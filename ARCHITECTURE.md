@@ -441,7 +441,9 @@ Configuration options:
 | Path | Description |
 |------|-------------|
 | `/login` | Login page |
+| `/logout` | Logout (clears session) |
 | `/dashboard` | Main dashboard |
+| `/admin` | Admin panel (metrics, security, monitoring) |
 | `/terminal/{service_id}` | Terminal UI |
 | `/vnc/{service_id}` | VNC viewer |
 | `/spice/{service_id}` | SPICE viewer |
@@ -531,6 +533,34 @@ CREATE TABLE ssh_keys (
 ```
 
 **Security Note:** Only public keys are stored in the database. Private keys are generated in-memory and returned to the user exactly once during key creation. They are never persisted, ensuring that even a database breach cannot expose private keys.
+
+## Database Usage
+
+The database module (`database.py`) provides a singleton instance for all database operations:
+
+```python
+from database import db
+
+# Must connect before any operations
+await db.connect()
+
+# Use high-level methods when available
+user = await db.get_user_by_username("admin")
+services = await db.get_all_services()
+
+# For custom queries, use db.conn after connect()
+async with db.conn.execute("SELECT * FROM users") as cursor:
+    rows = await cursor.fetchall()
+
+# Always close when done (handled by server lifecycle)
+await db.close()
+```
+
+**Important:**
+- Always call `db.connect()` before using database operations
+- The `db.conn` property raises `RuntimeError` if not connected
+- Use provided methods (`get_user_by_id`, `create_service`, etc.) for common operations
+- Direct SQL via `db.conn` is available for complex queries
 
 ## Scopes
 
