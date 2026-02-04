@@ -1143,6 +1143,61 @@ def show_invite_code() -> None:
     print(f"{'='*50}\n")
 
 
+async def set_admin_cli(username: str, remove: bool = False) -> None:
+    """Set or remove admin status for a user."""
+    await db.connect()
+
+    user = await db.get_user_by_username(username)
+    if not user:
+        print(f"Error: User '{username}' not found")
+        await db.close()
+        return
+
+    action = "Removing" if remove else "Granting"
+    new_status = 0 if remove else 1
+
+    if user["is_admin"] == new_status:
+        status_word = "already" if new_status else "not"
+        print(f"User '{username}' is {status_word} an admin")
+        await db.close()
+        return
+
+    await db.conn.execute(
+        "UPDATE users SET is_admin = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_status, user["id"])
+    )
+    await db.conn.commit()
+
+    status_word = "removed from" if remove else "added to"
+    print(f"User '{username}' has been {status_word} admin group")
+
+    await db.close()
+
+
+async def list_users_cli() -> None:
+    """List all users."""
+    await db.connect()
+
+    async with db.conn.execute(
+        "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    if not rows:
+        print("No users found")
+        await db.close()
+        return
+
+    print(f"\n{'ID':<5} {'Username':<20} {'Admin':<7} {'Created'}")
+    print("-" * 60)
+    for row in rows:
+        admin_str = "Yes" if row["is_admin"] else "No"
+        print(f"{row['id']:<5} {row['username']:<20} {admin_str:<7} {row['created_at']}")
+    print(f"\nTotal: {len(rows)} users\n")
+
+    await db.close()
+
+
 def main():
     """Main entry point."""
     import argparse
@@ -1169,6 +1224,14 @@ def main():
     # Show invite code
     subparsers.add_parser("invite-code", help="Show current daily invite code")
 
+    # Set admin status
+    set_admin = subparsers.add_parser("set-admin", help="Set or remove admin status for a user")
+    set_admin.add_argument("username", help="Username to modify")
+    set_admin.add_argument("--remove", action="store_true", help="Remove admin status instead of granting it")
+
+    # List users
+    subparsers.add_parser("list-users", help="List all users")
+
     args = parser.parse_args()
 
     if args.command == "serve" or args.command is None:
@@ -1182,6 +1245,10 @@ def main():
         asyncio.run(list_services_cli())
     elif args.command == "invite-code":
         show_invite_code()
+    elif args.command == "set-admin":
+        asyncio.run(set_admin_cli(args.username, args.remove))
+    elif args.command == "list-users":
+        asyncio.run(list_users_cli())
     else:
         parser.print_help()
 
