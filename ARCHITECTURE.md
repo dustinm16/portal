@@ -262,6 +262,17 @@ Game streaming via Moonlight/Sunshine.
 | Features | Game streaming, input relay |
 | Auth | JWT + pairing |
 
+### Secure Tunnel (secure_tunnel.py)
+Multiplexed secure TCP tunneling.
+
+| Feature | Description |
+|---------|-------------|
+| Protocol | WebSocket (binary frames) |
+| Backend | Any TCP service |
+| Features | Connection pooling, bandwidth monitoring |
+| Auth | JWT |
+| Multiplexing | Multiple connections per WebSocket |
+
 ## API Reference
 
 ### Core Endpoints
@@ -269,7 +280,9 @@ Game streaming via Moonlight/Sunshine.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| GET | `/api/stats` | Server statistics |
+| GET | `/api/stats` | Server statistics (admin) |
+| GET | `/api/plugins` | List available plugins |
+| GET | `/api/tunnels` | View active tunnel sessions (admin) |
 | POST | `/api/token` | Create access token |
 | GET | `/api/tokens` | List user tokens |
 | POST | `/api/token/revoke` | Revoke token |
@@ -283,6 +296,7 @@ Game streaming via Moonlight/Sunshine.
 | GET | `/api/services/{id}` | Get service details |
 | PUT | `/api/services/{id}` | Update service (admin) |
 | DELETE | `/api/services/{id}` | Delete service (admin) |
+| GET | `/api/services/{id}/health` | Check service health |
 
 ### Plugin Management
 
