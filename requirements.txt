@@ -1,0 +1,15 @@
+# Core dependencies
+aiohttp>=3.9
+PyJWT>=2.8
+aiosqlite>=0.19
+python-dotenv>=1.0
+argon2-cffi>=23.1
+
+# Optional: SSH plugin
+asyncssh>=2.14
+
+# Optional: VPN encryption
+cryptography>=41.0
+
+# Optional: Better async support
+uvloop>=0.19; sys_platform != 'win32'

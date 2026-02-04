@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{SERVICE_NAME}} - Portal Gateway</title>
+    <link rel="stylesheet" href="/static/css/portal.css">
+    <style>
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+        #vnc-container {
+            height: calc(100vh - 50px);
+            background: #000;
+        }
+        #vnc-screen {
+            width: 100%;
+            height: 100%;
+        }
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+        }
+        .connection-status.connected {
+            background: rgba(34, 197, 94, 0.1);
+            color: #22c55e;
+        }
+        .connection-status.connecting {
+            background: rgba(234, 179, 8, 0.1);
+            color: #eab308;
+        }
+        .connection-status.disconnected {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+        }
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        .vnc-loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: var(--text-secondary);
+        }
+        .vnc-loading .spinner {
+            width: 40px;
+            height: 40px;
+            margin: 0 auto 1rem;
+        }
+    </style>
+</head>
+<body class="vnc-page">
+    <header class="vnc-header">
+        <div class="vnc-title">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <span id="service-name">{{SERVICE_NAME}}</span>
+        </div>
+        <div class="vnc-controls">
+            <div class="connection-status connecting" id="connection-status">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+            <button class="btn btn-secondary" onclick="toggleFullscreen()" title="Fullscreen">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                </svg>
+            </button>
+            <button class="btn btn-secondary" onclick="reconnect()" title="Reconnect">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+            <button class="btn btn-secondary" onclick="window.close()" title="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <div id="vnc-container">
+        <div class="vnc-loading" id="vnc-loading">
+            <div class="spinner"></div>
+            <p>Connecting to VNC server...</p>
+        </div>
+        <div id="vnc-screen"></div>
+    </div>
+
+    <script src="/static/js/portal.js"></script>
+    <script type="module">
+        import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';
+
+        const serviceId = '{{SERVICE_ID}}';
+        let rfb = null;
+
+        function connect() {
+            updateStatus('connecting', 'Connecting...');
+            document.getElementById('vnc-loading').style.display = 'block';
+
+            const wsUrl = Portal.getWebSocketUrl(`/ws/vnc/${serviceId}`);
+
+            try {
+                rfb = new RFB(
+                    document.getElementById('vnc-screen'),
+                    wsUrl,
+                    {
+                        credentials: { password: '' }
+                    }
+                );
+
+                rfb.scaleViewport = true;
+                rfb.resizeSession = true;
+
+                rfb.addEventListener('connect', () => {
+                    updateStatus('connected', 'Connected');
+                    document.getElementById('vnc-loading').style.display = 'none';
+                });
+
+                rfb.addEventListener('disconnect', (e) => {
+                    updateStatus('disconnected', 'Disconnected');
+                    if (e.detail.clean) {
+                        console.log('VNC disconnected cleanly');
+                    } else {
+                        console.error('VNC disconnected with error');
+                    }
+                });
+
+                rfb.addEventListener('credentialsrequired', () => {
+                    const password = prompt('VNC Password:');
+                    if (password) {
+                        rfb.sendCredentials({ password: password });
+                    }
+                });
+
+                rfb.addEventListener('securityfailure', (e) => {
+                    console.error('Security failure:', e.detail.reason);
+                    alert('VNC security failure: ' + e.detail.reason);
+                });
+
+            } catch (error) {
+                console.error('VNC connection error:', error);
+                updateStatus('disconnected', 'Error');
+            }
+        }
+
+        window.reconnect = function() {
+            if (rfb) {
+                rfb.disconnect();
+            }
+            connect();
+        };
+
+        window.toggleFullscreen = function() {
+            const container = document.getElementById('vnc-container');
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                container.requestFullscreen();
+            }
+        };
+
+        function updateStatus(status, text) {
+            const statusEl = document.getElementById('connection-status');
+            const statusText = document.getElementById('status-text');
+            statusEl.className = `connection-status ${status}`;
+            statusText.textContent = text;
+        }
+
+        // Initialize connection
+        connect();
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (rfb) {
+                rfb.disconnect();
+            }
+        });
+    </script>
+</body>
+</html>
