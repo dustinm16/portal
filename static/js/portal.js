@@ -189,7 +189,6 @@ const Portal = {
      * Show toast notification
      */
     toast(message, type = 'info') {
-        // Simple toast implementation
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
         toast.textContent = message;
@@ -211,24 +210,9 @@ const Portal = {
             toast.style.animation = 'slideOut 0.3s ease';
             setTimeout(() => toast.remove(), 300);
         }, 3000);
-    }
-};
+    },
 
-// Add CSS animations for toast
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-    }
-`;
-document.head.appendChild(style);
-
-/**
+    /**
      * Format bytes to human readable
      */
     formatBytes(bytes, decimals = 2) {
@@ -254,8 +238,8 @@ document.head.appendChild(style);
         lastActivity: Date.now(),
         warningTimeout: null,
         expiryTimeout: null,
-        sessionDuration: 24 * 60 * 60 * 1000, // 24 hours default
-        warningBefore: 5 * 60 * 1000, // 5 minutes warning
+        sessionDuration: 24 * 60 * 60 * 1000,
+        warningBefore: 5 * 60 * 1000,
 
         init(duration) {
             if (duration) this.sessionDuration = duration;
