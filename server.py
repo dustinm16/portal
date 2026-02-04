@@ -297,6 +297,9 @@ async def http_list_services(request: web.Request) -> web.Response:
                 "id": s["id"],
                 "name": s["name"],
                 "path": s["path"],
+                "plugin": s.get("plugin", "tcp_tunnel"),
+                "host": s.get("host", ""),
+                "port": s.get("port", 0),
                 "required_scopes": s["required_scopes"],
                 "enabled": bool(s["enabled"])
             }
@@ -322,23 +325,40 @@ async def http_create_service(request: web.Request) -> web.Response:
 
     name = data.get("name")
     path = data.get("path")
-    internal_url = data.get("internal_url")
-    required_scopes = data.get("required_scopes", [])
+    plugin = data.get("plugin", "tcp_tunnel")
+    host = data.get("host", "localhost")
+    port = data.get("port", 0)
+    config = data.get("config", {})
+    required_scopes = data.get("required_scopes", "*")
 
-    if not all([name, path, internal_url]):
+    # Handle scopes as string or list
+    if isinstance(required_scopes, str):
+        required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
+
+    if not name or not path:
         return web.json_response(
-            {"error": "name, path, and internal_url required"},
+            {"error": "name and path required"},
             status=400
         )
 
     try:
-        service_id = await db.create_service(name, path, internal_url, required_scopes)
+        service_id = await db.create_service(
+            name=name,
+            path=path,
+            plugin=plugin,
+            host=host,
+            port=port,
+            config=config,
+            required_scopes=required_scopes
+        )
         logger.info(f"Service '{name}' created by user {token.user_id}")
         return web.json_response({
             "id": service_id,
             "name": name,
             "path": path,
-            "internal_url": internal_url,
+            "plugin": plugin,
+            "host": host,
+            "port": port,
             "required_scopes": required_scopes
         }, status=201)
     except Exception as e:
@@ -937,6 +957,124 @@ async def http_get_current_user(request: web.Request) -> web.Response:
     })
 
 
+async def http_list_users(request: web.Request) -> web.Response:
+    """List all users (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    async with db.conn.execute(
+        "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    return web.json_response({
+        "users": [
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "is_admin": bool(row["is_admin"]),
+                "created_at": row["created_at"]
+            }
+            for row in rows
+        ]
+    })
+
+
+async def http_update_user_admin(request: web.Request) -> web.Response:
+    """Update user admin status (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    user_id = request.match_info.get("id")
+    if not user_id or not user_id.isdigit():
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+
+    user_id = int(user_id)
+
+    # Don't allow modifying yourself
+    if user_id == token.user_id:
+        return web.json_response(
+            {"error": "Cannot modify your own admin status"},
+            status=400
+        )
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    is_admin = data.get("is_admin")
+    if is_admin is None:
+        return web.json_response({"error": "is_admin field required"}, status=400)
+
+    user = await db.get_user_by_id(user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    await db.conn.execute(
+        "UPDATE users SET is_admin = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (1 if is_admin else 0, user_id)
+    )
+    await db.conn.commit()
+
+    action = "granted" if is_admin else "revoked"
+    logger.info(f"Admin {action} for user {user['username']} by user {token.user_id}")
+
+    return web.json_response({
+        "id": user_id,
+        "username": user["username"],
+        "is_admin": bool(is_admin),
+        "message": f"Admin status {action}"
+    })
+
+
+async def http_delete_user(request: web.Request) -> web.Response:
+    """Delete a user (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    user_id = request.match_info.get("id")
+    if not user_id or not user_id.isdigit():
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+
+    user_id = int(user_id)
+
+    # Don't allow deleting yourself
+    if user_id == token.user_id:
+        return web.json_response(
+            {"error": "Cannot delete your own account"},
+            status=400
+        )
+
+    user = await db.get_user_by_id(user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    # Delete user's tokens first
+    await db.conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
+    # Delete the user
+    await db.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    await db.conn.commit()
+
+    logger.info(f"User {user['username']} deleted by admin {token.user_id}")
+
+    return web.json_response({
+        "message": f"User '{user['username']}' deleted"
+    })
+
+
 # =============================================================================
 # Application Setup
 # =============================================================================
@@ -963,7 +1101,10 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/services/{id}", http_delete_service)
 
     # User management
+    app.router.add_get("/api/users", http_list_users)
     app.router.add_post("/api/users", http_create_user)
+    app.router.add_put("/api/users/{id}/admin", http_update_user_admin)
+    app.router.add_delete("/api/users/{id}", http_delete_user)
     app.router.add_get("/api/me", http_get_current_user)
 
     # Registration (public with invite code)

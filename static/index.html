@@ -15,7 +15,7 @@
             Portal Gateway
         </div>
         <div class="navbar-menu">
-            <a href="#" onclick="openLocalTerminal(); return false;" class="navbar-terminal" title="Open Terminal">
+            <a href="#" onclick="openLocalTerminal(); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
@@ -25,6 +25,7 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
                 <span id="username"></span>
+                <span id="admin-badge" class="admin-badge" style="display: none;">Admin</span>
             </span>
             <a href="/logout">Logout</a>
         </div>
@@ -55,6 +56,37 @@
                     </a>
                 </li>
             </ul>
+
+            <!-- Admin Section (shown only for admins) -->
+            <div id="admin-section" style="display: none;">
+                <h3 style="margin-top: 2rem;">Administration</h3>
+                <ul>
+                    <li>
+                        <a href="#" onclick="showAddServiceModal(); return false;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                            </svg>
+                            Add Service
+                        </a>
+                    </li>
+                    <li>
+                        <a href="#" onclick="showManageUsersModal(); return false;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                            </svg>
+                            Manage Users
+                        </a>
+                    </li>
+                    <li>
+                        <a href="#" onclick="showInviteCode(); return false;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                            </svg>
+                            Invite Code
+                        </a>
+                    </li>
+                </ul>
+            </div>
         </aside>
 
         <main class="main-content">
@@ -72,13 +104,124 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
                 </svg>
                 <h3>No Services Available</h3>
-                <p>Configure services using the CLI or API.</p>
+                <p id="empty-message">Configure services using the CLI or API.</p>
             </div>
         </main>
     </div>
 
+    <!-- Add Service Modal -->
+    <div id="add-service-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('add-service-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add Service</h3>
+                <button class="modal-close" onclick="closeModal('add-service-modal')">&times;</button>
+            </div>
+            <form id="add-service-form" onsubmit="submitAddService(event)">
+                <div class="form-group">
+                    <label for="service-name">Service Name</label>
+                    <input type="text" id="service-name" required placeholder="My Service">
+                </div>
+                <div class="form-group">
+                    <label for="service-path">URL Path</label>
+                    <input type="text" id="service-path" required placeholder="/myservice">
+                </div>
+                <div class="form-group">
+                    <label for="service-plugin">Plugin Type</label>
+                    <select id="service-plugin" required>
+                        <option value="terminal">Terminal (PTY)</option>
+                        <option value="ssh">SSH</option>
+                        <option value="vnc">VNC Desktop</option>
+                        <option value="http_proxy">HTTP Proxy</option>
+                        <option value="tcp_tunnel">TCP Tunnel</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="service-host">Target Host</label>
+                    <input type="text" id="service-host" required placeholder="localhost">
+                </div>
+                <div class="form-group">
+                    <label for="service-port">Target Port</label>
+                    <input type="number" id="service-port" placeholder="22" min="1" max="65535">
+                </div>
+                <div class="form-group">
+                    <label for="service-scopes">Required Scopes (comma-separated)</label>
+                    <input type="text" id="service-scopes" placeholder="*">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('add-service-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Service</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Manage Users Modal -->
+    <div id="manage-users-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('manage-users-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>Manage Users</h3>
+                <button class="modal-close" onclick="closeModal('manage-users-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="users-loading" class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading users...</span>
+                </div>
+                <table id="users-table" class="data-table" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Username</th>
+                            <th>Admin</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Invite Code Modal -->
+    <div id="invite-code-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('invite-code-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Daily Invite Code</h3>
+                <button class="modal-close" onclick="closeModal('invite-code-modal')">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align: center; padding: 2rem;">
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">Share this code to allow new user registration:</p>
+                <div id="invite-code-display" class="invite-code-display">Loading...</div>
+                <p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 1rem;">Code expires at midnight UTC</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div id="confirm-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('confirm-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="confirm-title">Confirm</h3>
+                <button class="modal-close" onclick="closeModal('confirm-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-message"></p>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('confirm-modal')">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirm-btn" onclick="confirmAction()">Delete</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/js/portal.js"></script>
     <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/admin.js"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

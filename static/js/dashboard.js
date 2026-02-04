@@ -4,6 +4,7 @@
 
 let services = [];
 let currentCategory = 'all';
+let currentUser = null;
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', async () => {
@@ -16,8 +17,8 @@ document.addEventListener('DOMContentLoaded', async () => {
  */
 async function loadUserInfo() {
     try {
-        const user = await Portal.getCurrentUser();
-        document.getElementById('username').textContent = user.username;
+        currentUser = await Portal.getCurrentUser();
+        document.getElementById('username').textContent = currentUser.username;
     } catch (error) {
         console.error('Failed to load user info:', error);
     }
@@ -100,6 +101,18 @@ function createServiceCard(service) {
     const plugin = service.plugin || 'tcp_tunnel';
     const icon = Portal.getServiceIcon(plugin);
     const pluginName = Portal.getPluginDisplayName(plugin);
+    const isAdmin = currentUser && currentUser.is_admin;
+
+    let adminActions = '';
+    if (isAdmin) {
+        adminActions = `
+            <div class="service-card-actions">
+                <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); confirmDeleteService(${service.id}, '${escapeHtml(service.name).replace(/'/g, "\\'")}')">
+                    Delete
+                </button>
+            </div>
+        `;
+    }
 
     return `
         <div class="service-card" data-service-id="${service.id}">
@@ -116,6 +129,7 @@ function createServiceCard(service) {
                 <span class="service-status-dot"></span>
                 Available
             </div>
+            ${adminActions}
         </div>
     `;
 }
