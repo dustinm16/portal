@@ -228,6 +228,7 @@
             <div class="tab-nav">
                 <button class="tab-btn active" onclick="showTab('overview')">Overview</button>
                 <button class="tab-btn" onclick="showTab('metrics')">Traffic Metrics</button>
+                <button class="tab-btn" onclick="showTab('vuln')">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
                 <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
             </div>
@@ -330,6 +331,72 @@
                 </div>
             </div>
 
+            <!-- CVE Analysis Tab -->
+            <div id="tab-vuln" class="tab-content">
+                <div class="section-header">
+                    <h2>CVE Analysis & Vulnerability Scanner</h2>
+                </div>
+
+                <div class="admin-grid">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                            Scan Host
+                        </h3>
+                        <div class="shodan-lookup">
+                            <input type="text" id="vuln-host" placeholder="IP or hostname (e.g., 192.168.1.1)">
+                            <button class="btn btn-primary" style="width: auto;" onclick="scanHost()">Scan</button>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-size: 0.75rem; color: var(--text-muted);">Custom Ports (optional)</label>
+                            <input type="text" id="vuln-ports" placeholder="22,80,443,3389" style="font-size: 0.875rem; padding: 0.5rem;">
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            CVE Lookup
+                        </h3>
+                        <div class="shodan-lookup">
+                            <input type="text" id="cve-id" placeholder="CVE-2024-6387" style="text-transform: uppercase;">
+                            <button class="btn btn-secondary" style="width: auto;" onclick="lookupCVE()">Lookup</button>
+                        </div>
+                        <p style="font-size: 0.75rem; color: var(--text-muted);">Search NVD and local database for CVE details and mitigations.</p>
+                    </div>
+                </div>
+
+                <div class="admin-card" style="margin-top: 1.5rem;">
+                    <h3>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        Scan Results
+                    </h3>
+                    <div id="vuln-results">
+                        <p style="color: var(--text-muted); text-align: center; padding: 2rem;">
+                            Enter a host above to scan for vulnerabilities, or look up a specific CVE.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="admin-card" style="margin-top: 1.5rem;">
+                    <h3>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        Known CVE Database
+                        <button class="btn btn-secondary btn-sm" style="margin-left: auto;" onclick="loadKnownCVEs()">Refresh</button>
+                    </h3>
+                    <div id="known-cves" style="max-height: 400px; overflow-y: auto;">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Active Connections Tab -->
             <div id="tab-connections" class="tab-content">
                 <div class="section-header">
@@ -363,6 +430,7 @@
             switch(tabName) {
                 case 'overview': loadOverview(); break;
                 case 'metrics': loadMetrics(); break;
+                case 'vuln': loadKnownCVEs(); break;
                 case 'shodan': loadShodanConfig(); break;
                 case 'connections': loadActiveConnections(); break;
             }
@@ -756,6 +824,289 @@
                 document.getElementById('active-connections').innerHTML = '<p style="color: var(--accent-red);">Failed to load connections.</p>';
             }
         }
+
+        // =================================================================
+        // Vulnerability Scanner Functions
+        // =================================================================
+
+        // Scan a host for vulnerabilities
+        async function scanHost() {
+            const host = document.getElementById('vuln-host').value.trim();
+            if (!host) {
+                Portal.toast('Please enter a host', 'error');
+                return;
+            }
+
+            const portsInput = document.getElementById('vuln-ports').value.trim();
+            let url = `/api/vuln/scan/${encodeURIComponent(host)}`;
+            if (portsInput) {
+                url += `?ports=${encodeURIComponent(portsInput)}`;
+            }
+
+            document.getElementById('vuln-results').innerHTML = `
+                <div class="loading" style="padding: 2rem;">
+                    <div class="spinner"></div>
+                    <span>Scanning ${host}... This may take a moment.</span>
+                </div>
+            `;
+
+            try {
+                const result = await Portal.fetchJSON(url);
+                displayScanResults(result);
+            } catch (error) {
+                console.error('Scan failed:', error);
+                document.getElementById('vuln-results').innerHTML = `
+                    <div class="warning-banner">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>Scan failed. Please check the host and try again.</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Display scan results
+        function displayScanResults(result) {
+            const summary = result.summary || {};
+            const vulns = result.vulnerabilities || [];
+            const ports = result.open_ports || [];
+            const recommendations = result.recommendations || [];
+
+            let html = `
+                <div class="scan-results">
+                    <div class="scan-header">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                            ${result.target}
+                        </h4>
+                        <span class="risk-badge ${result.risk_level}">${result.risk_level} risk (${result.risk_score}/100)</span>
+                    </div>
+                    <div class="scan-body">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                            <div style="text-align: center; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-primary);">${summary.total_ports || 0}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Open Ports</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.75rem; background: rgba(239,68,68,0.1); border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: bold; color: var(--accent-red);">${summary.critical || 0}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Critical</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.75rem; background: rgba(249,115,22,0.1); border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: bold; color: #f97316;">${summary.high || 0}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">High</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.75rem; background: rgba(251,191,36,0.1); border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: bold; color: var(--accent-yellow);">${summary.medium || 0}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Medium</div>
+                            </div>
+                        </div>
+            `;
+
+            // Recommendations
+            if (recommendations.length > 0) {
+                html += `
+                    <div style="background: rgba(96,165,250,0.1); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem;">
+                        <p style="color: var(--accent-blue); font-weight: 500; font-size: 0.875rem; margin-bottom: 0.5rem;">Recommendations:</p>
+                        <ul style="color: var(--text-secondary); font-size: 0.8rem; margin: 0; padding-left: 1.25rem;">
+                            ${recommendations.map(r => `<li style="margin-bottom: 0.25rem;">${escapeHtml(r)}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            // Vulnerabilities
+            if (vulns.length > 0) {
+                html += `<h4 style="font-size: 0.875rem; margin-bottom: 0.75rem; color: var(--text-primary);">Vulnerabilities Found (${vulns.length})</h4>`;
+                vulns.forEach(v => {
+                    html += `
+                        <div class="port-item" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem; width: 100%;">
+                                <span class="risk-badge ${v.severity}" style="font-size: 0.625rem;">${v.severity}</span>
+                                <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${v.cve_id}')">${v.cve_id}</span>
+                                <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${v.cvss}</span>
+                                ${v.port ? `<span style="font-size: 0.75rem; color: var(--text-muted);">Port: ${v.port}</span>` : ''}
+                            </div>
+                            <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">${escapeHtml(v.description)}</p>
+                            ${v.mitigation && v.mitigation.length > 0 ? `
+                                <div style="background: rgba(34,197,94,0.1); padding: 0.5rem 0.75rem; border-radius: 4px; width: 100%; margin-top: 0.25rem;">
+                                    <p style="color: var(--accent-green); font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem;">Mitigation:</p>
+                                    <p style="color: var(--text-secondary); font-size: 0.75rem; margin: 0;">${escapeHtml(v.mitigation[0])}</p>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                });
+            }
+
+            // Open ports
+            if (ports.length > 0) {
+                html += `<h4 style="font-size: 0.875rem; margin: 1rem 0 0.75rem; color: var(--text-primary);">Open Ports (${ports.length})</h4>`;
+                ports.forEach(p => {
+                    html += `
+                        <div class="port-item">
+                            <span class="port-number">${p.port}</span>
+                            <span class="port-service">${p.service_name || p.service}</span>
+                            <span class="risk-badge ${p.risk}" style="font-size: 0.625rem;">${p.risk}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            html += `
+                        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem;">
+                            Scan completed in ${result.scan_duration_seconds?.toFixed(2) || '?'}s at ${new Date(result.scan_time).toLocaleString()}
+                        </p>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('vuln-results').innerHTML = html;
+        }
+
+        // Lookup CVE by ID
+        async function lookupCVE() {
+            const cveId = document.getElementById('cve-id').value.trim().toUpperCase();
+            if (!cveId) {
+                Portal.toast('Please enter a CVE ID', 'error');
+                return;
+            }
+            await lookupCVEById(cveId);
+        }
+
+        async function lookupCVEById(cveId) {
+            document.getElementById('vuln-results').innerHTML = `
+                <div class="loading" style="padding: 2rem;">
+                    <div class="spinner"></div>
+                    <span>Looking up ${cveId}...</span>
+                </div>
+            `;
+
+            try {
+                const [cveData, mitigations] = await Promise.all([
+                    Portal.fetchJSON(`/api/vuln/cve/${encodeURIComponent(cveId)}`),
+                    Portal.fetchJSON(`/api/vuln/mitigations/${encodeURIComponent(cveId)}`)
+                ]);
+
+                displayCVEDetails(cveData, mitigations.mitigations || []);
+            } catch (error) {
+                console.error('CVE lookup failed:', error);
+                document.getElementById('vuln-results').innerHTML = `
+                    <div class="info-banner">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>CVE not found in local or NVD database.</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Display CVE details
+        function displayCVEDetails(cve, mitigations) {
+            const html = `
+                <div class="scan-results">
+                    <div class="scan-header">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            ${cve.cve_id}
+                        </h4>
+                        <span class="risk-badge ${cve.severity}">${cve.severity} (CVSS: ${cve.cvss})</span>
+                    </div>
+                    <div class="scan-body">
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
+                            ${escapeHtml(cve.description)}
+                        </p>
+
+                        ${cve.service ? `<p style="font-size: 0.875rem;"><strong>Service:</strong> ${cve.service}</p>` : ''}
+                        ${cve.affected_versions ? `
+                            <p style="font-size: 0.875rem;"><strong>Affected Versions:</strong> ${cve.affected_versions.join(', ')}</p>
+                        ` : ''}
+                        ${cve.source ? `<p style="font-size: 0.75rem; color: var(--text-muted);">Source: ${cve.source}</p>` : ''}
+
+                        ${mitigations.length > 0 ? `
+                            <div style="background: rgba(34,197,94,0.1); padding: 1rem; border-radius: 6px; margin-top: 1rem;">
+                                <p style="color: var(--accent-green); font-weight: 500; margin-bottom: 0.5rem;">Mitigation Steps:</p>
+                                <ol style="color: var(--text-secondary); font-size: 0.875rem; margin: 0; padding-left: 1.25rem;">
+                                    ${mitigations.map(m => `<li style="margin-bottom: 0.5rem;">${escapeHtml(m)}</li>`).join('')}
+                                </ol>
+                            </div>
+                        ` : ''}
+
+                        ${cve.references ? `
+                            <div style="margin-top: 1rem;">
+                                <p style="font-size: 0.875rem; font-weight: 500; margin-bottom: 0.5rem;">References:</p>
+                                <ul style="font-size: 0.75rem; color: var(--accent-blue); padding-left: 1rem;">
+                                    ${cve.references.map(r => `<li><a href="${r}" target="_blank" style="color: var(--accent-blue);">${r}</a></li>`).join('')}
+                                </ul>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('vuln-results').innerHTML = html;
+        }
+
+        // Load known CVEs
+        async function loadKnownCVEs() {
+            try {
+                const data = await Portal.fetchJSON('/api/vuln/known-cves');
+                const cves = data.cves || [];
+
+                if (cves.length === 0) {
+                    document.getElementById('known-cves').innerHTML = '<p style="color: var(--text-muted);">No CVEs in local database.</p>';
+                    return;
+                }
+
+                document.getElementById('known-cves').innerHTML = `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>CVE ID</th>
+                                <th>Service</th>
+                                <th>Severity</th>
+                                <th>CVSS</th>
+                                <th>Description</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${cves.map(c => `
+                                <tr>
+                                    <td style="font-family: monospace;">${c.cve_id}</td>
+                                    <td>${c.service}</td>
+                                    <td><span class="risk-badge ${c.severity}" style="font-size: 0.625rem;">${c.severity}</span></td>
+                                    <td>${c.cvss}</td>
+                                    <td style="max-width: 300px; font-size: 0.75rem; color: var(--text-secondary);">${escapeHtml(c.description)}</td>
+                                    <td>
+                                        <button class="btn btn-secondary btn-sm" onclick="lookupCVEById('${c.cve_id}')">Details</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (error) {
+                console.error('Failed to load known CVEs:', error);
+                document.getElementById('known-cves').innerHTML = '<p style="color: var(--accent-red);">Failed to load CVE database.</p>';
+            }
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // =================================================================
+        // Initialization
+        // =================================================================
 
         // Check authentication and load overview
         async function init() {

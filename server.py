@@ -65,6 +65,7 @@ from ssh_keys import (
 )
 from shodan_integration import shodan_client, init_shodan, shutdown_shodan
 from traffic_metrics import traffic_metrics, start_metrics_recorder, stop_metrics_recorder
+from vulnerability_scanner import vulnerability_scanner, init_scanner, shutdown_scanner
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -1079,6 +1080,166 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid API key"}, status=400)
 
 
+# =============================================================================
+# Vulnerability Scanner API
+# =============================================================================
+
+
+async def http_vuln_scan_host(request: web.Request) -> web.Response:
+    """Scan a host for vulnerabilities (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    host = request.match_info.get("host")
+    if not host:
+        return web.json_response({"error": "Host required"}, status=400)
+
+    # Validate host format (IP or hostname)
+    import re
+    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
+
+    if not (re.match(ip_pattern, host) or re.match(hostname_pattern, host)):
+        return web.json_response({"error": "Invalid host format"}, status=400)
+
+    # Parse optional ports parameter
+    ports_param = request.query.get("ports", "")
+    ports = None
+    if ports_param:
+        try:
+            ports = [int(p.strip()) for p in ports_param.split(",") if p.strip()]
+            if any(p < 1 or p > 65535 for p in ports):
+                return web.json_response({"error": "Invalid port number"}, status=400)
+        except ValueError:
+            return web.json_response({"error": "Invalid ports format"}, status=400)
+
+    try:
+        result = await vulnerability_scanner.scan_host(host, ports)
+        logger.info(f"Vulnerability scan completed for {host} by user {token.user_id}")
+        return web.json_response(result.to_dict())
+    except Exception as e:
+        logger.error(f"Vulnerability scan failed for {host}: {e}")
+        return web.json_response({"error": "Scan failed"}, status=500)
+
+
+async def http_vuln_scan_service(request: web.Request) -> web.Response:
+    """Scan a Portal service for vulnerabilities (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    service_id = request.match_info.get("service_id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service = await db.get_service_by_id(int(service_id))
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    host = service.get("host", "localhost")
+    port = service.get("port")
+
+    if not port:
+        return web.json_response({"error": "Service has no port configured"}, status=400)
+
+    try:
+        result = await vulnerability_scanner.scan_host(host, [port])
+        logger.info(f"Vulnerability scan completed for service {service_id} by user {token.user_id}")
+        return web.json_response({
+            "service": {
+                "id": service["id"],
+                "name": service["name"],
+                "host": host,
+                "port": port
+            },
+            "scan": result.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Vulnerability scan failed for service {service_id}: {e}")
+        return web.json_response({"error": "Scan failed"}, status=500)
+
+
+async def http_vuln_lookup_cve(request: web.Request) -> web.Response:
+    """Look up CVE details (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    cve_id = request.match_info.get("cve_id", "").upper()
+    if not cve_id:
+        return web.json_response({"error": "CVE ID required"}, status=400)
+
+    # Validate CVE format
+    import re
+    if not re.match(r'^CVE-\d{4}-\d+$', cve_id) and not cve_id.startswith("CVE-GENERIC-"):
+        # Also allow INFO- prefixed IDs for informational findings
+        if not cve_id.startswith("INFO-") and not cve_id.startswith("CVE-WEAK-"):
+            return web.json_response({"error": "Invalid CVE ID format"}, status=400)
+
+    result = await vulnerability_scanner.lookup_cve(cve_id)
+    if result:
+        return web.json_response(result)
+    else:
+        return web.json_response({"error": "CVE not found"}, status=404)
+
+
+async def http_vuln_get_mitigations(request: web.Request) -> web.Response:
+    """Get mitigation steps for a CVE (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    cve_id = request.match_info.get("cve_id", "").upper()
+    if not cve_id:
+        return web.json_response({"error": "CVE ID required"}, status=400)
+
+    mitigations = await vulnerability_scanner.get_mitigations(cve_id)
+    return web.json_response({
+        "cve_id": cve_id,
+        "mitigations": mitigations
+    })
+
+
+async def http_vuln_known_cves(request: web.Request) -> web.Response:
+    """List all known CVEs in local database (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    from vulnerability_scanner import KNOWN_CVES
+
+    cves = []
+    for cve_id, info in KNOWN_CVES.items():
+        cves.append({
+            "cve_id": cve_id,
+            "service": info["service"],
+            "severity": info["severity"],
+            "cvss": info["cvss"],
+            "description": info["description"][:100] + "..." if len(info["description"]) > 100 else info["description"]
+        })
+
+    # Sort by CVSS score descending
+    cves.sort(key=lambda x: x["cvss"], reverse=True)
+
+    return web.json_response({"cves": cves})
+
+
 async def http_stats(request: web.Request) -> web.Response:
     """Get server statistics (admin only)."""
     token = await authenticate_request(request)
@@ -2055,6 +2216,13 @@ def create_app() -> web.Application:
     app.router.add_get("/api/shodan/lookup/{ip}", http_shodan_lookup)
     app.router.add_get("/api/shodan/search", http_shodan_search)
 
+    # Vulnerability Scanner (admin only)
+    app.router.add_get("/api/vuln/scan/{host}", http_vuln_scan_host)
+    app.router.add_get("/api/vuln/scan-service/{service_id}", http_vuln_scan_service)
+    app.router.add_get("/api/vuln/cve/{cve_id}", http_vuln_lookup_cve)
+    app.router.add_get("/api/vuln/mitigations/{cve_id}", http_vuln_get_mitigations)
+    app.router.add_get("/api/vuln/known-cves", http_vuln_known_cves)
+
     # Web UI routes
     app.router.add_get("/login", http_login_page)
     app.router.add_post("/login", http_login_submit)
@@ -2109,6 +2277,10 @@ class PortalServer:
             await start_metrics_recorder()
             logger.info("Traffic metrics recorder started")
 
+        # Initialize vulnerability scanner
+        await init_scanner()
+        logger.info("Vulnerability scanner initialized")
+
         # Create SSL context
         ssl_context = create_ssl_context()
         logger.info("SSL context created")
@@ -2147,6 +2319,9 @@ class PortalServer:
 
         # Shutdown Shodan client
         await shutdown_shodan()
+
+        # Shutdown vulnerability scanner
+        await shutdown_scanner()
 
         # Shutdown plugins
         await shutdown_plugins()
