@@ -41,6 +41,7 @@ from plugins import (
     initialize_plugins,
     shutdown_plugins,
     get_plugin,
+    get_all_plugins,
 )
 from plugins.base import ServiceTarget
 
@@ -892,6 +893,94 @@ async def http_stats(request: web.Request) -> web.Response:
     })
 
 
+async def http_list_plugins(request: web.Request) -> web.Response:
+    """List available plugins."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    from plugins import get_all_plugins
+
+    plugins = get_all_plugins()
+    return web.json_response({
+        "plugins": [
+            {
+                "name": p.info.name,
+                "display_name": p.info.display_name,
+                "description": p.info.description,
+                "version": p.info.version,
+                "icon": p.info.icon,
+                "protocols": p.info.protocols
+            }
+            for p in plugins.values()
+        ]
+    })
+
+
+async def http_get_tunnel_sessions(request: web.Request) -> web.Response:
+    """Get active tunnel sessions (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    # Get secure tunnel plugin sessions
+    secure_tunnel = get_plugin("secure_tunnel")
+    sessions = []
+    if secure_tunnel and hasattr(secure_tunnel, "get_active_sessions"):
+        sessions = secure_tunnel.get_active_sessions()
+
+    return web.json_response({
+        "sessions": sessions,
+        "active_websockets": len(active_connections)
+    })
+
+
+async def http_service_health(request: web.Request) -> web.Response:
+    """Check health of a specific service."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service = await db.get_service_by_id(int(service_id))
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    # Check authorization
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        if not check_service_authorization(service, token):
+            return web.json_response({"error": "Access denied"}, status=403)
+
+    # Get plugin and run health check
+    plugin_name = service.get("plugin", "tcp_tunnel")
+    plugin = get_plugin(plugin_name)
+
+    if not plugin:
+        return web.json_response({
+            "healthy": False,
+            "message": f"Plugin not found: {plugin_name}"
+        })
+
+    from plugins.base import ServiceTarget
+    target = ServiceTarget(
+        id=service["id"],
+        name=service["name"],
+        plugin=plugin_name,
+        host=service.get("host", ""),
+        port=service.get("port", 0),
+        config=service.get("config", {})
+    )
+
+    health = await plugin.health_check(target)
+    return web.json_response(health)
+
+
 # =============================================================================
 # WebSocket Handler
 # =============================================================================
@@ -1544,6 +1633,8 @@ def create_app() -> web.Application:
     # HTTP API routes
     app.router.add_get("/health", http_health)
     app.router.add_get("/api/stats", http_stats)
+    app.router.add_get("/api/plugins", http_list_plugins)
+    app.router.add_get("/api/tunnels", http_get_tunnel_sessions)
 
     # Token management
     app.router.add_post("/api/token", http_create_token)
@@ -1556,6 +1647,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/services/{id}", http_get_service)
     app.router.add_put("/api/services/{id}", http_update_service)
     app.router.add_delete("/api/services/{id}", http_delete_service)
+    app.router.add_get("/api/services/{id}/health", http_service_health)
 
     # User management
     app.router.add_get("/api/users", http_list_users)
