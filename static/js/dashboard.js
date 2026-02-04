@@ -18,9 +18,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function loadUserInfo() {
     try {
         currentUser = await Portal.getCurrentUser();
+
+        // Set username in navbar
         document.getElementById('username').textContent = currentUser.username;
+
+        // Show admin badge and section if user is admin
+        if (currentUser.is_admin) {
+            const adminBadge = document.getElementById('admin-badge');
+            const adminSection = document.getElementById('admin-section');
+            const terminalBtn = document.getElementById('terminal-btn');
+
+            if (adminBadge) adminBadge.style.display = 'inline-block';
+            if (adminSection) adminSection.style.display = 'block';
+            if (terminalBtn) terminalBtn.style.display = 'flex';
+        }
+
+        // Set profile modal info
+        const profileUsername = document.getElementById('profile-username');
+        const profileRole = document.getElementById('profile-role');
+        if (profileUsername) profileUsername.textContent = currentUser.username;
+        if (profileRole) profileRole.textContent = currentUser.is_admin ? 'Administrator' : 'User';
+
     } catch (error) {
         console.error('Failed to load user info:', error);
+        Portal.toast('Failed to load user info', 'error');
     }
 }
 
