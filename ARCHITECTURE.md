@@ -279,11 +279,10 @@ Game streaming via Moonlight/Sunshine.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/services` | List all services |
-| POST | `/api/services` | Create service |
+| POST | `/api/services` | Create service (admin) |
 | GET | `/api/services/{id}` | Get service details |
-| PUT | `/api/services/{id}` | Update service |
-| DELETE | `/api/services/{id}` | Delete service |
-| GET | `/api/services/{id}/health` | Check service health |
+| PUT | `/api/services/{id}` | Update service (admin) |
+| DELETE | `/api/services/{id}` | Delete service (admin) |
 
 ### Plugin Management
 
@@ -322,6 +321,7 @@ Game streaming via Moonlight/Sunshine.
 | PUT | `/api/users/{id}/admin` | Update admin status |
 | DELETE | `/api/users/{id}` | Delete user (admin only) |
 | GET | `/api/me` | Get current user info |
+| POST | `/api/me/password` | Change current user's password |
 | POST | `/api/register` | Register with invite code |
 | GET | `/api/invite-code` | Get invite code (admin only) |
 
