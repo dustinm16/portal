@@ -2,6 +2,8 @@
  * Portal Gateway - Admin Functions
  */
 
+console.log('admin.js loading...');
+
 // currentUser is defined in dashboard.js
 var pendingConfirmAction = null;
 
@@ -31,7 +33,18 @@ async function initAdminUI() {
  * Show modal by ID
  */
 function showModal(modalId) {
-    document.getElementById(modalId).style.display = 'flex';
+    console.log('showModal called:', modalId);
+    const modal = document.getElementById(modalId);
+    if (!modal) {
+        console.error('Modal not found:', modalId);
+        alert('Modal not found: ' + modalId);
+        return;
+    }
+    console.log('Modal element found, setting display to flex');
+    console.log('Modal before:', modal.style.display);
+    modal.style.display = 'flex';
+    console.log('Modal after:', modal.style.display);
+    console.log('Modal computed style:', window.getComputedStyle(modal).display);
     document.body.style.overflow = 'hidden';
 }
 
@@ -39,14 +52,24 @@ function showModal(modalId) {
  * Close modal by ID
  */
 function closeModal(modalId) {
+    console.log('closeModal called:', modalId);
     document.getElementById(modalId).style.display = 'none';
     document.body.style.overflow = '';
+
+    // Clean up log auto-refresh if closing logs modal
+    if (modalId === 'logs-modal' && typeof logAutoRefreshInterval !== 'undefined' && logAutoRefreshInterval) {
+        clearInterval(logAutoRefreshInterval);
+        logAutoRefreshInterval = null;
+        const checkbox = document.getElementById('log-auto-refresh');
+        if (checkbox) checkbox.checked = false;
+    }
 }
 
 /**
  * Show Add Service Modal
  */
 function showAddServiceModal() {
+    console.log('showAddServiceModal called');
     document.getElementById('add-service-form').reset();
     showModal('add-service-modal');
 }
@@ -99,15 +122,20 @@ async function submitAddService(event) {
  * Show Manage Users Modal
  */
 async function showManageUsersModal() {
+    console.log('showManageUsersModal called');
     showModal('manage-users-modal');
     document.getElementById('users-loading').style.display = 'flex';
     document.getElementById('users-table').style.display = 'none';
 
     try {
+        console.log('Fetching users...');
         const response = await Portal.fetch('/api/users');
+        console.log('Users response status:', response.status);
         const data = await response.json();
+        console.log('Users data:', data);
 
         renderUsersTable(data.users);
+        console.log('Users table rendered');
     } catch (error) {
         Portal.toast('Failed to load users', 'error');
         console.error('Load users error:', error);
@@ -118,7 +146,9 @@ async function showManageUsersModal() {
  * Render users table
  */
 function renderUsersTable(users) {
+    console.log('renderUsersTable called with', users?.length, 'users');
     const tbody = document.getElementById('users-tbody');
+    console.log('tbody element:', tbody);
 
     tbody.innerHTML = users.map(user => `
         <tr data-user-id="${user.id}">
@@ -263,8 +293,11 @@ function confirmAction() {
  * Show Invite Code Modal
  */
 async function showInviteCode() {
+    console.log('showInviteCode called');
     showModal('invite-code-modal');
-    document.getElementById('invite-code-display').textContent = 'Loading...';
+    const display = document.getElementById('invite-code-display');
+    console.log('invite-code-display element:', display);
+    display.textContent = 'Loading...';
 
     try {
         const response = await Portal.fetch('/api/invite-code');
@@ -304,6 +337,7 @@ var logAutoRefreshInterval = null;
  * Show Logs Modal
  */
 async function showLogsModal() {
+    console.log('showLogsModal called');
     showModal('logs-modal');
     await loadLogFiles();
     await loadLogSettings();
@@ -434,19 +468,17 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-// Clean up on modal close
-const originalCloseModal = closeModal;
-closeModal = function(modalId) {
-    if (modalId === 'logs-modal' && logAutoRefreshInterval) {
-        clearInterval(logAutoRefreshInterval);
-        logAutoRefreshInterval = null;
-        document.getElementById('log-auto-refresh').checked = false;
-    }
-    originalCloseModal(modalId);
-};
-
 // Initialize admin UI when page loads
-document.addEventListener('DOMContentLoaded', initAdminUI);
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('admin.js DOMContentLoaded');
+    initAdminUI();
+});
+
+console.log('admin.js loaded, functions defined:',
+    typeof showAddServiceModal,
+    typeof showManageUsersModal,
+    typeof showInviteCode,
+    typeof showLogsModal);
 
 // Close modals on Escape key
 document.addEventListener('keydown', (e) => {

@@ -103,19 +103,20 @@ function createServiceCard(service) {
     const pluginName = Portal.getPluginDisplayName(plugin);
     const isAdmin = currentUser && currentUser.is_admin;
 
-    let adminActions = '';
+    let deleteBtn = '';
     if (isAdmin) {
-        adminActions = `
-            <div class="service-card-actions">
-                <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); confirmDeleteService(${service.id}, '${escapeHtml(service.name).replace(/'/g, "\\'")}')">
-                    Delete
-                </button>
-            </div>
+        deleteBtn = `
+            <button class="service-delete-btn" onclick="event.stopPropagation(); confirmDeleteService(${service.id}, '${escapeHtml(service.name).replace(/'/g, "\\'")}')" title="Delete service">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
         `;
     }
 
     return `
         <div class="service-card" data-service-id="${service.id}">
+            ${deleteBtn}
             <div class="service-card-header">
                 <div class="service-icon">
                     ${icon}
@@ -129,7 +130,6 @@ function createServiceCard(service) {
                 <span class="service-status-dot"></span>
                 Available
             </div>
-            ${adminActions}
         </div>
     `;
 }

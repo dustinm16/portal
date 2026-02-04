@@ -777,17 +777,42 @@ body {
     user-select: all;
 }
 
-/* Service Card Actions (for admin) */
-.service-card-actions {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
-    padding-top: 0.75rem;
-    border-top: 1px solid var(--card-border);
+/* Service Card Delete Button */
+.service-card {
+    position: relative;
 }
 
-.service-card-actions button {
-    flex: 1;
+.service-delete-btn {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 4px;
+    color: var(--accent-red);
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.service-delete-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.service-card:hover .service-delete-btn {
+    opacity: 1;
+}
+
+.service-delete-btn:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: var(--accent-red);
 }
 
 /* Select Input */
