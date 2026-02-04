@@ -48,6 +48,13 @@ class Config:
     # TLS Settings
     TLS_MIN_VERSION: str = "TLSv1.2"
 
+    # Shodan API Settings
+    SHODAN_API_KEY: str = os.getenv("SHODAN_API_KEY", "")
+
+    # Metrics Settings
+    METRICS_ENABLED: bool = os.getenv("METRICS_ENABLED", "true").lower() == "true"
+    METRICS_RETENTION_HOURS: int = int(os.getenv("METRICS_RETENTION_HOURS", "24"))
+
     @classmethod
     def validate(cls) -> list[str]:
         """Validate configuration and return list of errors."""

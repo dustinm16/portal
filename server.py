@@ -63,6 +63,8 @@ from ssh_keys import (
     get_all_keys,
     get_authorized_keys,
 )
+from shodan_integration import shodan_client, init_shodan, shutdown_shodan
+from traffic_metrics import traffic_metrics, start_metrics_recorder, stop_metrics_recorder
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -877,6 +879,206 @@ async def http_admin_list_all_keys(request: web.Request) -> web.Response:
         return web.json_response({"error": "Failed to list SSH keys"}, status=500)
 
 
+# =============================================================================
+# Traffic Metrics API
+# =============================================================================
+
+
+async def http_get_metrics_summary(request: web.Request) -> web.Response:
+    """Get traffic metrics summary (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    return web.json_response(traffic_metrics.get_summary())
+
+
+async def http_get_metrics_services(request: web.Request) -> web.Response:
+    """Get per-service traffic metrics (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    return web.json_response({
+        "services": traffic_metrics.get_all_service_metrics()
+    })
+
+
+async def http_get_metrics_active(request: web.Request) -> web.Response:
+    """Get active connections with metrics (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    return web.json_response({
+        "connections": traffic_metrics.get_active_connections()
+    })
+
+
+async def http_get_metrics_time_series(request: web.Request) -> web.Response:
+    """Get time series metrics (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    hours = int(request.query.get("hours", "1"))
+    hours = min(max(hours, 1), 24)  # Clamp between 1 and 24
+
+    return web.json_response({
+        "data": traffic_metrics.get_time_series(hours)
+    })
+
+
+async def http_get_metrics_top(request: web.Request) -> web.Response:
+    """Get top services and users (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    limit = int(request.query.get("limit", "10"))
+    limit = min(max(limit, 1), 50)  # Clamp between 1 and 50
+
+    return web.json_response({
+        "top_services": traffic_metrics.get_top_services(limit),
+        "top_users": traffic_metrics.get_top_users(limit)
+    })
+
+
+# =============================================================================
+# Shodan Integration API
+# =============================================================================
+
+
+async def http_shodan_lookup(request: web.Request) -> web.Response:
+    """Look up an IP address in Shodan (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    ip = request.match_info.get("ip")
+    if not ip:
+        return web.json_response({"error": "IP address required"}, status=400)
+
+    # Validate IP format
+    import re
+    if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip):
+        return web.json_response({"error": "Invalid IP address format"}, status=400)
+
+    if not Config.SHODAN_API_KEY:
+        return web.json_response({"error": "Shodan API key not configured"}, status=503)
+
+    result = await shodan_client.lookup_host(ip)
+    if result:
+        return web.json_response(result.to_dict())
+    else:
+        return web.json_response({"error": "No data found for IP", "ip": ip}, status=404)
+
+
+async def http_shodan_search(request: web.Request) -> web.Response:
+    """Search Shodan (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not Config.SHODAN_API_KEY:
+        return web.json_response({"error": "Shodan API key not configured"}, status=503)
+
+    query = request.query.get("query")
+    if not query:
+        return web.json_response({"error": "Query parameter required"}, status=400)
+
+    limit = int(request.query.get("limit", "10"))
+    limit = min(max(limit, 1), 100)
+
+    results = await shodan_client.search(query, limit)
+    return web.json_response({"results": results})
+
+
+async def http_shodan_api_info(request: web.Request) -> web.Response:
+    """Get Shodan API info (credits remaining, etc.) - admin only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not Config.SHODAN_API_KEY:
+        return web.json_response({
+            "configured": False,
+            "message": "Shodan API key not configured"
+        })
+
+    info = await shodan_client.get_api_info()
+    if info:
+        return web.json_response({
+            "configured": True,
+            "plan": info.get("plan", "unknown"),
+            "query_credits": info.get("query_credits", 0),
+            "scan_credits": info.get("scan_credits", 0)
+        })
+    else:
+        return web.json_response({
+            "configured": True,
+            "error": "Failed to get API info"
+        }, status=500)
+
+
+async def http_shodan_set_api_key(request: web.Request) -> web.Response:
+    """Set Shodan API key (admin only) - stores in memory only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    api_key = data.get("api_key", "").strip()
+    if not api_key:
+        return web.json_response({"error": "API key required"}, status=400)
+
+    # Set the API key (memory only - for persistence, set SHODAN_API_KEY env var)
+    shodan_client.set_api_key(api_key)
+
+    # Verify the key works
+    info = await shodan_client.get_api_info()
+    if info:
+        logger.info(f"Shodan API key updated by user {token.user_id}")
+        return web.json_response({
+            "status": "success",
+            "plan": info.get("plan", "unknown"),
+            "query_credits": info.get("query_credits", 0)
+        })
+    else:
+        return web.json_response({"error": "Invalid API key"}, status=400)
+
+
 async def http_stats(request: web.Request) -> web.Response:
     """Get server statistics (admin only)."""
     token = await authenticate_request(request)
@@ -888,11 +1090,15 @@ async def http_stats(request: web.Request) -> web.Response:
 
     services = await db.get_all_services()
 
+    # Include traffic metrics summary
+    metrics = traffic_metrics.get_summary()
+
     return web.json_response({
         "active_connections": len(active_connections),
         "total_services": len(services),
         "rate_limit_entries": len(rate_limits),
-        "uptime_check": datetime.now(timezone.utc).isoformat()
+        "uptime_check": datetime.now(timezone.utc).isoformat(),
+        "metrics": metrics
     })
 
 
@@ -1542,6 +1748,20 @@ async def http_github_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def http_admin_page(request: web.Request) -> web.Response:
+    """Serve admin panel page (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    # Check admin access
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        raise web.HTTPFound("/dashboard")
+
+    html = load_static_file("admin.html")
+    return web.Response(text=html, content_type="text/html")
+
+
 async def http_get_current_user(request: web.Request) -> web.Response:
     """Get current authenticated user info."""
     token = await authenticate_request(request)
@@ -1730,9 +1950,49 @@ async def http_delete_user(request: web.Request) -> web.Response:
 # Application Setup
 # =============================================================================
 
+@web.middleware
+async def security_headers_middleware(request: web.Request, handler):
+    """Add security headers to all responses."""
+    response = await handler(request)
+
+    # Prevent clickjacking
+    response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+
+    # Prevent MIME type sniffing
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+
+    # Enable XSS filter in older browsers
+    response.headers.setdefault('X-XSS-Protection', '1; mode=block')
+
+    # Referrer policy
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+
+    # Permissions policy - restrict sensitive features
+    response.headers.setdefault('Permissions-Policy',
+        'geolocation=(), microphone=(), camera=(), payment=()')
+
+    # Content Security Policy for HTML pages
+    content_type = response.headers.get('Content-Type', '')
+    if 'text/html' in content_type:
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' https://cdn.jsdelivr.net; "
+            "connect-src 'self' wss: ws:; "
+            "frame-ancestors 'self'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+        response.headers.setdefault('Content-Security-Policy', csp)
+
+    return response
+
+
 def create_app() -> web.Application:
     """Create the aiohttp application."""
-    app = web.Application()
+    app = web.Application(middlewares=[security_headers_middleware])
 
     # Static files
     app.router.add_static("/static", STATIC_DIR)
@@ -1782,6 +2042,19 @@ def create_app() -> web.Application:
     app.router.add_get("/api/ssh-keys/{id}", http_get_ssh_key)
     app.router.add_delete("/api/ssh-keys/{id}", http_delete_ssh_key)
 
+    # Traffic Metrics (admin only)
+    app.router.add_get("/api/metrics", http_get_metrics_summary)
+    app.router.add_get("/api/metrics/services", http_get_metrics_services)
+    app.router.add_get("/api/metrics/active", http_get_metrics_active)
+    app.router.add_get("/api/metrics/timeseries", http_get_metrics_time_series)
+    app.router.add_get("/api/metrics/top", http_get_metrics_top)
+
+    # Shodan Integration (admin only)
+    app.router.add_get("/api/shodan/info", http_shodan_api_info)
+    app.router.add_post("/api/shodan/api-key", http_shodan_set_api_key)
+    app.router.add_get("/api/shodan/lookup/{ip}", http_shodan_lookup)
+    app.router.add_get("/api/shodan/search", http_shodan_search)
+
     # Web UI routes
     app.router.add_get("/login", http_login_page)
     app.router.add_post("/login", http_login_submit)
@@ -1793,6 +2066,7 @@ def create_app() -> web.Application:
     app.router.add_get("/spice/{service_id}", http_spice_page)
     app.router.add_get("/proxmox/{service_id}", http_proxmox_page)
     app.router.add_get("/github/{service_id}", http_github_page)
+    app.router.add_get("/admin", http_admin_page)
 
     # WebSocket endpoints - catch all paths for relay (must be last)
     app.router.add_get("/", websocket_handler)
@@ -1824,6 +2098,16 @@ class PortalServer:
         load_builtin_plugins()
         await initialize_plugins()
         logger.info("Plugins initialized")
+
+        # Initialize Shodan client if API key is configured
+        if Config.SHODAN_API_KEY:
+            await init_shodan(Config.SHODAN_API_KEY)
+            logger.info("Shodan integration initialized")
+
+        # Start traffic metrics recorder
+        if Config.METRICS_ENABLED:
+            await start_metrics_recorder()
+            logger.info("Traffic metrics recorder started")
 
         # Create SSL context
         ssl_context = create_ssl_context()
@@ -1857,6 +2141,12 @@ class PortalServer:
     async def stop(self) -> None:
         """Stop the server gracefully."""
         logger.info("Shutting down...")
+
+        # Stop metrics recorder
+        await stop_metrics_recorder()
+
+        # Shutdown Shodan client
+        await shutdown_shodan()
 
         # Shutdown plugins
         await shutdown_plugins()

@@ -228,6 +228,99 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
+/**
+     * Format bytes to human readable
+     */
+    formatBytes(bytes, decimals = 2) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    },
+
+    /**
+     * Format number with commas
+     */
+    formatNumber(num) {
+        return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    },
+
+    /**
+     * Session activity tracking
+     */
+    sessionActivity: {
+        lastActivity: Date.now(),
+        warningTimeout: null,
+        expiryTimeout: null,
+        sessionDuration: 24 * 60 * 60 * 1000, // 24 hours default
+        warningBefore: 5 * 60 * 1000, // 5 minutes warning
+
+        init(duration) {
+            if (duration) this.sessionDuration = duration;
+            this.resetActivity();
+            this.setupListeners();
+        },
+
+        setupListeners() {
+            ['mousedown', 'keydown', 'scroll', 'touchstart'].forEach(event => {
+                document.addEventListener(event, () => this.resetActivity(), { passive: true });
+            });
+        },
+
+        resetActivity() {
+            this.lastActivity = Date.now();
+            this.hideBanner();
+
+            if (this.warningTimeout) clearTimeout(this.warningTimeout);
+            if (this.expiryTimeout) clearTimeout(this.expiryTimeout);
+
+            const timeUntilWarning = this.sessionDuration - this.warningBefore;
+            this.warningTimeout = setTimeout(() => this.showWarning(), timeUntilWarning);
+            this.expiryTimeout = setTimeout(() => this.sessionExpired(), this.sessionDuration);
+        },
+
+        showWarning() {
+            let banner = document.getElementById('session-banner');
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.id = 'session-banner';
+                banner.className = 'session-banner';
+                banner.innerHTML = `
+                    <span>Your session will expire soon due to inactivity.</span>
+                    <button onclick="Portal.sessionActivity.resetActivity()">Stay Signed In</button>
+                `;
+                document.body.prepend(banner);
+            }
+            banner.classList.remove('hidden');
+        },
+
+        hideBanner() {
+            const banner = document.getElementById('session-banner');
+            if (banner) banner.classList.add('hidden');
+        },
+
+        sessionExpired() {
+            window.location.href = '/login?expired=1';
+        }
+    }
+};
+
+// Add CSS animations for toast
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+    }
+`;
+document.head.appendChild(style);
+
 // Export for module use
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = Portal;

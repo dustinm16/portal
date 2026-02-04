@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Portal Gateway - Admin Panel</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=11">
+    <style>
+        .admin-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .admin-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+        .admin-card h3 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+        }
+        .admin-card h3 svg {
+            width: 20px;
+            height: 20px;
+            color: var(--accent-blue);
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        .stat-value {
+            color: var(--text-primary);
+            font-weight: 600;
+            font-family: monospace;
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+        }
+        .section-header h2 {
+            margin: 0;
+        }
+        .tab-nav {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 0.5rem;
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 0.875rem;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        .tab-btn:hover {
+            color: var(--text-primary);
+            background: var(--card-bg);
+        }
+        .tab-btn.active {
+            color: var(--accent-blue);
+            background: rgba(96, 165, 250, 0.1);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .shodan-lookup {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .shodan-lookup input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            background: var(--code-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-family: monospace;
+        }
+        .shodan-lookup input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+        .config-form {
+            background: var(--code-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .config-form label {
+            display: block;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+        .config-form input {
+            width: 100%;
+            padding: 0.75rem;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--card-border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-family: monospace;
+        }
+        .risk-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .risk-badge.critical {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+        .risk-badge.high {
+            background: rgba(249, 115, 22, 0.2);
+            color: #f97316;
+        }
+        .risk-badge.medium {
+            background: rgba(251, 191, 36, 0.2);
+            color: var(--accent-yellow);
+        }
+        .risk-badge.low {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--accent-green);
+        }
+        .active-conn-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .conn-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+        }
+        .conn-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .conn-service {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+        .conn-details {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .conn-stats {
+            text-align: right;
+            font-family: monospace;
+            font-size: 0.75rem;
+        }
+        .refresh-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+        .refresh-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+        .chart-placeholder {
+            background: var(--code-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+            </svg>
+            Portal Gateway - Admin Panel
+        </div>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="dashboard">
+        <main class="main-content" style="max-width: 1400px; margin: 0 auto;">
+            <div class="tab-nav">
+                <button class="tab-btn active" onclick="showTab('overview')">Overview</button>
+                <button class="tab-btn" onclick="showTab('metrics')">Traffic Metrics</button>
+                <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
+                <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
+            </div>
+
+            <!-- Overview Tab -->
+            <div id="tab-overview" class="tab-content active">
+                <div class="admin-grid">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                            Server Statistics
+                        </h3>
+                        <div id="server-stats">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                            Traffic Summary
+                        </h3>
+                        <div id="traffic-summary">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                            Shodan Status
+                        </h3>
+                        <div id="shodan-status">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="admin-card">
+                    <h3>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                        </svg>
+                        Top Services
+                    </h3>
+                    <div id="top-services">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Traffic Metrics Tab -->
+            <div id="tab-metrics" class="tab-content">
+                <div class="section-header">
+                    <h2>Traffic Metrics</h2>
+                    <button class="btn btn-secondary refresh-btn" onclick="loadMetrics()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+                <div class="metrics-grid" id="metrics-grid">
+                    <div class="loading"><div class="spinner"></div> Loading metrics...</div>
+                </div>
+                <div class="admin-card">
+                    <h3>Per-Service Metrics</h3>
+                    <div id="service-metrics">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Shodan Tab -->
+            <div id="tab-shodan" class="tab-content">
+                <div class="section-header">
+                    <h2>Shodan Security Scanner</h2>
+                </div>
+
+                <div class="admin-card" style="margin-bottom: 1.5rem;">
+                    <h3>API Configuration</h3>
+                    <div id="shodan-config">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <div class="admin-card">
+                    <h3>IP Lookup</h3>
+                    <div class="shodan-lookup">
+                        <input type="text" id="shodan-ip" placeholder="Enter IP address (e.g., 8.8.8.8)" pattern="^(\d{1,3}\.){3}\d{1,3}$">
+                        <button class="btn btn-primary" style="width: auto;" onclick="lookupIP()">Lookup</button>
+                    </div>
+                    <div id="shodan-results">
+                        <p style="color: var(--text-muted); text-align: center;">Enter an IP address to look up its exposure information.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Connections Tab -->
+            <div id="tab-connections" class="tab-content">
+                <div class="section-header">
+                    <h2>Active Connections</h2>
+                    <button class="btn btn-secondary refresh-btn" onclick="loadActiveConnections()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+                <div class="admin-card">
+                    <div id="active-connections" class="active-conn-list">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/portal.js?v=11"></script>
+    <script>
+        // Tab switching
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('tab-' + tabName).classList.add('active');
+            event.target.classList.add('active');
+
+            // Load data for the tab
+            switch(tabName) {
+                case 'overview': loadOverview(); break;
+                case 'metrics': loadMetrics(); break;
+                case 'shodan': loadShodanConfig(); break;
+                case 'connections': loadActiveConnections(); break;
+            }
+        }
+
+        // Format bytes
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Format duration
+        function formatDuration(seconds) {
+            if (seconds < 60) return Math.round(seconds) + 's';
+            if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+            if (seconds < 86400) return Math.round(seconds / 3600) + 'h';
+            return Math.round(seconds / 86400) + 'd';
+        }
+
+        // Load overview data
+        async function loadOverview() {
+            try {
+                const [stats, metrics, shodanInfo, top] = await Promise.all([
+                    Portal.fetchJSON('/api/stats'),
+                    Portal.fetchJSON('/api/metrics'),
+                    Portal.fetchJSON('/api/shodan/info'),
+                    Portal.fetchJSON('/api/metrics/top')
+                ]);
+
+                // Server stats
+                document.getElementById('server-stats').innerHTML = `
+                    <div class="stat-row"><span class="stat-label">Active Connections</span><span class="stat-value">${stats.active_connections}</span></div>
+                    <div class="stat-row"><span class="stat-label">Total Services</span><span class="stat-value">${stats.total_services}</span></div>
+                    <div class="stat-row"><span class="stat-label">Rate Limit Entries</span><span class="stat-value">${stats.rate_limit_entries}</span></div>
+                `;
+
+                // Traffic summary
+                document.getElementById('traffic-summary').innerHTML = `
+                    <div class="stat-row"><span class="stat-label">Total Connections</span><span class="stat-value">${metrics.total_connections}</span></div>
+                    <div class="stat-row"><span class="stat-label">Total Traffic</span><span class="stat-value">${formatBytes(metrics.total_bytes)}</span></div>
+                    <div class="stat-row"><span class="stat-label">Active Users</span><span class="stat-value">${metrics.active_users}</span></div>
+                    <div class="stat-row"><span class="stat-label">Conn/Hour</span><span class="stat-value">${metrics.connections_per_hour}</span></div>
+                `;
+
+                // Shodan status
+                if (shodanInfo.configured) {
+                    document.getElementById('shodan-status').innerHTML = `
+                        <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value" style="color: var(--accent-green);">Configured</span></div>
+                        <div class="stat-row"><span class="stat-label">Plan</span><span class="stat-value">${shodanInfo.plan || 'Unknown'}</span></div>
+                        <div class="stat-row"><span class="stat-label">Query Credits</span><span class="stat-value">${shodanInfo.query_credits || 0}</span></div>
+                    `;
+                } else {
+                    document.getElementById('shodan-status').innerHTML = `
+                        <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value" style="color: var(--accent-yellow);">Not Configured</span></div>
+                        <p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 0.5rem;">Set SHODAN_API_KEY env var or configure in Shodan tab.</p>
+                    `;
+                }
+
+                // Top services
+                const topServices = top.top_services || [];
+                if (topServices.length > 0) {
+                    document.getElementById('top-services').innerHTML = `
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Service ID</th>
+                                    <th>Total Connections</th>
+                                    <th>Active</th>
+                                    <th>Traffic</th>
+                                    <th>Unique Users</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${topServices.map(s => `
+                                    <tr>
+                                        <td>${s.service_id}</td>
+                                        <td>${s.total_connections}</td>
+                                        <td>${s.active_connections}</td>
+                                        <td>${formatBytes(s.total_bytes)}</td>
+                                        <td>${s.unique_users}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    document.getElementById('top-services').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
+                }
+
+            } catch (error) {
+                console.error('Failed to load overview:', error);
+            }
+        }
+
+        // Load metrics
+        async function loadMetrics() {
+            try {
+                const [summary, services] = await Promise.all([
+                    Portal.fetchJSON('/api/metrics'),
+                    Portal.fetchJSON('/api/metrics/services')
+                ]);
+
+                document.getElementById('metrics-grid').innerHTML = `
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Total Connections</span>
+                        </div>
+                        <div class="metric-value">${summary.total_connections}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Active Connections</span>
+                        </div>
+                        <div class="metric-value">${summary.active_connections}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Total Bandwidth</span>
+                        </div>
+                        <div class="metric-value">${formatBytes(summary.total_bytes)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Active Users</span>
+                        </div>
+                        <div class="metric-value">${summary.active_users}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Connections/Hour</span>
+                        </div>
+                        <div class="metric-value">${summary.connections_per_hour}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Errors</span>
+                        </div>
+                        <div class="metric-value">${summary.total_errors}</div>
+                    </div>
+                `;
+
+                const serviceList = services.services || [];
+                if (serviceList.length > 0) {
+                    document.getElementById('service-metrics').innerHTML = `
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Service</th>
+                                    <th>Connections</th>
+                                    <th>Active</th>
+                                    <th>Sent</th>
+                                    <th>Received</th>
+                                    <th>Avg Duration</th>
+                                    <th>Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${serviceList.map(s => `
+                                    <tr>
+                                        <td>${s.service_id}</td>
+                                        <td>${s.total_connections}</td>
+                                        <td>${s.active_connections}</td>
+                                        <td>${formatBytes(s.total_bytes_sent)}</td>
+                                        <td>${formatBytes(s.total_bytes_received)}</td>
+                                        <td>${formatDuration(s.avg_duration_seconds)}</td>
+                                        <td>${s.errors}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    document.getElementById('service-metrics').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
+                }
+
+            } catch (error) {
+                console.error('Failed to load metrics:', error);
+                document.getElementById('metrics-grid').innerHTML = '<p style="color: var(--accent-red);">Failed to load metrics.</p>';
+            }
+        }
+
+        // Load Shodan config
+        async function loadShodanConfig() {
+            try {
+                const info = await Portal.fetchJSON('/api/shodan/info');
+
+                if (info.configured) {
+                    document.getElementById('shodan-config').innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <p style="color: var(--accent-green); font-weight: 500;">API Key Configured</p>
+                                <p style="color: var(--text-muted); font-size: 0.875rem;">Plan: ${info.plan || 'Unknown'} | Query Credits: ${info.query_credits || 0}</p>
+                            </div>
+                            <button class="btn btn-secondary btn-sm" onclick="showApiKeyForm()">Update Key</button>
+                        </div>
+                        <div id="api-key-form" style="display: none; margin-top: 1rem;">
+                            <div class="config-form">
+                                <label>New Shodan API Key</label>
+                                <input type="password" id="new-api-key" placeholder="Enter Shodan API key">
+                                <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                                    <button class="btn btn-primary btn-sm" style="width: auto;" onclick="saveShodanKey()">Save</button>
+                                    <button class="btn btn-secondary btn-sm" style="width: auto;" onclick="hideApiKeyForm()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    document.getElementById('shodan-config').innerHTML = `
+                        <div class="warning-banner">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            <span>Shodan API key not configured. Set SHODAN_API_KEY environment variable or enter below.</span>
+                        </div>
+                        <div class="config-form">
+                            <label>Shodan API Key</label>
+                            <input type="password" id="new-api-key" placeholder="Enter your Shodan API key">
+                            <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">
+                                Get your API key from <a href="https://account.shodan.io" target="_blank" style="color: var(--accent-blue);">account.shodan.io</a>
+                            </p>
+                            <button class="btn btn-primary btn-sm" style="width: auto; margin-top: 0.75rem;" onclick="saveShodanKey()">Save API Key</button>
+                        </div>
+                    `;
+                }
+
+            } catch (error) {
+                console.error('Failed to load Shodan config:', error);
+            }
+        }
+
+        function showApiKeyForm() {
+            document.getElementById('api-key-form').style.display = 'block';
+        }
+
+        function hideApiKeyForm() {
+            document.getElementById('api-key-form').style.display = 'none';
+        }
+
+        async function saveShodanKey() {
+            const apiKey = document.getElementById('new-api-key').value.trim();
+            if (!apiKey) {
+                Portal.toast('Please enter an API key', 'error');
+                return;
+            }
+
+            try {
+                const response = await Portal.postJSON('/api/shodan/api-key', { api_key: apiKey });
+                const result = await response.json();
+
+                if (response.ok) {
+                    Portal.toast('Shodan API key saved successfully');
+                    loadShodanConfig();
+                } else {
+                    Portal.toast(result.error || 'Failed to save API key', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to save API key', 'error');
+            }
+        }
+
+        // Lookup IP in Shodan
+        async function lookupIP() {
+            const ip = document.getElementById('shodan-ip').value.trim();
+            if (!ip) {
+                Portal.toast('Please enter an IP address', 'error');
+                return;
+            }
+
+            // Validate IP format
+            if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+                Portal.toast('Invalid IP address format', 'error');
+                return;
+            }
+
+            document.getElementById('shodan-results').innerHTML = '<div class="loading"><div class="spinner"></div> Looking up...</div>';
+
+            try {
+                const response = await Portal.fetch(`/api/shodan/lookup/${ip}`);
+                const result = await response.json();
+
+                if (!response.ok) {
+                    document.getElementById('shodan-results').innerHTML = `
+                        <div class="info-banner">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>${result.error || 'No data found for this IP'}</span>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const risk = result.risk_score || { score: 0, level: 'low', factors: [] };
+
+                document.getElementById('shodan-results').innerHTML = `
+                    <div class="scan-results">
+                        <div class="scan-header">
+                            <h4>
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                </svg>
+                                ${result.ip}
+                            </h4>
+                            <span class="risk-badge ${risk.level}">${risk.level} risk (${risk.score}/100)</span>
+                        </div>
+                        <div class="scan-body">
+                            <div style="margin-bottom: 1rem;">
+                                <p style="color: var(--text-secondary); font-size: 0.875rem;">
+                                    <strong>Organization:</strong> ${result.org || 'Unknown'}<br>
+                                    <strong>ISP:</strong> ${result.isp || 'Unknown'}<br>
+                                    <strong>Location:</strong> ${result.city || 'Unknown'}, ${result.country || 'Unknown'}<br>
+                                    <strong>Hostnames:</strong> ${result.hostnames?.join(', ') || 'None'}
+                                </p>
+                            </div>
+
+                            ${risk.factors.length > 0 ? `
+                                <div style="background: rgba(239, 68, 68, 0.1); padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem;">
+                                    <p style="color: var(--accent-red); font-weight: 500; font-size: 0.875rem; margin-bottom: 0.5rem;">Risk Factors:</p>
+                                    <ul style="color: var(--text-secondary); font-size: 0.75rem; margin: 0; padding-left: 1rem;">
+                                        ${risk.factors.map(f => `<li>${f}</li>`).join('')}
+                                    </ul>
+                                </div>
+                            ` : ''}
+
+                            <p style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem;">Open Ports (${result.ports?.length || 0}):</p>
+                            ${result.ports?.map(p => `
+                                <div class="port-item">
+                                    <span class="port-number">${p.port}/${p.protocol}</span>
+                                    <span class="port-service">${p.service}</span>
+                                    <span class="port-product">${p.product || ''} ${p.version || ''}</span>
+                                    ${p.vulns?.length > 0 ? `<span class="vulnerability-badge critical">${p.vulns.length} CVE</span>` : ''}
+                                </div>
+                            `).join('') || '<p style="color: var(--text-muted);">No open ports found.</p>'}
+
+                            ${result.vulns?.length > 0 ? `
+                                <div style="margin-top: 1rem;">
+                                    <p style="color: var(--accent-red); font-size: 0.875rem; font-weight: 500;">Known Vulnerabilities:</p>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.5rem;">
+                                        ${result.vulns.map(v => `<span class="vulnerability-badge critical">${v}</span>`).join('')}
+                                    </div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error('Shodan lookup failed:', error);
+                document.getElementById('shodan-results').innerHTML = `
+                    <div class="warning-banner">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>Failed to perform lookup. Please try again.</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Load active connections
+        async function loadActiveConnections() {
+            try {
+                const data = await Portal.fetchJSON('/api/metrics/active');
+                const connections = data.connections || [];
+
+                if (connections.length === 0) {
+                    document.getElementById('active-connections').innerHTML = `
+                        <p style="color: var(--text-muted); text-align: center; padding: 2rem;">No active connections.</p>
+                    `;
+                    return;
+                }
+
+                document.getElementById('active-connections').innerHTML = connections.map(c => `
+                    <div class="conn-item">
+                        <div class="conn-info">
+                            <span class="conn-service">Service #${c.service_id} (${c.plugin})</span>
+                            <span class="conn-details">User #${c.user_id} | ${c.client_ip || 'Unknown IP'} | ${formatDuration(c.duration_seconds)}</span>
+                        </div>
+                        <div class="conn-stats">
+                            <div style="color: var(--accent-green);">${formatBytes(c.bytes_sent)} sent</div>
+                            <div style="color: var(--accent-blue);">${formatBytes(c.bytes_received)} recv</div>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (error) {
+                console.error('Failed to load connections:', error);
+                document.getElementById('active-connections').innerHTML = '<p style="color: var(--accent-red);">Failed to load connections.</p>';
+            }
+        }
+
+        // Check authentication and load overview
+        async function init() {
+            try {
+                const user = await Portal.getCurrentUser();
+                if (!user.is_admin) {
+                    window.location.href = '/dashboard';
+                    return;
+                }
+                loadOverview();
+            } catch (error) {
+                window.location.href = '/login';
+            }
+        }
+
+        // Initialize
+        init();
+
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab-content.active');
+            if (activeTab) {
+                switch(activeTab.id) {
+                    case 'tab-overview': loadOverview(); break;
+                    case 'tab-metrics': loadMetrics(); break;
+                    case 'tab-connections': loadActiveConnections(); break;
+                }
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

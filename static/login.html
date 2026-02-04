@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
     <title>Portal Gateway - Login</title>
-    <link rel="stylesheet" href="/static/css/portal.css">
+    <link rel="stylesheet" href="/static/css/portal.css?v=11">
     <style>
         .form-footer {
             margin-top: 1.5rem;
@@ -31,6 +32,126 @@
             border-radius: 8px;
             font-size: 0.875rem;
             margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .success-message svg {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+        .error-message {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .error-message svg {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+        .password-wrapper {
+            position: relative;
+        }
+        .password-wrapper input {
+            padding-right: 3rem;
+        }
+        .password-toggle {
+            position: absolute;
+            right: 0.75rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 0.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.2s;
+        }
+        .password-toggle:hover {
+            color: var(--text-primary);
+        }
+        .password-toggle svg {
+            width: 20px;
+            height: 20px;
+        }
+        .password-strength {
+            margin-top: 0.5rem;
+        }
+        .strength-bar {
+            height: 4px;
+            background: var(--card-border);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-bottom: 0.25rem;
+        }
+        .strength-fill {
+            height: 100%;
+            width: 0;
+            transition: width 0.3s, background-color 0.3s;
+            border-radius: 2px;
+        }
+        .strength-fill.weak { width: 25%; background: #ef4444; }
+        .strength-fill.fair { width: 50%; background: #f59e0b; }
+        .strength-fill.good { width: 75%; background: #60a5fa; }
+        .strength-fill.strong { width: 100%; background: #22c55e; }
+        .strength-text {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .remember-me {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1.25rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+        .remember-me input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--accent-blue);
+        }
+        .remember-me label {
+            cursor: pointer;
+        }
+        .security-notice {
+            margin-top: 1.5rem;
+            padding: 0.75rem;
+            background: rgba(96, 165, 250, 0.05);
+            border-radius: 8px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-align: center;
+        }
+        .security-notice svg {
+            width: 14px;
+            height: 14px;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 0.25rem;
+        }
+        .input-hint {
+            display: block;
+            margin-top: 0.25rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .input-error {
+            border-color: var(--accent-red) !important;
+        }
+        .input-success {
+            border-color: var(--accent-green) !important;
+        }
+        .field-error {
+            color: var(--accent-red);
+            font-size: 0.75rem;
+            margin-top: 0.25rem;
         }
     </style>
 </head>
@@ -56,15 +177,36 @@
             <div id="message-container"></div>
 
             <!-- Login Form -->
-            <form id="login-form">
+            <form id="login-form" autocomplete="on">
                 <div class="form-group">
                     <label for="login-username">Username</label>
-                    <input type="text" id="login-username" name="username" required autofocus autocomplete="username" placeholder="Enter your username">
+                    <input type="text" id="login-username" name="username" required autofocus
+                           autocomplete="username" placeholder="Enter your username"
+                           pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, underscores, and hyphens only"
+                           maxlength="50">
                 </div>
 
                 <div class="form-group">
                     <label for="login-password">Password</label>
-                    <input type="password" id="login-password" name="password" required autocomplete="current-password" placeholder="Enter your password">
+                    <div class="password-wrapper">
+                        <input type="password" id="login-password" name="password" required
+                               autocomplete="current-password" placeholder="Enter your password"
+                               maxlength="128">
+                        <button type="button" class="password-toggle" onclick="togglePassword('login-password', this)" aria-label="Show password">
+                            <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <svg class="eye-closed" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="remember-me">
+                    <input type="checkbox" id="remember-me" name="remember">
+                    <label for="remember-me">Remember me for 30 days</label>
                 </div>
 
                 <button type="submit" class="btn btn-primary" id="login-btn">
@@ -78,20 +220,70 @@
             </form>
 
             <!-- Register Form -->
-            <form id="register-form" class="hidden">
+            <form id="register-form" class="hidden" autocomplete="on">
                 <div class="form-group">
                     <label for="register-username">Username</label>
-                    <input type="text" id="register-username" name="username" required autocomplete="username" placeholder="Choose a username">
+                    <input type="text" id="register-username" name="username" required
+                           autocomplete="username" placeholder="Choose a username"
+                           pattern="[a-zA-Z0-9_-]{3,30}"
+                           title="3-30 characters: letters, numbers, underscores, and hyphens"
+                           minlength="3" maxlength="30">
+                    <span class="input-hint">3-30 characters, letters, numbers, underscores, hyphens</span>
+                    <div id="username-error" class="field-error hidden"></div>
                 </div>
 
                 <div class="form-group">
                     <label for="register-password">Password</label>
-                    <input type="password" id="register-password" name="password" required autocomplete="new-password" placeholder="Choose a password">
+                    <div class="password-wrapper">
+                        <input type="password" id="register-password" name="password" required
+                               autocomplete="new-password" placeholder="Choose a strong password"
+                               minlength="8" maxlength="128"
+                               oninput="updatePasswordStrength(this.value)">
+                        <button type="button" class="password-toggle" onclick="togglePassword('register-password', this)" aria-label="Show password">
+                            <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <svg class="eye-closed" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="password-strength" id="password-strength" style="display: none;">
+                        <div class="strength-bar">
+                            <div class="strength-fill" id="strength-fill"></div>
+                        </div>
+                        <span class="strength-text" id="strength-text">Enter a password</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="register-confirm">Confirm Password</label>
+                    <div class="password-wrapper">
+                        <input type="password" id="register-confirm" name="confirm_password" required
+                               autocomplete="new-password" placeholder="Confirm your password"
+                               minlength="8" maxlength="128">
+                        <button type="button" class="password-toggle" onclick="togglePassword('register-confirm', this)" aria-label="Show password">
+                            <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <svg class="eye-closed" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="confirm-error" class="field-error hidden"></div>
                 </div>
 
                 <div class="form-group">
                     <label for="register-invite">Invite Code</label>
-                    <input type="text" id="register-invite" name="invite_code" required placeholder="PORTAL-XXXX-XXXX-XXXX" style="text-transform: uppercase;">
+                    <input type="text" id="register-invite" name="invite_code" required
+                           placeholder="PORTAL-XXXX-XXXX-XXXX"
+                           pattern="PORTAL-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}"
+                           style="text-transform: uppercase;"
+                           autocomplete="off">
+                    <span class="input-hint">Format: PORTAL-XXXX-XXXX-XXXX</span>
                 </div>
 
                 <button type="submit" class="btn btn-primary" id="register-btn">
@@ -103,6 +295,13 @@
                     Already have an account? <a onclick="showLogin()">Sign In</a>
                 </div>
             </form>
+
+            <div class="security-notice">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+                Your connection is secure. Never share your credentials.
+            </div>
         </div>
     </div>
 
@@ -112,6 +311,98 @@
         const messageContainer = document.getElementById('message-container');
         const formTitle = document.getElementById('form-title');
         const formSubtitle = document.getElementById('form-subtitle');
+
+        // Password visibility toggle
+        function togglePassword(inputId, button) {
+            const input = document.getElementById(inputId);
+            const eyeOpen = button.querySelector('.eye-open');
+            const eyeClosed = button.querySelector('.eye-closed');
+
+            if (input.type === 'password') {
+                input.type = 'text';
+                eyeOpen.style.display = 'none';
+                eyeClosed.style.display = 'block';
+                button.setAttribute('aria-label', 'Hide password');
+            } else {
+                input.type = 'password';
+                eyeOpen.style.display = 'block';
+                eyeClosed.style.display = 'none';
+                button.setAttribute('aria-label', 'Show password');
+            }
+        }
+
+        // Password strength calculator
+        function calculatePasswordStrength(password) {
+            let score = 0;
+            if (password.length >= 8) score++;
+            if (password.length >= 12) score++;
+            if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score++;
+            if (/\d/.test(password)) score++;
+            if (/[!@#$%^&*(),.?":{}|<>]/.test(password)) score++;
+            return Math.min(score, 4);
+        }
+
+        function updatePasswordStrength(password) {
+            const strengthContainer = document.getElementById('password-strength');
+            const strengthFill = document.getElementById('strength-fill');
+            const strengthText = document.getElementById('strength-text');
+
+            if (!password) {
+                strengthContainer.style.display = 'none';
+                return;
+            }
+
+            strengthContainer.style.display = 'block';
+            const score = calculatePasswordStrength(password);
+
+            strengthFill.className = 'strength-fill';
+            switch (score) {
+                case 0:
+                case 1:
+                    strengthFill.classList.add('weak');
+                    strengthText.textContent = 'Weak - add more characters';
+                    break;
+                case 2:
+                    strengthFill.classList.add('fair');
+                    strengthText.textContent = 'Fair - try adding symbols';
+                    break;
+                case 3:
+                    strengthFill.classList.add('good');
+                    strengthText.textContent = 'Good - looking better!';
+                    break;
+                case 4:
+                    strengthFill.classList.add('strong');
+                    strengthText.textContent = 'Strong password';
+                    break;
+            }
+        }
+
+        // Validate password confirmation
+        function validatePasswordMatch() {
+            const password = document.getElementById('register-password').value;
+            const confirm = document.getElementById('register-confirm').value;
+            const errorDiv = document.getElementById('confirm-error');
+            const confirmInput = document.getElementById('register-confirm');
+
+            if (confirm && password !== confirm) {
+                errorDiv.textContent = 'Passwords do not match';
+                errorDiv.classList.remove('hidden');
+                confirmInput.classList.add('input-error');
+                return false;
+            } else {
+                errorDiv.classList.add('hidden');
+                confirmInput.classList.remove('input-error');
+                if (confirm && password === confirm) {
+                    confirmInput.classList.add('input-success');
+                } else {
+                    confirmInput.classList.remove('input-success');
+                }
+                return true;
+            }
+        }
+
+        document.getElementById('register-confirm').addEventListener('input', validatePasswordMatch);
+        document.getElementById('register-password').addEventListener('input', validatePasswordMatch);
 
         function showLogin() {
             loginForm.classList.remove('hidden');
@@ -132,11 +423,17 @@
         }
 
         function showError(message) {
-            messageContainer.innerHTML = `<div class="error-message">${escapeHtml(message)}</div>`;
+            const icon = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>`;
+            messageContainer.innerHTML = `<div class="error-message">${icon}<span>${escapeHtml(message)}</span></div>`;
         }
 
         function showSuccess(message) {
-            messageContainer.innerHTML = `<div class="success-message">${escapeHtml(message)}</div>`;
+            const icon = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>`;
+            messageContainer.innerHTML = `<div class="success-message">${icon}<span>${escapeHtml(message)}</span></div>`;
         }
 
         function escapeHtml(text) {
@@ -160,9 +457,11 @@
             setButtonLoading(btn, true, 'Signing in...');
             messageContainer.innerHTML = '';
 
+            const rememberMe = document.getElementById('remember-me').checked;
             const data = {
-                username: document.getElementById('login-username').value,
-                password: document.getElementById('login-password').value
+                username: document.getElementById('login-username').value.trim(),
+                password: document.getElementById('login-password').value,
+                remember: rememberMe
             };
 
             try {
@@ -192,13 +491,26 @@
         // Register form handler
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+
+            // Validate password match
+            if (!validatePasswordMatch()) {
+                showError('Passwords do not match');
+                return;
+            }
+
+            const password = document.getElementById('register-password').value;
+            if (calculatePasswordStrength(password) < 2) {
+                showError('Please choose a stronger password');
+                return;
+            }
+
             const btn = document.getElementById('register-btn');
             setButtonLoading(btn, true, 'Creating account...');
             messageContainer.innerHTML = '';
 
             const data = {
-                username: document.getElementById('register-username').value,
-                password: document.getElementById('register-password').value,
+                username: document.getElementById('register-username').value.trim(),
+                password: password,
                 invite_code: document.getElementById('register-invite').value.toUpperCase()
             };
 
@@ -215,9 +527,9 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    showSuccess('Account created successfully! You can now sign in.');
-                    // Clear register form and switch to login
+                    showSuccess('Account created successfully! Redirecting to sign in...');
                     registerForm.reset();
+                    document.getElementById('password-strength').style.display = 'none';
                     setTimeout(() => {
                         showLogin();
                         document.getElementById('login-username').value = data.username;
@@ -232,6 +544,14 @@
                 setButtonLoading(btn, false, 'Create Account');
             }
         });
+
+        // Handle URL parameters (e.g., ?expired=1 for session timeout)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('expired') === '1') {
+            showError('Your session has expired. Please sign in again.');
+        } else if (urlParams.get('logout') === '1') {
+            showSuccess('You have been signed out successfully.');
+        }
     </script>
 </body>
 </html>

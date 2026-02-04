@@ -87,6 +87,8 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 ├── logger.py              # Logging with rotation
 ├── router.py              # Request routing
 ├── registry.py            # Plugin registry
+├── shodan_integration.py  # Shodan API integration
+├── traffic_metrics.py     # Traffic metrics tracking
 │
 ├── protocols/             # Protocol handlers
 │   ├── __init__.py
@@ -113,7 +115,8 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 │
 ├── static/                # Web assets
 │   ├── index.html         # Dashboard with service management
-│   ├── login.html         # Login page
+│   ├── login.html         # Login page with security features
+│   ├── admin.html         # Admin panel (metrics, Shodan, monitoring)
 │   ├── terminal.html      # Terminal UI (xterm.js)
 │   ├── vnc.html           # VNC viewer (noVNC)
 │   ├── spice.html         # SPICE viewer
@@ -556,6 +559,32 @@ CREATE TABLE ssh_keys (
 | `PLUGIN_DIR` | Plugin directory | plugins/ |
 | `STATIC_DIR` | Static files | static/ |
 
+## Admin Panel (`/admin`)
+
+The admin panel provides system monitoring and security scanning capabilities.
+
+### Traffic Metrics
+- Real-time connection monitoring
+- Per-service bandwidth tracking
+- Connection history and statistics
+- Active user monitoring
+- Time series data (24-hour retention)
+
+### Shodan Integration
+- IP lookup for exposure assessment
+- Risk scoring based on open ports and CVEs
+- Vulnerability tracking
+- Service discovery
+- API key management
+
+### Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SHODAN_API_KEY` | Shodan API key | - |
+| `METRICS_ENABLED` | Enable metrics | true |
+| `METRICS_RETENTION_HOURS` | Data retention | 24 |
+
 ## Security
 
 1. **Authentication**: JWT tokens with configurable expiry
@@ -570,6 +599,17 @@ CREATE TABLE ssh_keys (
    - Only public keys and fingerprints are persisted
    - Database breach cannot expose private keys
    - Supports Ed25519 (recommended) and RSA 4096-bit keys
+8. **Security Headers**:
+   - X-Frame-Options: SAMEORIGIN
+   - X-Content-Type-Options: nosniff
+   - Content-Security-Policy (HTML pages)
+   - Referrer-Policy: strict-origin-when-cross-origin
+   - Permissions-Policy restrictions
+9. **Login Security**:
+   - Password visibility toggle
+   - Password strength indicator
+   - Session timeout warnings
+   - Remember me option (30 days)
 
 ## Roadmap
 
@@ -621,3 +661,8 @@ CREATE TABLE ssh_keys (
 - [x] Secure tunnel with multiplexing
 - [x] VPN tunnel (TUN/TAP/SOCKS)
 - [x] HTTP reverse proxy
+- [x] Shodan API integration
+- [x] Traffic metrics dashboard
+- [x] Admin panel with monitoring
+- [x] Security headers middleware
+- [x] Enhanced login page (password strength, visibility toggle)
