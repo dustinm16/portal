@@ -4,7 +4,7 @@
 
 Portal Gateway is a modular, secure gateway for accessing home infrastructure resources remotely. It provides authenticated access to various services through a unified interface with support for multiple protocols.
 
-**Public Endpoint:** `https://portal.dddvm.xyz`
+**Public Endpoint:** `https://portal.example.com`
 
 ## System Architecture
 
@@ -37,15 +37,19 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 │  └─────────────────────────────────────────────────────────────────────┘  │
 │                                    │                                      │
 │  ┌─────────────────────────────────┴───────────────────────────────────┐  │
-│  │                        Service Plugins                               │  │
+│  │                     Service Plugins (11 total)                       │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
 │  │  │ Terminal │  │   VNC    │  │  SPICE   │  │   SSH    │            │  │
 │  │  │ (pty)    │  │ (noVNC)  │  │          │  │          │            │  │
 │  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│  │  │ Proxmox  │  │ TrueNAS  │  │   Plex   │  │Moonlight │            │  │
-│  │  │          │  │          │  │          │  │          │            │  │
+│  │  │ Proxmox  │  │  GitHub  │  │ MediaMTX │  │   HTTP   │            │  │
+│  │  │          │  │          │  │          │  │  Proxy   │            │  │
 │  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                          │  │
+│  │  │TCP Tunnel│  │  Secure  │  │   VPN    │                          │  │
+│  │  │          │  │  Tunnel  │  │  Tunnel  │                          │  │
+│  │  └──────────┘  └──────────┘  └──────────┘                          │  │
 │  └─────────────────────────────────────────────────────────────────────┘  │
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────────────┐  │
@@ -74,7 +78,7 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 ## Directory Structure
 
 ```
-/home/dustin/scripts/portal/
+/opt/portal/
 ├── server.py              # Main entry point
 ├── config.py              # Configuration management
 ├── database.py            # SQLite database layer
@@ -92,25 +96,37 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 │   ├── tcp.py             # TCP tunnel over WebSocket
 │   └── udp.py             # UDP relay (for gaming)
 │
-├── plugins/               # Service plugins
-│   ├── __init__.py
+├── plugins/               # Service plugins (11 plugins)
+│   ├── __init__.py        # Plugin registry and loader
 │   ├── base.py            # Base plugin class
 │   ├── terminal.py        # Web terminal (PTY)
 │   ├── ssh.py             # SSH over WebSocket
 │   ├── vnc.py             # VNC proxy (noVNC)
 │   ├── spice.py           # SPICE proxy
-│   ├── proxmox.py         # Proxmox integration
-│   ├── truenas.py         # TrueNAS integration
-│   ├── plex.py            # Plex proxy
-│   └── moonlight.py       # Moonlight/Sunshine
+│   ├── proxmox.py         # Proxmox VE integration
+│   ├── github.py          # GitHub repository management
+│   ├── mediamtx.py        # MediaMTX streaming (WebRTC/HLS)
+│   ├── tcp_tunnel.py      # Generic TCP tunnel
+│   ├── secure_tunnel.py   # Encrypted tunnel with rate limiting
+│   ├── vpn_tunnel.py      # VPN bridge (TUN/TAP/SOCKS)
+│   └── http_proxy.py      # HTTP reverse proxy
 │
 ├── static/                # Web assets
-│   ├── index.html         # Dashboard
-│   ├── terminal.html      # Terminal UI
-│   ├── vnc.html           # VNC viewer
+│   ├── index.html         # Dashboard with service management
+│   ├── login.html         # Login page
+│   ├── terminal.html      # Terminal UI (xterm.js)
+│   ├── vnc.html           # VNC viewer (noVNC)
+│   ├── spice.html         # SPICE viewer
+│   ├── proxmox.html       # Proxmox management UI
+│   ├── github.html        # GitHub repository browser
+│   ├── media.html         # MediaMTX streaming player
 │   ├── unauthorized.html  # Auth error page
-│   ├── css/
+│   ├── css/portal.css     # Shared dark theme styles
 │   └── js/
+│       ├── portal.js      # Core utilities
+│       ├── dashboard.js   # Service grid and categories
+│       ├── admin.js       # Service/user management
+│       └── ssh-keys.js    # SSH key management
 │
 ├── templates/             # HTML templates
 ├── certs/                 # SSL certificates
@@ -171,7 +187,7 @@ Services are stored in the database with plugin-specific configuration:
   "config": {
     "host": "192.168.1.100",
     "port": 22,
-    "username": "dustin",
+    "username": "admin",
     "auth_method": "key"
   },
   "required_scopes": ["access:pc"],
@@ -232,46 +248,100 @@ Proxmox VE integration with console access.
 | Features | VM list, console, start/stop |
 | Auth | JWT + Proxmox API token |
 
-### TrueNAS (truenas.py)
-TrueNAS SCALE/CORE integration.
+### GitHub (github.py)
+GitHub repository management and CI/CD integration.
 
 | Feature | Description |
 |---------|-------------|
-| Protocol | HTTP + WebSocket |
-| Backend | TrueNAS API |
-| Features | Pools, datasets, services |
-| Auth | JWT + TrueNAS API key |
+| Protocol | WebSocket + HTTP |
+| Backend | GitHub API |
+| Features | Repos, branches, PRs, Actions workflows |
+| Auth | JWT + OAuth App or Personal Access Token |
 
-### Plex (plex.py)
-Plex Media Server proxy.
+Configuration options:
+- `client_id`: GitHub OAuth App Client ID
+- `client_secret`: GitHub OAuth App Client Secret
+- `personal_token`: Personal Access Token (alternative to OAuth)
+- `default_org`: Default organization to show
+- `webhook_secret`: Secret for validating webhooks
+- `allowed_repos`: Restrict access to specific repos
 
-| Feature | Description |
-|---------|-------------|
-| Protocol | HTTP |
-| Backend | Plex server |
-| Features | Media access, transcoding |
-| Auth | JWT + Plex token |
-
-### Moonlight (moonlight.py)
-Game streaming via Moonlight/Sunshine.
+### VPN Tunnel (vpn_tunnel.py)
+VPN bridge for TUN/TAP/SOCKS connections.
 
 | Feature | Description |
 |---------|-------------|
-| Protocol | UDP + TCP |
-| Backend | Sunshine server |
-| Features | Game streaming, input relay |
-| Auth | JWT + pairing |
+| Protocol | WebSocket (binary) |
+| Backend | VPN server |
+| Modes | TUN, TAP, SOCKS proxy |
+| Auth | JWT |
+
+Configuration options:
+- `mode`: Connection mode (tun, tap, socks)
+- `mtu`: Maximum transmission unit
+- `dns`: DNS server addresses
+
+### HTTP Proxy (http_proxy.py)
+HTTP reverse proxy for web applications.
+
+| Feature | Description |
+|---------|-------------|
+| Protocol | HTTP/HTTPS |
+| Backend | Any HTTP service |
+| Features | Header rewriting, path mapping |
+| Auth | JWT |
+
+Configuration options:
+- `target_url`: Backend URL to proxy to
+- `rewrite_host`: Rewrite Host header
+- `preserve_host`: Keep original Host header
 
 ### Secure Tunnel (secure_tunnel.py)
-Multiplexed secure TCP tunneling.
+Multiplexed secure TCP tunneling with advanced features.
 
 | Feature | Description |
 |---------|-------------|
 | Protocol | WebSocket (binary frames) |
 | Backend | Any TCP service |
-| Features | Connection pooling, bandwidth monitoring |
+| Features | Connection pooling, bandwidth limiting, statistics |
 | Auth | JWT |
 | Multiplexing | Multiple connections per WebSocket |
+| Rate Limiting | Token bucket algorithm for bandwidth control |
+
+Configuration options:
+- `bandwidth_limit`: Bytes per second (0 = unlimited)
+- `max_connections`: Maximum concurrent connections per session
+- `connection_timeout`: Timeout for new connections
+- `idle_timeout`: Idle session timeout
+
+### TCP Tunnel (tcp_tunnel.py)
+Generic TCP over WebSocket for any TCP protocol.
+
+| Feature | Description |
+|---------|-------------|
+| Protocol | WebSocket (binary) |
+| Backend | Any TCP service |
+| Features | VNC, RDP, database, Redis support |
+| Statistics | Per-connection bytes sent/received |
+| Auth | JWT |
+
+### MediaMTX (mediamtx.py)
+Live video streaming via MediaMTX server.
+
+| Feature | Description |
+|---------|-------------|
+| Protocol | WebSocket (signaling) + WebRTC |
+| Backend | MediaMTX server |
+| Playback | WebRTC (low latency), HLS (compatibility) |
+| Auth | JWT + stream-level access control |
+| Features | Stream listing, multi-stream, live stats |
+
+Configuration options:
+- `api_url`: MediaMTX API endpoint (default: http://localhost:9997)
+- `webrtc_url`: WebRTC WHEP endpoint (default: http://localhost:8889)
+- `hls_url`: HLS streaming endpoint (default: http://localhost:8888)
+- `default_stream`: Stream to auto-play on connect
+- `allowed_streams`: Restrict access to specific streams
 
 ## API Reference
 
@@ -354,9 +424,46 @@ Multiplexed secure TCP tunneling.
 |------|-------------|
 | `/ws` | General WebSocket (ping/pong) |
 | `/ws/terminal/{service_id}` | Terminal session |
+| `/ws/ssh/{service_id}` | SSH session |
 | `/ws/vnc/{service_id}` | VNC session |
 | `/ws/spice/{service_id}` | SPICE session |
-| `/ws/ssh/{service_id}` | SSH session |
+| `/ws/proxmox/{service_id}` | Proxmox console |
+| `/ws/github/{service_id}` | GitHub operations |
+| `/ws/mediamtx/{service_id}` | MediaMTX signaling |
+| `/ws/tunnel/{service_id}` | TCP/Secure tunnel |
+
+### Web UI Routes
+
+| Path | Description |
+|------|-------------|
+| `/login` | Login page |
+| `/dashboard` | Main dashboard |
+| `/terminal/{service_id}` | Terminal UI |
+| `/vnc/{service_id}` | VNC viewer |
+| `/spice/{service_id}` | SPICE viewer |
+| `/proxmox/{service_id}` | Proxmox management |
+| `/github/{service_id}` | GitHub browser |
+| `/media/{service_id}` | Media player |
+
+## Service Presets
+
+The Add Service modal includes quick-start presets for common configurations:
+
+| Preset | Plugin | Description |
+|--------|--------|-------------|
+| Local Shell | terminal | Local PTY terminal |
+| Local VNC | vnc | VNC on localhost:5900 |
+| SSH Server | ssh | Remote SSH connection |
+| VNC Server | vnc | Remote VNC connection |
+| MediaMTX RTSP | mediamtx | RTSP stream relay |
+| MediaMTX WebRTC | mediamtx | WebRTC low-latency stream |
+| Proxmox Cluster | proxmox | Proxmox VE management |
+| SPICE VM | spice | SPICE VM console |
+| GitHub | github | GitHub repository manager |
+| HTTP Proxy | http_proxy | HTTP reverse proxy |
+| TCP Tunnel | tcp_tunnel | Generic TCP tunnel |
+| Secure Tunnel | secure_tunnel | Encrypted tunnel |
+| VPN Bridge | vpn_tunnel | VPN TUN/TAP bridge |
 
 ## Database Schema
 
@@ -442,7 +549,7 @@ CREATE TABLE ssh_keys (
 | `JWT_SECRET` | Token signing key | Required |
 | `HOST` | Bind address | 0.0.0.0 |
 | `PORT` | Listen port | 443 |
-| `HOSTNAME` | Public hostname | portal.dddvm.xyz |
+| `HOSTNAME` | Public hostname | portal.example.com |
 | `SSL_CERT` | Certificate path | - |
 | `SSL_KEY` | Private key path | - |
 | `DATABASE_PATH` | SQLite path | portal.db |
@@ -482,28 +589,35 @@ CREATE TABLE ssh_keys (
 
 ### Phase 3: Remote Desktop (Current)
 - [x] VNC plugin (noVNC)
-- [ ] SPICE plugin
+- [x] SPICE plugin (spice-html5)
 - [ ] RDP plugin (future)
 
 ### Phase 4: Infrastructure Integration
-- [ ] Proxmox plugin
+- [x] Proxmox plugin
+- [x] GitHub plugin (repos, PRs, Actions)
 - [ ] TrueNAS plugin
 - [ ] Network device plugin
 
 ### Phase 5: Media & Gaming
+- [x] MediaMTX plugin (WebRTC/HLS streaming)
 - [ ] Plex plugin
 - [ ] Moonlight/Sunshine plugin
-- [ ] Seedbox plugin
 
 ### Phase 6: Dashboard ✓
 - [x] Web dashboard UI
-- [x] Service launcher
+- [x] Service launcher with plugin icons
 - [x] Admin panel (users, services, logs)
+- [x] Add Service modal with presets
+- [x] Edit Service modal
 - [x] Daily invite code system
 - [x] Mobile-friendly design
 
 ### Phase 7: Advanced Features (Current)
-- [ ] Two-factor authentication
+- [ ] Two-factor authentication (TOTP)
 - [x] SSH key management (secure, no private key storage)
 - [ ] Connection recording
-- [ ] Bandwidth monitoring
+- [x] Bandwidth monitoring and limiting
+- [x] Connection statistics tracking
+- [x] Secure tunnel with multiplexing
+- [x] VPN tunnel (TUN/TAP/SOCKS)
+- [x] HTTP reverse proxy

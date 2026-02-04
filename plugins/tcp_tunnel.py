@@ -3,11 +3,12 @@
 import asyncio
 import logging
 import struct
-from typing import Optional
+import time
+from typing import Dict, Optional
 
 from aiohttp import web, WSMsgType
 
-from .base import PluginBase, PluginInfo, ServiceTarget
+from .base import PluginBase, PluginInfo, ServiceTarget, ConnectionStats
 from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.tcp_tunnel")
@@ -20,6 +21,14 @@ class TCPTunnelPlugin(PluginBase):
     Allows any TCP protocol to be tunneled through WebSocket,
     useful for VNC, RDP, database connections, etc.
     """
+
+    def __init__(self):
+        super().__init__()
+        self._active_connections: Dict[str, ConnectionStats] = {}
+
+    def get_active_connections(self) -> list:
+        """Get list of active connections with stats."""
+        return [stats.to_dict() for stats in self._active_connections.values()]
 
     info = PluginInfo(
         name="tcp_tunnel",
@@ -74,6 +83,15 @@ class TCPTunnelPlugin(PluginBase):
         buffer_size = config.get("buffer_size", 65536)
         protocol_hint = config.get("protocol_hint", "other")
 
+        # Create connection stats
+        conn_id = f"{user_id}:{target.id}:{time.time()}"
+        stats = ConnectionStats(
+            user_id=user_id,
+            service_id=target.id,
+            service_name=target.name
+        )
+        self._active_connections[conn_id] = stats
+
         logger.info(f"TCP tunnel for user {user_id}: {host}:{port} ({protocol_hint})")
 
         try:
@@ -83,17 +101,19 @@ class TCPTunnelPlugin(PluginBase):
             )
         except asyncio.TimeoutError:
             await ws.send_bytes(self._error_frame(f"Connection timeout: {host}:{port}"))
+            del self._active_connections[conn_id]
             return
         except Exception as e:
             await ws.send_bytes(self._error_frame(f"Connection failed: {e}"))
+            del self._active_connections[conn_id]
             return
 
         await ws.send_bytes(self._control_frame("connected", {"host": host, "port": port}))
 
         try:
             await asyncio.gather(
-                self._tcp_to_ws(reader, ws, buffer_size),
-                self._ws_to_tcp(ws, writer),
+                self._tcp_to_ws(reader, ws, buffer_size, stats),
+                self._ws_to_tcp(ws, writer, stats),
             )
         finally:
             writer.close()
@@ -101,13 +121,18 @@ class TCPTunnelPlugin(PluginBase):
                 await writer.wait_closed()
             except Exception:
                 pass
-            logger.info(f"TCP tunnel closed for user {user_id}: {host}:{port}")
+            del self._active_connections[conn_id]
+            logger.info(
+                f"TCP tunnel closed for user {user_id}: {host}:{port} "
+                f"(sent={stats.bytes_sent}, recv={stats.bytes_received})"
+            )
 
     async def _tcp_to_ws(
         self,
         reader: asyncio.StreamReader,
         ws: web.WebSocketResponse,
-        buffer_size: int
+        buffer_size: int,
+        stats: Optional[ConnectionStats] = None
     ) -> None:
         """Forward TCP data to WebSocket."""
         try:
@@ -116,6 +141,9 @@ class TCPTunnelPlugin(PluginBase):
                 if not data:
                     break
                 await ws.send_bytes(data)
+                if stats:
+                    stats.bytes_received += len(data)
+                    stats.messages_received += 1
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -124,7 +152,8 @@ class TCPTunnelPlugin(PluginBase):
     async def _ws_to_tcp(
         self,
         ws: web.WebSocketResponse,
-        writer: asyncio.StreamWriter
+        writer: asyncio.StreamWriter,
+        stats: Optional[ConnectionStats] = None
     ) -> None:
         """Forward WebSocket data to TCP."""
         try:
@@ -132,6 +161,9 @@ class TCPTunnelPlugin(PluginBase):
                 if msg.type == WSMsgType.BINARY:
                     writer.write(msg.data)
                     await writer.drain()
+                    if stats:
+                        stats.bytes_sent += len(msg.data)
+                        stats.messages_sent += 1
                 elif msg.type == WSMsgType.TEXT:
                     # Handle control messages
                     pass

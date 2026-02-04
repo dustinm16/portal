@@ -92,15 +92,18 @@ STATIC_DIR = Path(__file__).parent / "static"
 _static_cache: dict[str, str] = {}
 
 
-def load_static_file(filename: str) -> str:
-    """Load and cache a static file."""
-    if filename not in _static_cache:
-        filepath = STATIC_DIR / filename
-        if filepath.exists():
-            _static_cache[filename] = filepath.read_text()
-        else:
-            _static_cache[filename] = f"<h1>404 - {filename} not found</h1>"
-    return _static_cache[filename]
+def load_static_file(filename: str, use_cache: bool = False) -> str:
+    """Load a static file, optionally caching it."""
+    if use_cache and filename in _static_cache:
+        return _static_cache[filename]
+
+    filepath = STATIC_DIR / filename
+    if filepath.exists():
+        content = filepath.read_text()
+        if use_cache:
+            _static_cache[filename] = content
+        return content
+    return f"<h1>404 - {filename} not found</h1>"
 
 
 def unauthorized_response(request: web.Request) -> web.Response:
@@ -894,7 +897,7 @@ async def http_stats(request: web.Request) -> web.Response:
 
 
 async def http_list_plugins(request: web.Request) -> web.Response:
-    """List available plugins."""
+    """List available plugins with their configuration schemas."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -910,7 +913,8 @@ async def http_list_plugins(request: web.Request) -> web.Response:
                 "description": p.info.description,
                 "version": p.info.version,
                 "icon": p.info.icon,
-                "protocols": p.info.protocols
+                "protocols": p.info.protocols,
+                "config_schema": p.info.config_schema,
             }
             for p in plugins.values()
         ]
@@ -928,12 +932,19 @@ async def http_get_tunnel_sessions(request: web.Request) -> web.Response:
 
     # Get secure tunnel plugin sessions
     secure_tunnel = get_plugin("secure_tunnel")
-    sessions = []
+    secure_sessions = []
     if secure_tunnel and hasattr(secure_tunnel, "get_active_sessions"):
-        sessions = secure_tunnel.get_active_sessions()
+        secure_sessions = secure_tunnel.get_active_sessions()
+
+    # Get TCP tunnel plugin connections
+    tcp_tunnel = get_plugin("tcp_tunnel")
+    tcp_connections = []
+    if tcp_tunnel and hasattr(tcp_tunnel, "get_active_connections"):
+        tcp_connections = tcp_tunnel.get_active_connections()
 
     return web.json_response({
-        "sessions": sessions,
+        "secure_tunnel_sessions": secure_sessions,
+        "tcp_tunnel_connections": tcp_connections,
         "active_websockets": len(active_connections)
     })
 
@@ -1135,13 +1146,17 @@ async def handle_relay_ws(
 
     logger.debug(f"handle_relay_ws called with path: {path}")
 
-    # Check for /ws/terminal/{id} or /ws/vnc/{id} patterns
+    # Check for /ws/terminal/{id}, /ws/vnc/{id}, /ws/media/{id}, /ws/spice/{id}, /ws/proxmox/{id} patterns
     service = None
     terminal_match = re.match(r"^/ws/terminal/(\d+)$", path)
     vnc_match = re.match(r"^/ws/vnc/(\d+)$", path)
+    media_match = re.match(r"^/ws/media/(\d+)$", path)
+    spice_match = re.match(r"^/ws/spice/(\d+)$", path)
+    proxmox_match = re.match(r"^/ws/proxmox/(\d+)$", path)
 
-    if terminal_match or vnc_match:
-        service_id = int(terminal_match.group(1) if terminal_match else vnc_match.group(1))
+    if terminal_match or vnc_match or media_match or spice_match or proxmox_match:
+        match = terminal_match or vnc_match or media_match or spice_match or proxmox_match
+        service_id = int(match.group(1))
         logger.debug(f"Looking up service by ID: {service_id}")
         service = await db.get_service_by_id(service_id)
         logger.debug(f"Service lookup result: {service}")
@@ -1435,6 +1450,98 @@ async def http_vnc_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def http_media_page(request: web.Request) -> web.Response:
+    """Serve media streaming page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    service_id = request.match_info.get("service_id", "")
+
+    # Verify service exists and user has access
+    service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
+    if not service:
+        return web.Response(status=404, text="Service not found")
+
+    if not check_service_authorization(service, token):
+        return web.Response(status=403, text="Access denied")
+
+    html = load_static_file("mediamtx.html")
+    # Inject service info
+    html = html.replace("{{SERVICE_ID}}", service_id)
+    html = html.replace("{{SERVICE_NAME}}", service.get("name", "Media"))
+
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_spice_page(request: web.Request) -> web.Response:
+    """Serve SPICE console page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    service_id = request.match_info.get("service_id", "")
+
+    # Verify service exists and user has access
+    service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
+    if not service:
+        return web.Response(status=404, text="Service not found")
+
+    if not check_service_authorization(service, token):
+        return web.Response(status=403, text="Access denied")
+
+    html = load_static_file("spice.html")
+    # Inject service info
+    html = html.replace("{{SERVICE_ID}}", service_id)
+    html = html.replace("{{SERVICE_NAME}}", service.get("name", "SPICE Console"))
+
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_proxmox_page(request: web.Request) -> web.Response:
+    """Serve Proxmox management page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    service_id = request.match_info.get("service_id", "")
+
+    # Verify service exists and user has access
+    service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
+    if not service:
+        return web.Response(status=404, text="Service not found")
+
+    if not check_service_authorization(service, token):
+        return web.Response(status=403, text="Access denied")
+
+    html = load_static_file("proxmox.html")
+    # Inject service info
+    html = html.replace("{{SERVICE_ID}}", service_id)
+    html = html.replace("{{SERVICE_NAME}}", service.get("name", "Proxmox VE"))
+
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_github_page(request: web.Request) -> web.Response:
+    """Serve GitHub management page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    service_id = request.match_info.get("service_id", "")
+
+    # Verify service exists and user has access
+    service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
+    if not service:
+        return web.Response(status=404, text="Service not found")
+
+    if not check_service_authorization(service, token):
+        return web.Response(status=403, text="Access denied")
+
+    html = load_static_file("github.html")
+    return web.Response(text=html, content_type="text/html")
+
+
 async def http_get_current_user(request: web.Request) -> web.Response:
     """Get current authenticated user info."""
     token = await authenticate_request(request)
@@ -1682,6 +1789,10 @@ def create_app() -> web.Application:
     app.router.add_get("/dashboard", http_dashboard)
     app.router.add_get("/terminal/{service_id}", http_terminal_page)
     app.router.add_get("/vnc/{service_id}", http_vnc_page)
+    app.router.add_get("/media/{service_id}", http_media_page)
+    app.router.add_get("/spice/{service_id}", http_spice_page)
+    app.router.add_get("/proxmox/{service_id}", http_proxmox_page)
+    app.router.add_get("/github/{service_id}", http_github_page)
 
     # WebSocket endpoints - catch all paths for relay (must be last)
     app.router.add_get("/", websocket_handler)

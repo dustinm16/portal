@@ -3,9 +3,9 @@
 
 set -e
 
-HOSTNAME="portal.dddvm.xyz"
-EMAIL="${CERT_EMAIL:-admin@dddvm.xyz}"
-PORTAL_DIR="/home/dustin/scripts/portal"
+HOSTNAME="${PORTAL_HOSTNAME:-portal.example.com}"
+EMAIL="${CERT_EMAIL:-admin@example.com}"
+PORTAL_DIR="${PORTAL_DIR:-/opt/portal}"
 
 echo "=== Portal Gateway Certificate Setup ==="
 echo "Hostname: $HOSTNAME"

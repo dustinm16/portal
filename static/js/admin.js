@@ -65,13 +65,389 @@ function closeModal(modalId) {
     }
 }
 
+// Plugin configuration cache
+var pluginConfigs = {};
+
 /**
  * Show Add Service Modal
  */
-function showAddServiceModal() {
+async function showAddServiceModal() {
     console.log('showAddServiceModal called');
     document.getElementById('add-service-form').reset();
+    document.getElementById('plugin-config-fields').innerHTML = '';
+    document.getElementById('common-target-fields').style.display = 'block';
+    document.getElementById('service-preset').value = '';
+
+    // Always reload plugins to ensure fresh data
+    await loadPluginConfigs();
+
     showModal('add-service-modal');
+
+    // Small delay to ensure DOM is ready
+    setTimeout(() => {
+        onPluginChange(); // Initialize plugin-specific fields
+    }, 100);
+}
+
+/**
+ * Load plugin configurations from API
+ */
+async function loadPluginConfigs() {
+    try {
+        const response = await Portal.fetch('/api/plugins');
+        if (response.ok) {
+            const data = await response.json();
+            console.log('Loaded plugins:', data.plugins.map(p => p.name));
+            data.plugins.forEach(p => {
+                pluginConfigs[p.name] = p;
+            });
+        }
+    } catch (error) {
+        console.error('Failed to load plugins:', error);
+    }
+}
+
+/**
+ * Service presets with pre-filled values
+ */
+const SERVICE_PRESETS = {
+    'local-shell': {
+        name: 'Local Shell',
+        path: '/shell',
+        plugin: 'terminal',
+        host: 'localhost',
+        port: 0,
+        config: { shell: '/bin/bash' }
+    },
+    'local-vnc': {
+        name: 'Local Desktop',
+        path: '/desktop',
+        plugin: 'vnc',
+        host: 'localhost',
+        port: 5900
+    },
+    'ssh-server': {
+        name: 'SSH Server',
+        path: '/ssh',
+        plugin: 'ssh',
+        host: '',
+        port: 22
+    },
+    'vnc-server': {
+        name: 'VNC Server',
+        path: '/vnc',
+        plugin: 'vnc',
+        host: '',
+        port: 5900
+    },
+    'rdp-server': {
+        name: 'RDP Desktop',
+        path: '/rdp',
+        plugin: 'vnc',
+        host: '',
+        port: 3389,
+        config: { rfb_version: '3.8' }
+    },
+    'mediamtx-rtsp': {
+        name: 'RTSP Stream',
+        path: '/stream',
+        plugin: 'mediamtx',
+        host: 'localhost',
+        port: 8554,
+        config: { api_url: 'http://localhost:9997', protocol: 'rtsp' }
+    },
+    'mediamtx-webrtc': {
+        name: 'WebRTC Stream',
+        path: '/webrtc',
+        plugin: 'mediamtx',
+        host: 'localhost',
+        port: 8889,
+        config: { api_url: 'http://localhost:9997', protocol: 'webrtc' }
+    },
+    'proxmox-cluster': {
+        name: 'Proxmox VE',
+        path: '/proxmox',
+        plugin: 'proxmox',
+        host: '',
+        port: 8006,
+        config: { verify_ssl: false }
+    },
+    'spice-vm': {
+        name: 'VM Console',
+        path: '/vm',
+        plugin: 'spice',
+        host: '',
+        port: 5900
+    },
+    'http-proxy': {
+        name: 'HTTP Proxy',
+        path: '/proxy',
+        plugin: 'http_proxy',
+        host: '',
+        port: 80,
+        config: { target_url: 'http://localhost:8080' }
+    },
+    'tcp-tunnel': {
+        name: 'TCP Tunnel',
+        path: '/tunnel',
+        plugin: 'tcp_tunnel',
+        host: '',
+        port: 0
+    },
+    'secure-tunnel': {
+        name: 'Secure Tunnel',
+        path: '/secure',
+        plugin: 'secure_tunnel',
+        host: '',
+        port: 0,
+        config: { encryption: 'aes-256-gcm' }
+    },
+    'vpn-bridge': {
+        name: 'VPN Bridge',
+        path: '/vpn',
+        plugin: 'vpn_tunnel',
+        host: 'localhost',
+        port: 0,
+        config: { mode: 'tun' }
+    },
+    'github': {
+        name: 'GitHub',
+        path: '/github',
+        plugin: 'github',
+        host: 'api.github.com',
+        port: 443,
+        config: {}
+    }
+};
+
+/**
+ * Apply a service preset
+ */
+function applyServicePreset() {
+    const presetSelect = document.getElementById('service-preset');
+    const presetKey = presetSelect.value;
+
+    if (!presetKey) return;
+
+    const preset = SERVICE_PRESETS[presetKey];
+    if (!preset) return;
+
+    // Apply preset values
+    document.getElementById('service-name').value = preset.name;
+    document.getElementById('service-path').value = preset.path;
+    document.getElementById('service-plugin').value = preset.plugin;
+    document.getElementById('service-host').value = preset.host;
+    document.getElementById('service-port').value = preset.port || '';
+
+    // Trigger plugin change to update config fields
+    onPluginChange();
+
+    // Apply preset config values if any
+    if (preset.config) {
+        setTimeout(() => {
+            Object.entries(preset.config).forEach(([key, value]) => {
+                const input = document.getElementById(`config-${key}`);
+                if (input) {
+                    if (input.type === 'checkbox') {
+                        input.checked = value;
+                    } else {
+                        input.value = value;
+                    }
+                }
+            });
+        }, 50);
+    }
+}
+
+/**
+ * Handle plugin selection change
+ */
+function onPluginChange() {
+    const plugin = document.getElementById('service-plugin').value;
+    const configContainer = document.getElementById('plugin-config-fields');
+    const commonTarget = document.getElementById('common-target-fields');
+
+    configContainer.innerHTML = '';
+
+    // Show/hide common target fields based on plugin
+    const hideCommonFor = ['terminal', 'http_proxy', 'github'];
+    commonTarget.style.display = hideCommonFor.includes(plugin) ? 'none' : 'block';
+
+    // Get plugin config schema
+    const pluginInfo = pluginConfigs[plugin];
+    console.log('Plugin selected:', plugin, 'Config:', pluginInfo);
+    if (!pluginInfo || !pluginInfo.config_schema || !pluginInfo.config_schema.properties) {
+        console.log('No config schema for plugin:', plugin);
+        return;
+    }
+
+    const schema = pluginInfo.config_schema;
+    const properties = schema.properties;
+    const required = schema.required || [];
+
+    // Filter out host/port as they're already in common fields
+    const configFields = Object.entries(properties).filter(
+        ([key]) => !['host', 'port'].includes(key)
+    );
+
+    if (configFields.length === 0) return;
+
+    // Add section header
+    const header = document.createElement('div');
+    header.className = 'config-section-header';
+    header.innerHTML = `<h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">${pluginInfo.display_name} Settings</h4>`;
+    configContainer.appendChild(header);
+
+    // Add GitHub OAuth helper for GitHub plugin
+    if (plugin === 'github') {
+        const oauthHelper = document.createElement('div');
+        oauthHelper.className = 'oauth-helper';
+        oauthHelper.innerHTML = `
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.75rem;">
+                    <strong>Authentication Options:</strong>
+                </p>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
+                    <div><strong style="color: var(--accent-blue);">Option 1 - OAuth App:</strong> Enter Client ID and Client Secret from a <a href="https://github.com/settings/developers" target="_blank" style="color: var(--accent-blue);">GitHub OAuth App</a>. Users will see a "Connect with GitHub" button.</div>
+                    <div><strong style="color: var(--accent-green);">Option 2 - Personal Token:</strong> Enter a <a href="https://github.com/settings/tokens" target="_blank" style="color: var(--accent-blue);">Personal Access Token</a> with repo, read:user, and workflow scopes. All users share this token.</div>
+                </div>
+            </div>
+        `;
+        configContainer.appendChild(oauthHelper);
+    }
+
+    // Generate fields
+    configFields.forEach(([key, prop]) => {
+        const isRequired = required.includes(key);
+        const field = createConfigField(key, prop, isRequired);
+        configContainer.appendChild(field);
+    });
+}
+
+/**
+ * Create a form field for a config property
+ */
+function createConfigField(key, prop, isRequired) {
+    const div = document.createElement('div');
+    div.className = 'form-group';
+
+    const label = document.createElement('label');
+    label.htmlFor = `config-${key}`;
+    label.textContent = prop.title || formatLabel(key);
+    if (isRequired) {
+        label.innerHTML += ' <span style="color: var(--accent-red);">*</span>';
+    }
+    div.appendChild(label);
+
+    let input;
+
+    if (prop.enum) {
+        // Select dropdown for enum types
+        input = document.createElement('select');
+        input.id = `config-${key}`;
+        input.name = `config-${key}`;
+        if (isRequired) input.required = true;
+
+        prop.enum.forEach(val => {
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = val;
+            if (val === prop.default) opt.selected = true;
+            input.appendChild(opt);
+        });
+    } else if (prop.type === 'boolean') {
+        // Checkbox for boolean
+        const wrapper = document.createElement('label');
+        wrapper.className = 'toggle';
+
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = `config-${key}`;
+        input.name = `config-${key}`;
+        if (prop.default) input.checked = true;
+
+        const slider = document.createElement('span');
+        slider.className = 'toggle-slider';
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(slider);
+        div.appendChild(wrapper);
+
+        if (prop.description) {
+            const desc = document.createElement('small');
+            desc.style.color = 'var(--text-muted)';
+            desc.style.display = 'block';
+            desc.style.marginTop = '0.25rem';
+            desc.textContent = prop.description;
+            div.appendChild(desc);
+        }
+        return div;
+    } else if (prop.type === 'integer' || prop.type === 'number') {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.id = `config-${key}`;
+        input.name = `config-${key}`;
+        if (prop.minimum !== undefined) input.min = prop.minimum;
+        if (prop.maximum !== undefined) input.max = prop.maximum;
+        if (prop.default !== undefined) input.value = prop.default;
+        if (isRequired) input.required = true;
+    } else {
+        // Text input for strings
+        input = document.createElement('input');
+        input.type = 'text';
+        input.id = `config-${key}`;
+        input.name = `config-${key}`;
+        if (prop.default !== undefined) input.value = prop.default;
+        if (isRequired) input.required = true;
+        if (prop.pattern) input.pattern = prop.pattern;
+    }
+
+    if (prop.description) {
+        input.placeholder = prop.description;
+    }
+
+    div.appendChild(input);
+
+    if (prop.description && prop.type !== 'boolean') {
+        const desc = document.createElement('small');
+        desc.style.color = 'var(--text-muted)';
+        desc.textContent = prop.description;
+        div.appendChild(desc);
+    }
+
+    return div;
+}
+
+/**
+ * Format a key into a readable label
+ */
+function formatLabel(key) {
+    return key
+        .replace(/_/g, ' ')
+        .replace(/([A-Z])/g, ' $1')
+        .replace(/^./, str => str.toUpperCase())
+        .trim();
+}
+
+/**
+ * Collect plugin configuration from form
+ */
+function collectPluginConfig() {
+    const config = {};
+    const configInputs = document.querySelectorAll('[id^="config-"]');
+
+    configInputs.forEach(input => {
+        const key = input.id.replace('config-', '');
+        if (input.type === 'checkbox') {
+            config[key] = input.checked;
+        } else if (input.type === 'number' && input.value) {
+            config[key] = parseFloat(input.value);
+        } else if (input.value) {
+            config[key] = input.value;
+        }
+    });
+
+    return config;
 }
 
 /**
@@ -87,6 +463,9 @@ async function submitAddService(event) {
     const port = document.getElementById('service-port').value;
     const scopes = document.getElementById('service-scopes').value || '*';
 
+    // Collect plugin-specific config
+    const config = collectPluginConfig();
+
     // Ensure path starts with /
     const normalizedPath = path.startsWith('/') ? path : '/' + path;
 
@@ -100,6 +479,7 @@ async function submitAddService(event) {
                 plugin,
                 host,
                 port: port ? parseInt(port) : 0,
+                config,
                 required_scopes: scopes
             })
         });
@@ -115,6 +495,274 @@ async function submitAddService(event) {
     } catch (error) {
         Portal.toast('Failed to add service', 'error');
         console.error('Add service error:', error);
+    }
+}
+
+/**
+ * Show Edit Service Modal
+ */
+async function showEditServiceModal(serviceId) {
+    console.log('showEditServiceModal called for service:', serviceId);
+
+    // Load plugins if not cached
+    if (Object.keys(pluginConfigs).length === 0) {
+        await loadPluginConfigs();
+    }
+
+    // Fetch service details
+    try {
+        const response = await Portal.fetch(`/api/services/${serviceId}`);
+        if (!response.ok) {
+            throw new Error('Failed to load service');
+        }
+        const service = await response.json();
+
+        // Populate form
+        document.getElementById('edit-service-id').value = service.id;
+        document.getElementById('edit-service-name').value = service.name;
+        document.getElementById('edit-service-path').value = service.path;
+        document.getElementById('edit-service-plugin').value = service.plugin || 'tcp_tunnel';
+        document.getElementById('edit-service-host').value = service.host || '';
+        document.getElementById('edit-service-port').value = service.port || '';
+        document.getElementById('edit-service-enabled').checked = service.enabled !== false;
+
+        // Handle scopes - can be string or array
+        const scopes = Array.isArray(service.required_scopes)
+            ? service.required_scopes.join(', ')
+            : service.required_scopes;
+        document.getElementById('edit-service-scopes').value = scopes;
+
+        // Update plugin-specific fields
+        onEditPluginChange();
+
+        // Apply service config values if any
+        if (service.config && typeof service.config === 'object') {
+            setTimeout(() => {
+                Object.entries(service.config).forEach(([key, value]) => {
+                    const input = document.getElementById(`edit-config-${key}`);
+                    if (input) {
+                        if (input.type === 'checkbox') {
+                            input.checked = value;
+                        } else {
+                            input.value = value;
+                        }
+                    }
+                });
+            }, 50);
+        }
+
+        showModal('edit-service-modal');
+    } catch (error) {
+        Portal.toast('Failed to load service details', 'error');
+        console.error('Load service error:', error);
+    }
+}
+
+/**
+ * Handle plugin selection change in edit modal
+ */
+function onEditPluginChange() {
+    const plugin = document.getElementById('edit-service-plugin').value;
+    const configContainer = document.getElementById('edit-plugin-config-fields');
+    const commonTarget = document.getElementById('edit-common-target-fields');
+
+    configContainer.innerHTML = '';
+
+    // Show/hide common target fields based on plugin
+    const hideCommonFor = ['terminal', 'http_proxy', 'github'];
+    commonTarget.style.display = hideCommonFor.includes(plugin) ? 'none' : 'block';
+
+    // Get plugin config schema
+    const pluginInfo = pluginConfigs[plugin];
+    if (!pluginInfo || !pluginInfo.config_schema || !pluginInfo.config_schema.properties) {
+        return;
+    }
+
+    const schema = pluginInfo.config_schema;
+    const properties = schema.properties;
+    const required = schema.required || [];
+
+    // Filter out host/port as they're already in common fields
+    const configFields = Object.entries(properties).filter(
+        ([key]) => !['host', 'port'].includes(key)
+    );
+
+    if (configFields.length === 0) return;
+
+    // Add section header
+    const header = document.createElement('div');
+    header.className = 'config-section-header';
+    header.innerHTML = `<h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">${pluginInfo.display_name} Settings</h4>`;
+    configContainer.appendChild(header);
+
+    // Generate fields
+    configFields.forEach(([key, prop]) => {
+        const isRequired = required.includes(key);
+        const field = createEditConfigField(key, prop, isRequired);
+        configContainer.appendChild(field);
+    });
+}
+
+/**
+ * Create a form field for edit config property
+ */
+function createEditConfigField(key, prop, isRequired) {
+    const div = document.createElement('div');
+    div.className = 'form-group';
+
+    const label = document.createElement('label');
+    label.htmlFor = `edit-config-${key}`;
+    label.textContent = prop.title || formatLabel(key);
+    if (isRequired) {
+        label.innerHTML += ' <span style="color: var(--accent-red);">*</span>';
+    }
+    div.appendChild(label);
+
+    let input;
+
+    if (prop.enum) {
+        input = document.createElement('select');
+        input.id = `edit-config-${key}`;
+        input.name = `edit-config-${key}`;
+        if (isRequired) input.required = true;
+
+        prop.enum.forEach(val => {
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = val;
+            if (val === prop.default) opt.selected = true;
+            input.appendChild(opt);
+        });
+    } else if (prop.type === 'boolean') {
+        const wrapper = document.createElement('label');
+        wrapper.className = 'toggle';
+
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = `edit-config-${key}`;
+        input.name = `edit-config-${key}`;
+        if (prop.default) input.checked = true;
+
+        const slider = document.createElement('span');
+        slider.className = 'toggle-slider';
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(slider);
+        div.appendChild(wrapper);
+
+        if (prop.description) {
+            const desc = document.createElement('small');
+            desc.style.color = 'var(--text-muted)';
+            desc.style.display = 'block';
+            desc.style.marginTop = '0.25rem';
+            desc.textContent = prop.description;
+            div.appendChild(desc);
+        }
+        return div;
+    } else if (prop.type === 'integer' || prop.type === 'number') {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.id = `edit-config-${key}`;
+        input.name = `edit-config-${key}`;
+        if (prop.minimum !== undefined) input.min = prop.minimum;
+        if (prop.maximum !== undefined) input.max = prop.maximum;
+        if (prop.default !== undefined) input.value = prop.default;
+        if (isRequired) input.required = true;
+    } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.id = `edit-config-${key}`;
+        input.name = `edit-config-${key}`;
+        if (prop.default !== undefined) input.value = prop.default;
+        if (isRequired) input.required = true;
+        if (prop.pattern) input.pattern = prop.pattern;
+    }
+
+    if (prop.description) {
+        input.placeholder = prop.description;
+    }
+
+    div.appendChild(input);
+
+    if (prop.description && prop.type !== 'boolean') {
+        const desc = document.createElement('small');
+        desc.style.color = 'var(--text-muted)';
+        desc.textContent = prop.description;
+        div.appendChild(desc);
+    }
+
+    return div;
+}
+
+/**
+ * Collect edit plugin configuration from form
+ */
+function collectEditPluginConfig() {
+    const config = {};
+    const configInputs = document.querySelectorAll('[id^="edit-config-"]');
+
+    configInputs.forEach(input => {
+        const key = input.id.replace('edit-config-', '');
+        if (input.type === 'checkbox') {
+            config[key] = input.checked;
+        } else if (input.type === 'number' && input.value) {
+            config[key] = parseFloat(input.value);
+        } else if (input.value) {
+            config[key] = input.value;
+        }
+    });
+
+    return config;
+}
+
+/**
+ * Submit Edit Service Form
+ */
+async function submitEditService(event) {
+    event.preventDefault();
+
+    const serviceId = document.getElementById('edit-service-id').value;
+    const name = document.getElementById('edit-service-name').value;
+    const path = document.getElementById('edit-service-path').value;
+    const plugin = document.getElementById('edit-service-plugin').value;
+    const host = document.getElementById('edit-service-host').value;
+    const port = document.getElementById('edit-service-port').value;
+    const enabled = document.getElementById('edit-service-enabled').checked;
+    const scopes = document.getElementById('edit-service-scopes').value || '*';
+
+    // Collect plugin-specific config
+    const config = collectEditPluginConfig();
+
+    // Ensure path starts with /
+    const normalizedPath = path.startsWith('/') ? path : '/' + path;
+
+    try {
+        const response = await Portal.fetch(`/api/services/${serviceId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                path: normalizedPath,
+                plugin,
+                host,
+                port: port ? parseInt(port) : 0,
+                enabled,
+                config,
+                required_scopes: scopes
+            })
+        });
+
+        if (response.ok) {
+            Portal.toast('Service updated successfully');
+            closeModal('edit-service-modal');
+            await loadServices();
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to update service', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update service', 'error');
+        console.error('Update service error:', error);
     }
 }
 

@@ -19,14 +19,14 @@ class Config:
     # Server Settings
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "443"))
-    HOSTNAME: str = os.getenv("HOSTNAME", "portal.dddvm.xyz")
+    HOSTNAME: str = os.getenv("HOSTNAME", "localhost")
 
     # SSL Certificate Paths
     SSL_CERT: str = os.getenv(
-        "SSL_CERT", f"/etc/letsencrypt/live/{os.getenv('HOSTNAME', 'portal.dddvm.xyz')}/fullchain.pem"
+        "SSL_CERT", f"/etc/letsencrypt/live/{os.getenv('HOSTNAME', 'localhost')}/fullchain.pem"
     )
     SSL_KEY: str = os.getenv(
-        "SSL_KEY", f"/etc/letsencrypt/live/{os.getenv('HOSTNAME', 'portal.dddvm.xyz')}/privkey.pem"
+        "SSL_KEY", f"/etc/letsencrypt/live/{os.getenv('HOSTNAME', 'localhost')}/privkey.pem"
     )
 
     # Database

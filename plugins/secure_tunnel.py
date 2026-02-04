@@ -2,7 +2,7 @@
 
 This plugin provides secure, multiplexed TCP tunneling over WebSocket with:
 - Connection pooling
-- Bandwidth monitoring
+- Bandwidth monitoring and limiting
 - Access control
 - Session recording (optional)
 """
@@ -24,6 +24,46 @@ from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.secure_tunnel")
+
+
+class BandwidthLimiter:
+    """Token bucket rate limiter for bandwidth control."""
+
+    def __init__(self, rate: int = 0, burst: int = 0):
+        """
+        Initialize bandwidth limiter.
+
+        Args:
+            rate: Bytes per second (0 = unlimited)
+            burst: Maximum burst size (defaults to rate)
+        """
+        self.rate = rate  # bytes/sec
+        self.burst = burst or rate  # max tokens
+        self.tokens = float(burst or rate)
+        self.last_update = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, size: int) -> None:
+        """Wait until enough tokens are available for the given size."""
+        if self.rate <= 0:
+            return  # No limiting
+
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                elapsed = now - self.last_update
+                self.last_update = now
+
+                # Add tokens based on elapsed time
+                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+
+                if self.tokens >= size:
+                    self.tokens -= size
+                    return
+
+                # Wait for tokens to accumulate
+                wait_time = (size - self.tokens) / self.rate
+                await asyncio.sleep(min(wait_time, 0.1))  # Max 100ms wait per iteration
 
 
 @dataclass
@@ -139,6 +179,10 @@ class SecureTunnelPlugin(PluginBase):
         max_connections = config.get("max_connections", 10)
         connection_timeout = config.get("connection_timeout", 30)
         idle_timeout = config.get("idle_timeout", 300)
+        bandwidth_limit = config.get("bandwidth_limit", 0)
+
+        # Create bandwidth limiter if limit is set
+        limiter = BandwidthLimiter(rate=bandwidth_limit) if bandwidth_limit > 0 else None
 
         # Create session
         session_id = hashlib.sha256(
@@ -153,7 +197,8 @@ class SecureTunnelPlugin(PluginBase):
         )
         self._sessions[session_id] = session
 
-        logger.info(f"Secure tunnel session {session_id} started for user {user_id}: {host}:{port}")
+        limit_msg = f" (limit: {bandwidth_limit} bytes/sec)" if bandwidth_limit else ""
+        logger.info(f"Secure tunnel session {session_id} started for user {user_id}: {host}:{port}{limit_msg}")
 
         # Connection tracking
         connections: Dict[int, TunnelConnection] = {}
@@ -171,7 +216,7 @@ class SecureTunnelPlugin(PluginBase):
         try:
             await self._tunnel_loop(
                 ws, session, connections, conn_lock,
-                host, port, max_connections, connection_timeout
+                host, port, max_connections, connection_timeout, limiter
             )
         finally:
             # Cleanup
@@ -198,7 +243,8 @@ class SecureTunnelPlugin(PluginBase):
         host: str,
         port: int,
         max_connections: int,
-        connection_timeout: int
+        connection_timeout: int,
+        limiter: Optional[BandwidthLimiter] = None
     ) -> None:
         """Main tunnel I/O loop."""
         tasks = set()
@@ -243,7 +289,7 @@ class SecureTunnelPlugin(PluginBase):
 
                     # Start reading from this connection
                     task = asyncio.create_task(
-                        self._read_tcp(ws, conn, session)
+                        self._read_tcp(ws, conn, session, limiter)
                     )
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
@@ -309,7 +355,8 @@ class SecureTunnelPlugin(PluginBase):
         self,
         ws: web.WebSocketResponse,
         conn: TunnelConnection,
-        session: TunnelSession
+        session: TunnelSession,
+        limiter: Optional[BandwidthLimiter] = None
     ) -> None:
         """Read from TCP connection and forward to WebSocket."""
         try:
@@ -317,6 +364,10 @@ class SecureTunnelPlugin(PluginBase):
                 data = await conn.reader.read(65536)
                 if not data:
                     break
+
+                # Apply bandwidth limiting if configured
+                if limiter:
+                    await limiter.acquire(len(data))
 
                 conn.bytes_received += len(data)
                 session.bytes_received += len(data)

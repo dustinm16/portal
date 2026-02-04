@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub - Portal Gateway</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=6">
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .github-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .github-header-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .github-logo {
+            width: 32px;
+            height: 32px;
+            color: var(--text-primary);
+        }
+
+        .github-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .github-user {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .github-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+        }
+
+        .github-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .github-sidebar {
+            width: 280px;
+            background: rgba(0, 0, 0, 0.2);
+            border-right: 1px solid var(--card-border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .github-sidebar-header {
+            padding: 1rem;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .github-sidebar-header h3 {
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+        }
+
+        .github-repos {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+
+        .repo-item {
+            padding: 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-bottom: 0.25rem;
+        }
+
+        .repo-item:hover {
+            background: var(--card-hover);
+        }
+
+        .repo-item.active {
+            background: rgba(96, 165, 250, 0.2);
+            border: 1px solid rgba(96, 165, 250, 0.3);
+        }
+
+        .repo-name {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .repo-name svg {
+            width: 14px;
+            height: 14px;
+            color: var(--text-muted);
+        }
+
+        .repo-private {
+            font-size: 0.625rem;
+            padding: 0.125rem 0.375rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
+            color: var(--text-muted);
+        }
+
+        .repo-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .repo-meta {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .repo-meta span {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .language-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .github-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .github-main-header {
+            padding: 1rem;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .github-main-header h2 {
+            font-size: 1.25rem;
+        }
+
+        .github-tabs {
+            display: flex;
+            gap: 0.25rem;
+            padding: 0 1rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .github-tab {
+            padding: 0.75rem 1rem;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .github-tab:hover {
+            color: var(--text-primary);
+        }
+
+        .github-tab.active {
+            color: var(--accent-blue);
+            border-bottom-color: var(--accent-blue);
+        }
+
+        .github-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+
+        .readme-content {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            line-height: 1.6;
+        }
+
+        .readme-content h1, .readme-content h2, .readme-content h3 {
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 0.5rem;
+        }
+
+        .readme-content h1:first-child {
+            margin-top: 0;
+        }
+
+        .readme-content code {
+            background: var(--code-bg);
+            padding: 0.125rem 0.375rem;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+
+        .readme-content pre {
+            background: var(--code-bg);
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+
+        .readme-content pre code {
+            padding: 0;
+            background: none;
+        }
+
+        .branch-list, .pr-list, .workflow-list, .run-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .branch-item, .pr-item, .workflow-item, .run-item {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .branch-item .branch-name {
+            font-family: monospace;
+            font-weight: 500;
+        }
+
+        .branch-item .branch-protected {
+            font-size: 0.625rem;
+            padding: 0.125rem 0.5rem;
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--accent-green);
+            border-radius: 9999px;
+        }
+
+        .pr-item {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .pr-title {
+            font-weight: 500;
+        }
+
+        .pr-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .pr-draft {
+            font-size: 0.625rem;
+            padding: 0.125rem 0.5rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
+        }
+
+        .workflow-item {
+            justify-content: space-between;
+        }
+
+        .workflow-name {
+            font-weight: 500;
+        }
+
+        .run-item {
+            justify-content: space-between;
+        }
+
+        .run-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-badge {
+            padding: 0.125rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .status-success {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--accent-green);
+        }
+
+        .status-failure {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .status-pending, .status-in_progress, .status-queued {
+            background: rgba(251, 191, 36, 0.2);
+            color: #fbbf24;
+        }
+
+        .auth-required {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            gap: 1.5rem;
+            padding: 2rem;
+        }
+
+        .auth-required svg {
+            width: 80px;
+            height: 80px;
+            color: var(--text-primary);
+        }
+
+        .auth-required h2 {
+            font-size: 1.5rem;
+            margin: 0;
+        }
+
+        .auth-required p {
+            max-width: 400px;
+            line-height: 1.6;
+        }
+
+        .btn-github {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.875rem 1.5rem;
+            background: #24292e;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-github:hover {
+            background: #2f363d;
+            border-color: #666;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-github svg {
+            width: 24px;
+            height: 24px;
+        }
+
+        .auth-scopes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-top: 0.5rem;
+        }
+
+        .auth-scope {
+            padding: 0.25rem 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--card-border);
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            color: var(--text-muted);
+        }
+
+        .loading-spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--card-border);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .actions-bar {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .create-repo-form {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+
+        .create-repo-form .form-group {
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <header class="github-header">
+        <div class="github-header-left">
+            <svg class="github-logo" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            <span class="github-title">GitHub</span>
+        </div>
+        <div id="github-user" class="github-user" style="display: none;">
+            <img id="user-avatar" class="github-avatar" src="" alt="">
+            <span id="user-name"></span>
+            <button class="btn btn-sm btn-secondary" onclick="disconnectGitHub()" title="Disconnect GitHub account" style="margin-left: 0.5rem;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <div class="github-container">
+        <aside class="github-sidebar">
+            <div class="github-sidebar-header">
+                <h3>Repositories</h3>
+                <button class="btn btn-sm btn-primary" onclick="showCreateRepoForm()">New</button>
+            </div>
+            <div id="repos-list" class="github-repos">
+                <div class="loading" style="padding: 2rem; text-align: center;">
+                    <div class="loading-spinner"></div>
+                    <p style="margin-top: 1rem; color: var(--text-muted);">Loading...</p>
+                </div>
+            </div>
+        </aside>
+
+        <main class="github-main">
+            <div id="auth-required" class="auth-required" style="display: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                </svg>
+                <h2>Connect to GitHub</h2>
+                <p id="auth-message" style="color: var(--text-muted);">
+                    Authorize Portal Gateway to access your GitHub repositories, manage workflows, and view pull requests.
+                </p>
+                <a id="auth-link" href="#" class="btn-github" target="_blank">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                    Connect with GitHub
+                </a>
+                <div class="auth-scopes">
+                    <span class="auth-scope">repo</span>
+                    <span class="auth-scope">read:user</span>
+                    <span class="auth-scope">workflow</span>
+                </div>
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem;">
+                    You'll be redirected to GitHub to authorize access
+                </p>
+            </div>
+
+            <div id="repo-view" style="display: none; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                <div class="github-main-header">
+                    <h2 id="repo-title">Select a Repository</h2>
+                    <div class="actions-bar">
+                        <a id="repo-link" href="#" target="_blank" class="btn btn-secondary btn-sm">View on GitHub</a>
+                        <button class="btn btn-secondary btn-sm" onclick="cloneRepo()">Clone</button>
+                    </div>
+                </div>
+
+                <div class="github-tabs">
+                    <button class="github-tab active" data-tab="readme" onclick="switchTab('readme')">README</button>
+                    <button class="github-tab" data-tab="branches" onclick="switchTab('branches')">Branches</button>
+                    <button class="github-tab" data-tab="prs" onclick="switchTab('prs')">Pull Requests</button>
+                    <button class="github-tab" data-tab="workflows" onclick="switchTab('workflows')">Actions</button>
+                    <button class="github-tab" data-tab="runs" onclick="switchTab('runs')">Runs</button>
+                </div>
+
+                <div class="github-content">
+                    <div id="tab-readme" class="tab-content">
+                        <div class="readme-content" id="readme-content">
+                            <div class="empty-state">Select a repository to view its README</div>
+                        </div>
+                    </div>
+                    <div id="tab-branches" class="tab-content" style="display: none;">
+                        <div id="branches-list" class="branch-list"></div>
+                    </div>
+                    <div id="tab-prs" class="tab-content" style="display: none;">
+                        <div id="prs-list" class="pr-list"></div>
+                    </div>
+                    <div id="tab-workflows" class="tab-content" style="display: none;">
+                        <div id="workflows-list" class="workflow-list"></div>
+                    </div>
+                    <div id="tab-runs" class="tab-content" style="display: none;">
+                        <div id="runs-list" class="run-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="create-repo-view" style="display: none; padding: 2rem;">
+                <h2 style="margin-bottom: 1.5rem;">Create New Repository</h2>
+                <form class="create-repo-form" onsubmit="submitCreateRepo(event)">
+                    <div class="form-group">
+                        <label for="new-repo-name">Repository Name</label>
+                        <input type="text" id="new-repo-name" required placeholder="my-new-repo">
+                    </div>
+                    <div class="form-group">
+                        <label for="new-repo-desc">Description (optional)</label>
+                        <input type="text" id="new-repo-desc" placeholder="A short description of your repository">
+                    </div>
+                    <div class="form-group">
+                        <label class="toggle-label">
+                            <input type="checkbox" id="new-repo-private">
+                            <span>Private repository</span>
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="hideCreateRepoForm()">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Create Repository</button>
+                    </div>
+                </form>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/portal.js?v=6"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        const serviceId = window.location.pathname.split('/').pop();
+        let ws = null;
+        let currentRepo = null;
+        let currentTab = 'readme';
+
+        // Language colors for the dots
+        const languageColors = {
+            'JavaScript': '#f1e05a',
+            'TypeScript': '#3178c6',
+            'Python': '#3572A5',
+            'Go': '#00ADD8',
+            'Rust': '#dea584',
+            'Java': '#b07219',
+            'C': '#555555',
+            'C++': '#f34b7d',
+            'C#': '#178600',
+            'Ruby': '#701516',
+            'PHP': '#4F5D95',
+            'HTML': '#e34c26',
+            'CSS': '#563d7c',
+            'Shell': '#89e051',
+            'Dockerfile': '#384d54'
+        };
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const token = Portal.getToken();
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/github/${serviceId}?token=${token}`);
+
+            ws.onopen = () => {
+                console.log('GitHub WebSocket connected');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+
+            ws.onclose = () => {
+                console.log('GitHub WebSocket disconnected');
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('GitHub WebSocket error:', error);
+            };
+        }
+
+        function handleMessage(data) {
+            console.log('Received:', data.type, data);
+
+            switch (data.type) {
+                case 'connected':
+                    showConnected(data);
+                    break;
+                case 'auth_required':
+                    showAuthRequired(data);
+                    break;
+                case 'error':
+                    showError(data.message);
+                    break;
+                case 'repos':
+                    renderRepos(data.repos);
+                    break;
+                case 'readme':
+                    renderReadme(data.content);
+                    break;
+                case 'branches':
+                    renderBranches(data.branches);
+                    break;
+                case 'pull_requests':
+                    renderPRs(data.pull_requests);
+                    break;
+                case 'workflows':
+                    renderWorkflows(data.workflows);
+                    break;
+                case 'workflow_runs':
+                    renderRuns(data.runs);
+                    break;
+                case 'workflow_triggered':
+                    alert(data.message);
+                    break;
+                case 'repo_created':
+                    alert(`Repository created: ${data.repo.full_name}`);
+                    hideCreateRepoForm();
+                    send({ command: 'list_repos' });
+                    break;
+            }
+        }
+
+        function send(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            }
+        }
+
+        function showConnected(data) {
+            document.getElementById('auth-required').style.display = 'none';
+            document.getElementById('repo-view').style.display = 'flex';
+            document.getElementById('github-user').style.display = 'flex';
+            document.getElementById('user-avatar').src = data.avatar;
+            document.getElementById('user-name').textContent = data.name || data.user;
+
+            // Load repos
+            send({ command: 'list_repos' });
+        }
+
+        function showAuthRequired(data) {
+            document.getElementById('auth-required').style.display = 'flex';
+            document.getElementById('repo-view').style.display = 'none';
+            document.getElementById('auth-message').textContent = 'Click below to authorize Portal Gateway to access your GitHub repositories.';
+            document.getElementById('auth-link').href = data.auth_url;
+        }
+
+        function showError(message) {
+            console.error('Error:', message);
+            alert(message);
+        }
+
+        function renderRepos(repos) {
+            const container = document.getElementById('repos-list');
+
+            if (repos.length === 0) {
+                container.innerHTML = '<div class="empty-state">No repositories found</div>';
+                return;
+            }
+
+            container.innerHTML = repos.map(repo => `
+                <div class="repo-item" onclick="selectRepo('${repo.full_name}')" data-repo="${repo.full_name}">
+                    <div class="repo-name">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                        </svg>
+                        ${repo.name}
+                        ${repo.private ? '<span class="repo-private">Private</span>' : ''}
+                    </div>
+                    ${repo.description ? `<div class="repo-desc">${escapeHtml(repo.description)}</div>` : ''}
+                    <div class="repo-meta">
+                        ${repo.language ? `
+                            <span>
+                                <span class="language-dot" style="background: ${languageColors[repo.language] || '#8b8b8b'}"></span>
+                                ${repo.language}
+                            </span>
+                        ` : ''}
+                        <span>${repo.stargazers_count} stars</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function selectRepo(fullName) {
+            const [owner, repo] = fullName.split('/');
+            currentRepo = { owner, repo, full_name: fullName };
+
+            // Update UI
+            document.querySelectorAll('.repo-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.repo === fullName);
+            });
+
+            document.getElementById('repo-title').textContent = fullName;
+            document.getElementById('repo-link').href = `https://github.com/${fullName}`;
+
+            // Load README
+            send({ command: 'get_readme', owner, repo });
+
+            // Reset to README tab
+            switchTab('readme');
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+
+            // Update tab buttons
+            document.querySelectorAll('.github-tab').forEach(el => {
+                el.classList.toggle('active', el.dataset.tab === tab);
+            });
+
+            // Hide all content
+            document.querySelectorAll('.tab-content').forEach(el => {
+                el.style.display = 'none';
+            });
+
+            // Show selected content
+            document.getElementById(`tab-${tab}`).style.display = 'block';
+
+            // Load data if needed
+            if (currentRepo) {
+                const { owner, repo } = currentRepo;
+                switch (tab) {
+                    case 'branches':
+                        send({ command: 'list_branches', owner, repo });
+                        break;
+                    case 'prs':
+                        send({ command: 'list_prs', owner, repo });
+                        break;
+                    case 'workflows':
+                        send({ command: 'list_workflows', owner, repo });
+                        break;
+                    case 'runs':
+                        send({ command: 'list_runs', owner, repo });
+                        break;
+                }
+            }
+        }
+
+        function renderReadme(content) {
+            const container = document.getElementById('readme-content');
+            if (content && content !== 'No README found') {
+                container.innerHTML = marked.parse(content);
+            } else {
+                container.innerHTML = '<div class="empty-state">No README found</div>';
+            }
+        }
+
+        function renderBranches(branches) {
+            const container = document.getElementById('branches-list');
+            container.innerHTML = branches.map(branch => `
+                <div class="branch-item">
+                    <span class="branch-name">${branch.name}</span>
+                    ${branch.protected ? '<span class="branch-protected">Protected</span>' : ''}
+                    <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: auto;">${branch.sha.slice(0, 7)}</span>
+                </div>
+            `).join('') || '<div class="empty-state">No branches found</div>';
+        }
+
+        function renderPRs(prs) {
+            const container = document.getElementById('prs-list');
+            container.innerHTML = prs.map(pr => `
+                <div class="pr-item">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span class="pr-title">#${pr.number} ${escapeHtml(pr.title)}</span>
+                        ${pr.draft ? '<span class="pr-draft">Draft</span>' : ''}
+                    </div>
+                    <div class="pr-meta">
+                        ${pr.user} wants to merge ${pr.head} into ${pr.base}
+                    </div>
+                </div>
+            `).join('') || '<div class="empty-state">No pull requests</div>';
+        }
+
+        function renderWorkflows(workflows) {
+            const container = document.getElementById('workflows-list');
+            container.innerHTML = workflows.map(wf => `
+                <div class="workflow-item">
+                    <div>
+                        <div class="workflow-name">${wf.name}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">${wf.path}</div>
+                    </div>
+                    <button class="btn btn-sm btn-secondary" onclick="triggerWorkflow(${wf.id})">Run</button>
+                </div>
+            `).join('') || '<div class="empty-state">No workflows found</div>';
+        }
+
+        function renderRuns(runs) {
+            const container = document.getElementById('runs-list');
+            container.innerHTML = runs.map(run => `
+                <div class="run-item">
+                    <div>
+                        <div style="font-weight: 500;">${run.name}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">
+                            ${run.head_branch} - ${run.head_sha} - ${run.event}
+                        </div>
+                    </div>
+                    <div class="run-status">
+                        <span class="status-badge status-${run.conclusion || run.status}">
+                            ${run.conclusion || run.status}
+                        </span>
+                        <a href="${run.html_url}" target="_blank" class="btn btn-sm btn-secondary">View</a>
+                    </div>
+                </div>
+            `).join('') || '<div class="empty-state">No workflow runs</div>';
+        }
+
+        function triggerWorkflow(workflowId) {
+            if (!currentRepo) return;
+            const ref = prompt('Branch to run on:', 'main');
+            if (ref) {
+                send({
+                    command: 'trigger_workflow',
+                    owner: currentRepo.owner,
+                    repo: currentRepo.repo,
+                    workflow_id: workflowId,
+                    ref: ref
+                });
+            }
+        }
+
+        function cloneRepo() {
+            if (!currentRepo) return;
+            const url = `git clone git@github.com:${currentRepo.full_name}.git`;
+            navigator.clipboard.writeText(url);
+            alert('Clone command copied to clipboard!');
+        }
+
+        function showCreateRepoForm() {
+            document.getElementById('repo-view').style.display = 'none';
+            document.getElementById('create-repo-view').style.display = 'block';
+        }
+
+        function hideCreateRepoForm() {
+            document.getElementById('create-repo-view').style.display = 'none';
+            document.getElementById('repo-view').style.display = 'flex';
+        }
+
+        function submitCreateRepo(event) {
+            event.preventDefault();
+            const name = document.getElementById('new-repo-name').value;
+            const description = document.getElementById('new-repo-desc').value;
+            const isPrivate = document.getElementById('new-repo-private').checked;
+
+            send({
+                command: 'create_repo',
+                name: name,
+                description: description,
+                private: isPrivate,
+                auto_init: true
+            });
+        }
+
+        function disconnectGitHub() {
+            if (confirm('Disconnect from GitHub? You will need to re-authorize to use this service again.')) {
+                // Send disconnect command to clear server-side session
+                send({ command: 'disconnect' });
+                // Reset UI
+                document.getElementById('github-user').style.display = 'none';
+                document.getElementById('repo-view').style.display = 'none';
+                document.getElementById('repos-list').innerHTML = '';
+                // Reconnect to show auth screen
+                if (ws) {
+                    ws.close();
+                }
+                setTimeout(connect, 500);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Connect on load
+        connect();
+    </script>
+</body>
+</html>

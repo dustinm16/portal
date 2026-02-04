@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portal Gateway - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=5">
+    <link rel="stylesheet" href="/static/css/portal.css?v=10">
 </head>
 <body>
     <nav class="navbar">
@@ -128,42 +128,113 @@
     <!-- Add Service Modal -->
     <div id="add-service-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('add-service-modal')"></div>
-        <div class="modal-content">
+        <div class="modal-content modal-large">
             <div class="modal-header">
                 <h3>Add Service</h3>
                 <button class="modal-close" onclick="closeModal('add-service-modal')">&times;</button>
             </div>
             <form id="add-service-form" onsubmit="submitAddService(event)">
+                <!-- Service Presets -->
                 <div class="form-group">
-                    <label for="service-name">Service Name</label>
-                    <input type="text" id="service-name" required placeholder="My Service">
-                </div>
-                <div class="form-group">
-                    <label for="service-path">URL Path</label>
-                    <input type="text" id="service-path" required placeholder="/myservice">
-                </div>
-                <div class="form-group">
-                    <label for="service-plugin">Plugin Type</label>
-                    <select id="service-plugin" required>
-                        <option value="terminal">Terminal (PTY)</option>
-                        <option value="ssh">SSH</option>
-                        <option value="vnc">VNC Desktop</option>
-                        <option value="http_proxy">HTTP Proxy</option>
-                        <option value="tcp_tunnel">TCP Tunnel</option>
+                    <label for="service-preset">Quick Start (Optional)</label>
+                    <select id="service-preset" onchange="applyServicePreset()">
+                        <option value="">-- Select a preset --</option>
+                        <optgroup label="Local Services">
+                            <option value="local-shell">Local Shell Terminal</option>
+                            <option value="local-vnc">Local VNC (port 5900)</option>
+                        </optgroup>
+                        <optgroup label="Remote Access">
+                            <option value="ssh-server">SSH Server</option>
+                            <option value="vnc-server">VNC Server</option>
+                            <option value="rdp-server">RDP via VNC</option>
+                        </optgroup>
+                        <optgroup label="Media & Streaming">
+                            <option value="mediamtx-rtsp">MediaMTX RTSP Relay</option>
+                            <option value="mediamtx-webrtc">MediaMTX WebRTC</option>
+                        </optgroup>
+                        <optgroup label="Virtualization">
+                            <option value="proxmox-cluster">Proxmox VE Cluster</option>
+                            <option value="spice-vm">SPICE VM Console</option>
+                        </optgroup>
+                        <optgroup label="Network Tools">
+                            <option value="http-proxy">HTTP Reverse Proxy</option>
+                            <option value="tcp-tunnel">TCP Tunnel</option>
+                            <option value="secure-tunnel">Encrypted Tunnel</option>
+                            <option value="vpn-bridge">VPN Bridge</option>
+                        </optgroup>
+                        <optgroup label="Development">
+                            <option value="github">GitHub</option>
+                        </optgroup>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label for="service-host">Target Host</label>
-                    <input type="text" id="service-host" required placeholder="localhost">
+
+                <hr style="border-color: rgba(255,255,255,0.1); margin: 1.5rem 0;">
+
+                <!-- Basic Settings -->
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="service-name">Service Name</label>
+                        <input type="text" id="service-name" required placeholder="My Service">
+                    </div>
+                    <div class="form-group">
+                        <label for="service-path">URL Path</label>
+                        <input type="text" id="service-path" required placeholder="/myservice">
+                    </div>
                 </div>
+
                 <div class="form-group">
-                    <label for="service-port">Target Port</label>
-                    <input type="number" id="service-port" placeholder="22" min="1" max="65535">
+                    <label for="service-plugin">Plugin Type</label>
+                    <select id="service-plugin" required onchange="onPluginChange()">
+                        <optgroup label="Terminal & Shell">
+                            <option value="terminal">Terminal (Local PTY)</option>
+                            <option value="ssh">SSH Remote Shell</option>
+                        </optgroup>
+                        <optgroup label="Desktop & Display">
+                            <option value="vnc">VNC Desktop</option>
+                            <option value="spice">SPICE Console</option>
+                        </optgroup>
+                        <optgroup label="Media & Streaming">
+                            <option value="mediamtx">MediaMTX Streaming</option>
+                        </optgroup>
+                        <optgroup label="Virtualization">
+                            <option value="proxmox">Proxmox VE</option>
+                        </optgroup>
+                        <optgroup label="Development">
+                            <option value="github">GitHub</option>
+                        </optgroup>
+                        <optgroup label="Network & Tunneling">
+                            <option value="tcp_tunnel">TCP Tunnel</option>
+                            <option value="secure_tunnel">Secure Tunnel (Encrypted)</option>
+                            <option value="vpn_tunnel">VPN Tunnel</option>
+                            <option value="http_proxy">HTTP Reverse Proxy</option>
+                        </optgroup>
+                    </select>
                 </div>
+
+                <!-- Common Target Settings -->
+                <div id="common-target-fields">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="service-host">Target Host</label>
+                            <input type="text" id="service-host" placeholder="localhost">
+                        </div>
+                        <div class="form-group">
+                            <label for="service-port">Target Port</label>
+                            <input type="number" id="service-port" placeholder="22" min="1" max="65535">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Plugin-specific Configuration -->
+                <div id="plugin-config-fields"></div>
+
+                <!-- Access Control -->
                 <div class="form-group">
                     <label for="service-scopes">Required Scopes (comma-separated)</label>
                     <input type="text" id="service-scopes" placeholder="*">
+                    <small style="color: var(--text-muted);">Use * for all users, or specific scopes like "admin,power-user"</small>
                 </div>
+
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('add-service-modal')">Cancel</button>
                     <button type="submit" class="btn btn-primary">Add Service</button>
@@ -198,6 +269,99 @@
                     <tbody id="users-tbody"></tbody>
                 </table>
             </div>
+        </div>
+    </div>
+
+    <!-- Edit Service Modal -->
+    <div id="edit-service-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('edit-service-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>Edit Service</h3>
+                <button class="modal-close" onclick="closeModal('edit-service-modal')">&times;</button>
+            </div>
+            <form id="edit-service-form" onsubmit="submitEditService(event)">
+                <input type="hidden" id="edit-service-id">
+
+                <!-- Basic Settings -->
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="edit-service-name">Service Name</label>
+                        <input type="text" id="edit-service-name" required placeholder="My Service">
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-service-path">URL Path</label>
+                        <input type="text" id="edit-service-path" required placeholder="/myservice">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="edit-service-plugin">Plugin Type</label>
+                        <select id="edit-service-plugin" required onchange="onEditPluginChange()">
+                            <optgroup label="Terminal & Shell">
+                                <option value="terminal">Terminal (Local PTY)</option>
+                                <option value="ssh">SSH Remote Shell</option>
+                            </optgroup>
+                            <optgroup label="Desktop & Display">
+                                <option value="vnc">VNC Desktop</option>
+                                <option value="spice">SPICE Console</option>
+                            </optgroup>
+                            <optgroup label="Media & Streaming">
+                                <option value="mediamtx">MediaMTX Streaming</option>
+                            </optgroup>
+                            <optgroup label="Virtualization">
+                                <option value="proxmox">Proxmox VE</option>
+                            </optgroup>
+                            <optgroup label="Development">
+                                <option value="github">GitHub</option>
+                            </optgroup>
+                            <optgroup label="Network & Tunneling">
+                                <option value="tcp_tunnel">TCP Tunnel</option>
+                                <option value="secure_tunnel">Secure Tunnel (Encrypted)</option>
+                                <option value="vpn_tunnel">VPN Tunnel</option>
+                                <option value="http_proxy">HTTP Reverse Proxy</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-service-enabled">Enabled</label>
+                        <label class="toggle">
+                            <input type="checkbox" id="edit-service-enabled" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Common Target Settings -->
+                <div id="edit-common-target-fields">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="edit-service-host">Target Host</label>
+                            <input type="text" id="edit-service-host" placeholder="localhost">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-service-port">Target Port</label>
+                            <input type="number" id="edit-service-port" placeholder="22" min="1" max="65535">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Plugin-specific Configuration -->
+                <div id="edit-plugin-config-fields"></div>
+
+                <!-- Access Control -->
+                <div class="form-group">
+                    <label for="edit-service-scopes">Required Scopes (comma-separated)</label>
+                    <input type="text" id="edit-service-scopes" placeholder="*">
+                    <small style="color: var(--text-muted);">Use * for all users, or specific scopes like "admin,power-user"</small>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('edit-service-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -403,10 +567,10 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=5"></script>
-    <script src="/static/js/dashboard.js?v=5"></script>
-    <script src="/static/js/admin.js?v=5"></script>
-    <script src="/static/js/ssh-keys.js?v=2"></script>
+    <script src="/static/js/portal.js?v=10"></script>
+    <script src="/static/js/dashboard.js?v=10"></script>
+    <script src="/static/js/admin.js?v=11"></script>
+    <script src="/static/js/ssh-keys.js?v=10"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

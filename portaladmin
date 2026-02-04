@@ -26,7 +26,7 @@ usage() {
     echo "  help                  Show this help message"
     echo ""
     echo "Examples:"
-    echo "  portaladmin grant dustin"
+    echo "  portaladmin grant username"
     echo "  portaladmin revoke testuser"
     echo "  portaladmin users"
 }

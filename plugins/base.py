@@ -1,5 +1,6 @@
 """Base plugin class for Portal Gateway."""
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -28,6 +29,32 @@ class ServiceTarget:
     host: str
     port: int
     config: dict = field(default_factory=dict)
+
+
+@dataclass
+class ConnectionStats:
+    """Statistics for an active connection."""
+    user_id: int
+    service_id: int
+    service_name: str
+    started_at: float = field(default_factory=time.time)
+    bytes_sent: int = 0
+    bytes_received: int = 0
+    messages_sent: int = 0
+    messages_received: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "user_id": self.user_id,
+            "service_id": self.service_id,
+            "service_name": self.service_name,
+            "started_at": self.started_at,
+            "uptime": time.time() - self.started_at,
+            "bytes_sent": self.bytes_sent,
+            "bytes_received": self.bytes_received,
+            "messages_sent": self.messages_sent,
+            "messages_received": self.messages_received,
+        }
 
 
 class PluginBase(ABC):

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{SERVICE_NAME}} - Portal Gateway</title>
+    <link rel="stylesheet" href="/static/css/portal.css">
+    <style>
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+        #spice-container {
+            height: calc(100vh - 50px);
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #spice-screen {
+            background: #000;
+        }
+        .spice-message {
+            color: #a1a1aa;
+            text-align: center;
+            padding: 2rem;
+        }
+        .spice-message svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+        }
+        .connection-status.connected {
+            background: rgba(34, 197, 94, 0.1);
+            color: #22c55e;
+        }
+        .connection-status.connecting {
+            background: rgba(234, 179, 8, 0.1);
+            color: #eab308;
+        }
+        .connection-status.disconnected {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+        }
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        .toolbar {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            display: flex;
+            gap: 0.5rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #spice-container:hover .toolbar {
+            opacity: 1;
+        }
+        .toolbar button {
+            background: none;
+            border: none;
+            color: #e4e4e7;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+        .toolbar button:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .toolbar button svg {
+            width: 20px;
+            height: 20px;
+        }
+    </style>
+</head>
+<body class="spice-page">
+    <header class="terminal-header">
+        <div class="terminal-title">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <span id="service-name">{{SERVICE_NAME}}</span>
+        </div>
+        <div class="terminal-controls">
+            <div class="connection-status connecting" id="connection-status">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+            <button class="btn btn-secondary" onclick="reconnect()" title="Reconnect">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+            <button class="btn btn-secondary" onclick="sendCtrlAltDel()" title="Send Ctrl+Alt+Del">
+                CAD
+            </button>
+            <button class="btn btn-secondary" onclick="window.close()" title="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <div id="spice-container">
+        <div id="spice-message" class="spice-message">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <p id="message-text">Connecting to VM console...</p>
+        </div>
+        <canvas id="spice-screen" style="display: none;"></canvas>
+        <div class="toolbar">
+            <button onclick="toggleFullscreen()" title="Fullscreen">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                </svg>
+            </button>
+            <button onclick="sendCtrlAltDel()" title="Ctrl+Alt+Del">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js"></script>
+    <script>
+        const serviceId = '{{SERVICE_ID}}';
+        let ws = null;
+        let spicePassword = null;
+        let spiceConn = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            connect();
+        });
+
+        function connect() {
+            updateStatus('connecting', 'Connecting...');
+            showMessage('Connecting to VM console...');
+
+            const wsUrl = Portal.getWebSocketUrl(`/ws/spice/${serviceId}`);
+            ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                updateStatus('connected', 'Waiting for SPICE...');
+            };
+
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    // JSON control message
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleControlMessage(data);
+                    } catch (e) {
+                        console.error('Invalid message:', e);
+                    }
+                } else {
+                    // Binary SPICE data - forward to SPICE client
+                    if (spiceConn && spiceConn.ws) {
+                        // The data needs to be forwarded to the spice-html5 handler
+                        handleSpiceData(event.data);
+                    }
+                }
+            };
+
+            ws.onclose = (event) => {
+                updateStatus('disconnected', 'Disconnected');
+                if (event.code !== 1000) {
+                    showMessage(`Connection closed (code: ${event.code})`);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateStatus('disconnected', 'Error');
+                showMessage('Connection error');
+            };
+        }
+
+        function handleControlMessage(data) {
+            switch (data.type) {
+                case 'connected':
+                    showMessage('Connected to SPICE server, initializing...');
+                    initSpice();
+                    break;
+
+                case 'auth':
+                    spicePassword = data.password;
+                    break;
+
+                case 'error':
+                    showMessage(`Error: ${data.message}`);
+                    updateStatus('disconnected', 'Error');
+                    break;
+            }
+        }
+
+        function initSpice() {
+            // Hide message, show canvas
+            document.getElementById('spice-message').style.display = 'none';
+            document.getElementById('spice-screen').style.display = 'block';
+
+            // Note: Full spice-html5 integration would require loading the library
+            // For now, we'll do a basic binary proxy approach
+            // The spice-html5 library expects to handle its own WebSocket
+
+            updateStatus('connected', 'Connected');
+            showMessage('');
+
+            // In a full implementation, you would initialize spice-html5 here:
+            // spiceConn = new SpiceMainConn({
+            //     uri: wsUrl,
+            //     screen_id: 'spice-screen',
+            //     password: spicePassword,
+            //     onerror: function(e) { showMessage('SPICE error: ' + e.message); },
+            //     onsuccess: function() { updateStatus('connected', 'Connected'); }
+            // });
+
+            // For the proxy mode, we relay binary data directly
+            console.log('SPICE connection established - binary proxy mode');
+        }
+
+        function handleSpiceData(data) {
+            // In proxy mode, SPICE data is handled by the backend
+            // The canvas would need a SPICE decoder to display
+            // This is a placeholder for full spice-html5 integration
+        }
+
+        function showMessage(text) {
+            const msgEl = document.getElementById('spice-message');
+            const textEl = document.getElementById('message-text');
+
+            if (text) {
+                msgEl.style.display = 'block';
+                textEl.textContent = text;
+            } else {
+                msgEl.style.display = 'none';
+            }
+        }
+
+        function reconnect() {
+            if (ws) {
+                ws.close();
+            }
+            if (spiceConn) {
+                spiceConn = null;
+            }
+            connect();
+        }
+
+        function sendCtrlAltDel() {
+            // Send Ctrl+Alt+Del key sequence
+            if (spiceConn && spiceConn.inputs) {
+                // spice-html5 method
+                spiceConn.inputs.sendCtrlAltDel();
+            } else if (ws && ws.readyState === WebSocket.OPEN) {
+                // Fallback: send control message
+                ws.send(JSON.stringify({
+                    type: 'ctrl_alt_del'
+                }));
+            }
+        }
+
+        function toggleFullscreen() {
+            const container = document.getElementById('spice-container');
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                container.requestFullscreen();
+            }
+        }
+
+        function updateStatus(status, text) {
+            const statusEl = document.getElementById('connection-status');
+            const statusText = document.getElementById('status-text');
+            statusEl.className = `connection-status ${status}`;
+            statusText.textContent = text;
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (spiceConn) {
+                spiceConn = null;
+            }
+            if (ws) {
+                ws.close(1000, 'Page closed');
+            }
+        });
+    </script>
+</body>
+</html>
