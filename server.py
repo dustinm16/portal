@@ -2235,6 +2235,7 @@ def create_app() -> web.Application:
     app.router.add_get("/proxmox/{service_id}", http_proxmox_page)
     app.router.add_get("/github/{service_id}", http_github_page)
     app.router.add_get("/admin", http_admin_page)
+    app.router.add_get("/admin/", http_admin_page)  # Handle trailing slash
 
     # WebSocket endpoints - catch all paths for relay (must be last)
     app.router.add_get("/", websocket_handler)
