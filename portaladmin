@@ -1,0 +1,69 @@
+#!/bin/bash
+# Portal Gateway Admin CLI
+# Usage: portaladmin <command> [args]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
+SERVER_SCRIPT="$SCRIPT_DIR/server.py"
+
+# Check if venv exists
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "Error: Virtual environment not found at $SCRIPT_DIR/venv"
+    exit 1
+fi
+
+usage() {
+    echo "Portal Gateway Admin CLI"
+    echo ""
+    echo "Usage: portaladmin <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  grant <username>      Grant admin status to user"
+    echo "  revoke <username>     Revoke admin status from user"
+    echo "  users                 List all users"
+    echo "  services              List all services"
+    echo "  invite                Show daily invite code"
+    echo "  help                  Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  portaladmin grant dustin"
+    echo "  portaladmin revoke testuser"
+    echo "  portaladmin users"
+}
+
+case "$1" in
+    grant)
+        if [ -z "$2" ]; then
+            echo "Error: Username required"
+            echo "Usage: portaladmin grant <username>"
+            exit 1
+        fi
+        "$VENV_PYTHON" "$SERVER_SCRIPT" set-admin "$2"
+        ;;
+    revoke)
+        if [ -z "$2" ]; then
+            echo "Error: Username required"
+            echo "Usage: portaladmin revoke <username>"
+            exit 1
+        fi
+        "$VENV_PYTHON" "$SERVER_SCRIPT" set-admin "$2" --remove
+        ;;
+    users)
+        "$VENV_PYTHON" "$SERVER_SCRIPT" list-users
+        ;;
+    services)
+        "$VENV_PYTHON" "$SERVER_SCRIPT" list-services
+        ;;
+    invite)
+        "$VENV_PYTHON" "$SERVER_SCRIPT" invite-code
+        ;;
+    help|--help|-h|"")
+        usage
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

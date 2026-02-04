@@ -1339,6 +1339,23 @@ async def list_users_cli() -> None:
     await db.close()
 
 
+def shell_cli(shell: str = None) -> None:
+    """Start a local interactive shell."""
+    import pty
+    import os
+
+    shell = shell or os.environ.get("SHELL", "/bin/bash")
+
+    print(f"Starting shell: {shell}")
+    print("Type 'exit' to quit.\n")
+
+    try:
+        pty.spawn(shell)
+    except Exception as e:
+        print(f"Error starting shell: {e}")
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     import argparse
