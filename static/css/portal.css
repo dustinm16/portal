@@ -603,6 +603,20 @@ body {
     max-width: 700px;
 }
 
+.modal-xlarge {
+    max-width: 900px;
+    height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-xlarge .modal-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
 @keyframes modalIn {
     from {
         opacity: 0;
@@ -803,6 +817,76 @@ select option {
     background: #1a1a2e;
     color: var(--text-primary);
 }
+
+/* Logs Viewer */
+.logs-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.logs-controls-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.logs-controls-right {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.logs-controls select {
+    width: auto;
+    padding: 0.5rem 2rem 0.5rem 0.75rem;
+    font-size: 0.875rem;
+}
+
+.logs-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.logs-checkbox input {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.logs-container {
+    flex: 1;
+    background: #0d1117;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    overflow: auto;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
+.logs-content {
+    padding: 0.75rem;
+    white-space: pre;
+    color: #c9d1d9;
+}
+
+.log-line {
+    padding: 0.125rem 0;
+}
+
+.log-line.level-DEBUG { color: #8b949e; }
+.log-line.level-INFO { color: #c9d1d9; }
+.log-line.level-WARNING { color: #d29922; }
+.log-line.level-ERROR { color: #f85149; }
+.log-line.level-CRITICAL { color: #ff7b72; font-weight: bold; }
 
 /* Responsive */
 @media (max-width: 768px) {

@@ -294,6 +294,157 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ============================================================================
+// Log Viewer Functions
+// ============================================================================
+
+var logAutoRefreshInterval = null;
+
+/**
+ * Show Logs Modal
+ */
+async function showLogsModal() {
+    showModal('logs-modal');
+    await loadLogFiles();
+    await loadLogSettings();
+    await loadLogs();
+}
+
+/**
+ * Load available log files
+ */
+async function loadLogFiles() {
+    try {
+        const response = await Portal.fetch('/api/logs/files');
+        const data = await response.json();
+
+        const select = document.getElementById('log-file-select');
+        select.innerHTML = data.files.map(f =>
+            `<option value="${f.name}">${f.name} (${formatFileSize(f.size)})</option>`
+        ).join('');
+    } catch (error) {
+        console.error('Failed to load log files:', error);
+    }
+}
+
+/**
+ * Load log settings
+ */
+async function loadLogSettings() {
+    try {
+        const response = await Portal.fetch('/api/logs/settings');
+        const data = await response.json();
+
+        document.getElementById('log-level-select').value = data.level;
+    } catch (error) {
+        console.error('Failed to load log settings:', error);
+    }
+}
+
+/**
+ * Load and display logs
+ */
+async function loadLogs() {
+    const container = document.getElementById('logs-container');
+    const filename = document.getElementById('log-file-select').value;
+
+    try {
+        const response = await Portal.fetch(`/api/logs?file=${filename}&lines=500`);
+        const data = await response.json();
+
+        if (data.error) {
+            container.innerHTML = `<div class="logs-content" style="color: var(--accent-red);">Error: ${data.error}</div>`;
+            return;
+        }
+
+        const lines = data.lines.map(line => {
+            const levelClass = getLogLevelClass(line);
+            return `<div class="log-line ${levelClass}">${escapeHtml(line)}</div>`;
+        }).join('');
+
+        container.innerHTML = `<div class="logs-content">${lines || 'No log entries'}</div>`;
+
+        // Scroll to bottom
+        container.scrollTop = container.scrollHeight;
+    } catch (error) {
+        container.innerHTML = `<div class="logs-content" style="color: var(--accent-red);">Failed to load logs: ${error.message}</div>`;
+        console.error('Load logs error:', error);
+    }
+}
+
+/**
+ * Get CSS class for log level
+ */
+function getLogLevelClass(line) {
+    if (line.includes('[DEBUG]')) return 'level-DEBUG';
+    if (line.includes('[INFO]')) return 'level-INFO';
+    if (line.includes('[WARNING]')) return 'level-WARNING';
+    if (line.includes('[ERROR]')) return 'level-ERROR';
+    if (line.includes('[CRITICAL]')) return 'level-CRITICAL';
+    return '';
+}
+
+/**
+ * Update log level
+ */
+async function updateLogLevel() {
+    const level = document.getElementById('log-level-select').value;
+
+    try {
+        const response = await Portal.fetch('/api/logs/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ level })
+        });
+
+        if (response.ok) {
+            Portal.toast(`Log level set to ${level}`);
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to update log level', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update log level', 'error');
+        console.error('Update log level error:', error);
+    }
+}
+
+/**
+ * Toggle auto-refresh for logs
+ */
+function toggleAutoRefresh() {
+    const checkbox = document.getElementById('log-auto-refresh');
+
+    if (checkbox.checked) {
+        logAutoRefreshInterval = setInterval(loadLogs, 3000);
+    } else {
+        if (logAutoRefreshInterval) {
+            clearInterval(logAutoRefreshInterval);
+            logAutoRefreshInterval = null;
+        }
+    }
+}
+
+/**
+ * Format file size
+ */
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// Clean up on modal close
+const originalCloseModal = closeModal;
+closeModal = function(modalId) {
+    if (modalId === 'logs-modal' && logAutoRefreshInterval) {
+        clearInterval(logAutoRefreshInterval);
+        logAutoRefreshInterval = null;
+        document.getElementById('log-auto-refresh').checked = false;
+    }
+    originalCloseModal(modalId);
+};
+
 // Initialize admin UI when page loads
 document.addEventListener('DOMContentLoaded', initAdminUI);
 

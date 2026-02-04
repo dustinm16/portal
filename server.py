@@ -42,12 +42,16 @@ from plugins import (
 )
 from plugins.base import ServiceTarget
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+# Configure logging with rotation
+from logger import (
+    setup_logging,
+    get_log_settings,
+    update_log_settings,
+    read_log_file,
+    get_log_files,
+    set_log_level,
 )
+setup_logging()
 logger = logging.getLogger("portal")
 
 # Rate limiting storage
@@ -488,6 +492,74 @@ async def http_get_invite_code(request: web.Request) -> web.Response:
     return web.json_response(info)
 
 
+async def http_get_logs(request: web.Request) -> web.Response:
+    """Get log file contents (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    # Get query params
+    filename = request.query.get("file", "portal.log")
+    lines = int(request.query.get("lines", 200))
+    offset = int(request.query.get("offset", 0))
+
+    lines = min(lines, 1000)  # Limit to 1000 lines
+
+    result = read_log_file(filename, lines, offset)
+    return web.json_response(result)
+
+
+async def http_get_log_files(request: web.Request) -> web.Response:
+    """Get list of log files (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    files = get_log_files()
+    return web.json_response({"files": files})
+
+
+async def http_get_log_settings(request: web.Request) -> web.Response:
+    """Get log settings (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    settings = get_log_settings()
+    return web.json_response(settings)
+
+
+async def http_update_log_settings(request: web.Request) -> web.Response:
+    """Update log settings (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    try:
+        settings = update_log_settings(data)
+        logger.info(f"Log settings updated by user {token.user_id}: {data}")
+        return web.json_response(settings)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
 async def http_stats(request: web.Request) -> web.Response:
     """Get server statistics (admin only)."""
     token = await authenticate_request(request)
@@ -548,10 +620,16 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         )
 
     logger.info(f"WebSocket connection from {client_ip} (user {token.user_id}) to {path}")
+    logger.debug(f"WebSocket headers: {dict(request.headers)}")
 
     # Create WebSocket response
     ws = web.WebSocketResponse(heartbeat=30)
-    await ws.prepare(request)
+    try:
+        await ws.prepare(request)
+        logger.debug(f"WebSocket prepared for {path}")
+    except Exception as e:
+        logger.error(f"Failed to prepare WebSocket for {path}: {e}")
+        return web.Response(status=500, text="WebSocket preparation failed")
 
     active_connections.add(ws)
 
@@ -653,6 +731,8 @@ async def handle_relay_ws(
     """Handle WebSocket relay to internal services via plugins."""
     import re
 
+    logger.debug(f"handle_relay_ws called with path: {path}")
+
     # Check for /ws/terminal/{id} or /ws/vnc/{id} patterns
     service = None
     terminal_match = re.match(r"^/ws/terminal/(\d+)$", path)
@@ -660,9 +740,12 @@ async def handle_relay_ws(
 
     if terminal_match or vnc_match:
         service_id = int(terminal_match.group(1) if terminal_match else vnc_match.group(1))
+        logger.debug(f"Looking up service by ID: {service_id}")
         service = await db.get_service_by_id(service_id)
+        logger.debug(f"Service lookup result: {service}")
     else:
         # Find matching service by path
+        logger.debug(f"Looking up service by path: {path}")
         service = await get_service_for_path(path)
 
     if not service:
@@ -1121,6 +1204,12 @@ def create_app() -> web.Application:
     # Registration (public with invite code)
     app.router.add_post("/api/register", http_register)
     app.router.add_get("/api/invite-code", http_get_invite_code)
+
+    # Logging (admin only)
+    app.router.add_get("/api/logs", http_get_logs)
+    app.router.add_get("/api/logs/files", http_get_log_files)
+    app.router.add_get("/api/logs/settings", http_get_log_settings)
+    app.router.add_put("/api/logs/settings", http_update_log_settings)
 
     # Web UI routes
     app.router.add_get("/login", http_login_page)

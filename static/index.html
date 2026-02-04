@@ -85,6 +85,14 @@
                             Invite Code
                         </a>
                     </li>
+                    <li>
+                        <a href="#" onclick="showLogsModal(); return false;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            View Logs
+                        </a>
+                    </li>
                 </ul>
             </div>
         </aside>
@@ -197,6 +205,45 @@
                 <p style="color: var(--text-secondary); margin-bottom: 1rem;">Share this code to allow new user registration:</p>
                 <div id="invite-code-display" class="invite-code-display">Loading...</div>
                 <p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 1rem;">Code expires at midnight UTC</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logs Modal -->
+    <div id="logs-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('logs-modal')"></div>
+        <div class="modal-content modal-xlarge">
+            <div class="modal-header">
+                <h3>System Logs</h3>
+                <button class="modal-close" onclick="closeModal('logs-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="logs-controls">
+                    <div class="logs-controls-left">
+                        <select id="log-file-select" onchange="loadLogs()">
+                            <option value="portal.log">portal.log</option>
+                        </select>
+                        <select id="log-level-select" onchange="updateLogLevel()">
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO" selected>INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                        </select>
+                        <label class="logs-checkbox">
+                            <input type="checkbox" id="log-auto-refresh" onchange="toggleAutoRefresh()">
+                            Auto-refresh
+                        </label>
+                    </div>
+                    <div class="logs-controls-right">
+                        <button class="btn btn-secondary btn-sm" onclick="loadLogs()">Refresh</button>
+                    </div>
+                </div>
+                <div id="logs-container" class="logs-container">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <span>Loading logs...</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
