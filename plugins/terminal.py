@@ -132,12 +132,27 @@ class TerminalPlugin(PluginBase):
         ws_reader = asyncio.create_task(self._read_ws(ws, master_fd))
 
         try:
-            await asyncio.gather(pty_reader, ws_reader)
+            # Wait for either task to complete (usually means connection closed)
+            done, pending = await asyncio.wait(
+                [pty_reader, ws_reader],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            # Check for exceptions in completed tasks
+            for task in done:
+                if task.exception():
+                    logger.error(f"Terminal task error: {task.exception()}")
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logger.error(f"Terminal loop error: {e}")
         finally:
             pty_reader.cancel()
             ws_reader.cancel()
+            # Wait for cancellation to complete
+            try:
+                await asyncio.gather(pty_reader, ws_reader, return_exceptions=True)
+            except:
+                pass
 
     async def _read_pty(
         self,
@@ -146,20 +161,29 @@ class TerminalPlugin(PluginBase):
         loop: asyncio.AbstractEventLoop
     ) -> None:
         """Read from PTY and send to WebSocket."""
-        while True:
+        while not ws.closed:
             try:
-                # Wait for data
-                await loop.run_in_executor(
+                # Wait for data with select in thread pool
+                readable, _, _ = await loop.run_in_executor(
                     None,
                     lambda: select.select([master_fd], [], [], 0.1)
                 )
+
+                if not readable:
+                    continue
 
                 # Read available data
                 try:
                     data = os.read(master_fd, 4096)
                     if data:
-                        await ws.send_str(data.decode("utf-8", errors="replace"))
-                except OSError:
+                        if not ws.closed:
+                            await ws.send_str(data.decode("utf-8", errors="replace"))
+                    else:
+                        # EOF - PTY closed
+                        logger.debug("PTY EOF received")
+                        break
+                except OSError as e:
+                    logger.debug(f"PTY read OSError: {e}")
                     break
 
             except asyncio.CancelledError:

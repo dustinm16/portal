@@ -651,8 +651,19 @@ async def handle_relay_ws(
     client_ip: str
 ) -> None:
     """Handle WebSocket relay to internal services via plugins."""
-    # Find matching service
-    service = await get_service_for_path(path)
+    import re
+
+    # Check for /ws/terminal/{id} or /ws/vnc/{id} patterns
+    service = None
+    terminal_match = re.match(r"^/ws/terminal/(\d+)$", path)
+    vnc_match = re.match(r"^/ws/vnc/(\d+)$", path)
+
+    if terminal_match or vnc_match:
+        service_id = int(terminal_match.group(1) if terminal_match else vnc_match.group(1))
+        service = await db.get_service_by_id(service_id)
+    else:
+        # Find matching service by path
+        service = await get_service_for_path(path)
 
     if not service:
         logger.warning(f"No service found for path: {path}")

@@ -4,7 +4,7 @@
 
 let services = [];
 let currentCategory = 'all';
-let currentUser = null;
+var currentUser = null;  // shared with admin.js
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', async () => {

@@ -2,8 +2,8 @@
  * Portal Gateway - Admin Functions
  */
 
-let currentUser = null;
-let pendingConfirmAction = null;
+// currentUser is defined in dashboard.js
+var pendingConfirmAction = null;
 
 /**
  * Initialize admin UI based on user role
