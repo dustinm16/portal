@@ -538,6 +538,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     try:
         if path == "/" or path == "/ws":
             await handle_ping_ws(ws, token)
+        elif path == "/ws/terminal/local":
+            await handle_local_terminal_ws(ws, token, client_ip)
         else:
             await handle_relay_ws(ws, path, token, client_ip)
     finally:
@@ -578,6 +580,48 @@ async def handle_ping_ws(ws: web.WebSocketResponse, token: TokenPayload) -> None
         elif msg.type == WSMsgType.ERROR:
             logger.error(f"WebSocket error: {ws.exception()}")
             break
+
+
+async def handle_local_terminal_ws(
+    ws: web.WebSocketResponse,
+    token: TokenPayload,
+    client_ip: str
+) -> None:
+    """Handle local server terminal WebSocket (admin only)."""
+    # Check admin access
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        logger.warning(f"Non-admin user {token.user_id} attempted local terminal access from {client_ip}")
+        await ws.send_json({"type": "error", "message": "Admin access required"})
+        await ws.close(code=4003, message=b"Forbidden")
+        return
+
+    # Get terminal plugin
+    plugin = get_plugin("terminal")
+    if not plugin:
+        logger.error("Terminal plugin not found for local terminal")
+        await ws.send_json({"type": "error", "message": "Terminal plugin not available"})
+        await ws.close(code=4005, message=b"Plugin not found")
+        return
+
+    # Create a virtual target for local terminal
+    target = ServiceTarget(
+        id="local",
+        name="Server Terminal",
+        plugin="terminal",
+        host="localhost",
+        port=0,
+        config={"shell": "/bin/bash"}
+    )
+
+    logger.info(f"Local terminal session started for user {token.user_id} from {client_ip}")
+
+    try:
+        await plugin.handle_websocket(ws, target, token.user_id)
+    except Exception as e:
+        logger.error(f"Local terminal error for user {token.user_id}: {e}")
+        if not ws.closed:
+            await ws.send_json({"type": "error", "message": f"Terminal error: {type(e).__name__}"})
+            await ws.close(code=4500, message=b"Terminal error")
 
 
 async def handle_relay_ws(
@@ -823,6 +867,17 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         raise web.HTTPFound("/login")
 
     service_id = request.match_info.get("service_id", "")
+
+    # Handle local terminal (server shell access)
+    if service_id == "local":
+        # Only admins can access local terminal
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return web.Response(status=403, text="Admin access required for local terminal")
+
+        html = load_static_file("terminal.html")
+        html = html.replace("{{SERVICE_ID}}", "local")
+        html = html.replace("{{SERVICE_NAME}}", "Server Terminal")
+        return web.Response(text=html, content_type="text/html")
 
     # Verify service exists and user has access
     service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None

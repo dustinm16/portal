@@ -245,6 +245,25 @@ body {
     color: var(--text-primary);
 }
 
+.navbar-terminal {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    transition: all 0.2s;
+}
+
+.navbar-terminal:hover {
+    color: var(--accent-blue);
+    background: var(--card-hover);
+    border-color: var(--accent-blue);
+}
+
 .navbar-user {
     display: flex;
     align-items: center;
