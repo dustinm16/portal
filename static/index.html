@@ -55,6 +55,14 @@
                         Refresh
                     </a>
                 </li>
+                <li>
+                    <a href="#" onclick="showSSHKeysModal(); return false;">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                        </svg>
+                        SSH Keys
+                    </a>
+                </li>
             </ul>
 
             <!-- Admin Section (shown only for admins) -->
@@ -266,9 +274,101 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=3"></script>
-    <script src="/static/js/dashboard.js?v=3"></script>
-    <script src="/static/js/admin.js?v=3"></script>
+    <!-- SSH Keys Modal -->
+    <div id="ssh-keys-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('ssh-keys-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>SSH Keys</h3>
+                <button class="modal-close" onclick="closeModal('ssh-keys-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="ssh-keys-actions">
+                    <button class="btn btn-primary" onclick="showCreateKeyForm()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        Generate New Key
+                    </button>
+                </div>
+
+                <!-- Create Key Form (hidden by default) -->
+                <div id="create-key-form" class="create-key-form" style="display: none;">
+                    <h4>Generate New SSH Key</h4>
+                    <form onsubmit="submitCreateKey(event)">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="key-name">Key Name</label>
+                                <input type="text" id="key-name" required placeholder="my-key">
+                            </div>
+                            <div class="form-group">
+                                <label for="key-type">Key Type</label>
+                                <select id="key-type">
+                                    <option value="ed25519" selected>Ed25519 (Recommended)</option>
+                                    <option value="rsa">RSA 4096</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" onclick="hideCreateKeyForm()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Generate</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- New Key Display (shows private key once) -->
+                <div id="new-key-display" class="new-key-display" style="display: none;">
+                    <div class="alert alert-warning">
+                        <strong>Save this private key now!</strong> It will not be shown again.
+                    </div>
+                    <div class="key-info">
+                        <p><strong>Name:</strong> <span id="new-key-name"></span></p>
+                        <p><strong>Fingerprint:</strong> <span id="new-key-fingerprint"></span></p>
+                    </div>
+                    <div class="form-group">
+                        <label>Private Key</label>
+                        <textarea id="new-private-key" readonly class="key-textarea"></textarea>
+                        <button class="btn btn-secondary btn-sm" onclick="copyPrivateKey()">Copy to Clipboard</button>
+                    </div>
+                    <div class="form-group">
+                        <label>Public Key</label>
+                        <textarea id="new-public-key" readonly class="key-textarea key-textarea-small"></textarea>
+                        <button class="btn btn-secondary btn-sm" onclick="copyPublicKey()">Copy to Clipboard</button>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" onclick="hideNewKeyDisplay()">Done - I've Saved the Key</button>
+                    </div>
+                </div>
+
+                <!-- Keys List -->
+                <div id="ssh-keys-loading" class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading keys...</span>
+                </div>
+                <table id="ssh-keys-table" class="data-table" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Fingerprint</th>
+                            <th>Created</th>
+                            <th>Last Used</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ssh-keys-tbody"></tbody>
+                </table>
+                <div id="ssh-keys-empty" class="empty-state-small" style="display: none;">
+                    <p>No SSH keys yet. Generate one to get started.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=4"></script>
+    <script src="/static/js/dashboard.js?v=4"></script>
+    <script src="/static/js/admin.js?v=4"></script>
+    <script src="/static/js/ssh-keys.js?v=1"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

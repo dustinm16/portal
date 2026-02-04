@@ -79,6 +79,8 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 ├── config.py              # Configuration management
 ├── database.py            # SQLite database layer
 ├── auth.py                # JWT authentication
+├── ssh_keys.py            # SSH key management (secure)
+├── logger.py              # Logging with rotation
 ├── router.py              # Request routing
 ├── registry.py            # Plugin registry
 │
@@ -298,6 +300,40 @@ Game streaming via Moonlight/Sunshine.
 | GET | `/api/categories` | List categories |
 | POST | `/api/categories` | Create category |
 
+### SSH Keys
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/ssh-keys` | List user's SSH keys |
+| POST | `/api/ssh-keys` | Generate new SSH key pair |
+| GET | `/api/ssh-keys/{id}` | Get key details (incl. public key) |
+| DELETE | `/api/ssh-keys/{id}` | Delete SSH key |
+| GET | `/api/ssh-keys/all` | List all keys (admin only) |
+| GET | `/api/ssh-keys/authorized` | Get authorized_keys format |
+
+**Security:** Private keys are returned only once during creation and are never stored. Users must save their private key immediately.
+
+### User Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/users` | List all users (admin only) |
+| POST | `/api/users` | Create user (admin only) |
+| PUT | `/api/users/{id}/admin` | Update admin status |
+| DELETE | `/api/users/{id}` | Delete user (admin only) |
+| GET | `/api/me` | Get current user info |
+| POST | `/api/register` | Register with invite code |
+| GET | `/api/invite-code` | Get invite code (admin only) |
+
+### Logging (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/logs` | Get log file contents |
+| GET | `/api/logs/files` | List log files |
+| GET | `/api/logs/settings` | Get log settings |
+| PUT | `/api/logs/settings` | Update log settings |
+
 ### WebSocket Endpoints
 
 | Path | Description |
@@ -353,6 +389,24 @@ CREATE TABLE sessions (
 );
 ```
 
+### ssh_keys
+```sql
+CREATE TABLE ssh_keys (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    key_type TEXT NOT NULL DEFAULT 'ed25519',
+    public_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_at TEXT,
+    last_used_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id, name)
+);
+```
+
+**Security Note:** Only public keys are stored in the database. Private keys are generated in-memory and returned to the user exactly once during key creation. They are never persisted, ensuring that even a database breach cannot expose private keys.
+
 ## Scopes
 
 | Scope | Access |
@@ -389,6 +443,12 @@ CREATE TABLE sessions (
 4. **Rate Limiting**: Per-IP request limits
 5. **Session Tracking**: Audit log of connections
 6. **Credential Storage**: Encrypted service credentials
+7. **SSH Key Security**:
+   - Private keys are NEVER stored in the database
+   - Keys are generated in-memory and returned to user only once
+   - Only public keys and fingerprints are persisted
+   - Database breach cannot expose private keys
+   - Supports Ed25519 (recommended) and RSA 4096-bit keys
 
 ## Roadmap
 
@@ -399,15 +459,15 @@ CREATE TABLE sessions (
 - [x] Rate limiting
 - [x] Cloudflare integration
 
-### Phase 2: Plugin System (Current)
-- [ ] Plugin base classes
-- [ ] Plugin registry
-- [ ] Dynamic plugin loading
-- [ ] Terminal plugin (PTY)
-- [ ] SSH plugin
+### Phase 2: Plugin System ✓
+- [x] Plugin base classes
+- [x] Plugin registry
+- [x] Dynamic plugin loading
+- [x] Terminal plugin (PTY)
+- [x] SSH plugin
 
-### Phase 3: Remote Desktop
-- [ ] VNC plugin (noVNC)
+### Phase 3: Remote Desktop (Current)
+- [x] VNC plugin (noVNC)
 - [ ] SPICE plugin
 - [ ] RDP plugin (future)
 
@@ -421,14 +481,15 @@ CREATE TABLE sessions (
 - [ ] Moonlight/Sunshine plugin
 - [ ] Seedbox plugin
 
-### Phase 6: Dashboard
-- [ ] Web dashboard UI
-- [ ] Service launcher
-- [ ] Status monitoring
-- [ ] Mobile-friendly design
+### Phase 6: Dashboard ✓
+- [x] Web dashboard UI
+- [x] Service launcher
+- [x] Admin panel (users, services, logs)
+- [x] Daily invite code system
+- [x] Mobile-friendly design
 
-### Phase 7: Advanced Features
+### Phase 7: Advanced Features (Current)
 - [ ] Two-factor authentication
-- [ ] SSH key management
+- [x] SSH key management (secure, no private key storage)
 - [ ] Connection recording
 - [ ] Bandwidth monitoring

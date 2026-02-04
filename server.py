@@ -51,6 +51,15 @@ from logger import (
     get_log_files,
     set_log_level,
 )
+from ssh_keys import (
+    create_user_key,
+    get_user_keys,
+    get_key_by_id,
+    delete_user_key,
+    admin_delete_key,
+    get_all_keys,
+    get_authorized_keys,
+)
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -558,6 +567,176 @@ async def http_update_log_settings(request: web.Request) -> web.Response:
         return web.json_response(settings)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_create_ssh_key(request: web.Request) -> web.Response:
+    """Generate a new SSH key pair for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    key_name = data.get("name")
+    key_type = data.get("key_type", "ed25519")
+
+    if not key_name:
+        return web.json_response({"error": "Key name required"}, status=400)
+
+    if key_type not in ["ed25519", "rsa"]:
+        return web.json_response(
+            {"error": "Invalid key type. Use 'ed25519' or 'rsa'"},
+            status=400
+        )
+
+    try:
+        key_info = await create_user_key(token.user_id, key_name, key_type)
+        logger.info(f"SSH key '{key_name}' created for user {token.user_id}")
+        return web.json_response(key_info, status=201)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.error(f"Failed to create SSH key: {e}")
+        return web.json_response({"error": "Failed to create SSH key"}, status=500)
+
+
+async def http_list_ssh_keys(request: web.Request) -> web.Response:
+    """List SSH keys for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        keys = await get_user_keys(token.user_id)
+        # Remove public_key from list response for brevity
+        return web.json_response({
+            "keys": [
+                {
+                    "id": k["id"],
+                    "name": k["name"],
+                    "key_type": k["key_type"],
+                    "fingerprint": k["fingerprint"],
+                    "created_at": k["created_at"],
+                    "last_used_at": k["last_used_at"]
+                }
+                for k in keys
+            ]
+        })
+    except Exception as e:
+        logger.error(f"Failed to list SSH keys: {e}")
+        return web.json_response({"error": "Failed to list SSH keys"}, status=500)
+
+
+async def http_get_ssh_key(request: web.Request) -> web.Response:
+    """Get a specific SSH key (including public key)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    key_id = request.match_info.get("id")
+    if not key_id or not key_id.isdigit():
+        return web.json_response({"error": "Invalid key ID"}, status=400)
+
+    key = await get_key_by_id(int(key_id))
+    if not key:
+        return web.json_response({"error": "Key not found"}, status=404)
+
+    # Users can only view their own keys (unless admin)
+    if key["user_id"] != token.user_id:
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return web.json_response({"error": "Key not found"}, status=404)
+
+    return web.json_response({
+        "id": key["id"],
+        "name": key["name"],
+        "key_type": key["key_type"],
+        "public_key": key["public_key"],
+        "fingerprint": key["fingerprint"],
+        "created_at": key["created_at"],
+        "last_used_at": key["last_used_at"]
+    })
+
+
+async def http_delete_ssh_key(request: web.Request) -> web.Response:
+    """Delete an SSH key."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    key_id = request.match_info.get("id")
+    if not key_id or not key_id.isdigit():
+        return web.json_response({"error": "Invalid key ID"}, status=400)
+
+    key_id = int(key_id)
+
+    # Try to delete as user first
+    if await delete_user_key(key_id, token.user_id):
+        logger.info(f"SSH key {key_id} deleted by user {token.user_id}")
+        return web.json_response({"status": "deleted"})
+
+    # If not found, check if admin and try admin delete
+    if token.has_scope("admin") or token.has_scope("*"):
+        if await admin_delete_key(key_id):
+            return web.json_response({"status": "deleted"})
+
+    return web.json_response({"error": "Key not found"}, status=404)
+
+
+async def http_get_authorized_keys(request: web.Request) -> web.Response:
+    """Get authorized_keys format for a user (for SSH server integration)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    # User ID can be specified by admin, otherwise use authenticated user
+    user_id = request.query.get("user_id")
+    if user_id:
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return forbidden_response(request)
+        user_id = int(user_id)
+    else:
+        user_id = token.user_id
+
+    try:
+        authorized_keys = await get_authorized_keys(user_id)
+        return web.Response(text=authorized_keys, content_type="text/plain")
+    except Exception as e:
+        logger.error(f"Failed to get authorized_keys: {e}")
+        return web.json_response({"error": "Failed to get authorized keys"}, status=500)
+
+
+async def http_admin_list_all_keys(request: web.Request) -> web.Response:
+    """List all SSH keys (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        keys = await get_all_keys()
+        return web.json_response({
+            "keys": [
+                {
+                    "id": k["id"],
+                    "user_id": k["user_id"],
+                    "username": k["username"],
+                    "name": k["name"],
+                    "key_type": k["key_type"],
+                    "fingerprint": k["fingerprint"],
+                    "created_at": k["created_at"],
+                    "last_used_at": k["last_used_at"]
+                }
+                for k in keys
+            ]
+        })
+    except Exception as e:
+        logger.error(f"Failed to list all SSH keys: {e}")
+        return web.json_response({"error": "Failed to list SSH keys"}, status=500)
 
 
 async def http_stats(request: web.Request) -> web.Response:
@@ -1210,6 +1389,14 @@ def create_app() -> web.Application:
     app.router.add_get("/api/logs/files", http_get_log_files)
     app.router.add_get("/api/logs/settings", http_get_log_settings)
     app.router.add_put("/api/logs/settings", http_update_log_settings)
+
+    # SSH Keys
+    app.router.add_post("/api/ssh-keys", http_create_ssh_key)
+    app.router.add_get("/api/ssh-keys", http_list_ssh_keys)
+    app.router.add_get("/api/ssh-keys/all", http_admin_list_all_keys)
+    app.router.add_get("/api/ssh-keys/authorized", http_get_authorized_keys)
+    app.router.add_get("/api/ssh-keys/{id}", http_get_ssh_key)
+    app.router.add_delete("/api/ssh-keys/{id}", http_delete_ssh_key)
 
     # Web UI routes
     app.router.add_get("/login", http_login_page)

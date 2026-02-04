@@ -68,12 +68,27 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS ssh_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    key_type TEXT NOT NULL DEFAULT 'ed25519',
+    public_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tokens_token_id ON tokens(token_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_services_path ON services(path);
 CREATE INDEX IF NOT EXISTS idx_services_plugin ON services(plugin);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_service_id ON sessions(service_id);
+CREATE INDEX IF NOT EXISTS idx_ssh_keys_user_id ON ssh_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_ssh_keys_fingerprint ON ssh_keys(fingerprint);
 """
 
 # Migration for existing databases
