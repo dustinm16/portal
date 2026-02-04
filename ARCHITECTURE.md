@@ -89,6 +89,7 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 ├── registry.py            # Plugin registry
 ├── shodan_integration.py  # Shodan API integration
 ├── traffic_metrics.py     # Traffic metrics tracking
+├── vulnerability_scanner.py # CVE analysis and port scanning
 │
 ├── protocols/             # Protocol handlers
 │   ├── __init__.py
@@ -577,6 +578,26 @@ The admin panel provides system monitoring and security scanning capabilities.
 - Service discovery
 - API key management
 
+### CVE Analysis & Vulnerability Scanner
+- Host vulnerability scanning with configurable ports
+- Known CVE database with 13+ critical vulnerabilities
+- Real-time version detection via banner grabbing
+- Automated risk scoring (0-100) and severity levels
+- Mitigation recommendations for each vulnerability
+- NVD (National Vulnerability Database) API integration
+- CVE lookup with detailed remediation steps
+
+#### Known CVE Coverage
+| CVE ID | Service | Severity | Description |
+|--------|---------|----------|-------------|
+| CVE-2024-6387 | SSH | Critical | RegreSSHion remote code execution |
+| CVE-2023-38408 | SSH | Critical | PKCS#11 remote code execution |
+| CVE-2021-44228 | Java | Critical | Log4Shell RCE |
+| CVE-2023-44487 | HTTP | High | HTTP/2 Rapid Reset attack |
+| CVE-2024-21626 | Docker | Critical | runc container escape |
+| CVE-2022-0543 | Redis | Critical | Lua sandbox escape |
+| CVE-GENERIC-* | Various | High | Telnet, FTP, SMB, RDP exposure |
+
 ### Configuration
 
 | Variable | Description | Default |
@@ -584,6 +605,7 @@ The admin panel provides system monitoring and security scanning capabilities.
 | `SHODAN_API_KEY` | Shodan API key | - |
 | `METRICS_ENABLED` | Enable metrics | true |
 | `METRICS_RETENTION_HOURS` | Data retention | 24 |
+| `NVD_API_KEY` | NVD API key (optional, higher rate limits) | - |
 
 ## Security
 
@@ -666,3 +688,7 @@ The admin panel provides system monitoring and security scanning capabilities.
 - [x] Admin panel with monitoring
 - [x] Security headers middleware
 - [x] Enhanced login page (password strength, visibility toggle)
+- [x] CVE analysis and vulnerability scanner
+- [x] Known CVE database with mitigations
+- [x] Host port scanning with risk scoring
+- [x] NVD API integration for CVE lookups
