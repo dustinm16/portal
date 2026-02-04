@@ -1063,3 +1063,25 @@ select option {
 .btn-sm svg {
     margin-right: 0;
 }
+
+/* Profile Modal */
+.profile-info {
+    background: var(--code-bg);
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+
+.profile-info p {
+    margin: 0.5rem 0;
+}
+
+.navbar-user {
+    text-decoration: none;
+    color: inherit;
+    transition: color 0.2s;
+}
+
+.navbar-user:hover {
+    color: var(--accent-blue);
+}

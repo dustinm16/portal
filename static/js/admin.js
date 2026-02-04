@@ -131,14 +131,25 @@ async function showManageUsersModal() {
         console.log('Fetching users...');
         const response = await Portal.fetch('/api/users');
         console.log('Users response status:', response.status);
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to load users');
+        }
+
         const data = await response.json();
         console.log('Users data:', data);
+
+        if (!data || !data.users) {
+            throw new Error('Invalid response format');
+        }
 
         renderUsersTable(data.users);
         console.log('Users table rendered');
     } catch (error) {
-        Portal.toast('Failed to load users', 'error');
+        Portal.toast(error.message || 'Failed to load users', 'error');
         console.error('Load users error:', error);
+        document.getElementById('users-loading').style.display = 'none';
     }
 }
 
@@ -301,11 +312,22 @@ async function showInviteCode() {
 
     try {
         const response = await Portal.fetch('/api/invite-code');
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to load invite code');
+        }
+
         const data = await response.json();
+
+        if (!data || !data.code) {
+            throw new Error('Invalid response format');
+        }
 
         document.getElementById('invite-code-display').textContent = data.code;
     } catch (error) {
         document.getElementById('invite-code-display').textContent = 'Error loading code';
+        Portal.toast(error.message || 'Failed to load invite code', 'error');
         console.error('Load invite code error:', error);
     }
 }
@@ -466,6 +488,71 @@ function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// ============================================================================
+// User Profile Functions
+// ============================================================================
+
+/**
+ * Show user profile modal
+ */
+function showProfileModal() {
+    if (!currentUser) {
+        Portal.toast('User not loaded', 'error');
+        return;
+    }
+
+    document.getElementById('profile-username').textContent = currentUser.username;
+    document.getElementById('profile-role').textContent = currentUser.is_admin ? 'Administrator' : 'User';
+
+    // Clear form
+    document.getElementById('change-password-form').reset();
+
+    showModal('profile-modal');
+}
+
+/**
+ * Submit password change form
+ */
+async function submitChangePassword(event) {
+    event.preventDefault();
+
+    const currentPassword = document.getElementById('current-password').value;
+    const newPassword = document.getElementById('new-password').value;
+    const confirmPassword = document.getElementById('confirm-password').value;
+
+    if (newPassword !== confirmPassword) {
+        Portal.toast('New passwords do not match', 'error');
+        return;
+    }
+
+    if (newPassword.length < 8) {
+        Portal.toast('Password must be at least 8 characters', 'error');
+        return;
+    }
+
+    try {
+        const response = await Portal.fetch('/api/me/password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                current_password: currentPassword,
+                new_password: newPassword
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to change password');
+        }
+
+        Portal.toast('Password changed successfully');
+        closeModal('profile-modal');
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to change password', 'error');
+        console.error('Change password error:', error);
+    }
 }
 
 // Initialize admin UI when page loads

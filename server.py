@@ -33,6 +33,8 @@ from auth import (
     get_invite_code_info,
     log_invite_code_usage,
     get_daily_invite_code,
+    hash_password,
+    verify_password,
 )
 from plugins import (
     load_builtin_plugins,
@@ -65,6 +67,21 @@ logger = logging.getLogger("portal")
 
 # Rate limiting storage
 rate_limits: dict[str, list[float]] = defaultdict(list)
+
+
+def safe_error_message(e: Exception) -> str:
+    """Return a safe error message without exposing internal details."""
+    error_msg = str(e)
+    # Don't expose file paths or internal details
+    if '/' in error_msg or '\\' in error_msg:
+        return "An internal error occurred"
+    # Truncate very long messages
+    if len(error_msg) > 200:
+        return error_msg[:200] + "..."
+    # Allow UNIQUE constraint errors to pass through (helpful for duplicate names)
+    if "UNIQUE constraint" in error_msg:
+        return "A record with this name or identifier already exists"
+    return error_msg
 
 # Active WebSocket connections for monitoring
 active_connections: weakref.WeakSet = weakref.WeakSet()
@@ -375,7 +392,8 @@ async def http_create_service(request: web.Request) -> web.Response:
             "required_scopes": required_scopes
         }, status=201)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=400)
+        logger.warning(f"Failed to create service: {e}")
+        return web.json_response({"error": safe_error_message(e)}, status=400)
 
 
 async def http_delete_service(request: web.Request) -> web.Response:
@@ -396,6 +414,120 @@ async def http_delete_service(request: web.Request) -> web.Response:
         return web.json_response({"status": "deleted"})
     else:
         return web.json_response({"error": "Service not found"}, status=404)
+
+
+async def http_update_service(request: web.Request) -> web.Response:
+    """Update a relay service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service_id = int(service_id)
+
+    # Check service exists
+    service = await db.get_service_by_id(service_id)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # Build update fields
+    updates = {}
+    if "name" in data:
+        updates["name"] = data["name"]
+    if "path" in data:
+        updates["path"] = data["path"]
+    if "plugin" in data:
+        updates["plugin"] = data["plugin"]
+    if "host" in data:
+        updates["host"] = data["host"]
+    if "port" in data:
+        updates["port"] = data["port"]
+    if "enabled" in data:
+        updates["enabled"] = 1 if data["enabled"] else 0
+    if "required_scopes" in data:
+        scopes = data["required_scopes"]
+        if isinstance(scopes, str):
+            scopes = [s.strip() for s in scopes.split(",") if s.strip()]
+        updates["required_scopes"] = ",".join(scopes)
+    if "config" in data:
+        import json as json_module
+        updates["config"] = json_module.dumps(data["config"])
+
+    if not updates:
+        return web.json_response({"error": "No fields to update"}, status=400)
+
+    try:
+        # Build SQL
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        set_clause += ", updated_at = ?"
+        values = list(updates.values()) + [datetime.now(timezone.utc).isoformat(), service_id]
+
+        await db.conn.execute(
+            f"UPDATE services SET {set_clause} WHERE id = ?",
+            values
+        )
+        await db.conn.commit()
+
+        # Get updated service
+        updated = await db.get_service_by_id(service_id)
+        logger.info(f"Service {service_id} updated by user {token.user_id}: {list(updates.keys())}")
+
+        return web.json_response({
+            "id": updated["id"],
+            "name": updated["name"],
+            "path": updated["path"],
+            "plugin": updated.get("plugin", "tcp_tunnel"),
+            "host": updated.get("host", ""),
+            "port": updated.get("port", 0),
+            "enabled": bool(updated["enabled"]),
+            "required_scopes": updated["required_scopes"]
+        })
+    except Exception as e:
+        logger.warning(f"Failed to update service {service_id}: {e}")
+        return web.json_response({"error": safe_error_message(e)}, status=400)
+
+
+async def http_get_service(request: web.Request) -> web.Response:
+    """Get a single service by ID."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service = await db.get_service_by_id(int(service_id))
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    # Check authorization for non-admin users
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        if not check_service_authorization(service, token):
+            return web.json_response({"error": "Access denied"}, status=403)
+
+    return web.json_response({
+        "id": service["id"],
+        "name": service["name"],
+        "path": service["path"],
+        "plugin": service.get("plugin", "tcp_tunnel"),
+        "host": service.get("host", ""),
+        "port": service.get("port", 0),
+        "enabled": bool(service["enabled"]),
+        "required_scopes": service["required_scopes"],
+        "config": service.get("config", {})
+    })
 
 
 async def http_create_user(request: web.Request) -> web.Response:
@@ -431,7 +563,8 @@ async def http_create_user(request: web.Request) -> web.Response:
             "is_admin": bool(user["is_admin"])
         }, status=201)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=400)
+        logger.warning(f"Failed to create user '{username}': {e}")
+        return web.json_response({"error": safe_error_message(e)}, status=400)
 
 
 async def http_register(request: web.Request) -> web.Response:
@@ -481,7 +614,8 @@ async def http_register(request: web.Request) -> web.Response:
             "message": "Registration successful"
         }, status=201)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=400)
+        logger.warning(f"Failed to register user '{username}': {e}")
+        return web.json_response({"error": safe_error_message(e)}, status=400)
 
 
 async def http_get_invite_code(request: web.Request) -> web.Response:
@@ -566,7 +700,7 @@ async def http_update_log_settings(request: web.Request) -> web.Response:
         logger.info(f"Log settings updated by user {token.user_id}: {data}")
         return web.json_response(settings)
     except ValueError as e:
-        return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"error": safe_error_message(e)}, status=400)
 
 
 async def http_create_ssh_key(request: web.Request) -> web.Response:
@@ -597,7 +731,7 @@ async def http_create_ssh_key(request: web.Request) -> web.Response:
         logger.info(f"SSH key '{key_name}' created for user {token.user_id}")
         return web.json_response(key_info, status=201)
     except ValueError as e:
-        return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"error": safe_error_message(e)}, status=400)
     except Exception as e:
         logger.error(f"Failed to create SSH key: {e}")
         return web.json_response({"error": "Failed to create SSH key"}, status=500)
@@ -1230,6 +1364,54 @@ async def http_get_current_user(request: web.Request) -> web.Response:
     })
 
 
+async def http_change_password(request: web.Request) -> web.Response:
+    """Change the current user's password."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    current_password = data.get("current_password")
+    new_password = data.get("new_password")
+
+    if not current_password or not new_password:
+        return web.json_response(
+            {"error": "current_password and new_password required"},
+            status=400
+        )
+
+    if len(new_password) < 8:
+        return web.json_response(
+            {"error": "New password must be at least 8 characters"},
+            status=400
+        )
+
+    # Get user and verify current password
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    if not verify_password(current_password, user["password_hash"]):
+        logger.warning(f"Failed password change attempt for user {token.user_id}")
+        return web.json_response({"error": "Current password is incorrect"}, status=401)
+
+    # Update password
+    new_hash = hash_password(new_password)
+    await db.conn.execute(
+        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+        (new_hash, datetime.now(timezone.utc).isoformat(), token.user_id)
+    )
+    await db.conn.commit()
+
+    logger.info(f"Password changed for user {token.user_id}")
+
+    return web.json_response({"message": "Password changed successfully"})
+
+
 async def http_list_users(request: web.Request) -> web.Response:
     """List all users (admin only)."""
     token = await authenticate_request(request)
@@ -1371,6 +1553,8 @@ def create_app() -> web.Application:
     # Service management
     app.router.add_get("/api/services", http_list_services)
     app.router.add_post("/api/services", http_create_service)
+    app.router.add_get("/api/services/{id}", http_get_service)
+    app.router.add_put("/api/services/{id}", http_update_service)
     app.router.add_delete("/api/services/{id}", http_delete_service)
 
     # User management
@@ -1379,6 +1563,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/users/{id}/admin", http_update_user_admin)
     app.router.add_delete("/api/users/{id}", http_delete_user)
     app.router.add_get("/api/me", http_get_current_user)
+    app.router.add_post("/api/me/password", http_change_password)
 
     # Registration (public with invite code)
     app.router.add_post("/api/register", http_register)
@@ -1521,16 +1706,32 @@ async def init_admin_user() -> None:
     await db.close()
 
 
-async def add_service_cli(name: str, path: str, internal_url: str, scopes: str = "") -> None:
+async def add_service_cli(
+    name: str,
+    path: str,
+    host: str,
+    plugin: str = "terminal",
+    port: int = 0,
+    scopes: str = ""
+) -> None:
     """Add a service via CLI."""
     await db.connect()
 
     scope_list = [s.strip() for s in scopes.split(",") if s.strip()] if scopes else []
-    service_id = await db.create_service(name, path, internal_url, scope_list)
+    service_id = await db.create_service(
+        name=name,
+        path=path,
+        plugin=plugin,
+        host=host,
+        port=port,
+        required_scopes=scope_list
+    )
     print(f"Service '{name}' created with ID {service_id}")
     print(f"  Path: {path}")
-    print(f"  Internal URL: {internal_url}")
-    print(f"  Required scopes: {scope_list or 'none'}")
+    print(f"  Plugin: {plugin}")
+    print(f"  Host: {host}")
+    print(f"  Port: {port or 'N/A'}")
+    print(f"  Required scopes: {scope_list or ['*']}")
 
     await db.close()
 
@@ -1543,11 +1744,14 @@ async def list_services_cli() -> None:
     if not services:
         print("No services configured.")
     else:
-        print(f"\n{'ID':<4} {'Name':<20} {'Path':<20} {'Internal URL':<40} {'Scopes'}")
+        print(f"\n{'ID':<4} {'Name':<20} {'Plugin':<12} {'Path':<15} {'Host':<20} {'Port':<6} {'Scopes'}")
         print("-" * 100)
         for s in services:
-            scopes = ",".join(s["required_scopes"]) or "none"
-            print(f"{s['id']:<4} {s['name']:<20} {s['path']:<20} {s['internal_url']:<40} {scopes}")
+            scopes = ",".join(s["required_scopes"]) or "*"
+            host = s.get("host", "") or "localhost"
+            port = s.get("port", 0) or "-"
+            plugin = s.get("plugin", "tcp_tunnel")
+            print(f"{s['id']:<4} {s['name']:<20} {plugin:<12} {s['path']:<15} {host:<20} {str(port):<6} {scopes}")
 
     await db.close()
 
@@ -1660,7 +1864,9 @@ def main():
     add_svc = subparsers.add_parser("add-service", help="Add a relay service")
     add_svc.add_argument("name", help="Service name")
     add_svc.add_argument("path", help="URL path (e.g., /myservice)")
-    add_svc.add_argument("internal_url", help="Internal WebSocket URL")
+    add_svc.add_argument("host", help="Target host (e.g., localhost, 192.168.1.100)")
+    add_svc.add_argument("--plugin", default="terminal", help="Plugin type: terminal, ssh, vnc, http_proxy, tcp_tunnel")
+    add_svc.add_argument("--port", type=int, default=0, help="Target port (e.g., 22 for SSH)")
     add_svc.add_argument("--scopes", default="", help="Required scopes (comma-separated)")
 
     # List services
@@ -1685,7 +1891,7 @@ def main():
     elif args.command == "init":
         asyncio.run(init_admin_user())
     elif args.command == "add-service":
-        asyncio.run(add_service_cli(args.name, args.path, args.internal_url, args.scopes))
+        asyncio.run(add_service_cli(args.name, args.path, args.host, args.plugin, args.port, args.scopes))
     elif args.command == "list-services":
         asyncio.run(list_services_cli())
     elif args.command == "invite-code":

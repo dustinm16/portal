@@ -26,20 +26,19 @@ async function loadSSHKeys() {
     empty.style.display = 'none';
 
     try {
-        const response = await fetch('/api/ssh-keys', {
-            credentials: 'include'
-        });
+        const response = await Portal.fetch('/api/ssh-keys');
 
         if (!response.ok) {
-            throw new Error('Failed to load SSH keys');
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to load SSH keys');
         }
 
         const data = await response.json();
-        sshKeys = data.keys || [];
+        sshKeys = (data && data.keys) ? data.keys : [];
         renderSSHKeys();
     } catch (error) {
         console.error('[SSH Keys] Error loading keys:', error);
-        Portal.toast('Failed to load SSH keys', 'error');
+        Portal.toast(error.message || 'Failed to load SSH keys', 'error');
     } finally {
         loading.style.display = 'none';
     }
@@ -116,17 +115,22 @@ async function submitCreateKey(event) {
         return;
     }
 
+    // Validate key name (alphanumeric, dashes, underscores only)
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+        Portal.toast('Key name can only contain letters, numbers, dashes, and underscores', 'error');
+        return;
+    }
+
     try {
-        const response = await fetch('/api/ssh-keys', {
+        const response = await Portal.fetch('/api/ssh-keys', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
             body: JSON.stringify({ name, key_type: keyType })
         });
 
         if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.error || 'Failed to create SSH key');
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to create SSH key');
         }
 
         const keyData = await response.json();
@@ -144,7 +148,7 @@ async function submitCreateKey(event) {
         Portal.toast('SSH key generated successfully');
     } catch (error) {
         console.error('[SSH Keys] Error creating key:', error);
-        Portal.toast(error.message, 'error');
+        Portal.toast(error.message || 'Failed to create SSH key', 'error');
     }
 }
 
@@ -204,15 +208,18 @@ async function copyPublicKey() {
  */
 async function viewPublicKey(keyId) {
     try {
-        const response = await fetch(`/api/ssh-keys/${keyId}`, {
-            credentials: 'include'
-        });
+        const response = await Portal.fetch(`/api/ssh-keys/${keyId}`);
 
         if (!response.ok) {
-            throw new Error('Failed to load key');
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to load key');
         }
 
         const key = await response.json();
+
+        if (!key || !key.public_key) {
+            throw new Error('Invalid key data received');
+        }
 
         // Show in a simple alert with copy functionality
         const publicKey = key.public_key;
@@ -227,7 +234,7 @@ async function viewPublicKey(keyId) {
         }
     } catch (error) {
         console.error('[SSH Keys] Error viewing key:', error);
-        Portal.toast('Failed to load public key', 'error');
+        Portal.toast(error.message || 'Failed to load public key', 'error');
     }
 }
 
@@ -247,7 +254,7 @@ async function copyToClipboard(text) {
  * Confirm delete key
  */
 function confirmDeleteKey(keyId, keyName) {
-    pendingAction = async () => {
+    pendingConfirmAction = async () => {
         await deleteSSHKey(keyId);
     };
 
@@ -264,21 +271,22 @@ function confirmDeleteKey(keyId, keyName) {
  */
 async function deleteSSHKey(keyId) {
     try {
-        const response = await fetch(`/api/ssh-keys/${keyId}`, {
-            method: 'DELETE',
-            credentials: 'include'
+        const response = await Portal.fetch(`/api/ssh-keys/${keyId}`, {
+            method: 'DELETE'
         });
 
         if (!response.ok) {
-            throw new Error('Failed to delete SSH key');
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to delete SSH key');
         }
 
         console.log('[SSH Keys] Key deleted:', keyId);
         Portal.toast('SSH key deleted');
+        closeModal('confirm-modal');
         await loadSSHKeys();
     } catch (error) {
         console.error('[SSH Keys] Error deleting key:', error);
-        Portal.toast('Failed to delete SSH key', 'error');
+        Portal.toast(error.message || 'Failed to delete SSH key', 'error');
     }
 }
 
