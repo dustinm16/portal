@@ -1781,7 +1781,13 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
 
 
 async def http_get_user_stream(request: web.Request) -> web.Response:
-    """Get a specific stream by ID."""
+    """Get a specific stream by ID.
+
+    Stream key visibility:
+    - Owner always sees their stream key (for OBS setup)
+    - Public streams: stream_key visible (needed for playback URLs)
+    - Private streams: stream_key hidden from non-owners
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1792,8 +1798,12 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Only owner can see stream key
-    if stream["user_id"] != token.user_id:
+    # Hide stream key for private streams from non-owners
+    # Public streams need the key visible for playback URLs
+    is_owner = stream["user_id"] == token.user_id
+    is_public = stream.get("is_public", False)
+
+    if not is_owner and not is_public:
         stream.pop("stream_key", None)
 
     return web.json_response({"stream": stream})
