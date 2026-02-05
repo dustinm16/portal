@@ -127,7 +127,7 @@ async function loadApiKeys() {
         }
 
         const data = await response.json();
-        apiKeys = (data && data.keys) ? data.keys : [];
+        apiKeys = (data && data.api_keys) ? data.api_keys : [];
         renderApiKeys();
     } catch (error) {
         console.error('[API Keys] Error loading keys:', error);
@@ -259,7 +259,7 @@ async function submitCreateApiKey(event) {
  */
 function showNewApiKeyDisplay(keyData) {
     document.getElementById('new-api-key-name').textContent = keyData.name;
-    document.getElementById('new-api-key-value').value = keyData.api_key;
+    document.getElementById('new-api-key-value').value = keyData.key;
     document.getElementById('new-api-key-display').style.display = 'block';
 }
 
