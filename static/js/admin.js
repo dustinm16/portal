@@ -1158,6 +1158,9 @@ function showProfileModal() {
     document.getElementById('change-password-form').reset();
 
     showModal('profile-modal');
+
+    // Load 2FA status
+    load2FAStatus();
 }
 
 /**
@@ -1364,21 +1367,6 @@ async function disable2FA(event) {
     }
 }
 
-// Override showProfileModal to also load 2FA status
-const originalShowProfileModal = typeof showProfileModal === 'function' ? showProfileModal : null;
-function showProfileModal() {
-    if (originalShowProfileModal) {
-        originalShowProfileModal();
-    } else {
-        // Fallback if original not defined
-        document.getElementById('profile-username').textContent = currentUser?.username || 'Unknown';
-        document.getElementById('profile-role').textContent = currentUser?.is_admin ? 'Administrator' : 'User';
-        document.getElementById('change-password-form').reset();
-        showModal('profile-modal');
-    }
-    // Load 2FA status
-    load2FAStatus();
-}
 
 
 // Initialize admin UI when page loads
