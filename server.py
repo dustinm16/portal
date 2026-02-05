@@ -206,15 +206,29 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
         except AuthError:
             pass
 
-    # Check for API key authentication (Authorization: Api-Key portal_xxx or X-API-Key header)
+    # Check for API key or Stream key authentication
+    # API keys: Authorization: Api-Key portal_xxx or X-API-Key header
+    # Stream keys: Authorization: Stream-Key live_xxx or X-Stream-Key header
     api_key = None
+    stream_key = None
+
     if auth_header.startswith("Api-Key "):
         api_key = auth_header[8:].strip()
+    elif auth_header.startswith("Stream-Key "):
+        stream_key = auth_header[11:].strip()
     elif request.headers.get("X-API-Key"):
         api_key = request.headers.get("X-API-Key").strip()
+    elif request.headers.get("X-Stream-Key"):
+        stream_key = request.headers.get("X-Stream-Key").strip()
 
+    # Stream keys and API keys are interchangeable for stream-related operations
     if api_key:
         token_payload = await authenticate_api_key(api_key)
+        if token_payload:
+            return token_payload
+
+    if stream_key:
+        token_payload = await authenticate_stream_key(stream_key)
         if token_payload:
             return token_payload
 
@@ -282,11 +296,49 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
 
     # Create a TokenPayload for the API key
     scopes = key_record.get("scopes", "*").split(",")
-    return TokenPayload(
-        user_id=key_record["user_id"],
-        username=key_record["username"],
-        scopes=scopes
-    )
+    return TokenPayload({
+        "sub": str(key_record["user_id"]),
+        "scopes": scopes,
+        "iat": int(datetime.now(timezone.utc).timestamp()),
+        "jti": f"apikey-{key_record['id']}"
+    })
+
+
+async def authenticate_stream_key(stream_key: str) -> Optional[TokenPayload]:
+    """Authenticate using a stream key.
+
+    Stream keys can be used as API keys for stream-related operations.
+    This allows OBS and other tools to use the stream key for both
+    publishing AND API access (e.g., checking stream status).
+
+    Args:
+        stream_key: The full stream key (live_xxx...)
+
+    Returns:
+        TokenPayload if valid, None otherwise
+    """
+    # Ensure proper format
+    if not stream_key.startswith("live_"):
+        return None
+
+    # Look up stream by key
+    stream = await db.get_stream_by_key(stream_key)
+    if not stream:
+        return None
+
+    # Get the stream owner's info
+    user = await db.get_user_by_id(stream["user_id"])
+    if not user:
+        return None
+
+    # Create a TokenPayload with stream-related scopes
+    # Stream keys grant access to stream operations only
+    return TokenPayload({
+        "sub": str(user["id"]),
+        "scopes": ["stream", "stream:read", "stream:write"],
+        "iat": int(datetime.now(timezone.utc).timestamp()),
+        "jti": f"streamkey-{stream['id']}"
+    })
 
 
 # =============================================================================
@@ -1827,6 +1879,114 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
 
+async def http_get_stream_bans(request: web.Request) -> web.Response:
+    """Get all bans for a stream (stream owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = int(request.match_info.get("id"))
+
+    # Verify ownership
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream["user_id"] != token.user_id:
+        # Allow admins to view bans
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return web.json_response({"error": "Not authorized"}, status=403)
+
+    bans = await db.get_stream_bans(stream_id)
+    return web.json_response({"bans": bans})
+
+
+async def http_create_stream_ban(request: web.Request) -> web.Response:
+    """Ban a user from stream chat (stream owner only).
+
+    Request body:
+    - user_id: int - User ID to ban
+    - reason: str (optional) - Reason for ban
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = int(request.match_info.get("id"))
+
+    # Verify ownership
+    stream = await db.get_user_stream(stream_id)
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Only owner or admin can ban
+    if stream["user_id"] != token.user_id:
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return web.json_response({"error": "Not authorized"}, status=403)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    user_id = data.get("user_id")
+    if not user_id:
+        return web.json_response({"error": "user_id required"}, status=400)
+
+    # Can't ban yourself
+    if user_id == token.user_id:
+        return web.json_response({"error": "Cannot ban yourself"}, status=400)
+
+    # Can't ban the stream owner
+    if user_id == stream["user_id"]:
+        return web.json_response({"error": "Cannot ban the stream owner"}, status=400)
+
+    reason = data.get("reason", "")
+
+    ban_id = await db.create_stream_ban(
+        stream_id=stream_id,
+        user_id=user_id,
+        banned_by=token.user_id,
+        reason=reason
+    )
+
+    if ban_id:
+        # Get banned user's username for the response
+        banned_user = await db.get_user_by_id(user_id)
+        logger.info(f"User {banned_user['username'] if banned_user else user_id} banned from stream {stream['name']} by user {token.user_id}")
+        return web.json_response({
+            "success": True,
+            "ban_id": ban_id,
+            "message": f"User banned from stream chat"
+        }, status=201)
+
+    return web.json_response({"error": "User may already be banned"}, status=400)
+
+
+async def http_remove_stream_ban(request: web.Request) -> web.Response:
+    """Remove a ban from stream chat (stream owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = int(request.match_info.get("id"))
+    user_id = int(request.match_info.get("user_id"))
+
+    # Verify ownership
+    stream = await db.get_user_stream(stream_id)
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Only owner or admin can unban
+    if stream["user_id"] != token.user_id:
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return web.json_response({"error": "Not authorized"}, status=403)
+
+    success = await db.remove_stream_ban(stream_id, user_id)
+    if success:
+        logger.info(f"User {user_id} unbanned from stream {stream['name']} by user {token.user_id}")
+        return web.json_response({"success": True, "message": "User unbanned"})
+
+    return web.json_response({"error": "Ban not found"}, status=404)
+
+
 async def http_get_public_streams(request: web.Request) -> web.Response:
     """Get all public streams (community streams)."""
     token = await authenticate_request(request)
@@ -1939,6 +2099,354 @@ async def http_stream_event(request: web.Request) -> web.Response:
             logger.info(f"Stream {stream['name']} ended")
 
     return web.json_response({"ok": True})
+
+
+# =============================================================================
+# Stream Proxy API (routes MediaMTX traffic through port 443)
+# =============================================================================
+
+
+async def _get_mediamtx_config() -> dict:
+    """Get MediaMTX service configuration."""
+    if not _service_manager:
+        return {}
+
+    # Find MediaMTX service
+    for svc in _service_manager.get_all_services():
+        if svc.get_info().name == "mediamtx":
+            return svc.get_merged_config()
+    return {}
+
+
+async def _validate_stream_access(stream_key: str, require_publish: bool = False) -> tuple[dict | None, str]:
+    """Validate stream key and return (stream_info, error_message).
+
+    Args:
+        stream_key: The stream key to validate
+        require_publish: If True, requires the stream key to be valid for publishing
+
+    Returns:
+        Tuple of (stream_dict or None, error_message or empty string)
+    """
+    if not stream_key:
+        return None, "Stream key required"
+
+    # Ensure proper format
+    if not stream_key.startswith("live_"):
+        stream_key = f"live_{stream_key}"
+
+    stream = await db.get_stream_by_key(stream_key)
+    if not stream:
+        return None, "Invalid stream key"
+
+    # For publishing, stream key must match exactly
+    if require_publish:
+        return stream, ""
+
+    # For viewing, allow public streams or owner's streams
+    if stream.get("is_public"):
+        return stream, ""
+
+    return stream, ""
+
+
+async def http_stream_hls_proxy(request: web.Request) -> web.Response:
+    """Proxy HLS requests to MediaMTX through port 443.
+
+    Route: /api/stream/{stream_key}/hls/{path:.*}
+
+    Allows viewing streams via HLS through the portal, keeping MediaMTX
+    bound to localhost.
+    """
+    stream_key = request.match_info.get("stream_key", "")
+    hls_path = request.match_info.get("path", "index.m3u8")
+
+    # Validate stream access
+    stream, error = await _validate_stream_access(stream_key)
+    if error:
+        return web.json_response({"error": error}, status=403)
+
+    # Get MediaMTX configuration
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        return web.json_response({"error": "MediaMTX not configured"}, status=503)
+
+    hls_port = mtx_config.get("hls_port", 8888)
+
+    # The stream path in MediaMTX is live/{stream_key} (RTMP app name + stream key)
+    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+    # MediaMTX path includes the RTMP app name "live"
+    mtx_path = f"live/{full_stream_key}"
+    url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
+
+    try:
+        # Create SSL context that allows self-signed certs (internal communication)
+        import ssl
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                content = await resp.read()
+
+                # Rewrite URLs in m3u8 files to go through our proxy
+                content_type = resp.content_type or "application/octet-stream"
+                if content_type.startswith("application/vnd.apple.mpegurl") or hls_path.endswith(".m3u8"):
+                    text = content.decode("utf-8")
+                    # Rewrite segment URLs to go through our proxy
+                    # MediaMTX uses path like /live/{stream_key}/, rewrite to /api/stream/{stream_key}/hls/
+                    text = text.replace(f"/{mtx_path}/", f"/api/stream/{stream_key}/hls/")
+                    content = text.encode("utf-8")
+
+                return web.Response(
+                    body=content,
+                    status=resp.status,
+                    content_type=content_type,
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Cache-Control": "no-cache",
+                    }
+                )
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "Stream timeout"}, status=504)
+    except Exception as e:
+        logger.error(f"HLS proxy error: {e}")
+        return web.json_response({"error": "Stream unavailable"}, status=502)
+
+
+async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
+    """WebRTC WHEP endpoint for playback through port 443.
+
+    Route: POST /api/stream/{stream_key}/webrtc/whep
+
+    Proxies WebRTC offers to MediaMTX and returns the answer.
+    """
+    stream_key = request.match_info.get("stream_key", "")
+
+    # Validate stream access
+    stream, error = await _validate_stream_access(stream_key)
+    if error:
+        return web.json_response({"error": error}, status=403)
+
+    # Get MediaMTX configuration
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        return web.json_response({"error": "MediaMTX not configured"}, status=503)
+
+    webrtc_port = mtx_config.get("webrtc_port", 8889)
+
+    # Get SDP offer from request
+    sdp_offer = await request.text()
+    if not sdp_offer:
+        return web.json_response({"error": "SDP offer required"}, status=400)
+
+    # The stream path in MediaMTX is the stream key
+    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+    # WebRTC uses plain HTTP internally (localhost only) - DTLS-SRTP handles media encryption
+    url = f"http://127.0.0.1:{webrtc_port}/{full_stream_key}/whep"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                data=sdp_offer,
+                headers={"Content-Type": "application/sdp"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                sdp_answer = await resp.text()
+
+                if resp.status == 201:
+                    # Rewrite Location header to go through our proxy
+                    location = resp.headers.get("Location", "")
+                    if location:
+                        # Extract session ID from location
+                        session_id = location.split("/")[-1]
+                        location = f"/api/stream/{stream_key}/webrtc/session/{session_id}"
+
+                    return web.Response(
+                        text=sdp_answer,
+                        status=201,
+                        content_type="application/sdp",
+                        headers={
+                            "Location": location,
+                            "Access-Control-Allow-Origin": "*",
+                            "Access-Control-Expose-Headers": "Location",
+                        }
+                    )
+                else:
+                    return web.Response(
+                        text=sdp_answer,
+                        status=resp.status,
+                        content_type=resp.content_type
+                    )
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "Connection timeout"}, status=504)
+    except Exception as e:
+        logger.error(f"WHEP proxy error: {e}")
+        return web.json_response({"error": "WebRTC unavailable"}, status=502)
+
+
+async def http_stream_webrtc_whip(request: web.Request) -> web.Response:
+    """WebRTC WHIP endpoint for publishing through port 443.
+
+    Route: POST /api/stream/{stream_key}/webrtc/whip
+
+    Allows OBS and other tools to publish streams via WebRTC through the portal.
+    """
+    stream_key = request.match_info.get("stream_key", "")
+
+    # Validate stream key for publishing
+    stream, error = await _validate_stream_access(stream_key, require_publish=True)
+    if error:
+        return web.json_response({"error": error}, status=403)
+
+    # Get MediaMTX configuration
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        return web.json_response({"error": "MediaMTX not configured"}, status=503)
+
+    webrtc_port = mtx_config.get("webrtc_port", 8889)
+
+    # Get SDP offer from request
+    sdp_offer = await request.text()
+    if not sdp_offer:
+        return web.json_response({"error": "SDP offer required"}, status=400)
+
+    # The stream path in MediaMTX is the stream key
+    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+    # WebRTC uses plain HTTP internally (localhost only) - DTLS-SRTP handles media encryption
+    url = f"http://127.0.0.1:{webrtc_port}/{full_stream_key}/whip"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                data=sdp_offer,
+                headers={"Content-Type": "application/sdp"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                sdp_answer = await resp.text()
+
+                if resp.status == 201:
+                    # Mark stream as live
+                    await db.set_stream_live(stream["id"], True)
+                    logger.info(f"Stream {stream['name']} started via WHIP")
+
+                    # Rewrite Location header
+                    location = resp.headers.get("Location", "")
+                    if location:
+                        session_id = location.split("/")[-1]
+                        location = f"/api/stream/{stream_key}/webrtc/session/{session_id}"
+
+                    return web.Response(
+                        text=sdp_answer,
+                        status=201,
+                        content_type="application/sdp",
+                        headers={
+                            "Location": location,
+                            "Access-Control-Allow-Origin": "*",
+                            "Access-Control-Expose-Headers": "Location",
+                        }
+                    )
+                else:
+                    return web.Response(
+                        text=sdp_answer,
+                        status=resp.status,
+                        content_type=resp.content_type
+                    )
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "Connection timeout"}, status=504)
+    except Exception as e:
+        logger.error(f"WHIP proxy error: {e}")
+        return web.json_response({"error": "WebRTC unavailable"}, status=502)
+
+
+async def http_stream_webrtc_session(request: web.Request) -> web.Response:
+    """Proxy WebRTC session management (ICE candidates, etc.).
+
+    Route: PATCH/DELETE /api/stream/{stream_key}/webrtc/session/{session_id}
+    """
+    stream_key = request.match_info.get("stream_key", "")
+    session_id = request.match_info.get("session_id", "")
+
+    # Validate stream access
+    stream, error = await _validate_stream_access(stream_key)
+    if error:
+        return web.json_response({"error": error}, status=403)
+
+    # Get MediaMTX configuration
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        return web.json_response({"error": "MediaMTX not configured"}, status=503)
+
+    webrtc_port = mtx_config.get("webrtc_port", 8889)
+
+    # The stream path in MediaMTX is the stream key
+    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+
+    # Determine the correct MediaMTX endpoint based on request method
+    method = request.method
+    # WebRTC uses plain HTTP internally (localhost only)
+    url = f"http://127.0.0.1:{webrtc_port}/{full_stream_key}/whep/{session_id}"
+
+    try:
+        body = await request.read()
+        headers = {"Content-Type": request.content_type} if request.content_type else {}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method,
+                url,
+                data=body,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                content = await resp.read()
+                return web.Response(
+                    body=content,
+                    status=resp.status,
+                    content_type=resp.content_type,
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
+    except Exception as e:
+        logger.error(f"WebRTC session proxy error: {e}")
+        return web.json_response({"error": "Session error"}, status=502)
+
+
+async def http_stream_info(request: web.Request) -> web.Response:
+    """Get stream information and playback URLs.
+
+    Route: GET /api/stream/{stream_key}/info
+    """
+    stream_key = request.match_info.get("stream_key", "")
+
+    # Validate stream access
+    stream, error = await _validate_stream_access(stream_key)
+    if error:
+        return web.json_response({"error": error}, status=403)
+
+    # Get the full stream key
+    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+
+    # Base URL for the portal
+    host = request.headers.get("Host", "portal.dddvm.xyz")
+    base_url = f"https://{host}"
+
+    return web.json_response({
+        "stream_key": full_stream_key,
+        "name": stream.get("name", ""),
+        "is_live": stream.get("is_live", False),
+        "is_public": stream.get("is_public", False),
+        "playback": {
+            "hls": f"{base_url}/api/stream/{stream_key}/hls/index.m3u8",
+            "webrtc_whep": f"{base_url}/api/stream/{stream_key}/webrtc/whep"
+        },
+        "publish": {
+            "webrtc_whip": f"{base_url}/api/stream/{stream_key}/webrtc/whip"
+        }
+    })
 
 
 # =============================================================================
@@ -3765,6 +4273,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Channel not found"})
                             continue
 
+                        # Check if this is a stream chat and user is banned
+                        stream = await db.get_stream_by_chat_channel(channel["id"])
+                        if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
+                            await ws.send_json({
+                                "type": "error",
+                                "message": "You are banned from this stream's chat"
+                            })
+                            continue
+
                         # Join new channel
                         current_channel = channel_name
                         if current_channel not in chat_rooms:
@@ -3835,6 +4352,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not channel:
                             continue
 
+                        # Check if user is banned from this stream's chat
+                        stream = await db.get_stream_by_chat_channel(channel["id"])
+                        if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
+                            await ws.send_json({
+                                "type": "error",
+                                "message": "You are banned from this stream's chat"
+                            })
+                            continue
+
                         # Save message (always save real username in DB)
                         msg_id = await db.create_chat_message(
                             channel["id"], user_id, username, message_text
@@ -3859,6 +4385,143 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "type": "typing",
                                 "username": username
                             }, exclude=ws)
+
+                    elif msg_type == "ban":
+                        # Stream owner can ban a user from chat
+                        if not current_channel:
+                            continue
+
+                        target_user_id = data.get("user_id")
+                        reason = data.get("reason", "")
+
+                        if not target_user_id:
+                            await ws.send_json({"type": "error", "message": "user_id required"})
+                            continue
+
+                        # Get the stream for this chat channel
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+
+                        stream = await db.get_stream_by_chat_channel(channel["id"])
+                        if not stream:
+                            await ws.send_json({"type": "error", "message": "Not a stream chat"})
+                            continue
+
+                        # Only stream owner or admin can ban
+                        is_owner = stream["user_id"] == user_id
+                        is_admin = user_role in ("admin", "superadmin")
+                        if not is_owner and not is_admin:
+                            await ws.send_json({"type": "error", "message": "Not authorized"})
+                            continue
+
+                        # Can't ban yourself or the stream owner
+                        if target_user_id == user_id:
+                            await ws.send_json({"type": "error", "message": "Cannot ban yourself"})
+                            continue
+                        if target_user_id == stream["user_id"]:
+                            await ws.send_json({"type": "error", "message": "Cannot ban stream owner"})
+                            continue
+
+                        # Create the ban
+                        ban_id = await db.create_stream_ban(
+                            stream_id=stream["id"],
+                            user_id=target_user_id,
+                            banned_by=user_id,
+                            reason=reason
+                        )
+
+                        if ban_id:
+                            # Get banned user info
+                            banned_user = await db.get_user_by_id(target_user_id)
+                            banned_username = banned_user["username"] if banned_user else f"User {target_user_id}"
+
+                            # Notify the channel
+                            await broadcast_to_channel(current_channel, {
+                                "type": "user_banned",
+                                "user_id": target_user_id,
+                                "username": banned_username,
+                                "banned_by": username,
+                                "reason": reason
+                            })
+
+                            # Send confirmation to the banner
+                            await ws.send_json({
+                                "type": "ban_success",
+                                "user_id": target_user_id,
+                                "username": banned_username
+                            })
+
+                            logger.info(f"User {banned_username} banned from stream {stream['name']} by {username}")
+                        else:
+                            await ws.send_json({"type": "error", "message": "User may already be banned"})
+
+                    elif msg_type == "unban":
+                        # Stream owner can unban a user
+                        if not current_channel:
+                            continue
+
+                        target_user_id = data.get("user_id")
+                        if not target_user_id:
+                            await ws.send_json({"type": "error", "message": "user_id required"})
+                            continue
+
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+
+                        stream = await db.get_stream_by_chat_channel(channel["id"])
+                        if not stream:
+                            await ws.send_json({"type": "error", "message": "Not a stream chat"})
+                            continue
+
+                        # Only stream owner or admin can unban
+                        is_owner = stream["user_id"] == user_id
+                        is_admin = user_role in ("admin", "superadmin")
+                        if not is_owner and not is_admin:
+                            await ws.send_json({"type": "error", "message": "Not authorized"})
+                            continue
+
+                        success = await db.remove_stream_ban(stream["id"], target_user_id)
+                        if success:
+                            banned_user = await db.get_user_by_id(target_user_id)
+                            banned_username = banned_user["username"] if banned_user else f"User {target_user_id}"
+
+                            await ws.send_json({
+                                "type": "unban_success",
+                                "user_id": target_user_id,
+                                "username": banned_username
+                            })
+                            logger.info(f"User {banned_username} unbanned from stream {stream['name']} by {username}")
+                        else:
+                            await ws.send_json({"type": "error", "message": "Ban not found"})
+
+                    elif msg_type == "get_bans":
+                        # Get list of banned users (stream owner only)
+                        if not current_channel:
+                            continue
+
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+
+                        stream = await db.get_stream_by_chat_channel(channel["id"])
+                        if not stream:
+                            await ws.send_json({"type": "error", "message": "Not a stream chat"})
+                            continue
+
+                        # Only stream owner or admin can view bans
+                        is_owner = stream["user_id"] == user_id
+                        is_admin = user_role in ("admin", "superadmin")
+                        if not is_owner and not is_admin:
+                            await ws.send_json({"type": "error", "message": "Not authorized"})
+                            continue
+
+                        bans = await db.get_stream_bans(stream["id"])
+                        await ws.send_json({
+                            "type": "bans_list",
+                            "bans": bans
+                        })
 
                 except json.JSONDecodeError:
                     await ws.send_json({"type": "error", "message": "Invalid JSON"})
@@ -4709,9 +5372,21 @@ def create_app() -> web.Application:
     app.router.add_put("/api/streams/{id}", http_update_user_stream)
     app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
     app.router.add_post("/api/streams/{id}/regenerate-key", http_regenerate_stream_key)
+    # Stream moderation (owner can ban users from stream chat)
+    app.router.add_get("/api/streams/{id}/bans", http_get_stream_bans)
+    app.router.add_post("/api/streams/{id}/bans", http_create_stream_ban)
+    app.router.add_delete("/api/streams/{id}/bans/{user_id}", http_remove_stream_ban)
     # MediaMTX hooks
     app.router.add_post("/api/stream/auth", http_stream_auth)
     app.router.add_post("/api/stream/event", http_stream_event)
+
+    # Stream Proxy API (routes all MediaMTX traffic through port 443)
+    app.router.add_get("/api/stream/{stream_key}/info", http_stream_info)
+    app.router.add_get("/api/stream/{stream_key}/hls/{path:.*}", http_stream_hls_proxy)
+    app.router.add_post("/api/stream/{stream_key}/webrtc/whep", http_stream_webrtc_whep)
+    app.router.add_post("/api/stream/{stream_key}/webrtc/whip", http_stream_webrtc_whip)
+    app.router.add_patch("/api/stream/{stream_key}/webrtc/session/{session_id}", http_stream_webrtc_session)
+    app.router.add_delete("/api/stream/{stream_key}/webrtc/session/{session_id}", http_stream_webrtc_session)
 
     # Traffic Metrics (admin only)
     app.router.add_get("/api/metrics", http_get_metrics_summary)

@@ -680,41 +680,41 @@
                 <p>Stream live video using RTMPS, RTSPS, or WebRTC. Streams can be public (visible to all users) or private. Each stream gets an integrated chat channel for viewer interaction.</p>
 
                 <div class="alert alert-info">
-                    <strong>TLS Required:</strong> All streaming protocols use mandatory TLS encryption. Self-signed certificates are auto-generated if not configured.
+                    <strong>Architecture:</strong> Publishing uses a dedicated subdomain (<code>stream.dddvm.xyz</code>) for direct RTMPS access with Let's Encrypt TLS. Playback is proxied through Portal on port 443 via Cloudflare.
                 </div>
 
                 <h3>Streaming Configuration</h3>
                 <table class="param-table">
-                    <tr><th>Protocol</th><th>Port</th><th>URL Format</th></tr>
+                    <tr><th>Purpose</th><th>Host</th><th>URL Format</th></tr>
                     <tr>
-                        <td><span class="param-name">RTMPS</span></td>
-                        <td>1936</td>
-                        <td><code>rtmps://portal.example.com:1936/live/{stream_key}</code></td>
+                        <td><span class="param-name">RTMPS Publishing</span></td>
+                        <td>stream.dddvm.xyz:1936</td>
+                        <td><code>rtmps://stream.dddvm.xyz:1936/live</code></td>
                     </tr>
                     <tr>
-                        <td><span class="param-name">RTSPS</span></td>
-                        <td>8322</td>
-                        <td><code>rtsps://portal.example.com:8322/{stream_key}</code></td>
+                        <td><span class="param-name">HLS Playback</span></td>
+                        <td>portal.dddvm.xyz:443</td>
+                        <td><code>https://portal.dddvm.xyz/api/stream/{stream_key}/hls/index.m3u8</code></td>
                     </tr>
                     <tr>
-                        <td><span class="param-name">HLS</span></td>
-                        <td>8888</td>
-                        <td><code>https://portal.example.com:8888/{stream_key}/index.m3u8</code></td>
+                        <td><span class="param-name">WebRTC Playback</span></td>
+                        <td>portal.dddvm.xyz:443</td>
+                        <td><code>https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whep</code></td>
                     </tr>
                     <tr>
-                        <td><span class="param-name">WebRTC</span></td>
-                        <td>8889</td>
-                        <td><code>https://portal.example.com:8889/{stream_key}/</code></td>
+                        <td><span class="param-name">WebRTC Publishing</span></td>
+                        <td>portal.dddvm.xyz:443</td>
+                        <td><code>https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whip</code></td>
                     </tr>
                 </table>
 
-                <h3>OBS Studio Setup</h3>
+                <h3>OBS Studio Setup (Recommended)</h3>
                 <p>To broadcast with OBS Studio:</p>
                 <ol style="color: var(--text-secondary); line-height: 1.8;">
                     <li>Go to <strong>Settings → Stream</strong></li>
                     <li>Set Service to <strong>Custom</strong></li>
-                    <li>Server: <code>rtmps://portal.example.com:1936/live</code></li>
-                    <li>Stream Key: Your stream key from the API (e.g., <code>sk_abc123...</code>)</li>
+                    <li>Server: <code>rtmps://stream.dddvm.xyz:1936/live</code></li>
+                    <li>Stream Key: Your stream key (e.g., <code>live_abc123...</code>)</li>
                     <li>Click OK and Start Streaming</li>
                 </ol>
 
@@ -788,8 +788,8 @@
   <span class="string">"stream_key"</span>: <span class="string">"sk_abc123def456..."</span>,
   <span class="string">"chat_channel_id"</span>: <span class="number">5</span>,
   <span class="string">"playback_urls"</span>: {
-    <span class="string">"hls"</span>: <span class="string">"https://portal.example.com:8888/sk_abc123.../index.m3u8"</span>,
-    <span class="string">"webrtc"</span>: <span class="string">"https://portal.example.com:8889/sk_abc123.../"</span>
+    <span class="string">"hls"</span>: <span class="string">"https://portal.example.com/api/stream/sk_abc123/hls/index.m3u8"</span>,
+    <span class="string">"webrtc"</span>: <span class="string">"https://portal.example.com/api/stream/sk_abc123/webrtc/whep"</span>
   }
 }</pre>
                         </div>
@@ -894,18 +894,28 @@
                 </div>
 
                 <h3>Watching Streams</h3>
-                <p>Viewers can watch streams using HLS.js in browser or any HLS-compatible player:</p>
+                <p>All stream traffic routes through Portal on port 443. Viewers can watch streams using HLS.js in browser or any HLS-compatible player:</p>
                 <div class="code-block">
 <pre><span class="keyword">import</span> Hls <span class="keyword">from</span> <span class="string">'hls.js'</span>;
 
 <span class="keyword">const</span> video = document.getElementById(<span class="string">'video'</span>);
 <span class="keyword">const</span> hls = <span class="keyword">new</span> Hls();
 
-hls.loadSource(<span class="string">'https://portal.example.com:8888/sk_abc123/index.m3u8'</span>);
+<span class="comment">// All playback through Portal on port 443</span>
+hls.loadSource(<span class="string">'https://portal.example.com/api/stream/sk_abc123/hls/index.m3u8'</span>);
 hls.attachMedia(video);
 hls.on(Hls.Events.MANIFEST_PARSED, () => {
   video.play();
 });</pre>
+                </div>
+
+                <h3>Publishing via WHIP</h3>
+                <p>Publish streams through port 443 using WebRTC WHIP (OBS 30.0+):</p>
+                <div class="code-block">
+<pre><span class="comment">// OBS Settings:</span>
+<span class="comment">// Service: WHIP</span>
+<span class="comment">// Server: https://portal.example.com/api/stream/{stream_key}/webrtc/whip</span>
+<span class="comment">// Bearer Token: (leave empty - key is in URL)</span></pre>
                 </div>
 
                 <!-- Users -->

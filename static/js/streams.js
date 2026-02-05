@@ -152,7 +152,7 @@ function renderStreamCard(stream, isOwner = false) {
  */
 function showCreateStreamModal() {
     document.getElementById('create-stream-form').reset();
-    openModal('create-stream-modal');
+    showModal('create-stream-modal');
 }
 
 /**
@@ -205,8 +205,11 @@ async function showStreamDetails(streamId) {
 
         document.getElementById('stream-details-title').textContent = stream.name;
 
-        const rtmpUrl = `rtmps://${window.location.hostname}:1936/live`;
-        const rtspUrl = `rtsps://${window.location.hostname}:8322/${stream.stream_key}`;
+        // Use stream.dddvm.xyz for direct RTMPS (bypasses Cloudflare)
+        const streamHost = window.location.hostname.replace('portal.', 'stream.');
+        const rtmpUrl = `rtmps://${streamHost}:1936/live`;
+        // HLS playback through Portal proxy on 443
+        const hlsUrl = `https://${window.location.hostname}/api/stream/${stream.stream_key}/hls/index.m3u8`;
 
         document.getElementById('stream-details-content').innerHTML = `
             <div class="stream-details">
@@ -228,6 +231,7 @@ async function showStreamDetails(streamId) {
                             <input type="text" value="${rtmpUrl}" readonly>
                             <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${rtmpUrl}')">Copy</button>
                         </div>
+                        <small style="color: var(--text-muted);">Direct connection to streaming server</small>
                     </div>
 
                     <div class="form-group">
@@ -256,9 +260,10 @@ async function showStreamDetails(streamId) {
                     <div class="form-group">
                         <label>HLS (for web players)</label>
                         <div class="input-with-copy">
-                            <input type="text" value="https://${window.location.hostname}:8888/${stream.stream_key}/index.m3u8" readonly>
-                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('https://${window.location.hostname}:8888/${stream.stream_key}/index.m3u8')">Copy</button>
+                            <input type="text" value="${hlsUrl}" readonly>
+                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${hlsUrl}')">Copy</button>
                         </div>
+                        <small style="color: var(--text-muted);">Proxied through Portal on port 443</small>
                     </div>
                 </div>
 
@@ -269,7 +274,7 @@ async function showStreamDetails(streamId) {
             </div>
         `;
 
-        openModal('stream-details-modal');
+        showModal('stream-details-modal');
 
     } catch (error) {
         console.error('Failed to load stream details:', error);
@@ -402,9 +407,9 @@ async function viewStream(streamId) {
 
         document.getElementById('view-stream-title').textContent = `${stream.name} - ${stream.owner_username}`;
 
-        // Set up video player with HLS
+        // Set up video player with HLS - routed through Portal on port 443
         const video = document.getElementById('stream-video');
-        const hlsUrl = `https://${window.location.hostname}:8888/${stream.stream_key}/index.m3u8`;
+        const hlsUrl = `/api/stream/${stream.stream_key}/hls/index.m3u8`;
 
         if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = hlsUrl;
@@ -422,7 +427,7 @@ async function viewStream(streamId) {
             connectStreamChat(stream.chat_channel_id);
         }
 
-        openModal('view-stream-modal');
+        showModal('view-stream-modal');
 
     } catch (error) {
         console.error('Failed to load stream:', error);

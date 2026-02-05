@@ -346,6 +346,21 @@ MIGRATIONS = [
     # Connection access control fields
     "ALTER TABLE user_connections ADD COLUMN portal_access INTEGER DEFAULT 1",
     "ALTER TABLE user_connections ADD COLUMN api_access INTEGER DEFAULT 0",
+    # Stream bans - allow stream owners to ban users from their stream chat
+    """CREATE TABLE IF NOT EXISTS stream_bans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stream_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        banned_by INTEGER NOT NULL,
+        reason TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (banned_by) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(stream_id, user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_stream_bans_stream ON stream_bans(stream_id)",
+    "CREATE INDEX IF NOT EXISTS idx_stream_bans_user ON stream_bans(user_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1513,6 +1528,69 @@ class Database:
         cursor = await self.conn.execute(query, params)
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    # Stream Ban operations (moderation)
+    async def create_stream_ban(
+        self,
+        stream_id: int,
+        user_id: int,
+        banned_by: int,
+        reason: str = None
+    ) -> int:
+        """Ban a user from a stream's chat. Returns ban ID or 0 if failed."""
+        try:
+            cursor = await self.conn.execute(
+                """INSERT INTO stream_bans (stream_id, user_id, banned_by, reason)
+                   VALUES (?, ?, ?, ?)""",
+                (stream_id, user_id, banned_by, reason)
+            )
+            await self.conn.commit()
+            return cursor.lastrowid
+        except Exception:
+            return 0
+
+    async def remove_stream_ban(self, stream_id: int, user_id: int) -> bool:
+        """Remove a ban from a stream."""
+        cursor = await self.conn.execute(
+            "DELETE FROM stream_bans WHERE stream_id = ? AND user_id = ?",
+            (stream_id, user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def is_user_banned_from_stream(self, stream_id: int, user_id: int) -> bool:
+        """Check if a user is banned from a stream."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM stream_bans WHERE stream_id = ? AND user_id = ?",
+            (stream_id, user_id)
+        )
+        return await cursor.fetchone() is not None
+
+    async def get_stream_bans(self, stream_id: int) -> list[dict]:
+        """Get all bans for a stream."""
+        cursor = await self.conn.execute(
+            """SELECT sb.*, u.username as banned_username, ub.username as banned_by_username
+               FROM stream_bans sb
+               JOIN users u ON sb.user_id = u.id
+               JOIN users ub ON sb.banned_by = ub.id
+               WHERE sb.stream_id = ?
+               ORDER BY sb.created_at DESC""",
+            (stream_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_stream_by_chat_channel(self, channel_id: int) -> Optional[dict]:
+        """Get a stream by its chat channel ID."""
+        cursor = await self.conn.execute(
+            """SELECT us.*, u.username as owner_username
+               FROM user_streams us
+               JOIN users u ON us.user_id = u.id
+               WHERE us.chat_channel_id = ?""",
+            (channel_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     # Chat/Forum operations
     async def get_chat_channels(self) -> list[dict]:

@@ -549,7 +549,7 @@ Real-time encrypted messaging system for authenticated users.
 
 ### User Streams (OBS/RTMP Broadcasting)
 
-User streams allow broadcasting from OBS or other streaming software with TLS encryption.
+User streams allow broadcasting from OBS or other streaming software. **All stream traffic routes through Portal on port 443** - MediaMTX services are bound to localhost only.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -562,20 +562,38 @@ User streams allow broadcasting from OBS or other streaming software with TLS en
 | POST | `/api/streams/{id}/regenerate-key` | Regenerate stream key |
 | POST | `/api/stream/auth` | MediaMTX auth hook (internal) |
 
+**Stream Proxy API (port 443):**
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/stream/{stream_key}/info` | Stream info and URLs |
+| GET | `/api/stream/{stream_key}/hls/{path}` | HLS playback proxy |
+| POST | `/api/stream/{stream_key}/webrtc/whep` | WebRTC playback |
+| POST | `/api/stream/{stream_key}/webrtc/whip` | WebRTC publishing |
+
 **Features:**
-- Stream key generation for OBS authentication
+- Stream key generation for authentication
 - Public/private stream visibility toggle
 - Integrated chat channels for public streams
 - Viewer count and total views tracking
-- HLS and WebRTC playback support
+- HLS and WebRTC playback via port 443
+- WebRTC WHIP publishing via port 443 (OBS 30.0+)
 
-**Streaming Ports (all TLS encrypted):**
-| Protocol | Port | Use |
-|----------|------|-----|
-| RTMPS | 1936 | OBS ingest |
-| RTSPS | 8322 | RTSP playback |
-| HLS | 8888 | Web playback |
-| WebRTC | 8889 | Low-latency playback |
+**Publishing Options:**
+1. **RTMPS** (Recommended for OBS): `rtmps://stream.dddvm.xyz:1936/live` + stream key
+   - Direct connection to server (bypasses Cloudflare)
+   - Uses Let's Encrypt certificate (auto-renewed)
+2. **WebRTC WHIP** (OBS 30.0+): `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whip`
+
+**Playback URLs (all via port 443, Cloudflare proxied):**
+- HLS: `https://portal.dddvm.xyz/api/stream/{key}/hls/index.m3u8`
+- WebRTC: `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whep`
+
+**Network Architecture:**
+| Service | Host | Port | Access |
+|---------|------|------|--------|
+| RTMPS Publishing | stream.dddvm.xyz | 1936 | External (direct) |
+| HLS/WebRTC | portal.dddvm.xyz | 443 | External (Cloudflare) |
+| MediaMTX Internal | 127.0.0.1 | 8888,8889 | Localhost only |
 
 ### Managed Services (Server Processes)
 

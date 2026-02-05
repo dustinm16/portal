@@ -16,6 +16,27 @@ All API endpoints require authentication via one of:
 1. **Session Cookie** - Obtained via `/login` form submission
 2. **Bearer Token** - `Authorization: Bearer <jwt_token>`
 3. **API Key** - `Authorization: Api-Key portal_xxx` or `X-API-Key: portal_xxx`
+4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx`
+
+### Stream Keys as API Keys
+
+**Stream keys and API keys are interchangeable for stream-related operations.** This allows streaming software (OBS, etc.) to use a single key for both:
+- Publishing the stream (WHIP/RTMP authentication)
+- Making API calls (checking stream status, updating settings)
+
+When authenticated with a stream key:
+- You are authenticated as the stream owner
+- Access is limited to stream-related operations
+- Full API access requires a regular API key
+
+**Example - Using stream key for API access:**
+```bash
+# Check stream status using stream key
+curl -H "X-Stream-Key: live_abc123..." https://portal.dddvm.xyz/api/streams
+
+# Same result with Api-Key header
+curl -H "X-API-Key: portal_xxx..." https://portal.dddvm.xyz/api/streams
+```
 
 ---
 
@@ -604,27 +625,202 @@ Handles stream start/stop events to update live status.
 
 ---
 
+#### GET /api/stream/{stream_key}/info
+Get stream information and playback URLs.
+
+**Response:**
+```json
+{
+  "stream_key": "live_abc123...",
+  "name": "My Stream",
+  "is_live": true,
+  "is_public": true,
+  "playback": {
+    "hls": "https://portal.dddvm.xyz/api/stream/live_abc123/hls/index.m3u8",
+    "webrtc_whep": "https://portal.dddvm.xyz/api/stream/live_abc123/webrtc/whep"
+  },
+  "publish": {
+    "webrtc_whip": "https://portal.dddvm.xyz/api/stream/live_abc123/webrtc/whip"
+  }
+}
+```
+
+---
+
+#### GET /api/stream/{stream_key}/hls/{path}
+Proxy HLS playback through Portal (port 443).
+
+Returns HLS playlist and segments for the specified stream.
+
+---
+
+#### POST /api/stream/{stream_key}/webrtc/whep
+WebRTC WHEP endpoint for playback.
+
+**Request:**
+- Body: SDP offer (application/sdp)
+
+**Response:**
+- Status: 201 Created
+- Body: SDP answer (application/sdp)
+- Headers: `Location` - Session URL for ICE candidates
+
+---
+
+#### POST /api/stream/{stream_key}/webrtc/whip
+WebRTC WHIP endpoint for publishing.
+
+**Request:**
+- Body: SDP offer (application/sdp)
+
+**Response:**
+- Status: 201 Created
+- Body: SDP answer (application/sdp)
+- Headers: `Location` - Session URL for ICE candidates
+
+---
+
 ### Streaming Configuration
 
-**OBS Studio Settings:**
+Portal Gateway provides a complete streaming solution with MediaMTX. Publishing uses a dedicated subdomain (`stream.dddvm.xyz`) for direct RTMPS access, while playback is proxied through Portal on port 443.
+
+**Stream Key = API Key**: Your stream key (`live_xxx...`) can be used for both streaming AND API access.
+
+**Publishing Options:**
+
+1. **RTMPS (Recommended for OBS)** - Direct connection with Let's Encrypt certificate
+   - Server: `rtmps://stream.dddvm.xyz:1936/live`
+   - Stream Key: Your stream key from My Streams tab
+   - Works with all versions of OBS Studio
+
+2. **WebRTC WHIP** - Works through port 443 (OBS 30.0+)
+   - URL: `https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whip`
+   - Service: WHIP in OBS settings
+
+**OBS Studio Settings (RTMPS - Recommended):**
 1. Go to Settings > Stream
-2. Service: Custom...
-3. Server: `rtmps://your-server.com:1936/live`
-4. Stream Key: Your stream key from the My Streams tab
+2. Service: Custom
+3. Server: `rtmps://stream.dddvm.xyz:1936/live`
+4. Stream Key: Your stream key (e.g., `live_abc123...`)
 
-**Playback URLs (all TLS encrypted):**
-- HLS: `https://your-server.com:8888/{stream_key}/index.m3u8`
-- WebRTC WHEP: `https://your-server.com:8889/{stream_key}/whep`
-- RTSPS: `rtsps://your-server.com:8322/{stream_key}`
+**Playback URLs (all via port 443):**
+- HLS: `https://portal.dddvm.xyz/api/stream/{stream_key}/hls/index.m3u8`
+- WebRTC WHEP: `https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whep`
 
-**Ports (all encrypted):**
-| Protocol | Port | Description |
-|----------|------|-------------|
-| RTMPS | 1936 | RTMP with TLS (ingest) |
-| RTSPS | 8322 | RTSP with TLS |
-| HLS | 8888 | HTTP Live Streaming (HTTPS) |
-| WebRTC | 8889 | WebRTC signaling (HTTPS) |
-| API | 9997 | MediaMTX API (HTTPS, internal) |
+**Using Stream Key for API Access:**
+```bash
+# Your stream key works as an API key for stream operations
+curl -H "X-Stream-Key: live_abc123..." https://portal.dddvm.xyz/api/streams
+```
+
+**Network Architecture:**
+| Service | Host | Port | Description |
+|---------|------|------|-------------|
+| RTMPS Publishing | stream.dddvm.xyz | 1936 | Direct connection (Let's Encrypt TLS) |
+| HLS/WebRTC Playback | portal.dddvm.xyz | 443 | Proxied through Cloudflare |
+| Portal API | portal.dddvm.xyz | 443 | Proxied through Cloudflare |
+
+**TLS Certificates:**
+- `stream.dddvm.xyz` uses Let's Encrypt (auto-renewed via certbot)
+- `portal.dddvm.xyz` uses Cloudflare Origin CA
+
+---
+
+### Stream Moderation
+
+Stream owners can ban users from their stream's chat.
+
+#### GET /api/streams/:id/bans
+List banned users for a stream (owner only).
+
+**Response:**
+```json
+{
+  "bans": [
+    {
+      "id": 1,
+      "stream_id": 5,
+      "user_id": 42,
+      "banned_by": 10,
+      "reason": "Spam",
+      "created_at": "2026-02-05T12:00:00Z",
+      "banned_username": "spammer123",
+      "banned_by_username": "streamowner"
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/streams/:id/bans
+Ban a user from stream chat (owner only).
+
+**Request:**
+```json
+{
+  "user_id": 42,
+  "reason": "Spam"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "ban_id": 1,
+  "message": "User banned from stream chat"
+}
+```
+
+---
+
+#### DELETE /api/streams/:id/bans/:user_id
+Remove a ban from stream chat (owner only).
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "User unbanned"
+}
+```
+
+---
+
+### Stream Chat WebSocket Commands
+
+Additional WebSocket message types for stream chat moderation:
+
+**Ban a user:**
+```json
+{
+  "type": "ban",
+  "user_id": 42,
+  "reason": "Spam"
+}
+```
+
+**Unban a user:**
+```json
+{
+  "type": "unban",
+  "user_id": 42
+}
+```
+
+**Get ban list:**
+```json
+{
+  "type": "get_bans"
+}
+```
+
+**Server responses:**
+- `user_banned` - Broadcast when a user is banned
+- `ban_success` - Confirmation of successful ban
+- `unban_success` - Confirmation of successful unban
+- `bans_list` - Response to get_bans request
 
 ---
 
