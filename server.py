@@ -4409,7 +4409,52 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     msg_type = data.get("type")
 
                     if msg_type == "join":
-                        channel_name = data.get("channel", "general")
+                        # Support multiple join methods:
+                        # 1. stream_key (pub_xxx or live_xxx) - preferred for stream chat
+                        # 2. channel_id (integer) - direct channel ID
+                        # 3. channel (string) - channel name (legacy)
+                        stream_key = data.get("stream_key")
+                        channel_id = data.get("channel_id")
+                        channel_name = data.get("channel")
+                        channel = None
+                        stream = None
+
+                        if stream_key:
+                            # Look up stream by key (public or private)
+                            if stream_key.startswith("pub_"):
+                                stream = await db.get_stream_by_public_key(stream_key)
+                            elif stream_key.startswith("live_"):
+                                stream = await db.get_stream_by_key(stream_key)
+                            else:
+                                # Try both formats
+                                stream = await db.get_stream_by_public_key(stream_key)
+                                if not stream:
+                                    stream = await db.get_stream_by_key(f"live_{stream_key}")
+
+                            if not stream:
+                                await ws.send_json({"type": "error", "message": "Invalid stream key"})
+                                continue
+
+                            if not stream.get("chat_channel_id"):
+                                await ws.send_json({"type": "error", "message": "Stream has no chat channel"})
+                                continue
+
+                            channel = await db.get_chat_channel(stream["chat_channel_id"])
+                        elif channel_id:
+                            # Direct channel ID lookup
+                            channel = await db.get_chat_channel(int(channel_id))
+                            if channel:
+                                stream = await db.get_stream_by_chat_channel(channel["id"])
+                        else:
+                            # Channel name lookup (default to "general")
+                            channel_name = channel_name or "general"
+                            channel = await db.get_chat_channel_by_name(channel_name)
+                            if channel:
+                                stream = await db.get_stream_by_chat_channel(channel["id"])
+
+                        if not channel:
+                            await ws.send_json({"type": "error", "message": "Channel not found"})
+                            continue
 
                         # Leave current channel
                         if current_channel and current_channel in chat_rooms:
@@ -4421,14 +4466,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": display_name
                             }, exclude=ws)
 
-                        # Get channel info
-                        channel = await db.get_chat_channel_by_name(channel_name)
-                        if not channel:
-                            await ws.send_json({"type": "error", "message": "Channel not found"})
-                            continue
-
-                        # Check if this is a stream chat and user is banned
-                        stream = await db.get_stream_by_chat_channel(channel["id"])
+                        # Check if user is banned from this stream's chat
                         if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
                             await ws.send_json({
                                 "type": "error",
@@ -4436,8 +4474,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
                             continue
 
-                        # Join new channel
-                        current_channel = channel_name
+                        # Join new channel (use channel name from DB)
+                        current_channel = channel["name"]
                         if current_channel not in chat_rooms:
                             chat_rooms[current_channel] = set()
                         chat_rooms[current_channel].add(user_entry)

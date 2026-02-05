@@ -546,9 +546,10 @@ async function viewStream(streamId) {
             return;
         }
 
-        // Connect to chat if available
-        if (stream.chat_channel_id) {
-            connectStreamChat(stream.chat_channel_id);
+        // Connect to chat using stream key (same auth as video)
+        const chatKey = stream.public_key || stream.stream_key;
+        if (chatKey) {
+            connectStreamChat(chatKey);
         }
 
         showModal('view-stream-modal');
@@ -560,15 +561,23 @@ async function viewStream(streamId) {
 }
 
 /**
- * Connect to stream chat
+ * Connect to stream chat using stream key authentication
  */
-function connectStreamChat(channelId) {
+function connectStreamChat(streamKey) {
     if (streamChatWs) {
         streamChatWs.close();
     }
 
-    const wsUrl = Portal.getWebSocketUrl(`/ws/chat/${channelId}`);
+    const wsUrl = Portal.getWebSocketUrl('/ws/chat');
     streamChatWs = new WebSocket(wsUrl);
+
+    streamChatWs.onopen = () => {
+        // Use stream key for authentication (same as video playback)
+        streamChatWs.send(JSON.stringify({
+            type: 'join',
+            stream_key: streamKey
+        }));
+    };
 
     streamChatWs.onmessage = (event) => {
         const data = JSON.parse(event.data);

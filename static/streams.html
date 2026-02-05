@@ -1313,9 +1313,10 @@
                     }
                 }
 
-                // Connect to chat if channel exists
-                if (currentStream.chat_channel_id) {
-                    connectChat(currentStream.chat_channel_id);
+                // Connect to chat using stream key (same auth as video)
+                const chatKey = currentStream.public_key || currentStream.stream_key;
+                if (chatKey) {
+                    connectChat(chatKey);
                 }
 
             } catch (error) {
@@ -1360,7 +1361,7 @@
             currentStream = null;
         }
 
-        function connectChat(channelId) {
+        function connectChat(streamKey) {
             if (chatWs) {
                 chatWs.close();
             }
@@ -1369,9 +1370,10 @@
             chatWs = new WebSocket(`${protocol}//${location.host}/ws/chat`);
 
             chatWs.onopen = () => {
+                // Use stream key for authentication (same as video playback)
                 chatWs.send(JSON.stringify({
                     type: 'join',
-                    channel_id: channelId
+                    stream_key: streamKey
                 }));
             };
 
