@@ -3421,6 +3421,16 @@ async def http_chat_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def http_streams_page(request: web.Request) -> web.Response:
+    """Serve community streams page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    html = load_static_file("streams.html")
+    return web.Response(text=html, content_type="text/html")
+
+
 # =============================================================================
 # Chat/Forum System
 # =============================================================================
@@ -4601,6 +4611,7 @@ def create_app() -> web.Application:
     app.router.add_get("/docs", http_api_docs_page)
     app.router.add_get("/api-docs", http_api_docs_page)  # Alias
     app.router.add_get("/chat", http_chat_page)
+    app.router.add_get("/streams", http_streams_page)
 
     # Chat API
     app.router.add_get("/api/chat/channels", http_get_chat_channels)
