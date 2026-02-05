@@ -206,8 +206,7 @@ async function showStreamDetails(streamId) {
         document.getElementById('stream-details-title').textContent = stream.name;
 
         // Use stream.dddvm.xyz for direct RTMPS (bypasses Cloudflare)
-        const streamHost = window.location.hostname.replace('portal.', 'stream.');
-        const rtmpUrl = `rtmps://${streamHost}:1936/live`;
+        const rtmpUrl = 'rtmps://stream.dddvm.xyz:1936/live';
         // HLS playback through Portal proxy on 443
         const hlsUrl = `https://${window.location.hostname}/api/stream/${stream.stream_key}/hls/index.m3u8`;
 
