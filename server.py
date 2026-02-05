@@ -2415,126 +2415,6 @@ async def http_vuln_known_cves(request: web.Request) -> web.Response:
     return web.json_response({"cves": cves})
 
 
-# =============================================================================
-# Session Recording Endpoints
-# =============================================================================
-
-async def http_list_recordings(request: web.Request) -> web.Response:
-    """List all recordings (admin only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
-
-    recordings = await db.get_all_recordings()
-
-    logger.debug(f"Recordings list requested by user {token.user_id}: {len(recordings)} records")
-
-    return web.json_response({
-        "recordings": [
-            {
-                "id": r["id"],
-                "user_id": r["user_id"],
-                "username": r["username"],
-                "service_id": r["service_id"],
-                "service_name": r["service_name"],
-                "filename": r["filename"],
-                "format": r["format"],
-                "size": r["size"],
-                "duration": r["duration"],
-                "created_at": r["created_at"]
-            }
-            for r in recordings
-        ]
-    })
-
-
-async def http_get_recording(request: web.Request) -> web.Response:
-    """Get recording metadata by ID (admin only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
-
-    recording_id = request.match_info.get("id")
-    if not recording_id or not recording_id.isdigit():
-        return web.json_response({"error": "Invalid recording ID"}, status=400)
-
-    recording = await db.get_recording(int(recording_id))
-    if not recording:
-        return web.json_response({"error": "Recording not found"}, status=404)
-
-    return web.json_response(recording)
-
-
-async def http_download_recording(request: web.Request) -> web.Response:
-    """Download recording file (admin only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
-
-    recording_id = request.match_info.get("id")
-    if not recording_id or not recording_id.isdigit():
-        return web.json_response({"error": "Invalid recording ID"}, status=400)
-
-    recording = await db.get_recording(int(recording_id))
-    if not recording:
-        return web.json_response({"error": "Recording not found"}, status=404)
-
-    filepath = Path(Config.RECORDINGS_DIR) / recording["filename"]
-    if not filepath.exists():
-        logger.warning(f"Recording file not found: {filepath}")
-        return web.json_response({"error": "Recording file not found"}, status=404)
-
-    logger.info(f"Recording {recording_id} downloaded by user {token.user_id}")
-
-    return web.FileResponse(
-        filepath,
-        headers={
-            "Content-Disposition": f'attachment; filename="{recording["filename"]}"',
-            "Content-Type": "application/json"  # asciicast is JSON
-        }
-    )
-
-
-async def http_delete_recording(request: web.Request) -> web.Response:
-    """Delete a recording (admin only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
-
-    recording_id = request.match_info.get("id")
-    if not recording_id or not recording_id.isdigit():
-        return web.json_response({"error": "Invalid recording ID"}, status=400)
-
-    recording = await db.get_recording(int(recording_id))
-    if not recording:
-        return web.json_response({"error": "Recording not found"}, status=404)
-
-    # Delete file if it exists
-    filepath = Path(Config.RECORDINGS_DIR) / recording["filename"]
-    if filepath.exists():
-        filepath.unlink()
-        logger.info(f"Recording file deleted: {filepath}")
-
-    # Delete database record
-    await db.delete_recording(int(recording_id))
-
-    logger.info(f"Recording {recording_id} deleted by user {token.user_id}")
-
-    return web.json_response({"status": "deleted"})
-
-
 async def http_stats(request: web.Request) -> web.Response:
     """Get server statistics (admin only)."""
     token = await authenticate_request(request)
@@ -4845,12 +4725,6 @@ def create_app() -> web.Application:
     app.router.add_get("/api/vuln/search", http_vuln_search_cves)
     app.router.add_get("/api/vuln/status", http_vuln_scanner_status)
     app.router.add_post("/api/vuln/nvd-api-key", http_vuln_set_nvd_api_key)
-
-    # Session Recordings (admin only)
-    app.router.add_get("/api/recordings", http_list_recordings)
-    app.router.add_get("/api/recordings/{id}", http_get_recording)
-    app.router.add_get("/api/recordings/{id}/download", http_download_recording)
-    app.router.add_delete("/api/recordings/{id}", http_delete_recording)
 
     # Web UI routes
     app.router.add_get("/login", http_login_page)

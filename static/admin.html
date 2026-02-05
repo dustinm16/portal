@@ -316,7 +316,6 @@
                 <button class="tab-btn" onclick="showTab('vuln')">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
                 <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
-                <button class="tab-btn" onclick="showTab('recordings')">Session Recordings</button>
             </div>
 
             <!-- Overview Tab -->
@@ -629,26 +628,6 @@
                 </div>
             </div>
 
-            <!-- Session Recordings Tab -->
-            <div id="tab-recordings" class="tab-content">
-                <div class="section-header">
-                    <h2>Session Recordings</h2>
-                    <button class="btn btn-secondary refresh-btn" onclick="loadRecordings()">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                        Refresh
-                    </button>
-                </div>
-                <div class="admin-card">
-                    <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.875rem;">
-                        Terminal session recordings are stored in asciicast v2 format. Enable recording per-service by editing the service configuration.
-                    </p>
-                    <div id="recordings-list">
-                        <div class="loading"><div class="spinner"></div> Loading recordings...</div>
-                    </div>
-                </div>
-            </div>
         </main>
     </div>
 
@@ -669,7 +648,6 @@
                 case 'vuln': loadKnownCVEs(); loadScannerStatus(); break;
                 case 'shodan': loadShodanConfig(); break;
                 case 'connections': loadActiveConnections(); break;
-                case 'recordings': loadRecordings(); break;
             }
         }
 
@@ -1060,99 +1038,6 @@
             } catch (error) {
                 console.error('Failed to load connections:', error);
                 document.getElementById('active-connections').innerHTML = '<p style="color: var(--accent-red);">Failed to load connections.</p>';
-            }
-        }
-
-        // =================================================================
-        // Session Recordings Functions
-        // =================================================================
-
-        // Load session recordings
-        async function loadRecordings() {
-            try {
-                const data = await Portal.fetchJSON('/api/recordings');
-                const recordings = data.recordings || [];
-
-                if (recordings.length === 0) {
-                    document.getElementById('recordings-list').innerHTML = `
-                        <p style="color: var(--text-muted); text-align: center; padding: 2rem;">
-                            No recordings found. Enable recording in service configuration to start capturing sessions.
-                        </p>
-                    `;
-                    return;
-                }
-
-                document.getElementById('recordings-list').innerHTML = `
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>User</th>
-                                <th>Service</th>
-                                <th>Duration</th>
-                                <th>Size</th>
-                                <th>Date</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${recordings.map(r => `
-                                <tr>
-                                    <td>${r.id}</td>
-                                    <td>${escapeHtml(r.username)}</td>
-                                    <td>${escapeHtml(r.service_name)}</td>
-                                    <td>${formatDuration(r.duration)}</td>
-                                    <td>${formatBytes(r.size)}</td>
-                                    <td>${new Date(r.created_at + 'Z').toLocaleString()}</td>
-                                    <td>
-                                        <button class="btn btn-secondary btn-sm" onclick="downloadRecording(${r.id})" title="Download">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                            </svg>
-                                        </button>
-                                        <button class="btn btn-danger btn-sm" onclick="deleteRecording(${r.id})" title="Delete">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                            </svg>
-                                        </button>
-                                    </td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-            } catch (error) {
-                console.error('Failed to load recordings:', error);
-                document.getElementById('recordings-list').innerHTML = '<p style="color: var(--accent-red);">Failed to load recordings.</p>';
-            }
-        }
-
-        // Download a recording
-        function downloadRecording(id) {
-            window.location.href = `/api/recordings/${id}/download`;
-        }
-
-        // Delete a recording
-        async function deleteRecording(id) {
-            if (!confirm('Are you sure you want to delete this recording? This action cannot be undone.')) {
-                return;
-            }
-
-            try {
-                const response = await Portal.fetch(`/api/recordings/${id}`, {
-                    method: 'DELETE'
-                });
-
-                if (response.ok) {
-                    Portal.toast('Recording deleted successfully');
-                    loadRecordings();
-                } else {
-                    const data = await response.json().catch(() => ({}));
-                    Portal.toast(data.error || 'Failed to delete recording', 'error');
-                }
-            } catch (error) {
-                Portal.toast('Failed to delete recording', 'error');
-                console.error('Delete recording error:', error);
             }
         }
 

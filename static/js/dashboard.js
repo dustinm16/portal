@@ -210,8 +210,10 @@ function createServiceCard(service) {
         }
     }
 
-    // Type badge for managed services
-    const typeBadge = isManaged ? `<span class="service-type-badge managed">Managed</span>` : '';
+    // Type badge for service type
+    const typeBadge = isManaged
+        ? `<span class="service-type-badge managed">Managed</span>`
+        : `<span class="service-type-badge proxy">Proxy</span>`;
 
     return `
         <div class="service-card" data-service-id="${service.id}">
