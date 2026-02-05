@@ -466,6 +466,17 @@ Get available connection types with schemas.
 
 User streams allow broadcasting from OBS or other streaming software. All traffic is encrypted via RTMPS/RTSPS.
 
+**Stream Keys:**
+Portal uses two types of keys for stream access control:
+
+| Key Type | Format | Purpose | Visibility |
+|----------|--------|---------|------------|
+| **Private Key** | `live_xxx...` | Publishing (OBS/RTMP) and full management | Owner only |
+| **Public Key** | `pub_xxx...` | Read-only viewing access (HLS/WebRTC playback) | Viewers of public streams |
+
+- **Private key (`stream_key`)**: Used for OBS publishing and stream management. Never share this key.
+- **Public key (`public_key`)**: Safe to share with viewers for read-only playback access.
+
 #### GET /api/streams
 List user's streams.
 
@@ -478,6 +489,7 @@ List user's streams.
       "name": "My Live Stream",
       "description": "Gaming session",
       "stream_key": "live_abc123...",
+      "public_key": "pub_xyz789...",
       "is_public": false,
       "is_live": true,
       "viewer_count": 5,
@@ -508,7 +520,8 @@ Create a new stream.
   "stream": {
     "id": 1,
     "name": "My Stream",
-    "stream_key": "live_abc123xyz..."
+    "stream_key": "live_abc123xyz...",
+    "public_key": "pub_def456..."
   }
 }
 ```
@@ -516,7 +529,7 @@ Create a new stream.
 ---
 
 #### GET /api/streams/public
-List all public (community) streams.
+List all public (community) streams. Requires authentication.
 
 **Response:**
 ```json
@@ -526,6 +539,7 @@ List all public (community) streams.
       "id": 1,
       "name": "Public Stream",
       "owner_username": "dustin",
+      "public_key": "pub_xyz789...",
       "is_live": true,
       "viewer_count": 10,
       "total_views": 500
@@ -534,18 +548,40 @@ List all public (community) streams.
 }
 ```
 
+Note: `stream_key` is never included in public listings (security).
+
 ---
 
 #### GET /api/streams/:id
 Get stream details.
 
-**Response:**
+**Key Visibility Rules:**
+- **Owner**: Sees both `stream_key` (for OBS) and `public_key` (for sharing)
+- **Non-owner (public stream)**: Sees `public_key` only (for playback)
+- **Non-owner (private stream)**: No keys visible
+
+**Response (owner):**
 ```json
 {
   "stream": {
     "id": 1,
     "name": "My Stream",
     "stream_key": "live_abc123...",
+    "public_key": "pub_xyz789...",
+    "is_public": true,
+    "is_live": false,
+    "chat_channel_id": 5
+  }
+}
+```
+
+**Response (non-owner viewing public stream):**
+```json
+{
+  "stream": {
+    "id": 1,
+    "name": "My Stream",
+    "public_key": "pub_xyz789...",
     "is_public": true,
     "is_live": false,
     "chat_channel_id": 5
@@ -625,19 +661,22 @@ Handles stream start/stop events to update live status.
 
 ---
 
-#### GET /api/stream/{stream_key}/info
+#### GET /api/stream/{key}/info
 Get stream information and playback URLs.
+
+**Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key.
 
 **Response:**
 ```json
 {
   "stream_key": "live_abc123...",
+  "public_key": "pub_xyz789...",
   "name": "My Stream",
   "is_live": true,
   "is_public": true,
   "playback": {
-    "hls": "https://portal.dddvm.xyz/api/stream/live_abc123/hls/index.m3u8",
-    "webrtc_whep": "https://portal.dddvm.xyz/api/stream/live_abc123/webrtc/whep"
+    "hls": "https://portal.dddvm.xyz/api/stream/pub_xyz789/hls/index.m3u8",
+    "webrtc_whep": "https://portal.dddvm.xyz/api/stream/pub_xyz789/webrtc/whep"
   },
   "publish": {
     "webrtc_whip": "https://portal.dddvm.xyz/api/stream/live_abc123/webrtc/whip"
@@ -647,15 +686,19 @@ Get stream information and playback URLs.
 
 ---
 
-#### GET /api/stream/{stream_key}/hls/{path}
+#### GET /api/stream/{key}/hls/{path}
 Proxy HLS playback through Portal (port 443).
+
+**Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key for playback.
 
 Returns HLS playlist and segments for the specified stream.
 
 ---
 
-#### POST /api/stream/{stream_key}/webrtc/whep
+#### POST /api/stream/{key}/webrtc/whep
 WebRTC WHEP endpoint for playback.
+
+**Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key for playback.
 
 **Request:**
 - Body: SDP offer (application/sdp)
@@ -667,8 +710,10 @@ WebRTC WHEP endpoint for playback.
 
 ---
 
-#### POST /api/stream/{stream_key}/webrtc/whip
+#### POST /api/stream/{key}/webrtc/whip
 WebRTC WHIP endpoint for publishing.
+
+**Key Types:** Requires private key (`live_xxx`) - public keys cannot publish.
 
 **Request:**
 - Body: SDP offer (application/sdp)
@@ -684,13 +729,19 @@ WebRTC WHIP endpoint for publishing.
 
 Portal Gateway provides a complete streaming solution with MediaMTX. Publishing uses a dedicated subdomain (`stream.dddvm.xyz`) for direct RTMPS access, while playback is proxied through Portal on port 443.
 
-**Stream Key = API Key**: Your stream key (`live_xxx...`) can be used for both streaming AND API access.
+**Key Types:**
+| Key | Format | Use Case |
+|-----|--------|----------|
+| Private Key | `live_xxx...` | Publishing (OBS), API access, stream management |
+| Public Key | `pub_xxx...` | Read-only playback URLs (safe to share with viewers) |
 
-**Publishing Options:**
+**Stream Key = API Key**: Your private stream key (`live_xxx...`) can be used for both streaming AND API access.
+
+**Publishing Options (requires private key `live_xxx`):**
 
 1. **RTMPS (Recommended for OBS)** - Direct connection with Let's Encrypt certificate
    - Server: `rtmps://stream.dddvm.xyz:1936/live`
-   - Stream Key: Your stream key from My Streams tab
+   - Stream Key: Your private stream key from My Streams tab
    - Works with all versions of OBS Studio
 
 2. **WebRTC WHIP** - Works through port 443 (OBS 30.0+)
@@ -701,15 +752,17 @@ Portal Gateway provides a complete streaming solution with MediaMTX. Publishing 
 1. Go to Settings > Stream
 2. Service: Custom
 3. Server: `rtmps://stream.dddvm.xyz:1936/live`
-4. Stream Key: Your stream key (e.g., `live_abc123...`)
+4. Stream Key: Your private stream key (e.g., `live_abc123...`)
 
-**Playback URLs (all via port 443):**
-- HLS: `https://portal.dddvm.xyz/api/stream/{stream_key}/hls/index.m3u8`
-- WebRTC WHEP: `https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whep`
+**Playback URLs (accepts either key type):**
+- HLS: `https://portal.dddvm.xyz/api/stream/{key}/hls/index.m3u8`
+- WebRTC WHEP: `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whep`
+
+For public streams, share the `public_key` (`pub_xxx`) for playback URLs instead of the private key.
 
 **Using Stream Key for API Access:**
 ```bash
-# Your stream key works as an API key for stream operations
+# Your private stream key works as an API key for stream operations
 curl -H "X-Stream-Key: live_abc123..." https://portal.dddvm.xyz/api/streams
 ```
 

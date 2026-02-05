@@ -578,15 +578,21 @@ User streams allow broadcasting from OBS or other streaming software. **All stre
 - HLS and WebRTC playback via port 443
 - WebRTC WHIP publishing via port 443 (OBS 30.0+)
 
-**Publishing Options:**
-1. **RTMPS** (Recommended for OBS): `rtmps://stream.dddvm.xyz:1936/live` + stream key
+**Stream Key Types:**
+- **Private key (`live_xxx`)**: Used for publishing (OBS) and API access. Never share.
+- **Public key (`pub_xxx`)**: Read-only viewing access. Safe to share with viewers.
+
+**Publishing Options (requires private key `live_xxx`):**
+1. **RTMPS** (Recommended for OBS): `rtmps://stream.dddvm.xyz:1936/live` + private stream key
    - Direct connection to server (bypasses Cloudflare)
    - Uses Let's Encrypt certificate (auto-renewed)
-2. **WebRTC WHIP** (OBS 30.0+): `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whip`
+2. **WebRTC WHIP** (OBS 30.0+): `https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whip`
 
-**Playback URLs (all via port 443, Cloudflare proxied):**
+**Playback URLs (accepts either key type, via port 443, Cloudflare proxied):**
 - HLS: `https://portal.dddvm.xyz/api/stream/{key}/hls/index.m3u8`
 - WebRTC: `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whep`
+
+For public streams, share the `public_key` for playback URLs instead of the private key.
 
 **Network Architecture:**
 | Service | Host | Port | Access |
@@ -850,21 +856,32 @@ CREATE TABLE user_streams (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    stream_key TEXT NOT NULL UNIQUE,
+    stream_key TEXT NOT NULL UNIQUE,    -- Private key for publishing (live_xxx)
+    public_key TEXT UNIQUE,              -- Public key for viewing (pub_xxx)
     description TEXT,
     is_public INTEGER DEFAULT 0,
     is_live INTEGER DEFAULT 0,
     viewer_count INTEGER DEFAULT 0,
     chat_channel_id INTEGER,
     total_views INTEGER DEFAULT 0,
+    thumbnail_url TEXT,
+    started_at TEXT,
+    ended_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (chat_channel_id) REFERENCES chat_channels(id) ON DELETE SET NULL,
     UNIQUE(user_id, name)
 );
 ```
 
-**Note:** User streams enable OBS broadcasting. The `stream_key` is used for RTMP authentication. Public streams create an associated chat channel.
+**Stream Key Types:**
+| Key | Format | Purpose | Visibility |
+|-----|--------|---------|------------|
+| `stream_key` | `live_xxx...` | Publishing (OBS/RTMP), API access, management | Owner only |
+| `public_key` | `pub_xxx...` | Read-only playback access (HLS/WebRTC) | Viewers of public streams |
+
+**Note:** User streams enable OBS broadcasting. The private `stream_key` is used for RTMP authentication and should never be shared. The `public_key` is safe to share with viewers for playback access. All streams automatically create an associated chat channel.
 
 ### service_logs
 ```sql
