@@ -5133,13 +5133,8 @@ async def http_delete_user(request: web.Request) -> web.Response:
     if not target_user:
         return web.json_response({"error": "User not found"}, status=404)
 
-    # Cannot delete other superadmins
+    # Superadmins can delete anyone (except themselves, checked above)
     target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
-    if target_role == "superadmin":
-        return web.json_response(
-            {"error": "Cannot delete other superadmins"},
-            status=403
-        )
 
     # Delete user's tokens first
     await db.conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
@@ -5158,7 +5153,7 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
     """Reset a user's password (admin+ for managed users, moderator for self only).
 
     Permission rules:
-    - superadmin: can reset any user's password (except other superadmins)
+    - superadmin: can reset any user's password (including other superadmins)
     - admin: can reset moderator and user passwords
     - moderator: can only reset their own password via /api/me/password
     """

@@ -374,22 +374,39 @@ def get_role_level(role: str) -> int:
         return 0
 
 def can_manage_role(actor_role: str, target_role: str) -> bool:
-    """Check if actor can manage users with target role."""
+    """Check if actor can manage users with target role.
+
+    Superadmins can manage other superadmins.
+    Other roles can only manage users with lower roles.
+    """
     actor_level = get_role_level(actor_role)
     target_level = get_role_level(target_role)
-    # Must be higher level to manage
+    # Superadmins can manage anyone including other superadmins
+    if actor_role == "superadmin":
+        return True
+    # Others must be higher level to manage
     return actor_level > target_level
 
 def can_assign_role(actor_role: str, new_role: str) -> bool:
-    """Check if actor can assign a specific role."""
+    """Check if actor can assign a specific role.
+
+    Superadmins can assign any role including superadmin.
+    Other roles can only assign roles below their level.
+    """
     actor_level = get_role_level(actor_role)
     new_level = get_role_level(new_role)
-    # Can only assign roles below your level
+    # Superadmins can assign any role
+    if actor_role == "superadmin":
+        return True
+    # Others can only assign roles below their level
     return actor_level > new_level
 
 def get_manageable_roles(actor_role: str) -> list[str]:
     """Get list of roles that actor can assign to others."""
     actor_level = get_role_level(actor_role)
+    # Superadmins can assign any role
+    if actor_role == "superadmin":
+        return ROLE_HIERARCHY.copy()
     return [r for r in ROLE_HIERARCHY if get_role_level(r) < actor_level]
 
 
