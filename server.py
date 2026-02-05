@@ -3003,15 +3003,24 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # Send user list with status info
                         user_ids = [entry[1] for entry in chat_rooms[current_channel]]
                         users_info = await db.get_users_status(list(set(user_ids)))
-                        users_list = [{
-                            "user_id": u["id"],
-                            "username": "Anonymous" if u.get("chat_anonymous") else u["username"],
-                            "nickname": u.get("nickname"),
-                            "status": u.get("status", "online"),
-                            "status_message": u.get("status_message"),
-                            "role": u.get("role", "user"),
-                            "anonymous": bool(u.get("chat_anonymous"))
-                        } for u in users_info]
+                        users_list = []
+                        for u in users_info:
+                            avatar = {}
+                            if u.get("avatar"):
+                                try:
+                                    avatar = json.loads(u["avatar"])
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                            users_list.append({
+                                "user_id": u["id"],
+                                "username": "Anonymous" if u.get("chat_anonymous") else u["username"],
+                                "nickname": u.get("nickname"),
+                                "status": u.get("status", "online"),
+                                "status_message": u.get("status_message"),
+                                "role": u.get("role", "user"),
+                                "anonymous": bool(u.get("chat_anonymous")),
+                                "avatar": avatar
+                            })
                         await ws.send_json({
                             "type": "users",
                             "users": users_list
@@ -3127,6 +3136,13 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         return web.json_response({"error": "User not found"}, status=404)
 
     role = user.get("role") or ("admin" if user.get("is_admin") else "user")
+    # Parse avatar JSON
+    avatar = {}
+    if user.get("avatar"):
+        try:
+            avatar = json.loads(user["avatar"])
+        except (json.JSONDecodeError, TypeError):
+            pass
     return web.json_response({
         "id": user["id"],
         "username": user["username"],
@@ -3135,6 +3151,7 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         "status_message": user.get("status_message"),
         "role": role,
         "chat_anonymous": bool(user.get("chat_anonymous")),
+        "avatar": avatar,
         "is_admin": bool(user["is_admin"]),
         "scopes": token.scopes,
         "permissions": {
@@ -3320,6 +3337,55 @@ async def http_update_chat_anonymous(request: web.Request) -> web.Response:
     return web.json_response({
         "anonymous": anonymous
     })
+
+
+async def http_update_avatar(request: web.Request) -> web.Response:
+    """Update user's avatar settings."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # Validate avatar settings
+    avatar = {}
+    if "color" in data:
+        color = data["color"]
+        # Validate hex color
+        if not isinstance(color, str) or not color.startswith("#") or len(color) != 7:
+            return web.json_response({"error": "Invalid color format. Use #RRGGBB"}, status=400)
+        avatar["color"] = color
+
+    if "emoji" in data:
+        emoji = data["emoji"]
+        if emoji and len(emoji) > 4:  # Emoji can be up to 4 chars with modifiers
+            return web.json_response({"error": "Invalid emoji"}, status=400)
+        avatar["emoji"] = emoji if emoji else None
+
+    if "initials" in data:
+        initials = data["initials"].upper()[:2] if data["initials"] else None
+        avatar["initials"] = initials
+
+    await db.set_avatar(token.user_id, avatar)
+
+    # Broadcast avatar change to all chat rooms
+    user = await db.get_user_by_id(token.user_id)
+    username = user["username"] if user else "Unknown"
+    for channel, users in chat_rooms.items():
+        for entry in users:
+            if entry[1] == token.user_id:
+                await broadcast_to_channel(channel, {
+                    "type": "user_avatar_changed",
+                    "user_id": token.user_id,
+                    "username": username,
+                    "avatar": avatar
+                })
+                break
+
+    return web.json_response({"avatar": avatar})
 
 
 # =============================================================================
@@ -3785,6 +3851,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/me/status", http_update_user_status)
     app.router.add_put("/api/me/nickname", http_update_user_nickname)
     app.router.add_put("/api/me/anonymous", http_update_chat_anonymous)
+    app.router.add_put("/api/me/avatar", http_update_avatar)
 
     # Two-Factor Authentication
     app.router.add_get("/api/user/2fa/status", http_2fa_status)

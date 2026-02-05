@@ -298,15 +298,14 @@
             font-style: italic;
         }
 
-        /* Role badges - permission level indicators */
+        /* Role badges */
         .role-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.2rem;
+            display: inline-block;
             padding: 0.1rem 0.4rem;
             border-radius: 3px;
             font-size: 0.65rem;
             font-weight: 600;
+            text-transform: uppercase;
             margin-left: 0.25rem;
             vertical-align: middle;
         }
@@ -317,51 +316,25 @@
         }
 
         .role-badge.admin {
-            background: linear-gradient(135deg, #dc2626, #991b1b);
+            background: var(--accent-red);
             color: white;
         }
 
         .role-badge.moderator {
-            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            background: var(--accent-blue);
             color: white;
         }
 
         .role-badge.user {
-            display: none; /* Don't show badge for regular users */
+            display: none;
         }
 
-        /* Permission stars inside badge */
-        .role-badge .perm-stars {
-            letter-spacing: -2px;
-            font-size: 0.6rem;
-        }
-
-        /* Mini badge for user list - shield icons */
+        /* Mini badge for user list - emoji icons */
         .role-badge-mini {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 14px;
-            height: 14px;
-            border-radius: 2px;
+            display: inline-block;
             margin-left: 4px;
+            font-size: 0.7rem;
             vertical-align: middle;
-            font-size: 0.5rem;
-            font-weight: bold;
-            color: white;
-        }
-
-        .role-badge-mini.superadmin {
-            background: linear-gradient(135deg, #f59e0b, #ef4444);
-            box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
-        }
-
-        .role-badge-mini.admin {
-            background: linear-gradient(135deg, #dc2626, #991b1b);
-        }
-
-        .role-badge-mini.moderator {
-            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
         }
 
         /* @mention highlights */
@@ -382,7 +355,7 @@
             color: #f59e0b;
         }
 
-        /* Anonymous toggle in settings */
+        /* Anonymous toggle in settings - switch style */
         .anonymous-toggle {
             display: flex;
             align-items: center;
@@ -390,12 +363,125 @@
             padding: 0.5rem 0;
             font-size: 0.75rem;
             color: var(--text-secondary);
+            cursor: pointer;
         }
 
         .anonymous-toggle input[type="checkbox"] {
+            position: relative;
+            width: 32px;
+            height: 18px;
+            appearance: none;
+            -webkit-appearance: none;
+            background: rgba(255,255,255,0.2);
+            border-radius: 9px;
+            cursor: pointer;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+
+        .anonymous-toggle input[type="checkbox"]::before {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
             width: 14px;
             height: 14px;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+
+        .anonymous-toggle input[type="checkbox"]:checked {
+            background: var(--accent-blue);
+        }
+
+        .anonymous-toggle input[type="checkbox"]:checked::before {
+            transform: translateX(14px);
+        }
+
+        /* Avatar picker */
+        .avatar-picker {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0;
+        }
+
+        .avatar-preview {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.875rem;
             cursor: pointer;
+            border: 2px solid rgba(255,255,255,0.2);
+            transition: border-color 0.2s;
+        }
+
+        .avatar-preview:hover {
+            border-color: var(--accent-blue);
+        }
+
+        /* Avatar modal */
+        .avatar-options {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .avatar-color-option {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .avatar-color-option:hover {
+            transform: scale(1.1);
+        }
+
+        .avatar-color-option.selected {
+            border-color: white;
+        }
+
+        .avatar-emoji-option {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255,255,255,0.05);
+            border: 2px solid transparent;
+            transition: background 0.2s, border-color 0.2s;
+        }
+
+        .avatar-emoji-option:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .avatar-emoji-option.selected {
+            border-color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.2);
+        }
+
+        .avatar-section {
+            margin-bottom: 1rem;
+        }
+
+        .avatar-section-title {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
         }
 
         .user-count {
@@ -711,6 +797,10 @@
                     </div>
                 </div>
                 <input type="text" class="nickname-input" id="nickname-input" placeholder="Set nickname..." maxlength="32" onchange="updateNickname()">
+                <div class="avatar-picker">
+                    <span style="font-size: 0.7rem; color: var(--text-muted);">Avatar:</span>
+                    <div class="avatar-preview" id="avatar-preview" onclick="showAvatarModal()">?</div>
+                </div>
                 <label class="anonymous-toggle">
                     <input type="checkbox" id="anonymous-toggle" onchange="toggleAnonymous()">
                     <span>Hide my username</span>
@@ -785,6 +875,33 @@
         </div>
     </div>
 
+    <!-- Avatar Customization Modal -->
+    <div id="avatar-modal" class="modal">
+        <div class="modal-backdrop" onclick="closeModal('avatar-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Customize Avatar</h3>
+                <button class="modal-close" onclick="closeModal('avatar-modal')">&times;</button>
+            </div>
+            <div class="avatar-section">
+                <div class="avatar-section-title">Color</div>
+                <div class="avatar-options" id="avatar-colors">
+                    <!-- Colors populated by JS -->
+                </div>
+            </div>
+            <div class="avatar-section">
+                <div class="avatar-section-title">Emoji (optional)</div>
+                <div class="avatar-options" id="avatar-emojis">
+                    <!-- Emojis populated by JS -->
+                </div>
+            </div>
+            <div class="form-actions" style="margin-top: 1rem;">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('avatar-modal')">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveAvatar()">Save</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let ws = null;
         let currentChannel = 'general';
@@ -800,6 +917,21 @@
             '💯', '🚀', '💪', '😢', '😡', '🤷', '👀', '💡',
             '⚠️', '🐛', '🔧', '📝', '🔒', '🔓', '📌', '💬'
         ];
+
+        // Avatar customization options
+        const AVATAR_COLORS = [
+            '#3b82f6', '#8b5cf6', '#ec4899', '#ef4444', '#f59e0b', '#10b981',
+            '#06b6d4', '#6366f1', '#d946ef', '#f97316', '#84cc16', '#14b8a6',
+            '#0ea5e9', '#a855f7', '#f43f5e', '#eab308', '#22c55e', '#64748b'
+        ];
+
+        const AVATAR_EMOJIS = [
+            '😊', '😎', '🤖', '👻', '🦊', '🐱', '🐶', '🦁', '🐸', '🐼', '🦄', '🐲',
+            '🌟', '⭐', '🔥', '💎', '🎮', '🎯', '🎨', '🎭', '🎪', '🚀', '⚡', '🌈'
+        ];
+
+        let selectedAvatarColor = AVATAR_COLORS[0];
+        let selectedAvatarEmoji = null;
 
         // Emoji shortcodes mapping
         const EMOJI_SHORTCODES = {
@@ -860,6 +992,13 @@
                 // Set anonymous toggle
                 document.getElementById('anonymous-toggle').checked = currentUser.chat_anonymous || false;
 
+                // Set avatar preview
+                if (currentUser.avatar) {
+                    selectedAvatarColor = currentUser.avatar.color || AVATAR_COLORS[0];
+                    selectedAvatarEmoji = currentUser.avatar.emoji || null;
+                }
+                updateAvatarPreview();
+
                 // Initialize emoji picker
                 initEmojiPicker();
             } catch (error) {
@@ -869,31 +1008,27 @@
 
         function getRoleBadge(role) {
             if (!role || role === 'user') return '';
-            // Permission levels: superadmin=4, admin=3, moderator=2, user=1
-            const config = {
-                'superadmin': { label: 'Owner', level: 4, stars: '★★★★' },
-                'admin': { label: 'Admin', level: 3, stars: '★★★' },
-                'moderator': { label: 'Mod', level: 2, stars: '★★' }
+            const labels = {
+                'superadmin': 'Owner',
+                'admin': 'Admin',
+                'moderator': 'Mod'
             };
-            const c = config[role];
-            if (!c) return '';
-            return `<span class="role-badge ${role}" title="Permission Level ${c.level}"><span class="perm-stars">${c.stars}</span> ${c.label}</span>`;
+            return `<span class="role-badge ${role}">${labels[role] || role}</span>`;
         }
 
         function getRoleBadgeMini(role) {
             if (!role || role === 'user') return '';
-            // Show permission level number in mini badge
-            const levels = {
-                'superadmin': '4',
-                'admin': '3',
-                'moderator': '2'
+            const icons = {
+                'superadmin': '👑',
+                'admin': '🛡️',
+                'moderator': '🔧'
             };
             const titles = {
-                'superadmin': 'Owner - Full Permissions',
-                'admin': 'Admin - User Management',
-                'moderator': 'Moderator - Chat Moderation'
+                'superadmin': 'Owner',
+                'admin': 'Admin',
+                'moderator': 'Moderator'
             };
-            return `<span class="role-badge-mini ${role}" title="${titles[role]}">${levels[role]}</span>`;
+            return `<span class="role-badge-mini ${role}" title="${titles[role]}">${icons[role]}</span>`;
         }
 
         function initEmojiPicker() {
@@ -1026,6 +1161,13 @@
                         renderUserList();
                     }
                     break;
+                case 'user_avatar_changed':
+                    if (onlineUsers.has(data.user_id)) {
+                        const user = onlineUsers.get(data.user_id);
+                        user.avatar = data.avatar;
+                        renderUserList();
+                    }
+                    break;
                 case 'typing':
                     showTypingIndicator(data.username);
                     break;
@@ -1054,14 +1196,18 @@
             const displayName = userInfo?.nickname || data.nickname || data.username;
             const role = data.role || userInfo?.role || 'user';
             const isAnonymous = data.anonymous || userInfo?.anonymous;
-            const initial = isAnonymous ? '?' : (displayName || 'U')[0].toUpperCase();
+            const avatar = userInfo?.avatar || data.avatar || {};
             const time = formatTime(data.created_at || new Date().toISOString());
 
             // Show @username only if there's a nickname and not anonymous
             const showRealUsername = (userInfo?.nickname || data.nickname) && !isAnonymous;
 
+            // Avatar styling
+            let avatarStyle = isAnonymous ? 'background: var(--text-muted);' : getAvatarStyle(avatar);
+            let avatarContent = isAnonymous ? '?' : getAvatarContent(avatar, displayName);
+
             div.innerHTML = `
-                <div class="message-avatar" style="${isAnonymous ? 'background: var(--text-muted);' : ''}">${initial}</div>
+                <div class="message-avatar" style="${avatarStyle}">${avatarContent}</div>
                 <div class="message-content">
                     <div class="message-header">
                         <span class="message-username">${escapeHtml(displayName)}</span>
@@ -1421,6 +1567,98 @@
                 console.error('Failed to update anonymous setting:', error);
                 checkbox.checked = !anonymous;
             }
+        }
+
+        // Avatar functions
+        function showAvatarModal() {
+            const colorsContainer = document.getElementById('avatar-colors');
+            const emojisContainer = document.getElementById('avatar-emojis');
+
+            // Render color options
+            colorsContainer.innerHTML = AVATAR_COLORS.map(color => `
+                <div class="avatar-color-option ${color === selectedAvatarColor ? 'selected' : ''}"
+                     style="background: ${color};"
+                     onclick="selectAvatarColor('${color}')"></div>
+            `).join('');
+
+            // Render emoji options (with "none" option)
+            emojisContainer.innerHTML = `
+                <div class="avatar-emoji-option ${!selectedAvatarEmoji ? 'selected' : ''}"
+                     onclick="selectAvatarEmoji(null)" title="No emoji">✕</div>
+            ` + AVATAR_EMOJIS.map(emoji => `
+                <div class="avatar-emoji-option ${emoji === selectedAvatarEmoji ? 'selected' : ''}"
+                     onclick="selectAvatarEmoji('${emoji}')">${emoji}</div>
+            `).join('');
+
+            document.getElementById('avatar-modal').style.display = 'flex';
+        }
+
+        function selectAvatarColor(color) {
+            selectedAvatarColor = color;
+            document.querySelectorAll('.avatar-color-option').forEach(el => {
+                el.classList.toggle('selected', el.style.background === color);
+            });
+            updateAvatarPreview();
+        }
+
+        function selectAvatarEmoji(emoji) {
+            selectedAvatarEmoji = emoji;
+            document.querySelectorAll('.avatar-emoji-option').forEach((el, i) => {
+                if (i === 0) {
+                    el.classList.toggle('selected', !emoji);
+                } else {
+                    el.classList.toggle('selected', el.textContent === emoji);
+                }
+            });
+            updateAvatarPreview();
+        }
+
+        function updateAvatarPreview() {
+            const preview = document.getElementById('avatar-preview');
+            preview.style.background = selectedAvatarColor;
+            if (selectedAvatarEmoji) {
+                preview.textContent = selectedAvatarEmoji;
+            } else {
+                const name = currentUser?.nickname || currentUser?.username || '?';
+                preview.textContent = name[0].toUpperCase();
+            }
+        }
+
+        async function saveAvatar() {
+            try {
+                const response = await fetch('/api/me/avatar', {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        color: selectedAvatarColor,
+                        emoji: selectedAvatarEmoji
+                    })
+                });
+
+                if (response.ok) {
+                    if (currentUser) {
+                        currentUser.avatar = { color: selectedAvatarColor, emoji: selectedAvatarEmoji };
+                    }
+                    closeModal('avatar-modal');
+                    appendSystemMessage('Avatar updated!');
+                } else {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to update avatar');
+                }
+            } catch (error) {
+                console.error('Failed to update avatar:', error);
+            }
+        }
+
+        function getAvatarStyle(avatar) {
+            const color = avatar?.color || AVATAR_COLORS[0];
+            return `background: ${color};`;
+        }
+
+        function getAvatarContent(avatar, name) {
+            if (avatar?.emoji) return avatar.emoji;
+            return (name || '?')[0].toUpperCase();
         }
 
         // Emoji picker functions

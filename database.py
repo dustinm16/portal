@@ -250,6 +250,8 @@ MIGRATIONS = [
     "UPDATE users SET role = 'superadmin' WHERE is_admin = 1 AND role = 'user'",
     # Hidden username for anonymous chat
     "ALTER TABLE users ADD COLUMN chat_anonymous INTEGER DEFAULT 0",
+    # Avatar customization (JSON: {"color": "#hex", "emoji": "🙂", "initials": "AB"})
+    "ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT '{}'",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -426,7 +428,7 @@ class Database:
             return []
         placeholders = ",".join("?" * len(user_ids))
         cursor = await self.conn.execute(
-            f"SELECT id, username, nickname, status, status_message, role, chat_anonymous FROM users WHERE id IN ({placeholders})",
+            f"SELECT id, username, nickname, status, status_message, role, chat_anonymous, avatar FROM users WHERE id IN ({placeholders})",
             user_ids
         )
         rows = await cursor.fetchall()
@@ -437,6 +439,16 @@ class Database:
         cursor = await self.conn.execute(
             "UPDATE users SET chat_anonymous = ?, updated_at = ? WHERE id = ?",
             (1 if anonymous else 0, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_avatar(self, user_id: int, avatar: dict) -> bool:
+        """Set user avatar settings (color, emoji, initials)."""
+        import json
+        cursor = await self.conn.execute(
+            "UPDATE users SET avatar = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(avatar), datetime.now(timezone.utc).isoformat(), user_id)
         )
         await self.conn.commit()
         return cursor.rowcount > 0
