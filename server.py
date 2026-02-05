@@ -3209,6 +3209,34 @@ async def http_stats(request: web.Request) -> web.Response:
     })
 
 
+async def http_public_stats(request: web.Request) -> web.Response:
+    """Get public statistics (no auth required).
+
+    Returns metrics visible to all authenticated users:
+    - live_streams: Count of currently live public streams
+    - online_users: Count of unique users in chat
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    # Get live public streams count
+    live_streams = await db.get_public_streams(live_only=True)
+    live_count = len(live_streams)
+
+    # Get unique online users across all chat channels
+    online_users = set()
+    for channel, connections in chat_rooms.items():
+        for ws, user_id, username in connections:
+            if not ws.closed:
+                online_users.add(user_id)
+
+    return web.json_response({
+        "live_streams": live_count,
+        "online_users": len(online_users),
+    })
+
+
 async def http_list_plugins(request: web.Request) -> web.Response:
     """List available plugins with their configuration schemas."""
     token = await authenticate_request(request)
@@ -5567,6 +5595,7 @@ def create_app() -> web.Application:
     app.router.add_get("/health", http_health)
     app.router.add_get("/favicon.ico", http_favicon)
     app.router.add_get("/api/stats", http_stats)
+    app.router.add_get("/api/stats/public", http_public_stats)
     app.router.add_get("/api/plugins", http_list_plugins)
     app.router.add_get("/api/tunnels", http_get_tunnel_sessions)
 

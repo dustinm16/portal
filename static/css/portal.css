@@ -1796,6 +1796,11 @@ select option {
     color: var(--accent-yellow);
 }
 
+.stat-icon-red {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-red);
+}
+
 .stat-content {
     display: flex;
     flex-direction: column;

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portal Gateway - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=22">
+    <link rel="stylesheet" href="/static/css/portal.css?v=23">
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
@@ -16,6 +16,9 @@
             Portal Gateway
         </div>
         <div class="navbar-menu">
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
+            <a href="/docs">API Docs</a>
             <a href="#" onclick="openLocalTerminal(); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -121,19 +124,30 @@
         <main class="main-content">
             <!-- Dashboard Stats Row -->
             <div class="dashboard-stats" id="dashboard-stats">
-                <div class="stat-card">
-                    <div class="stat-icon stat-icon-blue">
+                <div class="stat-card stat-card-clickable" onclick="window.location.href='/streams'">
+                    <div class="stat-icon stat-icon-red">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                         </svg>
                     </div>
                     <div class="stat-content">
-                        <span class="stat-value" id="stat-services">0</span>
-                        <span class="stat-label">Routes</span>
+                        <span class="stat-value" id="stat-live-streams">0</span>
+                        <span class="stat-label">Live Streams</span>
+                    </div>
+                </div>
+                <div class="stat-card stat-card-clickable" onclick="window.location.href='/chat'">
+                    <div class="stat-icon stat-icon-green">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                        </svg>
+                    </div>
+                    <div class="stat-content">
+                        <span class="stat-value" id="stat-online-users">0</span>
+                        <span class="stat-label">Online Users</span>
                     </div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-icon stat-icon-green">
+                    <div class="stat-icon stat-icon-blue">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                         </svg>
@@ -152,17 +166,6 @@
                     <div class="stat-content">
                         <span class="stat-value" id="stat-keys">0</span>
                         <span class="stat-label">SSH Keys</span>
-                    </div>
-                </div>
-                <div class="stat-card stat-card-clickable" onclick="window.location.href='/streams'">
-                    <div class="stat-icon stat-icon-yellow">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                        </svg>
-                    </div>
-                    <div class="stat-content">
-                        <span class="stat-value">Community</span>
-                        <span class="stat-label">Chat & Streams</span>
                     </div>
                 </div>
             </div>
@@ -1372,7 +1375,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=21"></script>
-    <script src="/static/js/dashboard.js?v=21"></script>
+    <script src="/static/js/dashboard.js?v=22"></script>
     <script src="/static/js/admin.js?v=21"></script>
     <script src="/static/js/ssh-keys.js?v=21"></script>
     <script src="/static/js/user-connections.js?v=21"></script>

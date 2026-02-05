@@ -323,10 +323,15 @@ document.addEventListener('click', (e) => {
  */
 async function loadDashboardStats() {
     try {
-        // Update services count
-        const statServices = document.getElementById('stat-services');
-        if (statServices) {
-            statServices.textContent = services.filter(s => s.enabled !== false).length;
+        // Load public stats (live streams, online users)
+        const publicStats = await Portal.api('/api/stats/public');
+        const statLiveStreams = document.getElementById('stat-live-streams');
+        const statOnlineUsers = document.getElementById('stat-online-users');
+        if (statLiveStreams && publicStats.live_streams !== undefined) {
+            statLiveStreams.textContent = publicStats.live_streams;
+        }
+        if (statOnlineUsers && publicStats.online_users !== undefined) {
+            statOnlineUsers.textContent = publicStats.online_users;
         }
 
         // Load connections count
@@ -354,6 +359,25 @@ async function loadDashboardStats() {
         console.error('Failed to load dashboard stats:', error);
     }
 }
+
+/**
+ * Periodically refresh public stats (every 30 seconds)
+ */
+setInterval(async () => {
+    try {
+        const publicStats = await Portal.api('/api/stats/public');
+        const statLiveStreams = document.getElementById('stat-live-streams');
+        const statOnlineUsers = document.getElementById('stat-online-users');
+        if (statLiveStreams && publicStats.live_streams !== undefined) {
+            statLiveStreams.textContent = publicStats.live_streams;
+        }
+        if (statOnlineUsers && publicStats.online_users !== undefined) {
+            statOnlineUsers.textContent = publicStats.online_users;
+        }
+    } catch (error) {
+        // Silent failure for periodic updates
+    }
+}, 30000);
 
 /**
  * Switch between tabs

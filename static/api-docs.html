@@ -272,6 +272,7 @@
                 </ul>
                 <h4>Core Endpoints</h4>
                 <ul>
+                    <li><a href="#public-stats">Public Stats</a></li>
                     <li><a href="#services">Services</a></li>
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#streams">User Streams</a></li>
@@ -458,6 +459,33 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Revokes the API key. The key will no longer work for authentication but remains in your key list.</p>
+                    </div>
+                </div>
+
+                <!-- Public Stats -->
+                <h2 id="public-stats">Public Stats</h2>
+                <p>Public statistics available to all authenticated users.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/stats/public</span>
+                        <span class="endpoint-desc">Get public statistics</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns public metrics visible to all authenticated users, including live stream counts and online user counts.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"live_streams"</span>: <span class="number">3</span>,
+  <span class="string">"online_users"</span>: <span class="number">12</span>
+}</pre>
+                        </div>
+                        <h4>Fields</h4>
+                        <ul>
+                            <li><code>live_streams</code> - Number of currently live public streams</li>
+                            <li><code>online_users</code> - Number of unique users currently in chat</li>
+                        </ul>
                     </div>
                 </div>
 
