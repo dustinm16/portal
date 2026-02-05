@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portal Gateway - Chat</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=15">
+    <link rel="stylesheet" href="/static/css/portal.css?v=17">
     <style>
         .chat-container {
             display: grid;
@@ -265,11 +265,37 @@
             height: 8px;
             border-radius: 50%;
             background: var(--accent-green);
+            flex-shrink: 0;
+        }
+
+        .user-status.online { background: var(--accent-green); }
+        .user-status.away { background: var(--accent-yellow); }
+        .user-status.busy { background: var(--accent-red); }
+        .user-status.dnd { background: #dc2626; }
+        .user-status.offline { background: var(--text-muted); }
+
+        .user-info {
+            flex: 1;
+            min-width: 0;
         }
 
         .user-name {
             color: var(--text-secondary);
             font-size: 0.875rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .user-nickname {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .user-status-msg {
+            color: var(--text-muted);
+            font-size: 0.65rem;
+            font-style: italic;
         }
 
         .user-count {
@@ -363,6 +389,170 @@
             font-size: 1.5rem;
             cursor: pointer;
         }
+
+        /* Status picker */
+        .status-picker {
+            position: relative;
+        }
+
+        .status-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.75rem;
+            width: 100%;
+        }
+
+        .status-btn:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .status-dropdown {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            right: 0;
+            background: var(--bg-primary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            margin-bottom: 0.25rem;
+            overflow: hidden;
+            z-index: 100;
+        }
+
+        .status-dropdown.show {
+            display: block;
+        }
+
+        .status-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .status-option:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        /* Markdown styles in messages */
+        .message-text strong { font-weight: 600; }
+        .message-text em { font-style: italic; }
+        .message-text code {
+            background: rgba(255,255,255,0.1);
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 0.875em;
+        }
+        .message-text pre {
+            background: rgba(0,0,0,0.3);
+            padding: 0.5rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 0.25rem 0;
+        }
+        .message-text pre code {
+            background: none;
+            padding: 0;
+        }
+        .message-text del {
+            text-decoration: line-through;
+            opacity: 0.7;
+        }
+        .message-text blockquote {
+            border-left: 3px solid var(--accent-blue);
+            padding-left: 0.75rem;
+            margin: 0.25rem 0;
+            color: var(--text-muted);
+        }
+
+        /* Emoji picker */
+        .emoji-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.5rem;
+            font-size: 1.25rem;
+            opacity: 0.6;
+            transition: opacity 0.2s;
+        }
+
+        .emoji-btn:hover {
+            opacity: 1;
+        }
+
+        .emoji-picker {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            background: var(--bg-secondary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+            max-width: 300px;
+            z-index: 100;
+        }
+
+        .emoji-picker.show {
+            display: block;
+        }
+
+        .emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 0.25rem;
+        }
+
+        .emoji-item {
+            cursor: pointer;
+            padding: 0.25rem;
+            font-size: 1.25rem;
+            text-align: center;
+            border-radius: 4px;
+        }
+
+        .emoji-item:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        /* Input area adjustments */
+        .chat-input-wrapper {
+            position: relative;
+        }
+
+        /* User settings section */
+        .user-settings {
+            padding: 0.5rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .nickname-input {
+            width: 100%;
+            padding: 0.25rem 0.5rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-size: 0.75rem;
+            margin-top: 0.5rem;
+        }
+
+        .nickname-input::placeholder {
+            color: var(--text-muted);
+        }
     </style>
 </head>
 <body>
@@ -396,6 +586,32 @@
                     + New Channel
                 </button>
             </div>
+            <div class="user-settings">
+                <div class="status-picker">
+                    <button class="status-btn" onclick="toggleStatusDropdown()">
+                        <span class="user-status online" id="my-status-dot"></span>
+                        <span id="my-status-text">Online</span>
+                    </button>
+                    <div class="status-dropdown" id="status-dropdown">
+                        <div class="status-option" onclick="setMyStatus('online')">
+                            <span class="user-status online"></span> Online
+                        </div>
+                        <div class="status-option" onclick="setMyStatus('away')">
+                            <span class="user-status away"></span> Away
+                        </div>
+                        <div class="status-option" onclick="setMyStatus('busy')">
+                            <span class="user-status busy"></span> Busy
+                        </div>
+                        <div class="status-option" onclick="setMyStatus('dnd')">
+                            <span class="user-status dnd"></span> Do Not Disturb
+                        </div>
+                        <div class="status-option" onclick="setMyStatus('offline')">
+                            <span class="user-status offline"></span> Appear Offline
+                        </div>
+                    </div>
+                </div>
+                <input type="text" class="nickname-input" id="nickname-input" placeholder="Set nickname..." maxlength="32" onchange="updateNickname()">
+            </div>
             <div class="connection-status">
                 <span class="status-dot" id="status-dot"></span>
                 <span id="connection-text">Connecting...</span>
@@ -414,7 +630,11 @@
             <div class="typing-indicator" id="typing-indicator"></div>
             <div class="chat-input-container">
                 <div class="chat-input-wrapper">
-                    <input type="text" id="chat-input" placeholder="Type a message..." autocomplete="off">
+                    <button class="emoji-btn" onclick="toggleEmojiPicker()" title="Insert emoji">😊</button>
+                    <div class="emoji-picker" id="emoji-picker">
+                        <div class="emoji-grid" id="emoji-grid"></div>
+                    </div>
+                    <input type="text" id="chat-input" placeholder="Type a message... (supports **bold**, *italic*, `code`, ~~strike~~)" autocomplete="off">
                     <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -467,7 +687,33 @@
         let currentUser = null;
         let reconnectAttempts = 0;
         let typingTimeout = null;
-        let onlineUsers = new Set();
+        let onlineUsers = new Map(); // user_id -> user info
+
+        // Common emoji for quick picker
+        const COMMON_EMOJI = [
+            '😊', '😂', '🤣', '❤️', '😍', '🤔', '😎', '🙏',
+            '👍', '👎', '👋', '🎉', '🔥', '✅', '❌', '⭐',
+            '💯', '🚀', '💪', '😢', '😡', '🤷', '👀', '💡',
+            '⚠️', '🐛', '🔧', '📝', '🔒', '🔓', '📌', '💬'
+        ];
+
+        // Emoji shortcodes mapping
+        const EMOJI_SHORTCODES = {
+            ':)': '😊', ':-)': '😊', ':D': '😃', ':-D': '😃',
+            ':(': '😢', ':-(': '😢', ';)': '😉', ';-)': '😉',
+            ':P': '😛', ':-P': '😛', ':O': '😮', ':-O': '😮',
+            '<3': '❤️', ':heart:': '❤️', ':fire:': '🔥',
+            ':+1:': '👍', ':thumbsup:': '👍', ':-1:': '👎', ':thumbsdown:': '👎',
+            ':star:': '⭐', ':check:': '✅', ':x:': '❌',
+            ':rocket:': '🚀', ':100:': '💯', ':clap:': '👏',
+            ':eyes:': '👀', ':thinking:': '🤔', ':bulb:': '💡',
+            ':warning:': '⚠️', ':bug:': '🐛', ':wrench:': '🔧',
+            ':memo:': '📝', ':lock:': '🔒', ':unlock:': '🔓',
+            ':wave:': '👋', ':party:': '🎉', ':tada:': '🎉',
+            ':lol:': '🤣', ':cry:': '😢', ':angry:': '😡',
+            ':cool:': '😎', ':pray:': '🙏', ':muscle:': '💪',
+            ':shrug:': '🤷', ':pin:': '📌', ':speech:': '💬'
+        };
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
@@ -497,10 +743,28 @@
                     return;
                 }
                 currentUser = await response.json();
-                document.getElementById('username-display').textContent = currentUser.username;
+                document.getElementById('username-display').textContent = currentUser.nickname || currentUser.username;
+
+                // Set initial status display
+                updateMyStatusDisplay(currentUser.status || 'online');
+
+                // Set nickname input
+                if (currentUser.nickname) {
+                    document.getElementById('nickname-input').value = currentUser.nickname;
+                }
+
+                // Initialize emoji picker
+                initEmojiPicker();
             } catch (error) {
                 console.error('Failed to load user:', error);
             }
+        }
+
+        function initEmojiPicker() {
+            const grid = document.getElementById('emoji-grid');
+            grid.innerHTML = COMMON_EMOJI.map(emoji =>
+                `<span class="emoji-item" onclick="insertEmoji('${emoji}')">${emoji}</span>`
+            ).join('');
         }
 
         async function loadChannels() {
@@ -594,14 +858,29 @@
                     updateUserList(data.users);
                     break;
                 case 'user_joined':
-                    onlineUsers.add(data.username);
                     appendSystemMessage(`${data.username} joined the channel`);
-                    updateUserCount();
+                    // Refresh user list will happen via WebSocket
                     break;
                 case 'user_left':
-                    onlineUsers.delete(data.username);
+                    onlineUsers.delete(data.user_id || data.username);
                     appendSystemMessage(`${data.username} left the channel`);
                     updateUserCount();
+                    renderUserList();
+                    break;
+                case 'user_status_changed':
+                    if (onlineUsers.has(data.user_id)) {
+                        const user = onlineUsers.get(data.user_id);
+                        user.status = data.status;
+                        user.status_message = data.status_message;
+                        renderUserList();
+                    }
+                    break;
+                case 'user_nickname_changed':
+                    if (onlineUsers.has(data.user_id)) {
+                        const user = onlineUsers.get(data.user_id);
+                        user.nickname = data.nickname;
+                        renderUserList();
+                    }
                     break;
                 case 'typing':
                     showTypingIndicator(data.username);
@@ -625,14 +904,18 @@
             div.className = 'message';
             div.dataset.messageId = data.id;
 
-            const initial = (data.username || 'U')[0].toUpperCase();
+            // Look up user info for nickname display
+            const userInfo = data.user_id ? onlineUsers.get(data.user_id) : null;
+            const displayName = userInfo?.nickname || data.username;
+            const initial = (displayName || 'U')[0].toUpperCase();
             const time = formatTime(data.created_at || new Date().toISOString());
 
             div.innerHTML = `
                 <div class="message-avatar">${initial}</div>
                 <div class="message-content">
                     <div class="message-header">
-                        <span class="message-username">${escapeHtml(data.username)}</span>
+                        <span class="message-username">${escapeHtml(displayName)}</span>
+                        ${userInfo?.nickname ? `<span class="message-realname" style="color: var(--text-muted); font-size: 0.75rem;">@${escapeHtml(data.username)}</span>` : ''}
                         <span class="message-time">${time}</span>
                     </div>
                     <div class="message-text">${formatMessage(data.message)}</div>
@@ -660,19 +943,53 @@
         }
 
         function updateUserList(users) {
-            onlineUsers = new Set(users);
+            // users is now an array of {user_id, username, nickname, status, status_message}
+            onlineUsers = new Map();
+            users.forEach(u => onlineUsers.set(u.user_id, u));
+            renderUserList();
+        }
+
+        function renderUserList() {
             const list = document.getElementById('user-list');
+            const users = Array.from(onlineUsers.values());
+
+            // Sort: online first, then by name
+            users.sort((a, b) => {
+                const statusOrder = {'online': 0, 'away': 1, 'busy': 2, 'dnd': 3, 'offline': 4};
+                const aOrder = statusOrder[a.status] || 0;
+                const bOrder = statusOrder[b.status] || 0;
+                if (aOrder !== bOrder) return aOrder - bOrder;
+                return (a.nickname || a.username).localeCompare(b.nickname || b.username);
+            });
+
             list.innerHTML = users.map(user => `
-                <div class="user-item">
-                    <span class="user-status"></span>
-                    <span class="user-name">${escapeHtml(user)}</span>
+                <div class="user-item" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status)}">
+                    <span class="user-status ${user.status || 'online'}"></span>
+                    <div class="user-info">
+                        <div class="user-name">${escapeHtml(user.nickname || user.username)}</div>
+                        ${user.nickname ? `<div class="user-nickname">@${escapeHtml(user.username)}</div>` : ''}
+                        ${user.status_message ? `<div class="user-status-msg">${escapeHtml(user.status_message)}</div>` : ''}
+                    </div>
                 </div>
             `).join('');
             updateUserCount();
         }
 
+        function getStatusLabel(status) {
+            const labels = {
+                'online': 'Online',
+                'away': 'Away',
+                'busy': 'Busy',
+                'dnd': 'Do Not Disturb',
+                'offline': 'Offline'
+            };
+            return labels[status] || 'Online';
+        }
+
         function updateUserCount() {
-            document.getElementById('user-count').textContent = `${onlineUsers.size} online`;
+            const total = onlineUsers.size;
+            const online = Array.from(onlineUsers.values()).filter(u => u.status !== 'offline').length;
+            document.getElementById('user-count').textContent = `${online} online`;
         }
 
         function sendMessage() {
@@ -786,10 +1103,40 @@
         function formatMessage(text) {
             // Escape HTML first
             text = escapeHtml(text);
-            // Convert URLs to links
-            text = text.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-            // Convert newlines to br
+
+            // Convert emoji shortcodes
+            for (const [code, emoji] of Object.entries(EMOJI_SHORTCODES)) {
+                // Escape regex special characters in code
+                const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                text = text.replace(new RegExp(escaped, 'g'), emoji);
+            }
+
+            // Code blocks (```) - must be before inline code
+            text = text.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+
+            // Inline code (`)
+            text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+            // Bold (**text** or __text__)
+            text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+            text = text.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+
+            // Italic (*text* or _text_)
+            text = text.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+            text = text.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+
+            // Strikethrough (~~text~~)
+            text = text.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+
+            // Blockquote (> text)
+            text = text.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+            // Convert URLs to links (after markdown so we don't break URLs)
+            text = text.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+
+            // Convert newlines to br (except in pre tags)
             text = text.replace(/\n/g, '<br>');
+
             return text;
         }
 
@@ -798,6 +1145,94 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // Status picker functions
+        function toggleStatusDropdown() {
+            document.getElementById('status-dropdown').classList.toggle('show');
+        }
+
+        async function setMyStatus(status) {
+            document.getElementById('status-dropdown').classList.remove('show');
+
+            try {
+                const response = await fetch('/api/me/status', {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status })
+                });
+
+                if (response.ok) {
+                    updateMyStatusDisplay(status);
+                    if (currentUser) currentUser.status = status;
+                } else {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to update status');
+                }
+            } catch (error) {
+                console.error('Failed to update status:', error);
+            }
+        }
+
+        function updateMyStatusDisplay(status) {
+            const dot = document.getElementById('my-status-dot');
+            const text = document.getElementById('my-status-text');
+
+            dot.className = 'user-status ' + status;
+            text.textContent = getStatusLabel(status);
+        }
+
+        // Nickname function
+        async function updateNickname() {
+            const input = document.getElementById('nickname-input');
+            const nickname = input.value.trim();
+
+            try {
+                const response = await fetch('/api/me/nickname', {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nickname })
+                });
+
+                if (response.ok) {
+                    if (currentUser) currentUser.nickname = nickname || null;
+                    document.getElementById('username-display').textContent = nickname || currentUser?.username || 'User';
+                } else {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to update nickname');
+                    input.value = currentUser?.nickname || '';
+                }
+            } catch (error) {
+                console.error('Failed to update nickname:', error);
+            }
+        }
+
+        // Emoji picker functions
+        function toggleEmojiPicker() {
+            document.getElementById('emoji-picker').classList.toggle('show');
+        }
+
+        function insertEmoji(emoji) {
+            const input = document.getElementById('chat-input');
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            const text = input.value;
+            input.value = text.substring(0, start) + emoji + text.substring(end);
+            input.focus();
+            input.setSelectionRange(start + emoji.length, start + emoji.length);
+            document.getElementById('emoji-picker').classList.remove('show');
+        }
+
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.status-picker')) {
+                document.getElementById('status-dropdown').classList.remove('show');
+            }
+            if (!e.target.closest('.emoji-btn') && !e.target.closest('.emoji-picker')) {
+                document.getElementById('emoji-picker').classList.remove('show');
+            }
+        });
     </script>
 </body>
 </html>

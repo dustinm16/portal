@@ -240,6 +240,10 @@ MIGRATIONS = [
     "INSERT OR IGNORE INTO chat_channels (name, description, is_default) VALUES ('general', 'General discussion', 1)",
     "INSERT OR IGNORE INTO chat_channels (name, description) VALUES ('random', 'Off-topic chat')",
     "INSERT OR IGNORE INTO chat_channels (name, description) VALUES ('help', 'Help and support')",
+    # User status for chat presence
+    "ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'online'",
+    "ALTER TABLE users ADD COLUMN status_message TEXT",
+    "ALTER TABLE users ADD COLUMN nickname TEXT",
 ]
 
 
@@ -348,6 +352,50 @@ class Database:
             await self.conn.commit()
             return True
         return False
+
+    # User status and profile operations
+    async def get_user_status(self, user_id: int) -> Optional[dict]:
+        """Get user status info."""
+        cursor = await self.conn.execute(
+            "SELECT id, username, nickname, status, status_message FROM users WHERE id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def set_user_status(self, user_id: int, status: str, status_message: str = None) -> bool:
+        """Set user status (online, away, busy, dnd, offline)."""
+        valid_statuses = ('online', 'away', 'busy', 'dnd', 'offline')
+        if status not in valid_statuses:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE users SET status = ?, status_message = ?, updated_at = ? WHERE id = ?",
+            (status, status_message, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_user_nickname(self, user_id: int, nickname: str) -> bool:
+        """Set user nickname for chat display."""
+        # Allow empty/null to clear nickname
+        cursor = await self.conn.execute(
+            "UPDATE users SET nickname = ?, updated_at = ? WHERE id = ?",
+            (nickname if nickname else None, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_users_status(self, user_ids: list[int]) -> list[dict]:
+        """Get status for multiple users."""
+        if not user_ids:
+            return []
+        placeholders = ",".join("?" * len(user_ids))
+        cursor = await self.conn.execute(
+            f"SELECT id, username, nickname, status, status_message FROM users WHERE id IN ({placeholders})",
+            user_ids
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     # Token operations
     async def create_token(

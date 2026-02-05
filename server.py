@@ -2996,11 +2996,19 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "messages": messages
                         })
 
-                        # Send user list
-                        users = [entry[2] for entry in chat_rooms[current_channel]]
+                        # Send user list with status info
+                        user_ids = [entry[1] for entry in chat_rooms[current_channel]]
+                        users_info = await db.get_users_status(list(set(user_ids)))
+                        users_list = [{
+                            "user_id": u["id"],
+                            "username": u["username"],
+                            "nickname": u.get("nickname"),
+                            "status": u.get("status", "online"),
+                            "status_message": u.get("status_message")
+                        } for u in users_info]
                         await ws.send_json({
                             "type": "users",
-                            "users": sorted(set(users))
+                            "users": users_list
                         })
 
                         # Notify others
@@ -3104,6 +3112,9 @@ async def http_get_current_user(request: web.Request) -> web.Response:
     return web.json_response({
         "id": user["id"],
         "username": user["username"],
+        "nickname": user.get("nickname"),
+        "status": user.get("status", "online"),
+        "status_message": user.get("status_message"),
         "is_admin": bool(user["is_admin"]),
         "scopes": token.scopes
     })
@@ -3155,6 +3166,99 @@ async def http_change_password(request: web.Request) -> web.Response:
     logger.info(f"Password changed for user {token.user_id}")
 
     return web.json_response({"message": "Password changed successfully"})
+
+
+async def http_update_user_status(request: web.Request) -> web.Response:
+    """Update user's chat status."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    status = data.get("status")
+    status_message = data.get("status_message", "")
+
+    if not status:
+        return web.json_response({"error": "status required"}, status=400)
+
+    valid_statuses = ('online', 'away', 'busy', 'dnd', 'offline')
+    if status not in valid_statuses:
+        return web.json_response(
+            {"error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"},
+            status=400
+        )
+
+    if status_message and len(status_message) > 100:
+        return web.json_response({"error": "Status message too long (max 100 chars)"}, status=400)
+
+    await db.set_user_status(token.user_id, status, status_message)
+
+    # Broadcast status change to all chat rooms the user is in
+    user = await db.get_user_by_id(token.user_id)
+    username = user["username"] if user else "Unknown"
+    for channel, users in chat_rooms.items():
+        for entry in users:
+            if entry[1] == token.user_id:
+                await broadcast_to_channel(channel, {
+                    "type": "user_status_changed",
+                    "user_id": token.user_id,
+                    "username": username,
+                    "status": status,
+                    "status_message": status_message
+                })
+                break
+
+    return web.json_response({
+        "status": status,
+        "status_message": status_message
+    })
+
+
+async def http_update_user_nickname(request: web.Request) -> web.Response:
+    """Update user's chat nickname."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    nickname = data.get("nickname", "").strip()
+
+    # Validate nickname (allow empty to clear)
+    if nickname:
+        if len(nickname) < 2 or len(nickname) > 32:
+            return web.json_response({"error": "Nickname must be 2-32 characters"}, status=400)
+        # Only allow alphanumeric, spaces, underscores, dashes
+        import re
+        if not re.match(r'^[\w\s\-]+$', nickname):
+            return web.json_response({"error": "Nickname can only contain letters, numbers, spaces, underscores and dashes"}, status=400)
+
+    await db.set_user_nickname(token.user_id, nickname if nickname else None)
+
+    # Broadcast nickname change to all chat rooms
+    user = await db.get_user_by_id(token.user_id)
+    username = user["username"] if user else "Unknown"
+    for channel, users in chat_rooms.items():
+        for entry in users:
+            if entry[1] == token.user_id:
+                await broadcast_to_channel(channel, {
+                    "type": "user_nickname_changed",
+                    "user_id": token.user_id,
+                    "username": username,
+                    "nickname": nickname if nickname else None
+                })
+                break
+
+    return web.json_response({
+        "nickname": nickname if nickname else None
+    })
 
 
 # =============================================================================
@@ -3493,6 +3597,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/users/{id}", http_delete_user)
     app.router.add_get("/api/me", http_get_current_user)
     app.router.add_post("/api/me/password", http_change_password)
+    app.router.add_put("/api/me/status", http_update_user_status)
+    app.router.add_put("/api/me/nickname", http_update_user_nickname)
 
     # Two-Factor Authentication
     app.router.add_get("/api/user/2fa/status", http_2fa_status)
