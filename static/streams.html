@@ -699,6 +699,8 @@
                     <video id="stream-video" controls autoplay></video>
                     <div id="player-stats" class="player-stats" style="display: none;">
                         <div class="stat-row"><span>Resolution:</span><span id="stat-resolution">--</span></div>
+                        <div class="stat-row"><span>Framerate:</span><span id="stat-framerate">--</span></div>
+                        <div class="stat-row"><span>Codec:</span><span id="stat-codec">--</span></div>
                         <div class="stat-row"><span>Bitrate:</span><span id="stat-bitrate">--</span></div>
                         <div class="stat-row"><span>Buffer:</span><span id="stat-buffer">--</span></div>
                         <div class="stat-row"><span>Latency:</span><span id="stat-latency">--</span></div>
@@ -900,7 +902,7 @@
 
                 const video = document.getElementById('stream-video');
 
-                // Resolution
+                // Resolution, framerate, codec, bitrate
                 const level = hlsPlayer.currentLevel;
                 if (level >= 0 && hlsPlayer.levels[level]) {
                     const lvl = hlsPlayer.levels[level];
@@ -908,8 +910,59 @@
                         `${lvl.width}x${lvl.height}`;
                     document.getElementById('stat-bitrate').textContent =
                         `${Math.round(lvl.bitrate / 1000)} kbps`;
+
+                    // Framerate - from level attrs or video element
+                    let fps = '--';
+                    if (lvl.frameRate) {
+                        fps = `${lvl.frameRate} fps`;
+                    } else if (lvl.attrs && lvl.attrs['FRAME-RATE']) {
+                        fps = `${parseFloat(lvl.attrs['FRAME-RATE']).toFixed(0)} fps`;
+                    } else if (video.getVideoPlaybackQuality) {
+                        // Estimate from played frames
+                        const quality = video.getVideoPlaybackQuality();
+                        if (quality.totalVideoFrames > 0 && video.currentTime > 0) {
+                            const estFps = quality.totalVideoFrames / video.currentTime;
+                            if (estFps > 10 && estFps < 120) {
+                                fps = `~${Math.round(estFps)} fps`;
+                            }
+                        }
+                    }
+                    document.getElementById('stat-framerate').textContent = fps;
+
+                    // Codec - parse from codecs string
+                    let codec = '--';
+                    const codecs = lvl.codecs || (lvl.attrs && lvl.attrs.CODECS);
+                    if (codecs) {
+                        // Parse codec string like "avc1.64001f,mp4a.40.2"
+                        const parts = codecs.split(',');
+                        const videoCodec = parts.find(c => c.startsWith('avc') || c.startsWith('hvc') || c.startsWith('hev') || c.startsWith('vp') || c.startsWith('av1'));
+                        const audioCodec = parts.find(c => c.startsWith('mp4a') || c.startsWith('opus') || c.startsWith('ac-'));
+
+                        if (videoCodec) {
+                            // Simplify codec names
+                            if (videoCodec.startsWith('avc1')) codec = 'H.264';
+                            else if (videoCodec.startsWith('hvc1') || videoCodec.startsWith('hev1')) codec = 'H.265';
+                            else if (videoCodec.startsWith('vp9')) codec = 'VP9';
+                            else if (videoCodec.startsWith('vp8')) codec = 'VP8';
+                            else if (videoCodec.startsWith('av01')) codec = 'AV1';
+                            else codec = videoCodec.split('.')[0].toUpperCase();
+
+                            // Add audio codec
+                            if (audioCodec) {
+                                if (audioCodec.startsWith('mp4a.40.2')) codec += ' / AAC';
+                                else if (audioCodec.startsWith('mp4a')) codec += ' / AAC';
+                                else if (audioCodec.startsWith('opus')) codec += ' / Opus';
+                                else if (audioCodec.startsWith('ac-3')) codec += ' / AC3';
+                            }
+                        } else {
+                            codec = codecs.substring(0, 20);
+                        }
+                    }
+                    document.getElementById('stat-codec').textContent = codec;
                 } else {
                     document.getElementById('stat-resolution').textContent = '--';
+                    document.getElementById('stat-framerate').textContent = '--';
+                    document.getElementById('stat-codec').textContent = '--';
                     document.getElementById('stat-bitrate').textContent = '--';
                 }
 
