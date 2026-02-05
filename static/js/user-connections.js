@@ -19,6 +19,7 @@ const CONNECTION_PRESETS = {
     'proxmox-ve': { name: 'Proxmox VE', type: 'proxmox', port: 8006, icon: 'server', config: { verify_ssl: false } },
     'tcp-tunnel': { name: 'TCP Tunnel', type: 'tcp_tunnel', icon: 'link', config: {} },
     'secure-tunnel': { name: 'Secure Tunnel', type: 'secure_tunnel', icon: 'lock', config: {} },
+    'vpn-bridge': { name: 'VPN Bridge', type: 'vpn_tunnel', icon: 'lock', config: {} },
     'http-proxy': { name: 'HTTP Proxy', type: 'http_proxy', port: 80, icon: 'globe', config: {} },
     'mysql-db': { name: 'MySQL Database', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' } },
     'postgres-db': { name: 'PostgreSQL Database', type: 'database', port: 5432, icon: 'database', config: { db_type: 'postgresql' } },
