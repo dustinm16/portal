@@ -1406,7 +1406,12 @@
         }
 
         function formatTime(isoString) {
-            const date = new Date(isoString);
+            // Handle timestamps - append Z if no timezone info (treat as UTC)
+            let dateStr = isoString;
+            if (dateStr && !dateStr.includes('+') && !dateStr.endsWith('Z')) {
+                dateStr = dateStr + 'Z';
+            }
+            const date = new Date(dateStr);
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
 

@@ -1181,10 +1181,12 @@ class Database:
     ) -> int:
         """Create a new chat message (encrypted)."""
         encrypted_message = encrypt_message(message)
+        # Explicitly store UTC timestamp with timezone info
+        created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type)
-               VALUES (?, ?, ?, ?, ?)""",
-            (channel_id, user_id, username, encrypted_message, message_type)
+            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (channel_id, user_id, username, encrypted_message, message_type, created_at)
         )
         await self.conn.commit()
         return cursor.lastrowid
