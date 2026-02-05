@@ -222,8 +222,9 @@ async function showStreamDetails(streamId) {
 
         // Use stream.dddvm.xyz for direct RTMPS (bypasses Cloudflare)
         const rtmpUrl = 'rtmps://stream.dddvm.xyz:1936/live';
-        // HLS playback through Portal proxy on 443
-        const hlsUrl = `https://${window.location.hostname}/api/stream/${stream.stream_key}/hls/index.m3u8`;
+        // HLS playback through Portal proxy on 443 (use public_key for viewing)
+        const viewKey = stream.public_key || stream.stream_key;
+        const hlsUrl = `https://${window.location.hostname}/api/stream/${viewKey}/hls/index.m3u8`;
 
         const thumbnailHtml = stream.thumbnail_url
             ? `<img src="${escapeHtml(stream.thumbnail_url)}" alt="Thumbnail">`
@@ -288,6 +289,21 @@ async function showStreamDetails(streamId) {
                         </label>
                     </div>
                 </div>
+
+                ${stream.public_key ? `
+                <div class="info-section">
+                    <h4>Public API Key</h4>
+                    <p class="info-description">Share this key with viewers for read-only access to your stream.</p>
+                    <div class="form-group">
+                        <label>Viewing Key (read-only)</label>
+                        <div class="input-with-copy">
+                            <input type="text" value="${stream.public_key}" readonly>
+                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${stream.public_key}')">Copy</button>
+                        </div>
+                        <small style="color: var(--text-muted);">Safe to share - viewers cannot modify your stream with this key.</small>
+                    </div>
+                </div>
+                ` : ''}
 
                 <div class="info-section">
                     <h4>Playback URLs</h4>
@@ -514,8 +530,10 @@ async function viewStream(streamId) {
         document.getElementById('view-stream-title').textContent = `${stream.name} - ${stream.owner_username}`;
 
         // Set up video player with HLS - routed through Portal on port 443
+        // Use public_key for viewing (read-only access)
         const video = document.getElementById('stream-video');
-        const hlsUrl = `/api/stream/${stream.stream_key}/hls/index.m3u8`;
+        const viewKey = stream.public_key || stream.stream_key;
+        const hlsUrl = `/api/stream/${viewKey}/hls/index.m3u8`;
 
         if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = hlsUrl;

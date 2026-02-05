@@ -1715,9 +1715,15 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
 
 
 def generate_stream_key() -> str:
-    """Generate a unique stream key for OBS/RTMP authentication."""
+    """Generate a unique private stream key for OBS/RTMP publishing."""
     import secrets
     return f"live_{secrets.token_urlsafe(24)}"
+
+
+def generate_public_key() -> str:
+    """Generate a unique public key for read-only stream access (viewing)."""
+    import secrets
+    return f"pub_{secrets.token_urlsafe(16)}"
 
 
 async def http_list_user_streams(request: web.Request) -> web.Response:
@@ -1748,14 +1754,16 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
     description = data.get("description", "").strip()
     is_public = bool(data.get("is_public", False))
 
-    # Generate unique stream key
-    stream_key = generate_stream_key()
+    # Generate unique keys
+    stream_key = generate_stream_key()  # Private key for publishing
+    public_key = generate_public_key()  # Public key for viewing
 
     try:
         stream_id = await db.create_user_stream(
             user_id=token.user_id,
             name=name,
             stream_key=stream_key,
+            public_key=public_key,
             description=description,
             is_public=is_public
         )
@@ -1783,10 +1791,10 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
 async def http_get_user_stream(request: web.Request) -> web.Response:
     """Get a specific stream by ID.
 
-    Stream key visibility:
-    - Owner always sees their stream key (for OBS setup)
-    - Public streams: stream_key visible (needed for playback URLs)
-    - Private streams: stream_key hidden from non-owners
+    Key visibility rules:
+    - Owner: sees both stream_key (for OBS) and public_key (for sharing)
+    - Non-owner viewing public stream: sees public_key only (for playback)
+    - Non-owner viewing private stream: no keys visible
     """
     token = await authenticate_request(request)
     if not token:
@@ -1798,13 +1806,15 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Hide stream key for private streams from non-owners
-    # Public streams need the key visible for playback URLs
     is_owner = stream["user_id"] == token.user_id
     is_public = stream.get("is_public", False)
 
-    if not is_owner and not is_public:
+    if not is_owner:
+        # Always hide the private stream_key from non-owners
         stream.pop("stream_key", None)
+        # Also hide public_key for private streams
+        if not is_public:
+            stream.pop("public_key", None)
 
     return web.json_response({"stream": stream})
 
@@ -2109,16 +2119,19 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
 async def http_get_public_streams(request: web.Request) -> web.Response:
     """Get all public streams (community streams).
 
-    This endpoint is accessible to all users (authenticated or not).
-    Stream keys are never included in the response.
+    This endpoint is accessible to all authenticated users.
+    - Private stream_key is never included (security)
+    - Public key (pub_xxx) is included for playback URLs
     """
-    # Authentication is optional - anyone can view public streams
     token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
 
     live_only = request.query.get("live", "false").lower() == "true"
     streams = await db.get_public_streams(live_only=live_only)
 
-    # Remove stream keys from public listing (security)
+    # Remove private stream keys from public listing (security)
+    # Keep public_key for playback URLs
     for stream in streams:
         stream.pop("stream_key", None)
 
@@ -2246,34 +2259,41 @@ async def _get_mediamtx_config() -> dict:
     return {}
 
 
-async def _validate_stream_access(stream_key: str, require_publish: bool = False) -> tuple[dict | None, str]:
-    """Validate stream key and return (stream_info, error_message).
+async def _validate_stream_access(key: str, require_publish: bool = False) -> tuple[dict | None, str]:
+    """Validate stream access key and return (stream_info, error_message).
+
+    Supports two key types:
+    - Private key (live_xxx): Used for publishing and full access
+    - Public key (pub_xxx): Used for read-only viewing access
 
     Args:
-        stream_key: The stream key to validate
-        require_publish: If True, requires the stream key to be valid for publishing
+        key: The stream key (private or public) to validate
+        require_publish: If True, requires private stream key for publishing
 
     Returns:
         Tuple of (stream_dict or None, error_message or empty string)
     """
-    if not stream_key:
+    if not key:
         return None, "Stream key required"
 
-    # Ensure proper format
-    if not stream_key.startswith("live_"):
-        stream_key = f"live_{stream_key}"
+    stream = None
 
-    stream = await db.get_stream_by_key(stream_key)
+    # Check if it's a public key (read-only access)
+    if key.startswith("pub_"):
+        if require_publish:
+            return None, "Public key cannot be used for publishing"
+        stream = await db.get_stream_by_public_key(key)
+        if not stream:
+            return None, "Invalid public key"
+        return stream, ""
+
+    # It's a private key (live_xxx) - full access
+    if not key.startswith("live_"):
+        key = f"live_{key}"
+
+    stream = await db.get_stream_by_key(key)
     if not stream:
         return None, "Invalid stream key"
-
-    # For publishing, stream key must match exactly
-    if require_publish:
-        return stream, ""
-
-    # For viewing, allow public streams or owner's streams
-    if stream.get("is_public"):
-        return stream, ""
 
     return stream, ""
 
@@ -2281,16 +2301,20 @@ async def _validate_stream_access(stream_key: str, require_publish: bool = False
 async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     """Proxy HLS requests to MediaMTX through port 443.
 
-    Route: /api/stream/{stream_key}/hls/{path:.*}
+    Route: /api/stream/{key}/hls/{path:.*}
+
+    Accepts either:
+    - Public key (pub_xxx): Read-only access for viewers
+    - Private key (live_xxx): Full access for stream owner
 
     Allows viewing streams via HLS through the portal, keeping MediaMTX
     bound to localhost.
     """
-    stream_key = request.match_info.get("stream_key", "")
+    key = request.match_info.get("stream_key", "")
     hls_path = request.match_info.get("path", "index.m3u8")
 
-    # Validate stream access
-    stream, error = await _validate_stream_access(stream_key)
+    # Validate stream access (supports both public and private keys)
+    stream, error = await _validate_stream_access(key)
     if error:
         return web.json_response({"error": error}, status=403)
 
@@ -2301,10 +2325,10 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
 
     hls_port = mtx_config.get("hls_port", 8888)
 
-    # The stream path in MediaMTX is live/{stream_key} (RTMP app name + stream key)
-    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+    # MediaMTX uses the private stream_key for paths (not public_key)
+    private_key = stream["stream_key"]
     # MediaMTX path includes the RTMP app name "live"
-    mtx_path = f"live/{full_stream_key}"
+    mtx_path = f"live/{private_key}"
     url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
 
     try:
@@ -2324,8 +2348,8 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
                 if content_type.startswith("application/vnd.apple.mpegurl") or hls_path.endswith(".m3u8"):
                     text = content.decode("utf-8")
                     # Rewrite segment URLs to go through our proxy
-                    # MediaMTX uses path like /live/{stream_key}/, rewrite to /api/stream/{stream_key}/hls/
-                    text = text.replace(f"/{mtx_path}/", f"/api/stream/{stream_key}/hls/")
+                    # Use the same key type that was used to access (preserves public/private key)
+                    text = text.replace(f"/{mtx_path}/", f"/api/stream/{key}/hls/")
                     content = text.encode("utf-8")
 
                 return web.Response(
@@ -2347,14 +2371,15 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
 async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
     """WebRTC WHEP endpoint for playback through port 443.
 
-    Route: POST /api/stream/{stream_key}/webrtc/whep
+    Route: POST /api/stream/{key}/webrtc/whep
 
+    Accepts either public key (pub_xxx) or private key (live_xxx) for viewing.
     Proxies WebRTC offers to MediaMTX and returns the answer.
     """
-    stream_key = request.match_info.get("stream_key", "")
+    key = request.match_info.get("stream_key", "")
 
-    # Validate stream access
-    stream, error = await _validate_stream_access(stream_key)
+    # Validate stream access (read-only, no publish required)
+    stream, error = await _validate_stream_access(key, require_publish=False)
     if error:
         return web.json_response({"error": error}, status=403)
 
@@ -2370,10 +2395,10 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
     if not sdp_offer:
         return web.json_response({"error": "SDP offer required"}, status=400)
 
-    # The stream path in MediaMTX is the stream key
-    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+    # MediaMTX uses private stream_key for paths
+    private_key = stream["stream_key"]
     # WebRTC uses plain HTTP internally (localhost only) - DTLS-SRTP handles media encryption
-    url = f"http://127.0.0.1:{webrtc_port}/{full_stream_key}/whep"
+    url = f"http://127.0.0.1:{webrtc_port}/{private_key}/whep"
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -2391,7 +2416,8 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                     if location:
                         # Extract session ID from location
                         session_id = location.split("/")[-1]
-                        location = f"/api/stream/{stream_key}/webrtc/session/{session_id}"
+                        # Use the same key type that was used to access
+                        location = f"/api/stream/{key}/webrtc/session/{session_id}"
 
                     return web.Response(
                         text=sdp_answer,

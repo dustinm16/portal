@@ -705,6 +705,9 @@
                         <div class="stat-row"><span>Buffer:</span><span id="stat-buffer">--</span></div>
                         <div class="stat-row"><span>Latency:</span><span id="stat-latency">--</span></div>
                         <div class="stat-row"><span>Dropped:</span><span id="stat-dropped">--</span></div>
+                        <div class="stat-row" id="stat-public-key-row" style="display: none; border-top: 1px solid #444; margin-top: 4px; padding-top: 4px;">
+                            <span>API Key:</span><span id="stat-public-key" style="font-size: 0.65rem; word-break: break-all;">--</span>
+                        </div>
                     </div>
                 </div>
                 <div class="player-controls">
@@ -850,8 +853,9 @@
             const video = document.getElementById('stream-video');
             const wasPlaying = !video.paused;
 
-            // Recreate player with new settings
-            const hlsUrl = `/api/stream/${currentStream.stream_key}/hls/index.m3u8`;
+            // Recreate player with new settings - use public_key for viewing
+            const streamKey = currentStream.public_key || currentStream.stream_key;
+            const hlsUrl = `/api/stream/${streamKey}/hls/index.m3u8`;
             const qualityLevel = hlsPlayer.currentLevel;
 
             hlsPlayer.destroy();
@@ -1141,7 +1145,17 @@
                     `;
                 } else {
                     // Use HLS for playback - routed through Portal on port 443
-                    const hlsUrl = `/api/stream/${currentStream.stream_key}/hls/index.m3u8`;
+                    // Use public_key for viewing (read-only access)
+                    const streamKey = currentStream.public_key || currentStream.stream_key;
+                    const hlsUrl = `/api/stream/${streamKey}/hls/index.m3u8`;
+
+                    // Show public API key in stats overlay if available
+                    if (currentStream.public_key) {
+                        document.getElementById('stat-public-key').textContent = currentStream.public_key;
+                        document.getElementById('stat-public-key-row').style.display = 'flex';
+                    } else {
+                        document.getElementById('stat-public-key-row').style.display = 'none';
+                    }
 
                     // Reset quality selector
                     const qualitySelect = document.getElementById('quality-selector');
@@ -1208,8 +1222,10 @@
             // Stop stats updates
             stopStatsUpdate();
 
-            // Hide stats overlay
+            // Hide stats overlay and reset public key display
             document.getElementById('player-stats').style.display = 'none';
+            document.getElementById('stat-public-key-row').style.display = 'none';
+            document.getElementById('stat-public-key').textContent = '--';
 
             // Clean up video
             if (hlsPlayer) {

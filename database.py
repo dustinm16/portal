@@ -361,6 +361,9 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_stream_bans_stream ON stream_bans(stream_id)",
     "CREATE INDEX IF NOT EXISTS idx_stream_bans_user ON stream_bans(user_id)",
+    # Public key for read-only stream access (separate from private stream_key)
+    "ALTER TABLE user_streams ADD COLUMN public_key TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_user_streams_public_key ON user_streams(public_key)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -434,6 +437,25 @@ class Database:
             except Exception:
                 # Column likely already exists
                 pass
+
+        # Generate public keys for any streams that don't have one
+        await self._populate_stream_public_keys()
+
+    async def _populate_stream_public_keys(self) -> None:
+        """Generate public keys for streams that don't have one."""
+        import secrets
+        cursor = await self._connection.execute(
+            "SELECT id FROM user_streams WHERE public_key IS NULL OR public_key = ''"
+        )
+        rows = await cursor.fetchall()
+        for row in rows:
+            public_key = f"pub_{secrets.token_urlsafe(16)}"
+            await self._connection.execute(
+                "UPDATE user_streams SET public_key = ? WHERE id = ?",
+                (public_key, row["id"])
+            )
+        if rows:
+            await self._connection.commit()
 
     async def close(self) -> None:
         """Close database connection."""
@@ -1394,14 +1416,24 @@ class Database:
         user_id: int,
         name: str,
         stream_key: str,
+        public_key: str = None,
         description: str = None,
         is_public: bool = False
     ) -> int:
-        """Create a new user stream."""
+        """Create a new user stream.
+
+        Args:
+            user_id: Owner's user ID
+            name: Stream name
+            stream_key: Private key for publishing (OBS/RTMP)
+            public_key: Public key for viewing (HLS/WebRTC)
+            description: Stream description
+            is_public: Whether stream is publicly visible
+        """
         cursor = await self.conn.execute(
-            """INSERT INTO user_streams (user_id, name, stream_key, description, is_public, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, name, stream_key, description, 1 if is_public else 0,
+            """INSERT INTO user_streams (user_id, name, stream_key, public_key, description, is_public, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, stream_key, public_key, description, 1 if is_public else 0,
              datetime.now(timezone.utc).isoformat())
         )
         await self.conn.commit()
@@ -1435,13 +1467,25 @@ class Database:
         return dict(row) if row else None
 
     async def get_stream_by_key(self, stream_key: str) -> Optional[dict]:
-        """Get a stream by its stream key (for authentication)."""
+        """Get a stream by its private stream key (for publishing authentication)."""
         cursor = await self.conn.execute(
             """SELECT us.*, u.username as owner_username
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
                WHERE us.stream_key = ?""",
             (stream_key,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_stream_by_public_key(self, public_key: str) -> Optional[dict]:
+        """Get a stream by its public key (for viewing access)."""
+        cursor = await self.conn.execute(
+            """SELECT us.*, u.username as owner_username
+               FROM user_streams us
+               LEFT JOIN users u ON us.user_id = u.id
+               WHERE us.public_key = ?""",
+            (public_key,)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
