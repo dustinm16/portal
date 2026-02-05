@@ -112,10 +112,10 @@ function renderStreamCard(stream, isOwner = false) {
 
     if (isOwner) {
         return `
-            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : ''}">
+            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : 'stream-offline'}">
                 <div class="stream-thumbnail">
                     ${thumbnailHtml}
-                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : ''}
+                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
                 </div>
                 <div class="stream-card-content">
                     <div class="connection-header">
@@ -145,10 +145,10 @@ function renderStreamCard(stream, isOwner = false) {
     } else {
         // Community stream card
         return `
-            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : ''}" onclick="viewStream(${stream.id})" style="cursor: pointer;">
+            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : 'stream-offline'}" onclick="viewStream(${stream.id})" style="cursor: pointer;">
                 <div class="stream-thumbnail">
                     ${thumbnailHtml}
-                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : ''}
+                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
                     ${stream.is_live ? `<div class="stream-viewers"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>${stream.viewer_count || 0}</div>` : ''}
                 </div>
                 <div class="stream-card-content">

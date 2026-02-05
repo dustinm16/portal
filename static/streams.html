@@ -155,6 +155,18 @@
             50% { opacity: 0.4; }
         }
 
+        .stream-offline-badge {
+            position: absolute;
+            top: 0.5rem;
+            left: 0.5rem;
+            background: rgba(100, 100, 100, 0.9);
+            color: rgba(255, 255, 255, 0.8);
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+
         .stream-viewers {
             position: absolute;
             top: 0.5rem;
@@ -1196,7 +1208,7 @@
                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                    </svg>`;
             return `
-                <div class="stream-card" onclick="openStream(${stream.id})">
+                <div class="stream-card ${stream.is_live ? '' : 'stream-offline'}" onclick="openStream(${stream.id})">
                     <div class="stream-thumbnail">
                         ${thumbnailContent}
                         ${stream.is_live ? `
@@ -1211,7 +1223,7 @@
                                 </svg>
                                 ${stream.viewer_count || 0}
                             </div>
-                        ` : ''}
+                        ` : '<div class="stream-offline-badge">OFFLINE</div>'}
                     </div>
                     <div class="stream-info">
                         <h3 class="stream-title">${escapeHtml(stream.name)}</h3>

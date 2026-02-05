@@ -2406,6 +2406,18 @@ select option {
     animation: pulse 1.5s infinite;
 }
 
+.stream-card.has-thumbnail .stream-offline-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(100, 100, 100, 0.9);
+    color: rgba(255, 255, 255, 0.8);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
 .stream-card.has-thumbnail .stream-viewers {
     position: absolute;
     bottom: 8px;
