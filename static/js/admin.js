@@ -766,6 +766,24 @@ async function submitEditService(event) {
     }
 }
 
+// Role management
+var manageableRoles = [];
+var actorRole = 'user';
+
+const ROLE_LABELS = {
+    'superadmin': 'Super Admin',
+    'admin': 'Admin',
+    'moderator': 'Moderator',
+    'user': 'User'
+};
+
+const ROLE_COLORS = {
+    'superadmin': 'var(--accent-red)',
+    'admin': 'var(--accent-purple)',
+    'moderator': 'var(--accent-blue)',
+    'user': 'var(--text-secondary)'
+};
+
 /**
  * Show Manage Users Modal
  */
@@ -792,6 +810,10 @@ async function showManageUsersModal() {
             throw new Error('Invalid response format');
         }
 
+        // Store actor's role info
+        actorRole = data.actor_role || 'user';
+        manageableRoles = data.manageable_roles || [];
+
         renderUsersTable(data.users);
         console.log('Users table rendered');
     } catch (error) {
@@ -802,6 +824,16 @@ async function showManageUsersModal() {
 }
 
 /**
+ * Check if current user can manage target role
+ */
+function canManageRole(targetRole) {
+    const hierarchy = ['user', 'moderator', 'admin', 'superadmin'];
+    const actorLevel = hierarchy.indexOf(actorRole);
+    const targetLevel = hierarchy.indexOf(targetRole);
+    return actorLevel > targetLevel;
+}
+
+/**
  * Render users table
  */
 function renderUsersTable(users) {
@@ -809,58 +841,132 @@ function renderUsersTable(users) {
     const tbody = document.getElementById('users-tbody');
     console.log('tbody element:', tbody);
 
-    tbody.innerHTML = users.map(user => `
-        <tr data-user-id="${user.id}">
-            <td>${user.id}</td>
-            <td>${escapeHtml(user.username)}</td>
-            <td>
-                <label class="toggle">
-                    <input type="checkbox"
-                           ${user.is_admin ? 'checked' : ''}
-                           ${user.id === currentUser.id ? 'disabled' : ''}
-                           onchange="toggleUserAdmin(${user.id}, this.checked)">
-                    <span class="toggle-slider"></span>
-                </label>
-            </td>
-            <td>${formatDate(user.created_at)}</td>
-            <td>
-                ${user.id !== currentUser.id ? `
-                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteUser(${user.id}, '${escapeHtml(user.username)}')">
-                        Delete
-                    </button>
-                ` : '<span style="color: var(--text-muted);">Current user</span>'}
-            </td>
-        </tr>
-    `).join('');
+    const canResetPasswords = currentUser?.permissions?.can_reset_passwords;
+    const canDeleteUsers = currentUser?.permissions?.can_delete_users;
+
+    tbody.innerHTML = users.map(user => {
+        const userRole = user.role || 'user';
+        const isCurrentUser = user.id === currentUser?.id;
+        const canManage = canManageRole(userRole) && !isCurrentUser;
+
+        // Build role select options
+        let roleSelect = '';
+        if (canManage && manageableRoles.length > 0) {
+            const options = manageableRoles.map(r =>
+                `<option value="${r}" ${userRole === r ? 'selected' : ''}>${ROLE_LABELS[r]}</option>`
+            ).join('');
+            roleSelect = `
+                <select onchange="changeUserRole(${user.id}, this.value)" style="background: var(--bg-primary); border: 1px solid var(--card-border); color: var(--text-primary); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem;">
+                    ${options}
+                </select>
+            `;
+        } else {
+            roleSelect = `<span class="role-badge" style="color: ${ROLE_COLORS[userRole]}; font-weight: 500;">${ROLE_LABELS[userRole]}</span>`;
+        }
+
+        // Build action buttons
+        let actions = '';
+        if (isCurrentUser) {
+            actions = '<span style="color: var(--text-muted); font-size: 0.75rem;">Current user</span>';
+        } else if (canManage) {
+            if (canResetPasswords) {
+                actions += `<button class="btn btn-secondary btn-sm" onclick="showResetPasswordModal(${user.id}, '${escapeHtml(user.username).replace(/'/g, "\\'")}')">Reset Password</button> `;
+            }
+            if (canDeleteUsers) {
+                actions += `<button class="btn btn-danger btn-sm" onclick="confirmDeleteUser(${user.id}, '${escapeHtml(user.username).replace(/'/g, "\\'")}')">Delete</button>`;
+            }
+        } else {
+            actions = '<span style="color: var(--text-muted); font-size: 0.65rem;">Cannot manage</span>';
+        }
+
+        return `
+            <tr data-user-id="${user.id}">
+                <td>${user.id}</td>
+                <td>${escapeHtml(user.username)}</td>
+                <td>${roleSelect}</td>
+                <td>${formatDate(user.created_at)}</td>
+                <td>${actions}</td>
+            </tr>
+        `;
+    }).join('');
 
     document.getElementById('users-loading').style.display = 'none';
     document.getElementById('users-table').style.display = 'table';
 }
 
 /**
- * Toggle user admin status
+ * Change user role
  */
-async function toggleUserAdmin(userId, isAdmin) {
+async function changeUserRole(userId, newRole) {
     try {
-        const response = await Portal.fetch(`/api/users/${userId}/admin`, {
+        const response = await Portal.fetch(`/api/users/${userId}/role`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ is_admin: isAdmin })
+            body: JSON.stringify({ role: newRole })
         });
 
         if (response.ok) {
-            const action = isAdmin ? 'granted' : 'revoked';
-            Portal.toast(`Admin status ${action}`);
+            Portal.toast(`Role updated to ${ROLE_LABELS[newRole]}`);
         } else {
             const data = await response.json();
-            Portal.toast(data.error || 'Failed to update user', 'error');
-            // Revert checkbox
-            const checkbox = document.querySelector(`tr[data-user-id="${userId}"] input[type="checkbox"]`);
-            if (checkbox) checkbox.checked = !isAdmin;
+            Portal.toast(data.error || 'Failed to update role', 'error');
+            // Reload to revert changes
+            showManageUsersModal();
         }
     } catch (error) {
-        Portal.toast('Failed to update user', 'error');
-        console.error('Toggle admin error:', error);
+        Portal.toast('Failed to update role', 'error');
+        console.error('Change role error:', error);
+    }
+}
+
+/**
+ * Legacy toggle function - redirects to role change
+ */
+async function toggleUserAdmin(userId, isAdmin) {
+    await changeUserRole(userId, isAdmin ? 'admin' : 'user');
+}
+
+/**
+ * Show reset password modal
+ */
+function showResetPasswordModal(userId, username) {
+    document.getElementById('reset-password-user-id').value = userId;
+    document.getElementById('reset-password-username').textContent = username;
+    document.getElementById('reset-password-input').value = '';
+    showModal('reset-password-modal');
+}
+
+/**
+ * Submit password reset
+ */
+async function submitResetPassword(event) {
+    event.preventDefault();
+
+    const userId = document.getElementById('reset-password-user-id').value;
+    const newPassword = document.getElementById('reset-password-input').value;
+
+    if (!newPassword || newPassword.length < 8) {
+        Portal.toast('Password must be at least 8 characters', 'error');
+        return;
+    }
+
+    try {
+        const response = await Portal.fetch(`/api/users/${userId}/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_password: newPassword })
+        });
+
+        if (response.ok) {
+            Portal.toast('Password reset successfully');
+            closeModal('reset-password-modal');
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to reset password', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to reset password', 'error');
+        console.error('Reset password error:', error);
     }
 }
 

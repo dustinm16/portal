@@ -244,7 +244,40 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'online'",
     "ALTER TABLE users ADD COLUMN status_message TEXT",
     "ALTER TABLE users ADD COLUMN nickname TEXT",
+    # User roles for permission system (superadmin, admin, moderator, user)
+    "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'",
+    # Migrate existing is_admin to role system
+    "UPDATE users SET role = 'superadmin' WHERE is_admin = 1 AND role = 'user'",
 ]
+
+# Role hierarchy - higher index = more permissions
+ROLE_HIERARCHY = ['user', 'moderator', 'admin', 'superadmin']
+
+def get_role_level(role: str) -> int:
+    """Get numeric level for a role (higher = more permissions)."""
+    try:
+        return ROLE_HIERARCHY.index(role)
+    except ValueError:
+        return 0
+
+def can_manage_role(actor_role: str, target_role: str) -> bool:
+    """Check if actor can manage users with target role."""
+    actor_level = get_role_level(actor_role)
+    target_level = get_role_level(target_role)
+    # Must be higher level to manage
+    return actor_level > target_level
+
+def can_assign_role(actor_role: str, new_role: str) -> bool:
+    """Check if actor can assign a specific role."""
+    actor_level = get_role_level(actor_role)
+    new_level = get_role_level(new_role)
+    # Can only assign roles below your level
+    return actor_level > new_level
+
+def get_manageable_roles(actor_role: str) -> list[str]:
+    """Get list of roles that actor can assign to others."""
+    actor_level = get_role_level(actor_role)
+    return [r for r in ROLE_HIERARCHY if get_role_level(r) < actor_level]
 
 
 class Database:
@@ -396,6 +429,56 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # User role operations
+    async def get_user_role(self, user_id: int) -> Optional[str]:
+        """Get user's role."""
+        cursor = await self.conn.execute(
+            "SELECT role FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            # Handle legacy is_admin users that haven't been migrated
+            role = row["role"]
+            return role if role else "user"
+        return None
+
+    async def set_user_role(self, user_id: int, role: str) -> bool:
+        """Set user's role."""
+        if role not in ROLE_HIERARCHY:
+            return False
+        # Also update is_admin for backward compatibility
+        is_admin = 1 if role in ('admin', 'superadmin') else 0
+        cursor = await self.conn.execute(
+            "UPDATE users SET role = ?, is_admin = ?, updated_at = ? WHERE id = ?",
+            (role, is_admin, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_all_users(self) -> list[dict]:
+        """Get all users with their roles."""
+        cursor = await self.conn.execute(
+            "SELECT id, username, role, is_admin, created_at, status FROM users ORDER BY id"
+        )
+        rows = await cursor.fetchall()
+        users = []
+        for row in rows:
+            user = dict(row)
+            # Ensure role is set (handle legacy data)
+            if not user.get("role"):
+                user["role"] = "admin" if user.get("is_admin") else "user"
+            users.append(user)
+        return users
+
+    async def reset_user_password(self, user_id: int, new_password_hash: str) -> bool:
+        """Reset a user's password (admin action)."""
+        cursor = await self.conn.execute(
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (new_password_hash, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # Token operations
     async def create_token(

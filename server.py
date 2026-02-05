@@ -19,7 +19,7 @@ import aiohttp
 from aiohttp import web, WSMsgType
 
 from config import Config
-from database import db
+from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles
 from auth import (
     AuthError,
     TokenPayload,
@@ -3109,14 +3109,22 @@ async def http_get_current_user(request: web.Request) -> web.Response:
     if not user:
         return web.json_response({"error": "User not found"}, status=404)
 
+    role = user.get("role") or ("admin" if user.get("is_admin") else "user")
     return web.json_response({
         "id": user["id"],
         "username": user["username"],
         "nickname": user.get("nickname"),
         "status": user.get("status", "online"),
         "status_message": user.get("status_message"),
+        "role": role,
         "is_admin": bool(user["is_admin"]),
-        "scopes": token.scopes
+        "scopes": token.scopes,
+        "permissions": {
+            "can_manage_users": get_role_level(role) >= get_role_level("moderator"),
+            "can_reset_passwords": get_role_level(role) >= get_role_level("admin"),
+            "can_delete_users": role == "superadmin",
+            "manageable_roles": get_manageable_roles(role)
+        }
     })
 
 
@@ -3401,40 +3409,56 @@ async def http_2fa_disable(request: web.Request) -> web.Response:
     })
 
 
+async def get_user_role_from_token(token) -> str:
+    """Get the role of the user from their token."""
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return "user"
+    return user.get("role") or ("admin" if user.get("is_admin") else "user")
+
+
 async def http_list_users(request: web.Request) -> web.Response:
-    """List all users (admin only)."""
+    """List all users (moderator+ only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
-    if not token.has_scope("admin") and not token.has_scope("*"):
+    actor_role = await get_user_role_from_token(token)
+    if get_role_level(actor_role) < get_role_level("moderator"):
         return forbidden_response(request)
 
-    async with db.conn.execute(
-        "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
-    ) as cursor:
-        rows = await cursor.fetchall()
+    users = await db.get_all_users()
 
     return web.json_response({
         "users": [
             {
-                "id": row["id"],
-                "username": row["username"],
-                "is_admin": bool(row["is_admin"]),
-                "created_at": row["created_at"]
+                "id": u["id"],
+                "username": u["username"],
+                "role": u.get("role", "user"),
+                "is_admin": bool(u.get("is_admin")),
+                "created_at": u["created_at"]
             }
-            for row in rows
-        ]
+            for u in users
+        ],
+        "actor_role": actor_role,
+        "manageable_roles": get_manageable_roles(actor_role)
     })
 
 
-async def http_update_user_admin(request: web.Request) -> web.Response:
-    """Update user admin status (admin only)."""
+async def http_update_user_role(request: web.Request) -> web.Response:
+    """Update user role (requires appropriate permissions).
+
+    Permission rules:
+    - superadmin: can assign any role (admin, moderator, user)
+    - admin: can assign moderator, user
+    - moderator: can assign user only
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
-    if not token.has_scope("admin") and not token.has_scope("*"):
+    actor_role = await get_user_role_from_token(token)
+    if get_role_level(actor_role) < get_role_level("moderator"):
         return forbidden_response(request)
 
     user_id = request.match_info.get("id")
@@ -3446,7 +3470,7 @@ async def http_update_user_admin(request: web.Request) -> web.Response:
     # Don't allow modifying yourself
     if user_id == token.user_id:
         return web.json_response(
-            {"error": "Cannot modify your own admin status"},
+            {"error": "Cannot modify your own role"},
             status=400
         )
 
@@ -3455,39 +3479,73 @@ async def http_update_user_admin(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    is_admin = data.get("is_admin")
-    if is_admin is None:
-        return web.json_response({"error": "is_admin field required"}, status=400)
+    new_role = data.get("role")
 
-    user = await db.get_user_by_id(user_id)
-    if not user:
+    # Handle legacy is_admin field for backward compatibility
+    if new_role is None and "is_admin" in data:
+        new_role = "admin" if data["is_admin"] else "user"
+
+    if not new_role:
+        return web.json_response({"error": "role field required"}, status=400)
+
+    if new_role not in ROLE_HIERARCHY:
+        return web.json_response(
+            {"error": f"Invalid role. Must be one of: {', '.join(ROLE_HIERARCHY)}"},
+            status=400
+        )
+
+    target_user = await db.get_user_by_id(user_id)
+    if not target_user:
         return web.json_response({"error": "User not found"}, status=404)
 
-    await db.conn.execute(
-        "UPDATE users SET is_admin = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (1 if is_admin else 0, user_id)
-    )
-    await db.conn.commit()
+    target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
 
-    action = "granted" if is_admin else "revoked"
-    logger.info(f"Admin {action} for user {user['username']} by user {token.user_id}")
+    # Check if actor can manage the target user
+    if not can_manage_role(actor_role, target_role):
+        return web.json_response(
+            {"error": f"You cannot modify users with role '{target_role}'"},
+            status=403
+        )
+
+    # Check if actor can assign the new role
+    if not can_assign_role(actor_role, new_role):
+        return web.json_response(
+            {"error": f"You cannot assign the role '{new_role}'"},
+            status=403
+        )
+
+    await db.set_user_role(user_id, new_role)
+
+    logger.info(f"Role changed for user {target_user['username']} from {target_role} to {new_role} by user {token.user_id}")
 
     return web.json_response({
         "id": user_id,
-        "username": user["username"],
-        "is_admin": bool(is_admin),
-        "message": f"Admin status {action}"
+        "username": target_user["username"],
+        "role": new_role,
+        "is_admin": new_role in ("admin", "superadmin"),
+        "message": f"Role updated to {new_role}"
     })
 
 
+async def http_update_user_admin(request: web.Request) -> web.Response:
+    """Legacy endpoint - redirects to role update."""
+    return await http_update_user_role(request)
+
+
 async def http_delete_user(request: web.Request) -> web.Response:
-    """Delete a user (admin only)."""
+    """Delete a user (superadmin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
+    actor_role = await get_user_role_from_token(token)
+
+    # Only superadmins can delete users
+    if actor_role != "superadmin":
+        return web.json_response(
+            {"error": "Only superadmins can delete users"},
+            status=403
+        )
 
     user_id = request.match_info.get("id")
     if not user_id or not user_id.isdigit():
@@ -3502,9 +3560,17 @@ async def http_delete_user(request: web.Request) -> web.Response:
             status=400
         )
 
-    user = await db.get_user_by_id(user_id)
-    if not user:
+    target_user = await db.get_user_by_id(user_id)
+    if not target_user:
         return web.json_response({"error": "User not found"}, status=404)
+
+    # Cannot delete other superadmins
+    target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
+    if target_role == "superadmin":
+        return web.json_response(
+            {"error": "Cannot delete other superadmins"},
+            status=403
+        )
 
     # Delete user's tokens first
     await db.conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
@@ -3512,10 +3578,74 @@ async def http_delete_user(request: web.Request) -> web.Response:
     await db.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     await db.conn.commit()
 
-    logger.info(f"User {user['username']} deleted by admin {token.user_id}")
+    logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
 
     return web.json_response({
-        "message": f"User '{user['username']}' deleted"
+        "message": f"User '{target_user['username']}' deleted"
+    })
+
+
+async def http_reset_user_password(request: web.Request) -> web.Response:
+    """Reset a user's password (admin+ for managed users, moderator for self only).
+
+    Permission rules:
+    - superadmin: can reset any user's password (except other superadmins)
+    - admin: can reset moderator and user passwords
+    - moderator: can only reset their own password via /api/me/password
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    actor_role = await get_user_role_from_token(token)
+    if get_role_level(actor_role) < get_role_level("admin"):
+        return web.json_response(
+            {"error": "Only admins and superadmins can reset passwords"},
+            status=403
+        )
+
+    user_id = request.match_info.get("id")
+    if not user_id or not user_id.isdigit():
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+
+    user_id = int(user_id)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    new_password = data.get("new_password")
+    if not new_password:
+        return web.json_response({"error": "new_password required"}, status=400)
+
+    if len(new_password) < 8:
+        return web.json_response(
+            {"error": "Password must be at least 8 characters"},
+            status=400
+        )
+
+    target_user = await db.get_user_by_id(user_id)
+    if not target_user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
+
+    # Check if actor can manage the target user
+    if not can_manage_role(actor_role, target_role):
+        return web.json_response(
+            {"error": f"You cannot reset passwords for users with role '{target_role}'"},
+            status=403
+        )
+
+    # Hash and save new password
+    new_hash = hash_password(new_password)
+    await db.reset_user_password(user_id, new_hash)
+
+    logger.info(f"Password reset for user {target_user['username']} by {actor_role} {token.user_id}")
+
+    return web.json_response({
+        "message": f"Password reset for user '{target_user['username']}'"
     })
 
 
@@ -3593,7 +3723,9 @@ def create_app() -> web.Application:
     # User management
     app.router.add_get("/api/users", http_list_users)
     app.router.add_post("/api/users", http_create_user)
-    app.router.add_put("/api/users/{id}/admin", http_update_user_admin)
+    app.router.add_put("/api/users/{id}/admin", http_update_user_admin)  # Legacy endpoint
+    app.router.add_put("/api/users/{id}/role", http_update_user_role)
+    app.router.add_post("/api/users/{id}/reset-password", http_reset_user_password)
     app.router.add_delete("/api/users/{id}", http_delete_user)
     app.router.add_get("/api/me", http_get_current_user)
     app.router.add_post("/api/me/password", http_change_password)

@@ -23,22 +23,40 @@ async function loadUserInfo() {
         // Set username in navbar
         document.getElementById('username').textContent = currentUser.username;
 
-        // Show admin badge and section if user is admin
-        if (currentUser.is_admin) {
+        // Role labels
+        const roleLabels = {
+            'superadmin': 'Super Admin',
+            'admin': 'Admin',
+            'moderator': 'Moderator',
+            'user': 'User'
+        };
+
+        // Show admin badge and section based on role
+        const role = currentUser.role || 'user';
+        const canManageUsers = currentUser.permissions?.can_manage_users;
+
+        if (currentUser.is_admin || role === 'superadmin' || role === 'admin') {
             const adminBadge = document.getElementById('admin-badge');
-            const adminSection = document.getElementById('admin-section');
             const terminalBtn = document.getElementById('terminal-btn');
 
-            if (adminBadge) adminBadge.style.display = 'inline-block';
-            if (adminSection) adminSection.style.display = 'block';
+            if (adminBadge) {
+                adminBadge.style.display = 'inline-block';
+                adminBadge.textContent = role === 'superadmin' ? 'Super Admin' : 'Admin';
+            }
             if (terminalBtn) terminalBtn.style.display = 'flex';
+        }
+
+        // Show admin section for moderator+ roles
+        if (canManageUsers) {
+            const adminSection = document.getElementById('admin-section');
+            if (adminSection) adminSection.style.display = 'block';
         }
 
         // Set profile modal info
         const profileUsername = document.getElementById('profile-username');
         const profileRole = document.getElementById('profile-role');
         if (profileUsername) profileUsername.textContent = currentUser.username;
-        if (profileRole) profileRole.textContent = currentUser.is_admin ? 'Administrator' : 'User';
+        if (profileRole) profileRole.textContent = roleLabels[role] || 'User';
 
     } catch (error) {
         console.error('Failed to load user info:', error);
