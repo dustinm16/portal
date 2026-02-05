@@ -2368,6 +2368,109 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
         return web.json_response({"error": "Stream unavailable"}, status=502)
 
 
+# Cache for stream thumbnails (key -> (timestamp, image_bytes))
+_thumbnail_cache: dict[str, tuple[float, bytes]] = {}
+_THUMBNAIL_CACHE_TTL = 15  # seconds
+
+
+async def http_stream_thumbnail(request: web.Request) -> web.Response:
+    """Generate a live thumbnail from an active stream.
+
+    Route: GET /api/stream/{key}/thumbnail
+
+    Captures a frame from the HLS stream using ffmpeg.
+    Thumbnails are cached for 15 seconds to reduce load.
+    """
+    key = request.match_info.get("stream_key", "")
+
+    # Validate stream access
+    stream, error = await _validate_stream_access(key, require_publish=False)
+    if error:
+        return web.json_response({"error": error}, status=403)
+
+    # Check if stream is live
+    if not stream.get("is_live"):
+        # Return static thumbnail if available, or 404
+        if stream.get("thumbnail_url"):
+            raise web.HTTPFound(stream["thumbnail_url"])
+        return web.json_response({"error": "Stream is offline"}, status=404)
+
+    # Check cache
+    cache_key = stream["stream_key"]
+    now = time.time()
+    if cache_key in _thumbnail_cache:
+        cached_time, cached_bytes = _thumbnail_cache[cache_key]
+        if now - cached_time < _THUMBNAIL_CACHE_TTL:
+            return web.Response(
+                body=cached_bytes,
+                content_type="image/jpeg",
+                headers={
+                    "Cache-Control": f"public, max-age={_THUMBNAIL_CACHE_TTL}",
+                    "Access-Control-Allow-Origin": "*",
+                }
+            )
+
+    # Get MediaMTX configuration
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        return web.json_response({"error": "MediaMTX not configured"}, status=503)
+
+    hls_port = mtx_config.get("hls_port", 8888)
+    private_key = stream["stream_key"]
+    hls_url = f"https://127.0.0.1:{hls_port}/live/{private_key}/index.m3u8"
+
+    try:
+        # Use ffmpeg to capture a frame from the HLS stream
+        # -i: input URL
+        # -vframes 1: capture only 1 frame
+        # -f image2: output format
+        # -q:v 2: quality (2-5 is good, lower is better)
+        # pipe:1: output to stdout
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",  # Overwrite without asking
+            "-i", hls_url,
+            "-vframes", "1",
+            "-f", "image2",
+            "-vcodec", "mjpeg",
+            "-q:v", "3",
+            "-vf", "scale=640:-1",  # Scale to 640px width, maintain aspect ratio
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "AV_LOG_FORCE_NOCOLOR": "1"}
+        )
+
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+
+        if proc.returncode != 0 or not stdout:
+            logger.warning(f"ffmpeg thumbnail capture failed for {cache_key}: {stderr.decode()[:200]}")
+            return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
+
+        # Cache the thumbnail
+        _thumbnail_cache[cache_key] = (now, stdout)
+
+        # Clean old cache entries
+        for k in list(_thumbnail_cache.keys()):
+            if now - _thumbnail_cache[k][0] > _THUMBNAIL_CACHE_TTL * 2:
+                del _thumbnail_cache[k]
+
+        return web.Response(
+            body=stdout,
+            content_type="image/jpeg",
+            headers={
+                "Cache-Control": f"public, max-age={_THUMBNAIL_CACHE_TTL}",
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "Thumbnail capture timeout"}, status=504)
+    except Exception as e:
+        logger.error(f"Thumbnail capture error: {e}")
+        return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
+
+
 async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
     """WebRTC WHEP endpoint for playback through port 443.
 
@@ -5572,6 +5675,7 @@ def create_app() -> web.Application:
 
     # Stream Proxy API (routes all MediaMTX traffic through port 443)
     app.router.add_get("/api/stream/{stream_key}/info", http_stream_info)
+    app.router.add_get("/api/stream/{stream_key}/thumbnail", http_stream_thumbnail)
     app.router.add_get("/api/stream/{stream_key}/hls/{path:.*}", http_stream_hls_proxy)
     app.router.add_post("/api/stream/{stream_key}/webrtc/whep", http_stream_webrtc_whep)
     app.router.add_post("/api/stream/{stream_key}/webrtc/whip", http_stream_webrtc_whip)

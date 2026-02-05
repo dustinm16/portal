@@ -88,9 +88,17 @@ function renderStreamCard(stream, isOwner = false) {
     const viewerCount = stream.is_live ? `${stream.viewer_count || 0} viewers` : '';
     const publicBadge = stream.is_public ? '<span class="badge badge-public">Public</span>' : '<span class="badge badge-private">Private</span>';
 
+    // Thumbnail URL - use dynamic thumbnail for live streams, static for offline
+    let thumbnailUrl = stream.thumbnail_url;
+    if (stream.is_live && stream.public_key) {
+        // Use dynamic thumbnail from HLS stream (with cache buster)
+        const cacheBuster = Math.floor(Date.now() / 15000); // Changes every 15 seconds
+        thumbnailUrl = `/api/stream/${stream.public_key}/thumbnail?t=${cacheBuster}`;
+    }
+
     // Thumbnail HTML - show image if available, otherwise show placeholder
-    const thumbnailHtml = stream.thumbnail_url
-        ? `<img src="${escapeHtml(stream.thumbnail_url)}" alt="Stream thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+    const thumbnailHtml = thumbnailUrl
+        ? `<img src="${escapeHtml(thumbnailUrl)}" alt="Stream thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
            <div class="stream-thumbnail-placeholder" style="display: none;">
                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
