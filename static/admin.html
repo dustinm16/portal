@@ -207,6 +207,86 @@
             color: var(--text-muted);
             font-size: 0.875rem;
         }
+        /* Modal styles */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            width: 90%;
+            max-height: 90vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .modal-header h3 {
+            margin: 0;
+            font-size: 1.125rem;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+        .modal-close:hover {
+            color: var(--text-primary);
+        }
+        .modal-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.375rem;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.625rem 0.75rem;
+            background: var(--code-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
     </style>
 </head>
 <body>
@@ -227,6 +307,7 @@
         <main class="main-content" style="max-width: 1400px; margin: 0 auto;">
             <div class="tab-nav">
                 <button class="tab-btn active" onclick="showTab('overview')">Overview</button>
+                <button class="tab-btn" onclick="showTab('services')">Managed Services</button>
                 <button class="tab-btn" onclick="showTab('metrics')">Traffic Metrics</button>
                 <button class="tab-btn" onclick="showTab('vuln')">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
@@ -281,6 +362,92 @@
                     </h3>
                     <div id="top-services">
                         <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Managed Services Tab -->
+            <div id="tab-services" class="tab-content">
+                <div class="section-header">
+                    <h2>Managed Services</h2>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn btn-primary" onclick="showCreateServiceModal()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                            </svg>
+                            New Service
+                        </button>
+                        <button class="btn btn-secondary refresh-btn" onclick="loadManagedServices()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+                <p style="color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.875rem;">
+                    Managed services are server processes that Portal runs and controls. These include media servers, TURN servers, and other backend services.
+                </p>
+                <div id="managed-services-list">
+                    <div class="loading"><div class="spinner"></div> Loading services...</div>
+                </div>
+
+                <!-- Service Logs Modal -->
+                <div id="service-logs-modal" class="modal" style="display: none;">
+                    <div class="modal-content" style="max-width: 800px;">
+                        <div class="modal-header">
+                            <h3 id="logs-modal-title">Service Logs</h3>
+                            <button class="modal-close" onclick="closeServiceLogsModal()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="service-logs-content" style="max-height: 400px; overflow-y: auto; background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
+                                <div class="loading"><div class="spinner"></div> Loading logs...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Create Service Modal -->
+                <div id="create-service-modal" class="modal" style="display: none;">
+                    <div class="modal-content" style="max-width: 500px;">
+                        <div class="modal-header">
+                            <h3>Create Managed Service</h3>
+                            <button class="modal-close" onclick="closeCreateServiceModal()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="create-service-form" onsubmit="createService(event)">
+                                <div class="form-group">
+                                    <label for="service-type">Service Type</label>
+                                    <select id="service-type" required onchange="updateServiceTypeInfo()">
+                                        <option value="">Select a service type...</option>
+                                    </select>
+                                </div>
+                                <div id="service-type-info" style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--code-bg); border-radius: 6px; font-size: 0.875rem;">
+                                </div>
+                                <div class="form-group">
+                                    <label for="service-name">Service Name</label>
+                                    <input type="text" id="service-name" placeholder="e.g., mediamtx-main" required pattern="[a-z0-9-]+" title="Lowercase letters, numbers, and hyphens only">
+                                </div>
+                                <div class="form-group">
+                                    <label for="service-display-name">Display Name</label>
+                                    <input type="text" id="service-display-name" placeholder="e.g., Main Media Server">
+                                </div>
+                                <div class="form-group">
+                                    <label for="service-description">Description</label>
+                                    <textarea id="service-description" rows="2" placeholder="Optional description"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="service-enabled" style="width: auto;">
+                                        <span>Enable and start immediately</span>
+                                    </label>
+                                </div>
+                                <div class="form-actions" style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                                    <button type="button" class="btn btn-secondary" onclick="closeCreateServiceModal()">Cancel</button>
+                                    <button type="submit" class="btn btn-primary">Create Service</button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -493,6 +660,7 @@
             // Load data for the tab
             switch(tabName) {
                 case 'overview': loadOverview(); break;
+                case 'services': loadManagedServices(); break;
                 case 'metrics': loadMetrics(); break;
                 case 'vuln': loadKnownCVEs(); loadScannerStatus(); break;
                 case 'shodan': loadShodanConfig(); break;
@@ -1444,6 +1612,325 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // =================================================================
+        // Managed Services Functions
+        // =================================================================
+
+        let serviceTypes = {};
+
+        // Load managed services
+        async function loadManagedServices() {
+            try {
+                const [servicesData, typesData] = await Promise.all([
+                    Portal.fetchJSON('/api/managed-services'),
+                    Portal.fetchJSON('/api/managed-services/types')
+                ]);
+
+                serviceTypes = typesData.types || {};
+                const services = servicesData.managed_services || [];
+
+                if (services.length === 0) {
+                    document.getElementById('managed-services-list').innerHTML = `
+                        <div class="admin-card" style="text-align: center; padding: 3rem;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="48" height="48" style="color: var(--text-muted); margin-bottom: 1rem;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                            </svg>
+                            <p style="color: var(--text-muted); margin-bottom: 1rem;">No managed services configured.</p>
+                            <button class="btn btn-primary" onclick="showCreateServiceModal()">Create Your First Service</button>
+                        </div>
+                    `;
+                    return;
+                }
+
+                document.getElementById('managed-services-list').innerHTML = `
+                    <div class="admin-grid" style="grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));">
+                        ${services.map(svc => renderServiceCard(svc)).join('')}
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error('Failed to load managed services:', error);
+                document.getElementById('managed-services-list').innerHTML = `
+                    <div class="warning-banner">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>Failed to load managed services. ${escapeHtml(error.message || '')}</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Render a service card
+        function renderServiceCard(svc) {
+            const statusColors = {
+                'running': 'var(--accent-green)',
+                'stopped': 'var(--text-muted)',
+                'error': 'var(--accent-red)',
+                'starting': 'var(--accent-yellow)',
+                'stopping': 'var(--accent-yellow)'
+            };
+            const statusColor = statusColors[svc.status] || 'var(--text-muted)';
+            const isRunning = svc.status === 'running';
+
+            return `
+                <div class="admin-card" style="position: relative;">
+                    <div style="position: absolute; top: 1rem; right: 1rem; display: flex; gap: 0.5rem;">
+                        ${svc.enabled ? '<span style="font-size: 0.625rem; padding: 0.125rem 0.5rem; background: rgba(34,197,94,0.2); color: var(--accent-green); border-radius: 9999px;">ENABLED</span>' : ''}
+                    </div>
+                    <h3 style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                        <span style="width: 10px; height: 10px; border-radius: 50%; background: ${statusColor}; ${isRunning ? 'animation: pulse 2s infinite;' : ''}"></span>
+                        ${escapeHtml(svc.display_name || svc.name)}
+                    </h3>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">
+                        ${escapeHtml(svc.description || 'No description')}
+                    </p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.8rem; margin-bottom: 1rem;">
+                        <div><span style="color: var(--text-muted);">Status:</span> <span style="color: ${statusColor}; font-weight: 500;">${svc.status}</span></div>
+                        <div><span style="color: var(--text-muted);">PID:</span> <span style="font-family: monospace;">${svc.pid || '-'}</span></div>
+                        <div><span style="color: var(--text-muted);">Port:</span> <span style="font-family: monospace;">${svc.port || '-'}</span></div>
+                        <div><span style="color: var(--text-muted);">Health:</span> <span style="color: ${svc.health_status === 'healthy' ? 'var(--accent-green)' : svc.health_status === 'unhealthy' ? 'var(--accent-red)' : 'var(--text-muted)'};">${svc.health_status || 'unknown'}</span></div>
+                    </div>
+                    ${svc.error_message ? `<p style="font-size: 0.75rem; color: var(--accent-red); margin-bottom: 1rem; padding: 0.5rem; background: rgba(239,68,68,0.1); border-radius: 4px;">${escapeHtml(svc.error_message)}</p>` : ''}
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        ${isRunning ? `
+                            <button class="btn btn-secondary btn-sm" onclick="stopService(${svc.id})">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                                </svg>
+                                Stop
+                            </button>
+                            <button class="btn btn-secondary btn-sm" onclick="restartService(${svc.id})">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                                Restart
+                            </button>
+                        ` : `
+                            <button class="btn btn-primary btn-sm" onclick="startService(${svc.id})">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Start
+                            </button>
+                        `}
+                        <button class="btn btn-secondary btn-sm" onclick="showServiceLogs(${svc.id}, '${escapeHtml(svc.name)}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            Logs
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteService(${svc.id}, '${escapeHtml(svc.name)}')" style="margin-left: auto;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Start a service
+        async function startService(id) {
+            try {
+                const response = await Portal.postJSON(`/api/managed-services/${id}/start`, {});
+                const result = await response.json();
+
+                if (response.ok) {
+                    Portal.toast('Service started successfully');
+                    loadManagedServices();
+                } else {
+                    Portal.toast(result.error || 'Failed to start service', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to start service', 'error');
+                console.error('Start service error:', error);
+            }
+        }
+
+        // Stop a service
+        async function stopService(id) {
+            try {
+                const response = await Portal.postJSON(`/api/managed-services/${id}/stop`, {});
+                const result = await response.json();
+
+                if (response.ok) {
+                    Portal.toast('Service stopped');
+                    loadManagedServices();
+                } else {
+                    Portal.toast(result.error || 'Failed to stop service', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to stop service', 'error');
+                console.error('Stop service error:', error);
+            }
+        }
+
+        // Restart a service
+        async function restartService(id) {
+            try {
+                const response = await Portal.postJSON(`/api/managed-services/${id}/restart`, {});
+                const result = await response.json();
+
+                if (response.ok) {
+                    Portal.toast('Service restarted');
+                    loadManagedServices();
+                } else {
+                    Portal.toast(result.error || 'Failed to restart service', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to restart service', 'error');
+                console.error('Restart service error:', error);
+            }
+        }
+
+        // Delete a service
+        async function deleteService(id, name) {
+            if (!confirm(`Are you sure you want to delete service "${name}"? This will stop the service if running.`)) {
+                return;
+            }
+
+            try {
+                const response = await Portal.fetch(`/api/managed-services/${id}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+
+                if (response.ok) {
+                    Portal.toast('Service deleted');
+                    loadManagedServices();
+                } else {
+                    Portal.toast(result.error || 'Failed to delete service', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to delete service', 'error');
+                console.error('Delete service error:', error);
+            }
+        }
+
+        // Show service logs
+        async function showServiceLogs(id, name) {
+            document.getElementById('logs-modal-title').textContent = `Logs: ${name}`;
+            document.getElementById('service-logs-modal').style.display = 'flex';
+            document.getElementById('service-logs-content').innerHTML = '<div class="loading"><div class="spinner"></div> Loading logs...</div>';
+
+            try {
+                const data = await Portal.fetchJSON(`/api/managed-services/${id}/logs?limit=100`);
+                const logs = data.logs || [];
+
+                if (logs.length === 0) {
+                    document.getElementById('service-logs-content').innerHTML = '<p style="color: var(--text-muted);">No logs available.</p>';
+                    return;
+                }
+
+                const levelColors = {
+                    'debug': 'var(--text-muted)',
+                    'info': 'var(--accent-blue)',
+                    'warn': 'var(--accent-yellow)',
+                    'error': 'var(--accent-red)'
+                };
+
+                document.getElementById('service-logs-content').innerHTML = logs.map(log => {
+                    const color = levelColors[log.level] || 'var(--text-secondary)';
+                    const time = new Date(log.created_at + 'Z').toLocaleTimeString();
+                    return `<div style="margin-bottom: 0.25rem;"><span style="color: var(--text-muted);">${time}</span> <span style="color: ${color}; font-weight: 500;">[${log.level.toUpperCase()}]</span> ${escapeHtml(log.message)}</div>`;
+                }).join('');
+
+            } catch (error) {
+                document.getElementById('service-logs-content').innerHTML = `<p style="color: var(--accent-red);">Failed to load logs: ${escapeHtml(error.message || 'Unknown error')}</p>`;
+            }
+        }
+
+        function closeServiceLogsModal() {
+            document.getElementById('service-logs-modal').style.display = 'none';
+        }
+
+        // Show create service modal
+        async function showCreateServiceModal() {
+            document.getElementById('create-service-modal').style.display = 'flex';
+            document.getElementById('create-service-form').reset();
+            document.getElementById('service-type-info').style.display = 'none';
+
+            // Populate service types dropdown
+            try {
+                if (Object.keys(serviceTypes).length === 0) {
+                    const typesData = await Portal.fetchJSON('/api/managed-services/types');
+                    serviceTypes = typesData.types || {};
+                }
+
+                const select = document.getElementById('service-type');
+                select.innerHTML = '<option value="">Select a service type...</option>';
+                Object.entries(serviceTypes).forEach(([key, info]) => {
+                    select.innerHTML += `<option value="${key}">${escapeHtml(info.display_name)} (${key})</option>`;
+                });
+            } catch (error) {
+                console.error('Failed to load service types:', error);
+            }
+        }
+
+        function closeCreateServiceModal() {
+            document.getElementById('create-service-modal').style.display = 'none';
+        }
+
+        function updateServiceTypeInfo() {
+            const typeKey = document.getElementById('service-type').value;
+            const infoEl = document.getElementById('service-type-info');
+
+            if (!typeKey || !serviceTypes[typeKey]) {
+                infoEl.style.display = 'none';
+                return;
+            }
+
+            const info = serviceTypes[typeKey];
+            infoEl.style.display = 'block';
+            infoEl.innerHTML = `
+                <p style="margin: 0 0 0.5rem 0; color: var(--text-primary); font-weight: 500;">${escapeHtml(info.display_name)}</p>
+                <p style="margin: 0 0 0.5rem 0; color: var(--text-secondary);">${escapeHtml(info.description)}</p>
+                <p style="margin: 0; font-size: 0.75rem; color: var(--text-muted);">Default Port: ${info.default_port || 'N/A'} | Version: ${info.version || '1.0.0'}</p>
+            `;
+        }
+
+        // Create a new service
+        async function createService(event) {
+            event.preventDefault();
+
+            const serviceType = document.getElementById('service-type').value;
+            const name = document.getElementById('service-name').value.trim();
+            const displayName = document.getElementById('service-display-name').value.trim();
+            const description = document.getElementById('service-description').value.trim();
+            const enabled = document.getElementById('service-enabled').checked;
+
+            if (!serviceType || !name) {
+                Portal.toast('Please fill in required fields', 'error');
+                return;
+            }
+
+            try {
+                const response = await Portal.postJSON('/api/managed-services', {
+                    type: serviceType,
+                    name: name,
+                    display_name: displayName || name,
+                    description: description,
+                    enabled: enabled
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    Portal.toast('Service created successfully');
+                    closeCreateServiceModal();
+                    loadManagedServices();
+                } else {
+                    Portal.toast(result.error || 'Failed to create service', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to create service', 'error');
+                console.error('Create service error:', error);
+            }
         }
 
         // =================================================================

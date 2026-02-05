@@ -421,6 +421,180 @@ Get available connection types with schemas.
 
 ---
 
+### User Streams
+
+User streams allow broadcasting from OBS or other streaming software. All traffic is encrypted via RTMPS/RTSPS.
+
+#### GET /api/streams
+List user's streams.
+
+**Response:**
+```json
+{
+  "streams": [
+    {
+      "id": 1,
+      "name": "My Live Stream",
+      "description": "Gaming session",
+      "stream_key": "live_abc123...",
+      "is_public": false,
+      "is_live": true,
+      "viewer_count": 5,
+      "total_views": 150,
+      "created_at": "2026-02-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/streams
+Create a new stream.
+
+**Request:**
+```json
+{
+  "name": "My Stream",
+  "description": "Optional description",
+  "is_public": false
+}
+```
+
+**Response:**
+```json
+{
+  "stream": {
+    "id": 1,
+    "name": "My Stream",
+    "stream_key": "live_abc123xyz..."
+  }
+}
+```
+
+---
+
+#### GET /api/streams/public
+List all public (community) streams.
+
+**Response:**
+```json
+{
+  "streams": [
+    {
+      "id": 1,
+      "name": "Public Stream",
+      "owner_username": "dustin",
+      "is_live": true,
+      "viewer_count": 10,
+      "total_views": 500
+    }
+  ]
+}
+```
+
+---
+
+#### GET /api/streams/:id
+Get stream details.
+
+**Response:**
+```json
+{
+  "stream": {
+    "id": 1,
+    "name": "My Stream",
+    "stream_key": "live_abc123...",
+    "is_public": true,
+    "is_live": false,
+    "chat_channel_id": 5
+  }
+}
+```
+
+---
+
+#### PUT /api/streams/:id
+Update stream settings.
+
+**Request:**
+```json
+{
+  "name": "New Name",
+  "description": "Updated description",
+  "is_public": true
+}
+```
+
+---
+
+#### DELETE /api/streams/:id
+Delete a stream.
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+#### POST /api/streams/:id/regenerate-key
+Regenerate stream key.
+
+**Response:**
+```json
+{
+  "stream": {
+    "id": 1,
+    "stream_key": "live_newkey456..."
+  }
+}
+```
+
+---
+
+#### POST /api/stream/auth
+MediaMTX authentication hook (internal use).
+
+**Request (from MediaMTX):**
+```json
+{
+  "action": "publish",
+  "path": "live_abc123...",
+  "user": "",
+  "password": ""
+}
+```
+
+**Response:**
+```json
+{
+  "ok": true
+}
+```
+
+---
+
+#### POST /api/stream/event
+MediaMTX event notifications (internal use).
+
+Handles stream start/stop events to update live status.
+
+---
+
+### OBS Configuration
+
+To stream to Portal:
+
+1. **Server:** `rtmps://your-server.com:1936/live`
+2. **Stream Key:** Your stream key from the dashboard
+
+All streaming traffic uses TLS encryption (RTMPS on port 1936, RTSPS on port 8322).
+
+---
+
 ### Chat
 
 #### GET /api/chat/channels
@@ -541,6 +715,252 @@ System statistics.
   "active_connections": 5,
   "total_services": 3,
   "uptime_check": "2026-02-05T12:00:00Z"
+}
+```
+
+---
+
+### Managed Services (Server Processes)
+
+Managed services are server processes that Portal runs and manages (e.g., MediaMTX media server, TURN server). These are different from user connections which are remote resources users connect to.
+
+#### GET /api/managed-services/types
+Get available managed service types.
+
+**Response:**
+```json
+{
+  "types": {
+    "mediamtx": {
+      "name": "mediamtx",
+      "display_name": "MediaMTX",
+      "description": "RTSP/RTMP/HLS/WebRTC media streaming server",
+      "version": "1.0.0",
+      "icon": "video",
+      "default_port": 8554,
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "rtsp_port": {"type": "integer", "default": 8554},
+          "rtmp_port": {"type": "integer", "default": 1935},
+          "hls_port": {"type": "integer", "default": 8888},
+          "webrtc_port": {"type": "integer", "default": 8889},
+          "api_port": {"type": "integer", "default": 9997}
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+#### GET /api/managed-services
+List all managed services.
+
+**Response:**
+```json
+{
+  "managed_services": [
+    {
+      "id": 1,
+      "name": "media-server",
+      "display_name": "Media Server",
+      "status": "running",
+      "pid": 12345,
+      "enabled": true,
+      "port": 8554,
+      "config": {"rtsp_port": 8554}
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/managed-services
+Create a new managed service (admin only).
+
+**Request:**
+```json
+{
+  "name": "media-server",
+  "type": "mediamtx",
+  "display_name": "Media Server",
+  "description": "Primary media streaming server",
+  "config": {
+    "rtsp_port": 8554,
+    "rtmp_port": 1935
+  },
+  "enabled": false
+}
+```
+
+**Response:**
+```json
+{
+  "service": {
+    "id": 1,
+    "name": "media-server",
+    "status": "stopped",
+    "enabled": false
+  },
+  "message": "Service created successfully"
+}
+```
+
+---
+
+#### GET /api/managed-services/:id
+Get a managed service by ID.
+
+**Response:**
+```json
+{
+  "service": {
+    "id": 1,
+    "name": "media-server",
+    "display_name": "Media Server",
+    "status": "running",
+    "pid": 12345,
+    "enabled": true,
+    "port": 8554,
+    "config": {"rtsp_port": 8554},
+    "health_status": "healthy",
+    "last_health_check": "2026-02-05T12:00:00Z",
+    "restart_count": 0
+  }
+}
+```
+
+---
+
+#### PUT /api/managed-services/:id
+Update a managed service (admin only).
+
+**Request:**
+```json
+{
+  "config": {
+    "rtsp_port": 8555,
+    "log_level": "debug"
+  },
+  "enabled": true
+}
+```
+
+---
+
+#### DELETE /api/managed-services/:id
+Delete a managed service (admin only).
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Service deleted"
+}
+```
+
+---
+
+#### POST /api/managed-services/:id/start
+Start a managed service (admin only).
+
+**Response:**
+```json
+{
+  "success": true,
+  "service": {
+    "id": 1,
+    "status": "running",
+    "pid": 12345
+  }
+}
+```
+
+---
+
+#### POST /api/managed-services/:id/stop
+Stop a managed service (admin only).
+
+**Response:**
+```json
+{
+  "success": true,
+  "service": {
+    "id": 1,
+    "status": "stopped",
+    "pid": null
+  }
+}
+```
+
+---
+
+#### POST /api/managed-services/:id/restart
+Restart a managed service (admin only).
+
+**Response:**
+```json
+{
+  "success": true,
+  "service": {
+    "id": 1,
+    "status": "running",
+    "pid": 12346
+  }
+}
+```
+
+---
+
+#### GET /api/managed-services/:id/status
+Get detailed status of a managed service.
+
+**Response:**
+```json
+{
+  "status": {
+    "id": 1,
+    "name": "media-server",
+    "status": "running",
+    "pid": 12345,
+    "health_status": "healthy",
+    "last_health_check": "2026-02-05T12:00:00Z",
+    "restart_count": 2,
+    "last_started_at": "2026-02-05T10:00:00Z",
+    "error_message": null
+  }
+}
+```
+
+---
+
+#### GET /api/managed-services/:id/logs
+Get logs for a managed service.
+
+**Query Parameters:**
+- `limit` (optional): Max log entries (default: 100)
+- `level` (optional): Filter by log level (info, warn, error)
+
+**Response:**
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "timestamp": "2026-02-05T12:00:00Z",
+      "level": "info",
+      "message": "Service started with PID 12345"
+    },
+    {
+      "id": 2,
+      "timestamp": "2026-02-05T12:00:01Z",
+      "level": "info",
+      "message": "RTSP server listening on :8554"
+    }
+  ]
 }
 ```
 

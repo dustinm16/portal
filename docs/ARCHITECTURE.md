@@ -78,16 +78,17 @@ Portal Gateway is a secure, authenticated gateway for home infrastructure that p
 
 ## Key Concepts
 
-### 1. Managed Services vs Remote Connections
+### 1. Managed Services vs Service Routes vs User Connections
 
-| Aspect | Managed Services | Remote Connections |
-|--------|------------------|-------------------|
-| **Definition** | Server processes Portal starts/stops | External resources Portal proxies to |
-| **Lifecycle** | Managed by Portal (start/stop/restart) | Always external, Portal just connects |
-| **Examples** | MediaMTX relay, TURN server, Local PTY | SSH servers, VNC desktops, Proxmox |
-| **Storage** | `managed_services` table | `user_connections` table |
-| **Ownership** | System-wide (admin managed) | Per-user (private) |
-| **Process** | Runs on Portal server | Runs elsewhere |
+| Aspect | Managed Services | Service Routes | User Connections |
+|--------|------------------|----------------|------------------|
+| **Definition** | Server processes Portal runs | Proxy routing configurations | Personal remote connections |
+| **Lifecycle** | Start/stop/restart by Portal | Static configuration | Static configuration |
+| **Examples** | MediaMTX server, TURN server | "Proxy /ssh to 192.168.1.10:22" | "My home server SSH" |
+| **Storage** | `managed_services` table | `services` table | `user_connections` table |
+| **Ownership** | System-wide (admin only) | System-wide (admin only) | Per-user (private) |
+| **Process** | Runs on Portal server | No process (just routing) | No process (just routing) |
+| **UI Location** | Admin Panel > Managed Services | Dashboard > Service Routes | Dashboard > My Connections |
 
 ### 2. Authentication Model
 
@@ -156,11 +157,10 @@ Permission Hierarchy:
 │   ├── vpn_tunnel.py      # VPN bridge
 │   └── http_proxy.py      # HTTP reverse proxy
 │
-├── services/              # Managed service controllers (TODO)
-│   ├── __init__.py        # Service manager
-│   ├── base.py            # ManagedService base class
-│   ├── mediamtx.py        # MediaMTX process manager
-│   └── turn.py            # TURN server manager
+├── services/              # Managed service controllers
+│   ├── __init__.py        # ServiceManager, registration system
+│   ├── base.py            # ManagedService base class, ServiceInfo
+│   └── mediamtx.py        # MediaMTX process manager
 │
 ├── static/
 │   ├── index.html         # Dashboard
@@ -236,13 +236,36 @@ CREATE TABLE managed_services (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
     type TEXT NOT NULL,              -- mediamtx, turn, etc.
+    display_name TEXT,
+    description TEXT,
     enabled INTEGER DEFAULT 0,
-    config TEXT DEFAULT '{}',        -- JSON configuration
     status TEXT DEFAULT 'stopped',   -- running, stopped, error
     pid INTEGER,                     -- Process ID when running
-    port INTEGER,                    -- Listening port
+    config TEXT DEFAULT '{}',        -- JSON configuration
+    port INTEGER,                    -- Primary listening port
+    ports TEXT DEFAULT '[]',         -- Additional ports (JSON array)
+    binary_path TEXT,                -- Custom binary path
+    config_path TEXT,                -- Config file path
+    working_dir TEXT,                -- Working directory
+    last_health_check TEXT,
+    health_status TEXT DEFAULT 'unknown',
+    restart_count INTEGER DEFAULT 0,
+    last_started_at TEXT,
+    last_stopped_at TEXT,
+    error_message TEXT,
+    icon TEXT DEFAULT 'server',
     created_at TEXT,
     updated_at TEXT
+);
+
+-- Service logs for monitoring
+CREATE TABLE service_logs (
+    id INTEGER PRIMARY KEY,
+    service_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    level TEXT DEFAULT 'info',       -- debug, info, warn, error
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
 );
 
 -- API keys for programmatic access
@@ -313,7 +336,7 @@ PUT  /api/users/:id/role        - Change user role (admin)
 DELETE /api/users/:id           - Delete user (superadmin)
 ```
 
-### Connections (User)
+### User Connections (Personal)
 
 ```
 GET  /api/connections           - List user's connections
@@ -324,19 +347,31 @@ DELETE /api/connections/:id     - Delete connection
 GET  /api/connections/types     - Available connection types
 ```
 
+### Service Routes (Admin)
+
+```
+GET  /api/services              - List service routes
+POST /api/services              - Create route
+GET  /api/services/:id          - Get route details
+PUT  /api/services/:id          - Update route
+DELETE /api/services/:id        - Delete route
+GET  /api/services/:id/health   - Check target health
+```
+
 ### Managed Services (Admin)
 
 ```
-GET  /api/services              - List managed services
-POST /api/services              - Create service
-GET  /api/services/:id          - Get service details
-PUT  /api/services/:id          - Update service config
-DELETE /api/services/:id        - Delete service
-POST /api/services/:id/start    - Start service
-POST /api/services/:id/stop     - Stop service
-POST /api/services/:id/restart  - Restart service
-GET  /api/services/:id/status   - Get service status
-GET  /api/services/:id/logs     - Get service logs
+GET  /api/managed-services/types     - Available service types
+GET  /api/managed-services           - List managed services
+POST /api/managed-services           - Create service
+GET  /api/managed-services/:id       - Get service details
+PUT  /api/managed-services/:id       - Update service config
+DELETE /api/managed-services/:id     - Delete service
+POST /api/managed-services/:id/start - Start service process
+POST /api/managed-services/:id/stop  - Stop service process
+POST /api/managed-services/:id/restart - Restart service
+GET  /api/managed-services/:id/status  - Get service status
+GET  /api/managed-services/:id/logs    - Get service logs
 ```
 
 ### Chat

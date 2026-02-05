@@ -252,6 +252,69 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN chat_anonymous INTEGER DEFAULT 0",
     # Avatar customization (JSON: {"color": "#hex", "emoji": "🙂", "initials": "AB"})
     "ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT '{}'",
+    # Managed services - actual server processes Portal runs
+    """CREATE TABLE IF NOT EXISTS managed_services (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        type TEXT NOT NULL,
+        display_name TEXT,
+        description TEXT,
+        enabled INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'stopped',
+        pid INTEGER,
+        config TEXT DEFAULT '{}',
+        port INTEGER,
+        ports TEXT DEFAULT '[]',
+        binary_path TEXT,
+        config_path TEXT,
+        working_dir TEXT,
+        last_health_check TEXT,
+        health_status TEXT DEFAULT 'unknown',
+        restart_count INTEGER DEFAULT 0,
+        last_started_at TEXT,
+        last_stopped_at TEXT,
+        error_message TEXT,
+        icon TEXT DEFAULT 'server',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_managed_services_type ON managed_services(type)",
+    "CREATE INDEX IF NOT EXISTS idx_managed_services_status ON managed_services(status)",
+    # Service logs
+    """CREATE TABLE IF NOT EXISTS service_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service_id INTEGER NOT NULL,
+        level TEXT DEFAULT 'info',
+        message TEXT NOT NULL,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_service_logs_service ON service_logs(service_id)",
+    "CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp)",
+    # User streams - for OBS/RTMP streaming
+    """CREATE TABLE IF NOT EXISTS user_streams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        stream_key TEXT NOT NULL UNIQUE,
+        description TEXT,
+        is_public INTEGER DEFAULT 0,
+        is_live INTEGER DEFAULT 0,
+        viewer_count INTEGER DEFAULT 0,
+        chat_channel_id INTEGER,
+        thumbnail_url TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        total_views INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (chat_channel_id) REFERENCES chat_channels(id) ON DELETE SET NULL,
+        UNIQUE(user_id, name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_user_streams_user ON user_streams(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_user_streams_stream_key ON user_streams(stream_key)",
+    "CREATE INDEX IF NOT EXISTS idx_user_streams_public ON user_streams(is_public, is_live)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1108,6 +1171,164 @@ class Database:
             connections.append(conn)
         return connections
 
+    # User streams operations
+    async def create_user_stream(
+        self,
+        user_id: int,
+        name: str,
+        stream_key: str,
+        description: str = None,
+        is_public: bool = False
+    ) -> int:
+        """Create a new user stream."""
+        cursor = await self.conn.execute(
+            """INSERT INTO user_streams (user_id, name, stream_key, description, is_public, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, name, stream_key, description, 1 if is_public else 0,
+             datetime.now(timezone.utc).isoformat())
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_user_streams(self, user_id: int) -> list[dict]:
+        """Get all streams for a user."""
+        cursor = await self.conn.execute(
+            """SELECT us.*, u.username as owner_username, c.name as chat_channel_name
+               FROM user_streams us
+               LEFT JOIN users u ON us.user_id = u.id
+               LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
+               WHERE us.user_id = ?
+               ORDER BY us.created_at DESC""",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_user_stream(self, stream_id: int) -> Optional[dict]:
+        """Get a specific stream by ID."""
+        cursor = await self.conn.execute(
+            """SELECT us.*, u.username as owner_username, c.name as chat_channel_name
+               FROM user_streams us
+               LEFT JOIN users u ON us.user_id = u.id
+               LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
+               WHERE us.id = ?""",
+            (stream_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_stream_by_key(self, stream_key: str) -> Optional[dict]:
+        """Get a stream by its stream key (for authentication)."""
+        cursor = await self.conn.execute(
+            """SELECT us.*, u.username as owner_username
+               FROM user_streams us
+               LEFT JOIN users u ON us.user_id = u.id
+               WHERE us.stream_key = ?""",
+            (stream_key,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_public_streams(self, live_only: bool = False) -> list[dict]:
+        """Get all public streams, optionally only live ones."""
+        query = """SELECT us.*, u.username as owner_username, c.name as chat_channel_name
+                   FROM user_streams us
+                   LEFT JOIN users u ON us.user_id = u.id
+                   LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
+                   WHERE us.is_public = 1"""
+        if live_only:
+            query += " AND us.is_live = 1"
+        query += " ORDER BY us.is_live DESC, us.viewer_count DESC, us.created_at DESC"
+
+        cursor = await self.conn.execute(query)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_user_stream(self, stream_id: int, user_id: int = None, **kwargs) -> bool:
+        """Update a user stream. If user_id is provided, verify ownership."""
+        allowed_fields = {"name", "description", "is_public", "is_live", "viewer_count",
+                         "chat_channel_id", "thumbnail_url", "started_at", "ended_at"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+
+        if not updates:
+            return False
+
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [stream_id]
+
+        query = f"UPDATE user_streams SET {set_clause} WHERE id = ?"
+        if user_id:
+            query += " AND user_id = ?"
+            values.append(user_id)
+
+        cursor = await self.conn.execute(query, values)
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_stream_live(self, stream_id: int, is_live: bool) -> bool:
+        """Set stream live status and update timestamps."""
+        now = datetime.now(timezone.utc).isoformat()
+        if is_live:
+            cursor = await self.conn.execute(
+                """UPDATE user_streams
+                   SET is_live = 1, started_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (now, now, stream_id)
+            )
+        else:
+            cursor = await self.conn.execute(
+                """UPDATE user_streams
+                   SET is_live = 0, ended_at = ?, viewer_count = 0, updated_at = ?,
+                       total_views = total_views + viewer_count
+                   WHERE id = ?""",
+                (now, now, stream_id)
+            )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def increment_stream_viewers(self, stream_id: int, delta: int = 1) -> bool:
+        """Increment or decrement viewer count."""
+        if delta >= 0:
+            cursor = await self.conn.execute(
+                "UPDATE user_streams SET viewer_count = viewer_count + ? WHERE id = ?",
+                (delta, stream_id)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "UPDATE user_streams SET viewer_count = MAX(0, viewer_count + ?) WHERE id = ?",
+                (delta, stream_id)
+            )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_user_stream(self, stream_id: int, user_id: int = None) -> bool:
+        """Delete a user stream. If user_id is provided, verify ownership."""
+        query = "DELETE FROM user_streams WHERE id = ?"
+        params = [stream_id]
+
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+
+        cursor = await self.conn.execute(query, params)
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def regenerate_stream_key(self, stream_id: int, new_key: str, user_id: int = None) -> bool:
+        """Regenerate a stream key."""
+        query = "UPDATE user_streams SET stream_key = ?, updated_at = ? WHERE id = ?"
+        params = [new_key, datetime.now(timezone.utc).isoformat(), stream_id]
+
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+
+        cursor = await self.conn.execute(query, params)
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
     # Chat/Forum operations
     async def get_chat_channels(self) -> list[dict]:
         """Get all chat channels."""
@@ -1251,6 +1472,226 @@ class Database:
         cursor = await self.conn.execute(
             "DELETE FROM chat_messages WHERE channel_id = ?",
             (channel_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    # =========================================================================
+    # Managed Services
+    # =========================================================================
+
+    async def create_managed_service(
+        self,
+        name: str,
+        service_type: str,
+        display_name: str = None,
+        description: str = None,
+        config: dict = None,
+        port: int = None,
+        binary_path: str = None,
+        icon: str = "server"
+    ) -> int:
+        """Create a new managed service."""
+        import json
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """INSERT INTO managed_services
+               (name, type, display_name, description, config, port, binary_path, icon, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, service_type, display_name or name, description,
+             json.dumps(config or {}), port, binary_path, icon, now, now)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_managed_service(self, service_id: int) -> Optional[dict]:
+        """Get a managed service by ID."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM managed_services WHERE id = ?",
+            (service_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_managed_service_by_name(self, name: str) -> Optional[dict]:
+        """Get a managed service by name."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM managed_services WHERE name = ?",
+            (name,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_managed_service_by_type(self, service_type: str) -> Optional[dict]:
+        """Get first managed service of a given type."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM managed_services WHERE type = ? LIMIT 1",
+            (service_type,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_all_managed_services(self) -> list[dict]:
+        """Get all managed services."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM managed_services ORDER BY name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_enabled_managed_services(self) -> list[dict]:
+        """Get all enabled managed services."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM managed_services WHERE enabled = 1 ORDER BY name"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_managed_service(self, service_id: int, **updates) -> bool:
+        """Update a managed service."""
+        import json
+        if not updates:
+            return False
+
+        # Handle JSON fields
+        if 'config' in updates and isinstance(updates['config'], dict):
+            updates['config'] = json.dumps(updates['config'])
+        if 'ports' in updates and isinstance(updates['ports'], list):
+            updates['ports'] = json.dumps(updates['ports'])
+
+        updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [service_id]
+
+        cursor = await self.conn.execute(
+            f"UPDATE managed_services SET {set_clause} WHERE id = ?",
+            values
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_service_status(
+        self,
+        service_id: int,
+        status: str,
+        pid: int = None,
+        error_message: str = None
+    ) -> bool:
+        """Update service status and optional PID/error."""
+        now = datetime.now(timezone.utc).isoformat()
+        updates = {
+            'status': status,
+            'pid': pid,
+            'updated_at': now
+        }
+
+        if status == 'running':
+            updates['last_started_at'] = now
+            updates['error_message'] = None
+        elif status == 'stopped':
+            updates['last_stopped_at'] = now
+            updates['pid'] = None
+        elif status == 'error':
+            updates['error_message'] = error_message
+            updates['pid'] = None
+
+        return await self.update_managed_service(service_id, **updates)
+
+    async def update_service_health(
+        self,
+        service_id: int,
+        health_status: str
+    ) -> bool:
+        """Update service health status."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """UPDATE managed_services
+               SET health_status = ?, last_health_check = ?, updated_at = ?
+               WHERE id = ?""",
+            (health_status, now, now, service_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def increment_service_restart_count(self, service_id: int) -> bool:
+        """Increment the restart count for a service."""
+        cursor = await self.conn.execute(
+            """UPDATE managed_services
+               SET restart_count = restart_count + 1, updated_at = ?
+               WHERE id = ?""",
+            (datetime.now(timezone.utc).isoformat(), service_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_managed_service(self, service_id: int) -> bool:
+        """Delete a managed service."""
+        cursor = await self.conn.execute(
+            "DELETE FROM managed_services WHERE id = ?",
+            (service_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    # Service logs
+
+    async def add_service_log(
+        self,
+        service_id: int,
+        message: str,
+        level: str = "info"
+    ) -> int:
+        """Add a log entry for a service."""
+        cursor = await self.conn.execute(
+            """INSERT INTO service_logs (service_id, level, message, timestamp)
+               VALUES (?, ?, ?, ?)""",
+            (service_id, level, message, datetime.now(timezone.utc).isoformat())
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_service_logs(
+        self,
+        service_id: int,
+        limit: int = 100,
+        level: str = None
+    ) -> list[dict]:
+        """Get logs for a service."""
+        if level:
+            cursor = await self.conn.execute(
+                """SELECT * FROM service_logs
+                   WHERE service_id = ? AND level = ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (service_id, level, limit)
+            )
+        else:
+            cursor = await self.conn.execute(
+                """SELECT * FROM service_logs
+                   WHERE service_id = ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (service_id, limit)
+            )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def clear_service_logs(self, service_id: int, keep_recent: int = 1000) -> int:
+        """Clear old logs for a service, keeping the most recent entries."""
+        # Get the ID threshold
+        cursor = await self.conn.execute(
+            """SELECT id FROM service_logs
+               WHERE service_id = ?
+               ORDER BY id DESC LIMIT 1 OFFSET ?""",
+            (service_id, keep_recent)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0
+
+        threshold_id = row[0]
+        cursor = await self.conn.execute(
+            "DELETE FROM service_logs WHERE service_id = ? AND id <= ?",
+            (service_id, threshold_id)
         )
         await self.conn.commit()
         return cursor.rowcount

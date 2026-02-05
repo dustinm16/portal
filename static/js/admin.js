@@ -148,21 +148,29 @@ const SERVICE_PRESETS = {
         port: 3389,
         config: { rfb_version: '3.8' }
     },
-    'mediamtx-rtsp': {
-        name: 'RTSP Stream',
+    'mediamtx-rtsps': {
+        name: 'RTSPS Stream (TLS)',
         path: '/stream',
         plugin: 'mediamtx',
-        host: 'localhost',
-        port: 8554,
-        config: { api_url: 'http://localhost:9997', protocol: 'rtsp' }
+        host: '127.0.0.1',
+        port: 8322,  // RTSPS port with TLS
+        config: { api_url: 'https://127.0.0.1:9997', protocol: 'rtsps' }
+    },
+    'mediamtx-hls': {
+        name: 'HLS Stream (HTTPS)',
+        path: '/live',
+        plugin: 'mediamtx',
+        host: '127.0.0.1',
+        port: 8888,  // HLS with HTTPS
+        config: { api_url: 'https://127.0.0.1:9997', protocol: 'hls' }
     },
     'mediamtx-webrtc': {
         name: 'WebRTC Stream',
         path: '/webrtc',
         plugin: 'mediamtx',
-        host: 'localhost',
+        host: '127.0.0.1',
         port: 8889,
-        config: { api_url: 'http://localhost:9997', protocol: 'webrtc' }
+        config: { api_url: 'https://127.0.0.1:9997', protocol: 'webrtc' }
     },
     'proxmox-cluster': {
         name: 'Proxmox VE',
@@ -179,13 +187,13 @@ const SERVICE_PRESETS = {
         host: '',
         port: 5900
     },
-    'http-proxy': {
-        name: 'HTTP Proxy',
+    'https-proxy': {
+        name: 'HTTPS Proxy',
         path: '/proxy',
         plugin: 'http_proxy',
         host: '',
-        port: 80,
-        config: { target_url: 'http://localhost:8080' }
+        port: 443,
+        config: { target_url: 'https://backend.example.com:443' }
     },
     'tcp-tunnel': {
         name: 'TCP Tunnel',

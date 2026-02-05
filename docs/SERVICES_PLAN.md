@@ -463,16 +463,18 @@ class HealthMonitor:
 
 ## Implementation Order
 
-### Week 1: Foundation
-- [ ] Create `managed_services` table migration
-- [ ] Implement `ServiceManager` class
-- [ ] Implement `ManagedService` base class
-- [ ] Add service CRUD API endpoints
+### Week 1: Foundation ✅ COMPLETE
+- [x] Create `managed_services` table migration
+- [x] Implement `ServiceManager` class
+- [x] Implement `ManagedService` base class
+- [x] Add service CRUD API endpoints (`/api/managed-services/*`)
+- [x] Health monitoring background task
+- [x] Auto-restart with exponential backoff
 
-### Week 2: MediaMTX
-- [ ] Implement `MediaMTXService` class
-- [ ] Add config generation
-- [ ] Add stream listing API
+### Week 2: MediaMTX ✅ COMPLETE
+- [x] Implement `MediaMTXService` class
+- [x] Add config generation (mediamtx.yml)
+- [x] Add stream listing API (via MediaMTX API)
 - [ ] Add WebRTC signaling relay
 - [ ] Test RTSP/HLS/WebRTC playback
 
@@ -486,8 +488,7 @@ class HealthMonitor:
 - [ ] Update admin panel with service controls
 - [ ] Add service log viewer
 - [ ] Add real-time status updates
-- [ ] Health monitoring & auto-restart
-- [ ] Documentation
+- [ ] Documentation updates
 
 ---
 

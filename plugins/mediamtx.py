@@ -45,18 +45,18 @@ class MediaMTXPlugin(PluginBase):
             "properties": {
                 "api_url": {
                     "type": "string",
-                    "description": "MediaMTX API URL (e.g., http://localhost:9997)",
-                    "default": "http://localhost:9997"
+                    "description": "MediaMTX API URL (use HTTPS for encrypted communication)",
+                    "default": "https://127.0.0.1:9997"
                 },
                 "webrtc_url": {
                     "type": "string",
-                    "description": "MediaMTX WebRTC URL (e.g., http://localhost:8889)",
-                    "default": "http://localhost:8889"
+                    "description": "MediaMTX WebRTC URL (use HTTPS for encrypted communication)",
+                    "default": "https://127.0.0.1:8889"
                 },
                 "hls_url": {
                     "type": "string",
-                    "description": "MediaMTX HLS URL (e.g., http://localhost:8888)",
-                    "default": "http://localhost:8888"
+                    "description": "MediaMTX HLS URL (use HTTPS for encrypted communication)",
+                    "default": "https://127.0.0.1:8888"
                 },
                 "default_stream": {
                     "type": "string",

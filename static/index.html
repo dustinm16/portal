@@ -41,7 +41,7 @@
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
                         </svg>
-                        All Services
+                        All Routes
                     </a>
                 </li>
             </ul>
@@ -83,7 +83,7 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                             </svg>
-                            Add Service
+                            Add Route
                         </a>
                     </li>
                     <li>
@@ -133,7 +133,7 @@
                     </div>
                     <div class="stat-content">
                         <span class="stat-value" id="stat-services">0</span>
-                        <span class="stat-label">Services</span>
+                        <span class="stat-label">Routes</span>
                     </div>
                 </div>
                 <div class="stat-card">
@@ -177,13 +177,25 @@
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
                     </svg>
-                    Services
+                    Service Routes
                 </button>
                 <button class="tab-btn" data-tab="my-connections" onclick="switchTab('my-connections')">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                     </svg>
                     My Connections
+                </button>
+                <button class="tab-btn" data-tab="my-streams" onclick="switchTab('my-streams')">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    My Streams
+                </button>
+                <button class="tab-btn" data-tab="community-streams" onclick="switchTab('community-streams')">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    </svg>
+                    Community
                 </button>
                 <button class="tab-btn" data-tab="quick-access" onclick="switchTab('quick-access')">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
@@ -193,23 +205,24 @@
                 </button>
             </div>
 
-            <!-- Tab Content: Services -->
+            <!-- Tab Content: Service Routes -->
             <div id="tab-services" class="tab-content active">
                 <div class="tab-header">
-                    <h2 id="content-title">All Services</h2>
+                    <h2 id="content-title">Service Routes</h2>
                     <div class="tab-actions" id="admin-service-actions" style="display: none;">
                         <button class="btn btn-primary btn-sm" onclick="showAddServiceModal()">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                             </svg>
-                            Add Service
+                            Add Route
                         </button>
                     </div>
                 </div>
+                <p class="tab-description" style="margin-bottom: 1rem;">Proxy routes to backend services. These configure how Portal routes traffic to local or remote services.</p>
 
                 <div id="loading" class="loading">
                     <div class="spinner"></div>
-                    <span>Loading services...</span>
+                    <span>Loading routes...</span>
                 </div>
 
                 <div id="services-grid" class="services-grid" style="display: none;"></div>
@@ -218,8 +231,8 @@
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
                     </svg>
-                    <h3>No Services Available</h3>
-                    <p id="empty-message">Configure services using the CLI or API.</p>
+                    <h3>No Service Routes</h3>
+                    <p id="empty-message">Add a route to proxy traffic to backend services.</p>
                 </div>
             </div>
 
@@ -250,6 +263,65 @@
                     <h3>No Connections Yet</h3>
                     <p>Add a connection to access your remote servers and services.</p>
                     <button class="btn btn-primary" onclick="showAddConnectionModal()" style="margin-top: 1rem;">Add Your First Connection</button>
+                </div>
+            </div>
+
+            <!-- Tab Content: My Streams -->
+            <div id="tab-my-streams" class="tab-content">
+                <div class="tab-header">
+                    <h2>My Streams</h2>
+                    <div class="tab-actions">
+                        <button class="btn btn-primary btn-sm" onclick="showCreateStreamModal()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                            </svg>
+                            Create Stream
+                        </button>
+                    </div>
+                </div>
+                <p class="tab-description">Stream live video from OBS or other broadcasting software. Get your stream key to start broadcasting.</p>
+
+                <div id="streams-loading" class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading streams...</span>
+                </div>
+                <div id="streams-grid" class="connections-grid" style="display: none;"></div>
+                <div id="streams-empty" class="empty-state" style="display: none;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    <h3>No Streams Yet</h3>
+                    <p>Create a stream to start broadcasting with OBS.</p>
+                    <button class="btn btn-primary" onclick="showCreateStreamModal()" style="margin-top: 1rem;">Create Your First Stream</button>
+                </div>
+            </div>
+
+            <!-- Tab Content: Community Streams -->
+            <div id="tab-community-streams" class="tab-content">
+                <div class="tab-header">
+                    <h2>Community Streams</h2>
+                    <div class="tab-actions">
+                        <button class="btn btn-secondary btn-sm" onclick="loadCommunityStreams()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+                <p class="tab-description">Watch public streams from the community. Click on a stream to view and chat with other viewers.</p>
+
+                <div id="community-streams-loading" class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading community streams...</span>
+                </div>
+                <div id="community-streams-grid" class="connections-grid" style="display: none;"></div>
+                <div id="community-streams-empty" class="empty-state" style="display: none;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    <h3>No Public Streams</h3>
+                    <p>No one is streaming publicly right now. Check back later!</p>
                 </div>
             </div>
 
@@ -320,16 +392,17 @@
         </main>
     </div>
 
-    <!-- Add Service Modal -->
+    <!-- Add Service Route Modal -->
     <div id="add-service-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('add-service-modal')"></div>
         <div class="modal-content modal-large">
             <div class="modal-header">
-                <h3>Add Service</h3>
+                <h3>Add Service Route</h3>
                 <button class="modal-close" onclick="closeModal('add-service-modal')">&times;</button>
             </div>
             <form id="add-service-form" onsubmit="submitAddService(event)">
-                <!-- Service Presets -->
+                <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Configure a proxy route to a backend service.</p>
+                <!-- Route Presets -->
                 <div class="form-group">
                     <label for="service-preset">Quick Start (Optional)</label>
                     <select id="service-preset" onchange="applyServicePreset()">
@@ -411,7 +484,8 @@
                     <div class="form-row">
                         <div class="form-group">
                             <label for="service-host">Target Host</label>
-                            <input type="text" id="service-host" placeholder="localhost">
+                            <input type="text" id="service-host" placeholder="192.168.1.100 or hostname">
+                            <small style="color: var(--text-muted);">Use 127.0.0.1 for local services only</small>
                         </div>
                         <div class="form-group">
                             <label for="service-port">Target Port</label>
@@ -432,7 +506,7 @@
 
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('add-service-modal')">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Add Service</button>
+                    <button type="submit" class="btn btn-primary">Add Route</button>
                 </div>
             </form>
         </div>
@@ -499,12 +573,12 @@
         </div>
     </div>
 
-    <!-- Edit Service Modal -->
+    <!-- Edit Service Route Modal -->
     <div id="edit-service-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('edit-service-modal')"></div>
         <div class="modal-content modal-large">
             <div class="modal-header">
-                <h3>Edit Service</h3>
+                <h3>Edit Service Route</h3>
                 <button class="modal-close" onclick="closeModal('edit-service-modal')">&times;</button>
             </div>
             <form id="edit-service-form" onsubmit="submitEditService(event)">
@@ -565,7 +639,8 @@
                     <div class="form-row">
                         <div class="form-group">
                             <label for="edit-service-host">Target Host</label>
-                            <input type="text" id="edit-service-host" placeholder="localhost">
+                            <input type="text" id="edit-service-host" placeholder="192.168.1.100 or hostname">
+                            <small style="color: var(--text-muted);">Use 127.0.0.1 for local services only</small>
                         </div>
                         <div class="form-group">
                             <label for="edit-service-port">Target Port</label>
@@ -1263,11 +1338,80 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=18"></script>
-    <script src="/static/js/dashboard.js?v=18"></script>
-    <script src="/static/js/admin.js?v=18"></script>
-    <script src="/static/js/ssh-keys.js?v=18"></script>
-    <script src="/static/js/user-connections.js?v=18"></script>
+    <!-- Create Stream Modal -->
+    <div id="create-stream-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('create-stream-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create Stream</h3>
+                <button class="modal-close" onclick="closeModal('create-stream-modal')">&times;</button>
+            </div>
+            <form id="create-stream-form" onsubmit="createStream(event)">
+                <div class="form-group">
+                    <label for="stream-name">Stream Name *</label>
+                    <input type="text" id="stream-name" required placeholder="My Live Stream">
+                </div>
+                <div class="form-group">
+                    <label for="stream-description">Description</label>
+                    <textarea id="stream-description" rows="2" placeholder="What will you be streaming?"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="stream-public">
+                        <span>Make stream public (visible to all users with chat)</span>
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('create-stream-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create Stream</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Stream Details Modal -->
+    <div id="stream-details-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('stream-details-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="stream-details-title">Stream Details</h3>
+                <button class="modal-close" onclick="closeModal('stream-details-modal')">&times;</button>
+            </div>
+            <div class="modal-body" id="stream-details-content">
+                <!-- Content loaded dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- View Stream Modal (for watching community streams) -->
+    <div id="view-stream-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('view-stream-modal')"></div>
+        <div class="modal-content modal-fullscreen">
+            <div class="modal-header">
+                <h3 id="view-stream-title">Live Stream</h3>
+                <button class="modal-close" onclick="closeModal('view-stream-modal')">&times;</button>
+            </div>
+            <div class="modal-body stream-viewer">
+                <div class="stream-video-container">
+                    <video id="stream-video" controls autoplay></video>
+                </div>
+                <div class="stream-chat-container" id="stream-chat-container">
+                    <div class="chat-messages" id="stream-chat-messages"></div>
+                    <form class="chat-input-form" onsubmit="sendStreamChatMessage(event)">
+                        <input type="text" id="stream-chat-input" placeholder="Type a message..." autocomplete="off">
+                        <button type="submit" class="btn btn-primary btn-sm">Send</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=19"></script>
+    <script src="/static/js/dashboard.js?v=19"></script>
+    <script src="/static/js/admin.js?v=19"></script>
+    <script src="/static/js/ssh-keys.js?v=19"></script>
+    <script src="/static/js/user-connections.js?v=19"></script>
+    <script src="/static/js/streams.js?v=19"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

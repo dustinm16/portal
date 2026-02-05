@@ -70,6 +70,13 @@ from ssh_keys import (
 from shodan_integration import shodan_client, init_shodan, shutdown_shodan
 from traffic_metrics import traffic_metrics, start_metrics_recorder, stop_metrics_recorder
 from vulnerability_scanner import vulnerability_scanner, init_scanner, shutdown_scanner
+from services import (
+    ServiceManager,
+    init_service_manager,
+    shutdown_service_manager,
+    get_available_service_types,
+    load_service_types,
+)
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -1391,6 +1398,292 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
 
 
 # =============================================================================
+# User Streams API (OBS/RTMP streaming)
+# =============================================================================
+
+
+def generate_stream_key() -> str:
+    """Generate a unique stream key for OBS/RTMP authentication."""
+    import secrets
+    return f"live_{secrets.token_urlsafe(24)}"
+
+
+async def http_list_user_streams(request: web.Request) -> web.Response:
+    """List all streams for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    streams = await db.get_user_streams(token.user_id)
+    return web.json_response({"streams": streams})
+
+
+async def http_create_user_stream(request: web.Request) -> web.Response:
+    """Create a new stream for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = data.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "Stream name is required"}, status=400)
+
+    description = data.get("description", "").strip()
+    is_public = bool(data.get("is_public", False))
+
+    # Generate unique stream key
+    stream_key = generate_stream_key()
+
+    try:
+        stream_id = await db.create_user_stream(
+            user_id=token.user_id,
+            name=name,
+            stream_key=stream_key,
+            description=description,
+            is_public=is_public
+        )
+
+        # If public, create a chat channel for the stream
+        chat_channel_id = None
+        if is_public:
+            user = await db.get_user_by_id(token.user_id)
+            channel_name = f"stream-{user['username']}-{stream_id}"
+            chat_channel_id = await db.create_chat_channel(
+                name=channel_name,
+                description=f"Chat for {name} by {user['username']}",
+                created_by=token.user_id
+            )
+            await db.update_user_stream(stream_id, chat_channel_id=chat_channel_id)
+
+        stream = await db.get_user_stream(stream_id)
+        return web.json_response({"stream": stream}, status=201)
+
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            return web.json_response({"error": "Stream name already exists"}, status=409)
+        logger.error(f"Failed to create stream: {e}")
+        return web.json_response({"error": "Failed to create stream"}, status=500)
+
+
+async def http_get_user_stream(request: web.Request) -> web.Response:
+    """Get a specific stream by ID."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+    stream = await db.get_user_stream(int(stream_id))
+
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Only owner can see stream key
+    if stream["user_id"] != token.user_id:
+        stream.pop("stream_key", None)
+
+    return web.json_response({"stream": stream})
+
+
+async def http_update_user_stream(request: web.Request) -> web.Response:
+    """Update a stream (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # Get existing stream to check ownership
+    stream = await db.get_user_stream(int(stream_id))
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    if stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Not authorized"}, status=403)
+
+    # Handle public/private toggle
+    was_public = stream.get("is_public", False)
+    is_public = data.get("is_public", was_public)
+
+    # Create chat channel if becoming public
+    if is_public and not was_public and not stream.get("chat_channel_id"):
+        user = await db.get_user_by_id(token.user_id)
+        channel_name = f"stream-{user['username']}-{stream_id}"
+        chat_channel_id = await db.create_chat_channel(
+            name=channel_name,
+            description=f"Chat for {stream['name']} by {user['username']}",
+            created_by=token.user_id
+        )
+        data["chat_channel_id"] = chat_channel_id
+
+    success = await db.update_user_stream(int(stream_id), user_id=token.user_id, **data)
+    if success:
+        updated_stream = await db.get_user_stream(int(stream_id))
+        return web.json_response({"stream": updated_stream})
+    return web.json_response({"error": "Failed to update stream"}, status=500)
+
+
+async def http_delete_user_stream(request: web.Request) -> web.Response:
+    """Delete a stream (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+
+    stream = await db.get_user_stream(int(stream_id))
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Delete associated chat channel if exists
+    if stream.get("chat_channel_id"):
+        await db.delete_chat_channel(stream["chat_channel_id"])
+
+    success = await db.delete_user_stream(int(stream_id), user_id=token.user_id)
+    if success:
+        return web.json_response({"success": True})
+    return web.json_response({"error": "Not authorized or stream not found"}, status=403)
+
+
+async def http_regenerate_stream_key(request: web.Request) -> web.Response:
+    """Regenerate stream key (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+    new_key = generate_stream_key()
+
+    success = await db.regenerate_stream_key(int(stream_id), new_key, user_id=token.user_id)
+    if success:
+        return web.json_response({"stream_key": new_key})
+    return web.json_response({"error": "Not authorized or stream not found"}, status=403)
+
+
+async def http_get_public_streams(request: web.Request) -> web.Response:
+    """Get all public streams (community streams)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    live_only = request.query.get("live", "false").lower() == "true"
+    streams = await db.get_public_streams(live_only=live_only)
+
+    # Remove stream keys from public listing
+    for stream in streams:
+        stream.pop("stream_key", None)
+
+    return web.json_response({"streams": streams})
+
+
+async def http_stream_auth(request: web.Request) -> web.Response:
+    """MediaMTX stream authentication hook.
+
+    Called by MediaMTX when a client tries to publish or play a stream.
+    Validates stream key for publishing, allows viewing of public streams.
+    """
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    action = data.get("action", "publish")  # publish, read, playback
+    path = data.get("path", "")
+    query = data.get("query", "")
+    user = data.get("user", "")
+    password = data.get("password", "")
+    ip = data.get("ip", "")
+
+    logger.debug(f"Stream auth request: action={action}, path={path}, user={user}, ip={ip}")
+
+    # For publishing, the stream key is passed as the password or in the path
+    # OBS typically sends: rtmp://server/live/stream_key or uses username/password
+    stream_key = password or path.split("/")[-1] if path else ""
+
+    if action == "publish":
+        # Validate stream key
+        if not stream_key or not stream_key.startswith("live_"):
+            logger.warning(f"Invalid stream key attempt from {ip}")
+            return web.json_response({"error": "Invalid stream key"}, status=401)
+
+        stream = await db.get_stream_by_key(stream_key)
+        if not stream:
+            logger.warning(f"Unknown stream key from {ip}")
+            return web.json_response({"error": "Invalid stream key"}, status=401)
+
+        # Mark stream as live
+        await db.set_stream_live(stream["id"], True)
+        logger.info(f"Stream {stream['name']} started by user {stream['owner_username']} from {ip}")
+
+        return web.json_response({"allowed": True})
+
+    elif action in ("read", "playback"):
+        # For reading/playback, extract stream key from path
+        if not path:
+            return web.json_response({"error": "Path required"}, status=400)
+
+        # Try to find stream by the path (which should be the stream key)
+        stream_key_from_path = path.split("/")[-1] if "/" in path else path
+        stream = await db.get_stream_by_key(f"live_{stream_key_from_path}") if not stream_key_from_path.startswith("live_") else await db.get_stream_by_key(stream_key_from_path)
+
+        if not stream:
+            # Try direct stream key lookup
+            stream = await db.get_stream_by_key(path)
+
+        if stream:
+            # Allow if public or owner is viewing
+            if stream.get("is_public"):
+                return web.json_response({"allowed": True})
+
+            # Check if viewer has auth (via query param or password)
+            if password:
+                # Validate via API key
+                api_key = await db.get_api_key(password)
+                if api_key and api_key["user_id"] == stream["user_id"]:
+                    return web.json_response({"allowed": True})
+
+        # For public streams, always allow
+        return web.json_response({"allowed": True})
+
+    return web.json_response({"error": "Unknown action"}, status=400)
+
+
+async def http_stream_event(request: web.Request) -> web.Response:
+    """MediaMTX stream event hook.
+
+    Called when streams start/stop for updating live status.
+    """
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    event = data.get("event", "")
+    path = data.get("path", "")
+
+    logger.debug(f"Stream event: event={event}, path={path}")
+
+    if event == "disconnect" and path:
+        # Find stream and mark as offline
+        stream_key = path.split("/")[-1] if "/" in path else path
+        stream = await db.get_stream_by_key(stream_key)
+        if stream:
+            await db.set_stream_live(stream["id"], False)
+            logger.info(f"Stream {stream['name']} ended")
+
+    return web.json_response({"ok": True})
+
+
+# =============================================================================
 # Traffic Metrics API
 # =============================================================================
 
@@ -2107,6 +2400,311 @@ async def http_service_health(request: web.Request) -> web.Response:
 
     health = await plugin.health_check(target)
     return web.json_response(health)
+
+
+# =============================================================================
+# Managed Services API (Server Processes Portal Runs)
+# =============================================================================
+
+# Global service manager reference (initialized in PortalServer.start)
+_service_manager: Optional[ServiceManager] = None
+
+
+async def http_list_managed_services(request: web.Request) -> web.Response:
+    """List all managed services."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    services = _service_manager.get_all_services()
+    return web.json_response({
+        "managed_services": [svc.get_status() for svc in services]
+    })
+
+
+async def http_get_managed_service_types(request: web.Request) -> web.Response:
+    """Get available managed service types."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    types = get_available_service_types()
+    return web.json_response({
+        "types": {
+            name: {
+                "name": info.name,
+                "display_name": info.display_name,
+                "description": info.description,
+                "version": info.version,
+                "icon": info.icon,
+                "default_port": info.default_port,
+                "config_schema": info.config_schema
+            }
+            for name, info in types.items()
+        }
+    })
+
+
+async def http_create_managed_service(request: web.Request) -> web.Response:
+    """Create a new managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = data.get("name")
+    service_type = data.get("type")
+
+    if not name or not service_type:
+        return web.json_response({"error": "name and type required"}, status=400)
+
+    # Check service type exists
+    if service_type not in get_available_service_types():
+        return web.json_response({
+            "error": f"Unknown service type: {service_type}",
+            "available_types": list(get_available_service_types().keys())
+        }, status=400)
+
+    try:
+        service = await _service_manager.create_service(
+            name=name,
+            service_type=service_type,
+            display_name=data.get("display_name"),
+            description=data.get("description"),
+            config=data.get("config", {}),
+            port=data.get("port"),
+            enabled=data.get("enabled", False)
+        )
+
+        if not service:
+            return web.json_response({"error": "Failed to create service"}, status=500)
+
+        logger.info(f"Managed service '{name}' created by user {token.user_id}")
+        return web.json_response({
+            "service": service.get_status(),
+            "message": "Service created successfully"
+        }, status=201)
+
+    except Exception as e:
+        logger.error(f"Error creating managed service: {e}")
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+
+
+async def http_get_managed_service(request: web.Request) -> web.Response:
+    """Get a managed service by ID."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service = await _service_manager.get_service(int(service_id))
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    status = await _service_manager.get_service_status(int(service_id))
+    return web.json_response({"service": status})
+
+
+async def http_update_managed_service(request: web.Request) -> web.Response:
+    """Update a managed service configuration (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service_id = int(service_id)
+    service = await _service_manager.get_service(service_id)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # Update config if provided
+    if "config" in data:
+        success, error = await _service_manager.update_service_config(service_id, data["config"])
+        if not success:
+            return web.json_response({"error": error}, status=400)
+
+    # Update enabled status if provided
+    if "enabled" in data:
+        if data["enabled"]:
+            await _service_manager.enable_service(service_id)
+        else:
+            await _service_manager.disable_service(service_id)
+
+    logger.info(f"Managed service {service_id} updated by user {token.user_id}")
+    status = await _service_manager.get_service_status(service_id)
+    return web.json_response({"service": status, "message": "Service updated"})
+
+
+async def http_delete_managed_service(request: web.Request) -> web.Response:
+    """Delete a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    if await _service_manager.delete_service(int(service_id)):
+        logger.info(f"Managed service {service_id} deleted by user {token.user_id}")
+        return web.json_response({"success": True, "message": "Service deleted"})
+    else:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+
+async def http_start_managed_service(request: web.Request) -> web.Response:
+    """Start a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    success, error = await _service_manager.start_service(int(service_id))
+    if success:
+        logger.info(f"Managed service {service_id} started by user {token.user_id}")
+        status = await _service_manager.get_service_status(int(service_id))
+        return web.json_response({"success": True, "service": status})
+    else:
+        return web.json_response({"error": error}, status=400)
+
+
+async def http_stop_managed_service(request: web.Request) -> web.Response:
+    """Stop a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    success, error = await _service_manager.stop_service(int(service_id))
+    if success:
+        logger.info(f"Managed service {service_id} stopped by user {token.user_id}")
+        status = await _service_manager.get_service_status(int(service_id))
+        return web.json_response({"success": True, "service": status})
+    else:
+        return web.json_response({"error": error}, status=400)
+
+
+async def http_restart_managed_service(request: web.Request) -> web.Response:
+    """Restart a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    success, error = await _service_manager.restart_service(int(service_id))
+    if success:
+        logger.info(f"Managed service {service_id} restarted by user {token.user_id}")
+        status = await _service_manager.get_service_status(int(service_id))
+        return web.json_response({"success": True, "service": status})
+    else:
+        return web.json_response({"error": error}, status=400)
+
+
+async def http_managed_service_status(request: web.Request) -> web.Response:
+    """Get status of a managed service."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    status = await _service_manager.get_service_status(int(service_id))
+    if not status:
+        return web.json_response({"error": "Service not found"}, status=404)
+
+    return web.json_response({"status": status})
+
+
+async def http_managed_service_logs(request: web.Request) -> web.Response:
+    """Get logs for a managed service."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    # Parse query params
+    limit = int(request.query.get("limit", 100))
+    level = request.query.get("level")
+
+    logs = await _service_manager.get_service_logs(int(service_id), limit, level)
+    return web.json_response({"logs": logs})
 
 
 # =============================================================================
@@ -3872,13 +4470,26 @@ def create_app() -> web.Application:
     app.router.add_post("/api/token/revoke", http_revoke_token)
     app.router.add_get("/api/tokens", http_list_tokens)
 
-    # Service management
+    # Service management (relay services / remote connections)
     app.router.add_get("/api/services", http_list_services)
     app.router.add_post("/api/services", http_create_service)
     app.router.add_get("/api/services/{id}", http_get_service)
     app.router.add_put("/api/services/{id}", http_update_service)
     app.router.add_delete("/api/services/{id}", http_delete_service)
     app.router.add_get("/api/services/{id}/health", http_service_health)
+
+    # Managed services (server processes Portal runs)
+    app.router.add_get("/api/managed-services/types", http_get_managed_service_types)
+    app.router.add_get("/api/managed-services", http_list_managed_services)
+    app.router.add_post("/api/managed-services", http_create_managed_service)
+    app.router.add_get("/api/managed-services/{id}", http_get_managed_service)
+    app.router.add_put("/api/managed-services/{id}", http_update_managed_service)
+    app.router.add_delete("/api/managed-services/{id}", http_delete_managed_service)
+    app.router.add_post("/api/managed-services/{id}/start", http_start_managed_service)
+    app.router.add_post("/api/managed-services/{id}/stop", http_stop_managed_service)
+    app.router.add_post("/api/managed-services/{id}/restart", http_restart_managed_service)
+    app.router.add_get("/api/managed-services/{id}/status", http_managed_service_status)
+    app.router.add_get("/api/managed-services/{id}/logs", http_managed_service_logs)
 
     # User management
     app.router.add_get("/api/users", http_list_users)
@@ -3932,6 +4543,18 @@ def create_app() -> web.Application:
     app.router.add_put("/api/connections/{id}", http_update_user_connection)
     app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
     app.router.add_get("/api/connections/{id}/connect", http_connect_user_connection)
+
+    # User Streams (OBS/RTMP streaming)
+    app.router.add_get("/api/streams", http_list_user_streams)
+    app.router.add_post("/api/streams", http_create_user_stream)
+    app.router.add_get("/api/streams/public", http_get_public_streams)
+    app.router.add_get("/api/streams/{id}", http_get_user_stream)
+    app.router.add_put("/api/streams/{id}", http_update_user_stream)
+    app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
+    app.router.add_post("/api/streams/{id}/regenerate-key", http_regenerate_stream_key)
+    # MediaMTX hooks
+    app.router.add_post("/api/stream/auth", http_stream_auth)
+    app.router.add_post("/api/stream/event", http_stream_event)
 
     # Traffic Metrics (admin only)
     app.router.add_get("/api/metrics", http_get_metrics_summary)
@@ -4058,6 +4681,12 @@ class PortalServer:
             Config.NVD_API_KEY = nvd_api_key
         logger.info("Vulnerability scanner initialized")
 
+        # Initialize managed services
+        global _service_manager
+        load_service_types()  # Load service type plugins
+        _service_manager = await init_service_manager(db)
+        logger.info("Managed services initialized")
+
         # Create SSL context
         ssl_context = create_ssl_context()
         logger.info("SSL context created")
@@ -4106,6 +4735,10 @@ class PortalServer:
 
         # Stop metrics recorder
         await stop_metrics_recorder()
+
+        # Shutdown managed services (stops all running service processes)
+        await shutdown_service_manager()
+        logger.info("Managed services stopped")
 
         # Shutdown Shodan client
         await shutdown_shodan()

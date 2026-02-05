@@ -429,12 +429,14 @@ Live video streaming via MediaMTX server.
 | Auth | JWT + stream-level access control |
 | Features | Stream listing, multi-stream, live stats |
 
-Configuration options:
-- `api_url`: MediaMTX API endpoint (default: http://localhost:9997)
-- `webrtc_url`: WebRTC WHEP endpoint (default: http://localhost:8889)
-- `hls_url`: HLS streaming endpoint (default: http://localhost:8888)
+Configuration options (all traffic encrypted - mandatory):
+- `api_url`: MediaMTX API endpoint (default: https://127.0.0.1:9997)
+- `webrtc_url`: WebRTC WHEP endpoint (default: https://127.0.0.1:8889)
+- `hls_url`: HLS streaming endpoint (default: https://127.0.0.1:8888)
 - `default_stream`: Stream to auto-play on connect
 - `allowed_streams`: Restrict access to specific streams
+
+**Security**: Encryption is mandatory and cannot be disabled. Self-signed certificates are auto-generated for internal services. All API endpoints require valid authentication tokens.
 
 ## API Reference
 
