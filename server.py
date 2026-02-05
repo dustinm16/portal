@@ -2945,8 +2945,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
     username = user["username"]
     user_id = user["id"]
+    user_role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    user_anonymous = bool(user.get("chat_anonymous"))
     current_channel = None
-    user_entry = (ws, user_id, username)
+    user_entry = (ws, user_id, username, user_role, user_anonymous)
 
     logger.info(f"[Chat] User {username} connected")
 
@@ -2963,9 +2965,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # Leave current channel
                         if current_channel and current_channel in chat_rooms:
                             chat_rooms[current_channel].discard(user_entry)
+                            display_name = "Anonymous" if user_anonymous else username
                             await broadcast_to_channel(current_channel, {
                                 "type": "user_left",
-                                "username": username
+                                "user_id": user_id,
+                                "username": display_name
                             }, exclude=ws)
 
                         # Get channel info
@@ -3001,10 +3005,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         users_info = await db.get_users_status(list(set(user_ids)))
                         users_list = [{
                             "user_id": u["id"],
-                            "username": u["username"],
+                            "username": "Anonymous" if u.get("chat_anonymous") else u["username"],
                             "nickname": u.get("nickname"),
                             "status": u.get("status", "online"),
-                            "status_message": u.get("status_message")
+                            "status_message": u.get("status_message"),
+                            "role": u.get("role", "user"),
+                            "anonymous": bool(u.get("chat_anonymous"))
                         } for u in users_info]
                         await ws.send_json({
                             "type": "users",
@@ -3012,9 +3018,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         })
 
                         # Notify others
+                        display_name = "Anonymous" if user_anonymous else username
                         await broadcast_to_channel(current_channel, {
                             "type": "user_joined",
-                            "username": username
+                            "user_id": user_id,
+                            "username": display_name,
+                            "role": user_role,
+                            "anonymous": user_anonymous
                         }, exclude=ws)
 
                     elif msg_type == "message":
@@ -3029,16 +3039,20 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not channel:
                             continue
 
-                        # Save message
+                        # Save message (always save real username in DB)
                         msg_id = await db.create_chat_message(
                             channel["id"], user_id, username, message_text
                         )
 
-                        # Broadcast to channel
+                        # Broadcast to channel (display anonymous if set)
+                        display_name = "Anonymous" if user_anonymous else username
                         await broadcast_to_channel(current_channel, {
                             "type": "message",
                             "id": msg_id,
-                            "username": username,
+                            "user_id": user_id,
+                            "username": display_name,
+                            "role": user_role,
+                            "anonymous": user_anonymous,
                             "message": message_text,
                             "created_at": datetime.now(timezone.utc).isoformat()
                         })
@@ -3064,9 +3078,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         # Clean up
         if current_channel and current_channel in chat_rooms:
             chat_rooms[current_channel].discard(user_entry)
+            display_name = "Anonymous" if user_anonymous else username
             await broadcast_to_channel(current_channel, {
                 "type": "user_left",
-                "username": username
+                "user_id": user_id,
+                "username": display_name
             })
             # Remove empty rooms
             if not chat_rooms[current_channel]:
@@ -3084,7 +3100,8 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None):
 
     dead_connections = set()
     for entry in chat_rooms[channel]:
-        ws, user_id, username = entry
+        # Handle both old (3-tuple) and new (5-tuple) formats during transition
+        ws = entry[0]
         if ws == exclude:
             continue
         try:
@@ -3117,6 +3134,7 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         "status": user.get("status", "online"),
         "status_message": user.get("status_message"),
         "role": role,
+        "chat_anonymous": bool(user.get("chat_anonymous")),
         "is_admin": bool(user["is_admin"]),
         "scopes": token.scopes,
         "permissions": {
@@ -3266,6 +3284,41 @@ async def http_update_user_nickname(request: web.Request) -> web.Response:
 
     return web.json_response({
         "nickname": nickname if nickname else None
+    })
+
+
+async def http_update_chat_anonymous(request: web.Request) -> web.Response:
+    """Update user's chat anonymous mode (hide username)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    anonymous = bool(data.get("anonymous", False))
+
+    await db.set_chat_anonymous(token.user_id, anonymous)
+
+    # Broadcast change to all chat rooms - user needs to rejoin for full effect
+    user = await db.get_user_by_id(token.user_id)
+    username = user["username"] if user else "Unknown"
+    display_name = "Anonymous" if anonymous else username
+    for channel, users in chat_rooms.items():
+        for entry in users:
+            if entry[1] == token.user_id:
+                await broadcast_to_channel(channel, {
+                    "type": "user_anonymous_changed",
+                    "user_id": token.user_id,
+                    "username": display_name,
+                    "anonymous": anonymous
+                })
+                break
+
+    return web.json_response({
+        "anonymous": anonymous
     })
 
 
@@ -3731,6 +3784,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/me/password", http_change_password)
     app.router.add_put("/api/me/status", http_update_user_status)
     app.router.add_put("/api/me/nickname", http_update_user_nickname)
+    app.router.add_put("/api/me/anonymous", http_update_chat_anonymous)
 
     # Two-Factor Authentication
     app.router.add_get("/api/user/2fa/status", http_2fa_status)

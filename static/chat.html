@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portal Gateway - Chat</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=17">
+    <link rel="stylesheet" href="/static/css/portal.css?v=19">
     <style>
         .chat-container {
             display: grid;
@@ -296,6 +296,94 @@
             color: var(--text-muted);
             font-size: 0.65rem;
             font-style: italic;
+        }
+
+        /* Role badges */
+        .role-badge {
+            display: inline-block;
+            padding: 0.1rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 0.25rem;
+            vertical-align: middle;
+        }
+
+        .role-badge.superadmin {
+            background: linear-gradient(135deg, #f59e0b, #ef4444);
+            color: white;
+        }
+
+        .role-badge.admin {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .role-badge.moderator {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .role-badge.user {
+            display: none; /* Don't show badge for regular users */
+        }
+
+        /* Mini badge for user list */
+        .role-badge-mini {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+
+        .role-badge-mini.superadmin {
+            background: linear-gradient(135deg, #f59e0b, #ef4444);
+            box-shadow: 0 0 4px #f59e0b;
+        }
+
+        .role-badge-mini.admin {
+            background: var(--accent-red);
+        }
+
+        .role-badge-mini.moderator {
+            background: var(--accent-blue);
+        }
+
+        /* @mention highlights */
+        .mention {
+            background: rgba(59, 130, 246, 0.2);
+            color: var(--accent-blue);
+            padding: 0 0.2rem;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .mention:hover {
+            background: rgba(59, 130, 246, 0.3);
+        }
+
+        .mention.me {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+
+        /* Anonymous toggle in settings */
+        .anonymous-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .anonymous-toggle input[type="checkbox"] {
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
         }
 
         .user-count {
@@ -611,6 +699,10 @@
                     </div>
                 </div>
                 <input type="text" class="nickname-input" id="nickname-input" placeholder="Set nickname..." maxlength="32" onchange="updateNickname()">
+                <label class="anonymous-toggle">
+                    <input type="checkbox" id="anonymous-toggle" onchange="toggleAnonymous()">
+                    <span>Hide my username</span>
+                </label>
             </div>
             <div class="connection-status">
                 <span class="status-dot" id="status-dot"></span>
@@ -753,11 +845,29 @@
                     document.getElementById('nickname-input').value = currentUser.nickname;
                 }
 
+                // Set anonymous toggle
+                document.getElementById('anonymous-toggle').checked = currentUser.chat_anonymous || false;
+
                 // Initialize emoji picker
                 initEmojiPicker();
             } catch (error) {
                 console.error('Failed to load user:', error);
             }
+        }
+
+        function getRoleBadge(role) {
+            if (!role || role === 'user') return '';
+            const labels = {
+                'superadmin': 'Owner',
+                'admin': 'Admin',
+                'moderator': 'Mod'
+            };
+            return `<span class="role-badge ${role}">${labels[role] || role}</span>`;
+        }
+
+        function getRoleBadgeMini(role) {
+            if (!role || role === 'user') return '';
+            return `<span class="role-badge-mini ${role}" title="${role}"></span>`;
         }
 
         function initEmojiPicker() {
@@ -882,6 +992,14 @@
                         renderUserList();
                     }
                     break;
+                case 'user_anonymous_changed':
+                    if (onlineUsers.has(data.user_id)) {
+                        const user = onlineUsers.get(data.user_id);
+                        user.username = data.username;
+                        user.anonymous = data.anonymous;
+                        renderUserList();
+                    }
+                    break;
                 case 'typing':
                     showTypingIndicator(data.username);
                     break;
@@ -906,16 +1024,23 @@
 
             // Look up user info for nickname display
             const userInfo = data.user_id ? onlineUsers.get(data.user_id) : null;
-            const displayName = userInfo?.nickname || data.username;
-            const initial = (displayName || 'U')[0].toUpperCase();
+            // Priority: use nickname from userInfo if available, then from data, then username
+            const displayName = userInfo?.nickname || data.nickname || data.username;
+            const role = data.role || userInfo?.role || 'user';
+            const isAnonymous = data.anonymous || userInfo?.anonymous;
+            const initial = isAnonymous ? '?' : (displayName || 'U')[0].toUpperCase();
             const time = formatTime(data.created_at || new Date().toISOString());
 
+            // Show @username only if there's a nickname and not anonymous
+            const showRealUsername = (userInfo?.nickname || data.nickname) && !isAnonymous;
+
             div.innerHTML = `
-                <div class="message-avatar">${initial}</div>
+                <div class="message-avatar" style="${isAnonymous ? 'background: var(--text-muted);' : ''}">${initial}</div>
                 <div class="message-content">
                     <div class="message-header">
                         <span class="message-username">${escapeHtml(displayName)}</span>
-                        ${userInfo?.nickname ? `<span class="message-realname" style="color: var(--text-muted); font-size: 0.75rem;">@${escapeHtml(data.username)}</span>` : ''}
+                        ${getRoleBadge(role)}
+                        ${showRealUsername ? `<span class="message-realname" style="color: var(--text-muted); font-size: 0.75rem;">@${escapeHtml(data.username)}</span>` : ''}
                         <span class="message-time">${time}</span>
                     </div>
                     <div class="message-text">${formatMessage(data.message)}</div>
@@ -953,8 +1078,12 @@
             const list = document.getElementById('user-list');
             const users = Array.from(onlineUsers.values());
 
-            // Sort: online first, then by name
+            // Sort: by role first (higher roles at top), then status, then by name
+            const roleOrder = {'superadmin': 0, 'admin': 1, 'moderator': 2, 'user': 3};
             users.sort((a, b) => {
+                const aRole = roleOrder[a.role] ?? 3;
+                const bRole = roleOrder[b.role] ?? 3;
+                if (aRole !== bRole) return aRole - bRole;
                 const statusOrder = {'online': 0, 'away': 1, 'busy': 2, 'dnd': 3, 'offline': 4};
                 const aOrder = statusOrder[a.status] || 0;
                 const bOrder = statusOrder[b.status] || 0;
@@ -962,17 +1091,34 @@
                 return (a.nickname || a.username).localeCompare(b.nickname || b.username);
             });
 
-            list.innerHTML = users.map(user => `
-                <div class="user-item" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status)}">
+            // Primary display: nickname if exists, otherwise username (unless anonymous)
+            list.innerHTML = users.map(user => {
+                const displayName = user.nickname || user.username;
+                const showUsername = user.nickname && !user.anonymous;
+                return `
+                <div class="user-item" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status)}"
+                     onclick="insertMention('${escapeHtml(user.nickname || user.username)}')" style="cursor: pointer;">
                     <span class="user-status ${user.status || 'online'}"></span>
                     <div class="user-info">
-                        <div class="user-name">${escapeHtml(user.nickname || user.username)}</div>
-                        ${user.nickname ? `<div class="user-nickname">@${escapeHtml(user.username)}</div>` : ''}
+                        <div class="user-name">
+                            ${escapeHtml(displayName)}${getRoleBadgeMini(user.role)}
+                        </div>
+                        ${showUsername ? `<div class="user-nickname">@${escapeHtml(user.username)}</div>` : ''}
                         ${user.status_message ? `<div class="user-status-msg">${escapeHtml(user.status_message)}</div>` : ''}
                     </div>
                 </div>
-            `).join('');
+            `}).join('');
             updateUserCount();
+        }
+
+        function insertMention(name) {
+            const input = document.getElementById('chat-input');
+            const start = input.selectionStart;
+            const text = input.value;
+            const mention = `@${name} `;
+            input.value = text.substring(0, start) + mention + text.substring(start);
+            input.focus();
+            input.setSelectionRange(start + mention.length, start + mention.length);
         }
 
         function getStatusLabel(status) {
@@ -1131,6 +1277,17 @@
             // Blockquote (> text)
             text = text.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
+            // @mentions - highlight usernames/nicknames
+            text = text.replace(/@([\w\s\-]+?)(?=\s|$|[.,!?])/g, (match, name) => {
+                const trimmedName = name.trim();
+                // Check if this mention matches current user
+                const isMe = currentUser && (
+                    trimmedName.toLowerCase() === currentUser.username?.toLowerCase() ||
+                    trimmedName.toLowerCase() === currentUser.nickname?.toLowerCase()
+                );
+                return `<span class="mention${isMe ? ' me' : ''}" data-mention="${escapeHtml(trimmedName)}">@${escapeHtml(trimmedName)}</span>`;
+            });
+
             // Convert URLs to links (after markdown so we don't break URLs)
             text = text.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
@@ -1205,6 +1362,38 @@
                 }
             } catch (error) {
                 console.error('Failed to update nickname:', error);
+            }
+        }
+
+        // Anonymous toggle
+        async function toggleAnonymous() {
+            const checkbox = document.getElementById('anonymous-toggle');
+            const anonymous = checkbox.checked;
+
+            try {
+                const response = await fetch('/api/me/anonymous', {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ anonymous })
+                });
+
+                if (response.ok) {
+                    if (currentUser) currentUser.chat_anonymous = anonymous;
+                    // Note: Full effect requires rejoining the chat
+                    if (anonymous) {
+                        appendSystemMessage('Your username is now hidden. Others will see you as "Anonymous".');
+                    } else {
+                        appendSystemMessage('Your username is now visible to others.');
+                    }
+                } else {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to update anonymous setting');
+                    checkbox.checked = !anonymous;
+                }
+            } catch (error) {
+                console.error('Failed to update anonymous setting:', error);
+                checkbox.checked = !anonymous;
             }
         }
 

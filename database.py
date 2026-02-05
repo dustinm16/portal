@@ -248,6 +248,8 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'",
     # Migrate existing is_admin to role system
     "UPDATE users SET role = 'superadmin' WHERE is_admin = 1 AND role = 'user'",
+    # Hidden username for anonymous chat
+    "ALTER TABLE users ADD COLUMN chat_anonymous INTEGER DEFAULT 0",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -424,11 +426,20 @@ class Database:
             return []
         placeholders = ",".join("?" * len(user_ids))
         cursor = await self.conn.execute(
-            f"SELECT id, username, nickname, status, status_message FROM users WHERE id IN ({placeholders})",
+            f"SELECT id, username, nickname, status, status_message, role, chat_anonymous FROM users WHERE id IN ({placeholders})",
             user_ids
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def set_chat_anonymous(self, user_id: int, anonymous: bool) -> bool:
+        """Set whether user hides their username in chat."""
+        cursor = await self.conn.execute(
+            "UPDATE users SET chat_anonymous = ?, updated_at = ? WHERE id = ?",
+            (1 if anonymous else 0, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # User role operations
     async def get_user_role(self, user_id: int) -> Optional[str]:
