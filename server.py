@@ -295,6 +295,11 @@ async def http_health(request: web.Request) -> web.Response:
     })
 
 
+async def http_favicon(request: web.Request) -> web.Response:
+    """Return empty response for favicon requests to avoid 404 logs."""
+    return web.Response(status=204)
+
+
 async def http_create_token(request: web.Request) -> web.Response:
     """Create a new access token."""
     client_ip = get_client_ip(request)
@@ -3463,6 +3468,7 @@ def create_app() -> web.Application:
 
     # HTTP API routes
     app.router.add_get("/health", http_health)
+    app.router.add_get("/favicon.ico", http_favicon)
     app.router.add_get("/api/stats", http_stats)
     app.router.add_get("/api/plugins", http_list_plugins)
     app.router.add_get("/api/tunnels", http_get_tunnel_sessions)

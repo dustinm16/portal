@@ -443,6 +443,7 @@ Configuration options:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
+| GET | `/favicon.ico` | Browser favicon (returns 204) |
 | GET | `/api/stats` | Server statistics (admin) |
 | GET | `/api/plugins` | List available plugins |
 | GET | `/api/tunnels` | View active tunnel sessions (admin) |
@@ -511,6 +512,25 @@ Configuration options:
 | GET | `/api/logs/settings` | Get log settings |
 | PUT | `/api/logs/settings` | Update log settings |
 
+### Chat System
+
+Real-time encrypted messaging system for authenticated users.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/chat/channels` | List chat channels |
+| POST | `/api/chat/channels` | Create channel (admin) |
+| PUT | `/api/chat/channels/{id}` | Update channel (admin) |
+| DELETE | `/api/chat/channels/{id}` | Delete channel (admin) |
+
+**Features:**
+- Real-time WebSocket messaging (`/ws/chat`)
+- Multiple channels (general, random, help)
+- Message encryption using Fernet (AES)
+- Admin-only channel management
+- User presence tracking (connect/disconnect events)
+- Message history with pagination
+
 ### WebSocket Endpoints
 
 | Path | Description |
@@ -524,6 +544,7 @@ Configuration options:
 | `/ws/github/{service_id}` | GitHub operations |
 | `/ws/mediamtx/{service_id}` | MediaMTX signaling |
 | `/ws/tunnel/{service_id}` | TCP/Secure tunnel |
+| `/ws/chat` | Real-time chat messaging |
 
 ### Web UI Routes
 
@@ -539,6 +560,8 @@ Configuration options:
 | `/proxmox/{service_id}` | Proxmox management |
 | `/github/{service_id}` | GitHub browser |
 | `/media/{service_id}` | Media player |
+| `/chat` | Real-time chat system |
+| `/docs` | API documentation |
 
 ## Service Presets
 
@@ -671,6 +694,37 @@ Persistent configuration storage for admin-configurable settings that survive se
 - `shodan_api_key` - Shodan API key
 - `nvd_api_key` - NVD API key for vulnerability scanning
 - `log_settings` - JSON with log level, max_size_mb, backup_count
+
+### chat_channels
+```sql
+CREATE TABLE chat_channels (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    topic TEXT,
+    is_default INTEGER DEFAULT 0,
+    created_by INTEGER,
+    created_at TEXT,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+```
+
+### chat_messages
+```sql
+CREATE TABLE chat_messages (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    message TEXT NOT NULL,  -- Encrypted with Fernet
+    message_type TEXT DEFAULT 'message',
+    created_at TEXT,
+    FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+```
+
+**Note:** Chat messages are encrypted at rest using Fernet (AES-128-CBC) derived from JWT_SECRET via PBKDF2.
 
 ## Database Usage
 
@@ -903,3 +957,7 @@ The admin panel provides system monitoring and security scanning capabilities.
 - [x] Host port scanning with risk scoring
 - [x] NVD API integration for CVE lookups
 - [x] Persistent settings storage (Shodan/NVD keys, log settings)
+- [x] Real-time chat system (encrypted, multi-channel)
+- [x] API documentation page (`/docs`)
+- [x] User connections (personal remote access)
+- [x] Favicon handler (eliminates 404 noise)

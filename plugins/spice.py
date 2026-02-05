@@ -226,7 +226,7 @@ class SPICEPlugin(PluginBase):
                         data = json.loads(msg.data)
                         if data.get("type") == "ping":
                             await ws.send_json({"type": "pong"})
-                    except:
+                    except (json.JSONDecodeError, KeyError, TypeError):
                         pass
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     break
