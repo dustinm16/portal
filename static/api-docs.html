@@ -232,6 +232,13 @@
             white-space: pre-wrap;
             color: #e2e8f0;
         }
+        /* Hide admin-only sections by default until we know user role */
+        .admin-only {
+            display: none;
+        }
+        .admin-only.visible {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -286,13 +293,15 @@
                 <ul>
                     <li><a href="#chat">Chat/Forum</a></li>
                 </ul>
-                <h4>Admin Only</h4>
-                <ul>
-                    <li><a href="#managed-services">Managed Services</a></li>
-                    <li><a href="#metrics">Metrics</a></li>
-                    <li><a href="#logs">Logs</a></li>
-                    <li><a href="#vulnerability">Vulnerability Scanner</a></li>
-                </ul>
+                <div class="admin-only">
+                    <h4>Admin Only</h4>
+                    <ul>
+                        <li><a href="#managed-services">Managed Services</a></li>
+                        <li><a href="#metrics">Metrics</a></li>
+                        <li><a href="#logs">Logs</a></li>
+                        <li><a href="#vulnerability">Vulnerability Scanner</a></li>
+                    </ul>
+                </div>
             </nav>
 
             <main class="docs-content">
@@ -517,7 +526,7 @@
                     </div>
                 </div>
 
-                <div class="endpoint">
+                <div class="endpoint admin-only">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
                         <span class="endpoint-path">/api/services</span>
@@ -1346,6 +1355,7 @@ ws.send(JSON.stringify({
                 </div>
 
                 <!-- Managed Services (Admin) -->
+                <div class="admin-only">
                 <h2 id="managed-services">Managed Services <span class="badge-admin">ADMIN</span></h2>
                 <p>Managed Services are background server processes that Portal can start, stop, and monitor. This includes the MediaMTX streaming server and other infrastructure components.</p>
 
@@ -1494,8 +1504,10 @@ ws.send(JSON.stringify({
                         <td>1936, 8322, 8888, 8889</td>
                     </tr>
                 </table>
+                </div>
 
                 <!-- Metrics (Admin) -->
+                <div class="admin-only">
                 <h2 id="metrics">Traffic Metrics <span class="badge-admin">ADMIN</span></h2>
                 <p>Real-time traffic monitoring and statistics.</p>
 
@@ -1534,8 +1546,10 @@ ws.send(JSON.stringify({
                         <p>Returns list of currently active connections with user and service info.</p>
                     </div>
                 </div>
+                </div>
 
                 <!-- Logs (Admin) -->
+                <div class="admin-only">
                 <h2 id="logs">Server Logs <span class="badge-admin">ADMIN</span></h2>
 
                 <div class="endpoint">
@@ -1562,8 +1576,10 @@ ws.send(JSON.stringify({
                         </table>
                     </div>
                 </div>
+                </div>
 
                 <!-- Vulnerability Scanner (Admin) -->
+                <div class="admin-only">
                 <h2 id="vulnerability">Vulnerability Scanner <span class="badge-admin">ADMIN</span></h2>
                 <p>Scan hosts and services for known vulnerabilities using nmap and CVE databases.</p>
 
@@ -1626,6 +1642,7 @@ ws.send(JSON.stringify({
                             </tr>
                         </table>
                     </div>
+                </div>
                 </div>
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
@@ -1702,13 +1719,20 @@ X-RateLimit-Reset: 1704067200</pre>
             });
         });
 
-        // Load username for navbar
+        // Load username for navbar and handle admin visibility
         (async function() {
             try {
                 const response = await fetch('/api/me', { credentials: 'include' });
                 if (response.ok) {
                     const user = await response.json();
                     document.getElementById('username-display').textContent = user.username;
+
+                    // Show admin-only sections if user is admin
+                    if (user.is_admin) {
+                        document.querySelectorAll('.admin-only').forEach(el => {
+                            el.classList.add('visible');
+                        });
+                    }
                 }
             } catch (e) {}
         })();
