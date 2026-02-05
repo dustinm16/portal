@@ -637,6 +637,34 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Auto-refresh interval for community streams (30 seconds)
+let communityStreamsRefreshInterval = null;
+
+/**
+ * Start auto-refreshing community streams
+ */
+function startCommunityStreamsRefresh() {
+    if (communityStreamsRefreshInterval) return;
+
+    communityStreamsRefreshInterval = setInterval(() => {
+        // Only refresh if the community-streams tab is visible
+        const tab = document.querySelector('[data-tab="community-streams"]');
+        if (tab && tab.classList.contains('active')) {
+            loadCommunityStreams();
+        }
+    }, 30000); // Refresh every 30 seconds
+}
+
+/**
+ * Stop auto-refreshing community streams
+ */
+function stopCommunityStreamsRefresh() {
+    if (communityStreamsRefreshInterval) {
+        clearInterval(communityStreamsRefreshInterval);
+        communityStreamsRefreshInterval = null;
+    }
+}
+
 // Load streams when tab is switched
 const originalSwitchTab = window.switchTab;
 window.switchTab = function(tab) {
@@ -646,8 +674,12 @@ window.switchTab = function(tab) {
 
     if (tab === 'my-streams') {
         loadUserStreams();
+        stopCommunityStreamsRefresh();
     } else if (tab === 'community-streams') {
         loadCommunityStreams();
+        startCommunityStreamsRefresh();
+    } else {
+        stopCommunityStreamsRefresh();
     }
 };
 
