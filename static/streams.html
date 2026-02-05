@@ -333,16 +333,14 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            position: relative;
+            min-height: 0;
         }
 
         .viewer-video video {
             width: 100%;
             height: 100%;
             object-fit: contain;
-        }
-
-        .viewer-video {
-            position: relative;
         }
 
         /* Player stats overlay */
@@ -403,6 +401,64 @@
         }
 
         .player-control-group select:hover {
+            border-color: var(--accent-blue);
+        }
+
+        /* Fullscreen styles */
+        .viewer-video-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            position: relative;
+        }
+
+        .viewer-video-wrapper:fullscreen,
+        .viewer-video-wrapper:-webkit-full-screen {
+            background: #000;
+        }
+
+        .viewer-video-wrapper:fullscreen .viewer-video,
+        .viewer-video-wrapper:-webkit-full-screen .viewer-video {
+            flex: 1;
+        }
+
+        .viewer-video-wrapper:fullscreen .player-controls,
+        .viewer-video-wrapper:-webkit-full-screen .player-controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.8);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .viewer-video-wrapper:fullscreen:hover .player-controls,
+        .viewer-video-wrapper:-webkit-full-screen:hover .player-controls {
+            opacity: 1;
+        }
+
+        .viewer-video-wrapper:fullscreen .player-stats,
+        .viewer-video-wrapper:-webkit-full-screen .player-stats {
+            z-index: 20;
+        }
+
+        .fullscreen-btn {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: var(--text-primary);
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-size: 0.8rem;
+        }
+
+        .fullscreen-btn:hover {
+            background: rgba(255,255,255,0.2);
             border-color: var(--accent-blue);
         }
 
@@ -695,6 +751,7 @@
                     </div>
                     <button class="viewer-close" onclick="closeViewer()">&times;</button>
                 </div>
+                <div class="viewer-video-wrapper" id="video-wrapper">
                 <div class="viewer-video">
                     <video id="stream-video" controls autoplay></video>
                     <div id="player-stats" class="player-stats" style="display: none;">
@@ -733,7 +790,16 @@
                             Stats
                         </button>
                     </div>
+                    <div class="player-control-group" style="margin-left: auto;">
+                        <button class="fullscreen-btn" onclick="toggleFullscreen()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                            </svg>
+                            Fullscreen
+                        </button>
+                    </div>
                 </div>
+                </div><!-- Close viewer-video-wrapper -->
             </div>
             <div class="viewer-chat">
                 <div class="viewer-chat-header">
@@ -891,6 +957,48 @@
             } else {
                 stats.style.display = 'none';
             }
+        }
+
+        /**
+         * Toggle fullscreen mode for the video wrapper (includes controls)
+         */
+        function toggleFullscreen() {
+            const wrapper = document.getElementById('video-wrapper');
+            if (!wrapper) return;
+
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                // Exit fullscreen
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                }
+            } else {
+                // Enter fullscreen
+                if (wrapper.requestFullscreen) {
+                    wrapper.requestFullscreen();
+                } else if (wrapper.webkitRequestFullscreen) {
+                    wrapper.webkitRequestFullscreen();
+                }
+            }
+        }
+
+        // Update fullscreen button text based on state
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+
+        function updateFullscreenButton() {
+            const btn = document.querySelector('.fullscreen-btn');
+            if (!btn) return;
+
+            const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+            btn.innerHTML = isFullscreen
+                ? `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                   </svg> Exit`
+                : `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                   </svg> Fullscreen`;
         }
 
         /**
