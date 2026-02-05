@@ -341,6 +341,71 @@
             object-fit: contain;
         }
 
+        .viewer-video {
+            position: relative;
+        }
+
+        /* Player stats overlay */
+        .player-stats {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.8);
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #0f0;
+            z-index: 10;
+            min-width: 180px;
+        }
+
+        .player-stats .stat-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 2px 0;
+        }
+
+        .player-stats .stat-row span:first-child {
+            color: #888;
+        }
+
+        /* Player controls bar */
+        .player-controls {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-secondary);
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .player-control-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .player-control-group label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .player-control-group select {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: var(--text-primary);
+            padding: 0.3rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+
+        .player-control-group select:hover {
+            border-color: var(--accent-blue);
+        }
+
         /* Chat sidebar */
         .viewer-chat {
             width: 350px;
@@ -632,6 +697,37 @@
                 </div>
                 <div class="viewer-video">
                     <video id="stream-video" controls autoplay></video>
+                    <div id="player-stats" class="player-stats" style="display: none;">
+                        <div class="stat-row"><span>Resolution:</span><span id="stat-resolution">--</span></div>
+                        <div class="stat-row"><span>Bitrate:</span><span id="stat-bitrate">--</span></div>
+                        <div class="stat-row"><span>Buffer:</span><span id="stat-buffer">--</span></div>
+                        <div class="stat-row"><span>Latency:</span><span id="stat-latency">--</span></div>
+                        <div class="stat-row"><span>Dropped:</span><span id="stat-dropped">--</span></div>
+                    </div>
+                </div>
+                <div class="player-controls">
+                    <div class="player-control-group">
+                        <label>Quality:</label>
+                        <select id="quality-selector" onchange="changeQuality(this.value)">
+                            <option value="-1">Auto</option>
+                        </select>
+                    </div>
+                    <div class="player-control-group">
+                        <label>Buffer:</label>
+                        <select id="buffer-selector" onchange="changeBuffer(this.value)">
+                            <option value="low">Low Latency</option>
+                            <option value="normal" selected>Normal</option>
+                            <option value="high">Stable</option>
+                        </select>
+                    </div>
+                    <div class="player-control-group">
+                        <button class="btn btn-sm btn-secondary" onclick="toggleStats()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                            Stats
+                        </button>
+                    </div>
                 </div>
             </div>
             <div class="viewer-chat">
@@ -655,6 +751,207 @@
         let currentStream = null;
         let chatWs = null;
         let hlsPlayer = null;
+        let statsInterval = null;
+
+        // HLS buffer presets
+        const bufferPresets = {
+            low: {
+                liveSyncDurationCount: 2,
+                liveMaxLatencyDurationCount: 4,
+                liveDurationInfinity: false,
+                highBufferWatchdogPeriod: 1
+            },
+            normal: {
+                liveSyncDurationCount: 3,
+                liveMaxLatencyDurationCount: 6,
+                liveDurationInfinity: false,
+                highBufferWatchdogPeriod: 2
+            },
+            high: {
+                liveSyncDurationCount: 5,
+                liveMaxLatencyDurationCount: 10,
+                liveDurationInfinity: true,
+                highBufferWatchdogPeriod: 3
+            }
+        };
+
+        /**
+         * Get HLS.js configuration based on buffer preset
+         */
+        function getHlsConfig(bufferSetting) {
+            const preset = bufferPresets[bufferSetting] || bufferPresets.normal;
+            return {
+                enableWorker: true,
+                lowLatencyMode: bufferSetting === 'low',
+                backBufferLength: 30,
+                ...preset
+            };
+        }
+
+        /**
+         * Populate quality selector with available levels
+         */
+        function populateQualityLevels(levels) {
+            const select = document.getElementById('quality-selector');
+            select.innerHTML = '<option value="-1">Auto</option>';
+
+            levels.forEach((level, index) => {
+                const height = level.height;
+                const bitrate = Math.round(level.bitrate / 1000);
+                const label = height ? `${height}p (${bitrate} kbps)` : `${bitrate} kbps`;
+                const option = document.createElement('option');
+                option.value = index;
+                option.textContent = label;
+                select.appendChild(option);
+            });
+        }
+
+        /**
+         * Update quality selector to show current level
+         */
+        function updateQualityIndicator(level) {
+            const select = document.getElementById('quality-selector');
+            // Only update if on Auto mode
+            if (select.value === '-1' && hlsPlayer) {
+                // Highlight auto option to show current quality
+                const autoOption = select.options[0];
+                const levels = hlsPlayer.levels;
+                if (levels && levels[level]) {
+                    const height = levels[level].height;
+                    autoOption.textContent = height ? `Auto (${height}p)` : 'Auto';
+                }
+            }
+        }
+
+        /**
+         * Change video quality
+         */
+        function changeQuality(level) {
+            if (!hlsPlayer) return;
+
+            level = parseInt(level);
+            if (level === -1) {
+                hlsPlayer.currentLevel = -1; // Auto
+                hlsPlayer.loadLevel = -1;
+            } else {
+                hlsPlayer.currentLevel = level;
+            }
+        }
+
+        /**
+         * Change buffer settings
+         */
+        function changeBuffer(setting) {
+            if (!hlsPlayer || !currentStream) return;
+
+            // Store current time
+            const video = document.getElementById('stream-video');
+            const wasPlaying = !video.paused;
+
+            // Recreate player with new settings
+            const hlsUrl = `/api/stream/${currentStream.stream_key}/hls/index.m3u8`;
+            const qualityLevel = hlsPlayer.currentLevel;
+
+            hlsPlayer.destroy();
+
+            const hlsConfig = getHlsConfig(setting);
+            hlsPlayer = new Hls(hlsConfig);
+            hlsPlayer.loadSource(hlsUrl);
+            hlsPlayer.attachMedia(video);
+
+            hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                populateQualityLevels(data.levels);
+                // Restore quality setting
+                if (qualityLevel !== -1) {
+                    hlsPlayer.currentLevel = qualityLevel;
+                }
+                if (wasPlaying) {
+                    video.play();
+                }
+            });
+
+            hlsPlayer.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+                updateQualityIndicator(data.level);
+            });
+        }
+
+        /**
+         * Toggle stats overlay
+         */
+        function toggleStats() {
+            const stats = document.getElementById('player-stats');
+            if (stats.style.display === 'none') {
+                stats.style.display = 'block';
+            } else {
+                stats.style.display = 'none';
+            }
+        }
+
+        /**
+         * Start stats update interval
+         */
+        function startStatsUpdate() {
+            if (statsInterval) {
+                clearInterval(statsInterval);
+            }
+
+            statsInterval = setInterval(() => {
+                if (!hlsPlayer) return;
+
+                const video = document.getElementById('stream-video');
+
+                // Resolution
+                const level = hlsPlayer.currentLevel;
+                if (level >= 0 && hlsPlayer.levels[level]) {
+                    const lvl = hlsPlayer.levels[level];
+                    document.getElementById('stat-resolution').textContent =
+                        `${lvl.width}x${lvl.height}`;
+                    document.getElementById('stat-bitrate').textContent =
+                        `${Math.round(lvl.bitrate / 1000)} kbps`;
+                } else {
+                    document.getElementById('stat-resolution').textContent = '--';
+                    document.getElementById('stat-bitrate').textContent = '--';
+                }
+
+                // Buffer
+                if (video.buffered.length > 0) {
+                    const bufferEnd = video.buffered.end(video.buffered.length - 1);
+                    const bufferLength = bufferEnd - video.currentTime;
+                    document.getElementById('stat-buffer').textContent =
+                        `${bufferLength.toFixed(1)}s`;
+                } else {
+                    document.getElementById('stat-buffer').textContent = '--';
+                }
+
+                // Latency (difference between live edge and current position)
+                if (hlsPlayer.latency !== undefined) {
+                    document.getElementById('stat-latency').textContent =
+                        `${hlsPlayer.latency.toFixed(1)}s`;
+                } else {
+                    document.getElementById('stat-latency').textContent = '--';
+                }
+
+                // Dropped frames
+                if (video.getVideoPlaybackQuality) {
+                    const quality = video.getVideoPlaybackQuality();
+                    document.getElementById('stat-dropped').textContent =
+                        `${quality.droppedVideoFrames}`;
+                } else {
+                    document.getElementById('stat-dropped').textContent = '--';
+                }
+
+            }, 1000);
+        }
+
+        /**
+         * Stop stats update interval
+         */
+        function stopStatsUpdate() {
+            if (statsInterval) {
+                clearInterval(statsInterval);
+                statsInterval = null;
+            }
+        }
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
@@ -793,17 +1090,41 @@
                     // Use HLS for playback - routed through Portal on port 443
                     const hlsUrl = `/api/stream/${currentStream.stream_key}/hls/index.m3u8`;
 
+                    // Reset quality selector
+                    const qualitySelect = document.getElementById('quality-selector');
+                    qualitySelect.innerHTML = '<option value="-1">Auto</option>';
+
                     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        // Native HLS support (Safari)
+                        // Native HLS support (Safari) - limited controls
                         video.src = hlsUrl;
+                        document.querySelector('.player-controls').style.display = 'none';
                     } else if (Hls.isSupported()) {
-                        // Use hls.js
+                        // Use hls.js with configurable settings
                         if (hlsPlayer) {
                             hlsPlayer.destroy();
                         }
-                        hlsPlayer = new Hls();
+
+                        const bufferSetting = document.getElementById('buffer-selector').value;
+                        const hlsConfig = getHlsConfig(bufferSetting);
+
+                        hlsPlayer = new Hls(hlsConfig);
                         hlsPlayer.loadSource(hlsUrl);
                         hlsPlayer.attachMedia(video);
+
+                        // Listen for manifest parsed to get quality levels
+                        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                            populateQualityLevels(data.levels);
+                        });
+
+                        // Listen for level switched
+                        hlsPlayer.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+                            updateQualityIndicator(data.level);
+                        });
+
+                        // Start stats update interval
+                        startStatsUpdate();
+
+                        document.querySelector('.player-controls').style.display = 'flex';
                     } else {
                         video.parentElement.innerHTML = `
                             <div class="stream-offline">
@@ -813,6 +1134,7 @@
                                 <p>Your browser doesn't support HLS playback</p>
                             </div>
                         `;
+                        document.querySelector('.player-controls').style.display = 'none';
                     }
                 }
 
@@ -830,6 +1152,12 @@
         function closeViewer() {
             document.getElementById('viewer-overlay').classList.remove('active');
 
+            // Stop stats updates
+            stopStatsUpdate();
+
+            // Hide stats overlay
+            document.getElementById('player-stats').style.display = 'none';
+
             // Clean up video
             if (hlsPlayer) {
                 hlsPlayer.destroy();
@@ -841,6 +1169,10 @@
                 video.pause();
                 video.src = '';
             }
+
+            // Reset quality selector
+            const qualitySelect = document.getElementById('quality-selector');
+            qualitySelect.innerHTML = '<option value="-1">Auto</option>';
 
             // Disconnect chat
             if (chatWs) {
