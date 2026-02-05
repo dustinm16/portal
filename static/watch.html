@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream - Portal Gateway</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=23">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--bg-primary);
+            overflow: hidden;
+        }
+        .watch-container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+        .video-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #000;
+            min-width: 0;
+        }
+        .video-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--card-border);
+        }
+        .stream-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            min-width: 0;
+        }
+        .stream-info h1 {
+            font-size: 1.1rem;
+            margin: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .stream-info .streamer {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        .stream-badges {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .live-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            background: var(--accent-red);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .live-badge .pulse {
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+        .viewer-count {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        .viewer-count svg {
+            width: 16px;
+            height: 16px;
+        }
+        .video-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            position: relative;
+        }
+        .video-wrapper video {
+            max-width: 100%;
+            max-height: 100%;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .offline-message {
+            color: var(--text-muted);
+            text-align: center;
+            padding: 2rem;
+        }
+        .offline-message h2 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+        .chat-section {
+            width: 340px;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--card-border);
+        }
+        .chat-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .chat-header h3 {
+            margin: 0;
+            font-size: 0.9rem;
+        }
+        .chat-toggle {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.25rem;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+        .chat-message {
+            padding: 0.35rem 0.5rem;
+            border-radius: 4px;
+            margin-bottom: 0.25rem;
+        }
+        .chat-message:hover {
+            background: rgba(255,255,255,0.05);
+        }
+        .chat-username {
+            color: var(--accent-blue);
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+        .chat-text {
+            color: var(--text-primary);
+            word-wrap: break-word;
+        }
+        .chat-input-form {
+            display: flex;
+            gap: 0.5rem;
+            padding: 0.75rem;
+            border-top: 1px solid var(--card-border);
+        }
+        .chat-input-form input {
+            flex: 1;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-primary);
+            border: 1px solid var(--card-border);
+            border-radius: 4px;
+            color: var(--text-primary);
+        }
+        .chat-input-form input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .btn-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+        .btn-close:hover {
+            background: rgba(255,255,255,0.1);
+            color: var(--text-primary);
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        @media (max-width: 900px) {
+            .chat-section {
+                position: fixed;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                transform: translateX(100%);
+                transition: transform 0.3s ease;
+                z-index: 100;
+            }
+            .chat-section.open {
+                transform: translateX(0);
+            }
+            .chat-toggle {
+                display: block;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="watch-container">
+        <div class="video-section">
+            <div class="video-header">
+                <div class="stream-info">
+                    <div>
+                        <h1 id="stream-title">Loading...</h1>
+                        <span class="streamer" id="stream-owner"></span>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <div class="stream-badges">
+                        <div class="live-badge" id="live-badge" style="display: none;">
+                            <span class="pulse"></span>LIVE
+                        </div>
+                        <div class="viewer-count" id="viewer-count" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <span id="viewer-count-value">0</span>
+                        </div>
+                    </div>
+                    <button class="chat-toggle" onclick="toggleChat()" title="Toggle Chat">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                    </button>
+                    <button class="btn-close" onclick="window.close()" title="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="video-wrapper">
+                <video id="stream-video" controls autoplay></video>
+                <div class="offline-message" id="offline-message" style="display: none;">
+                    <h2>Stream Offline</h2>
+                    <p>This stream is not currently live. Check back later!</p>
+                </div>
+            </div>
+        </div>
+        <div class="chat-section" id="chat-section">
+            <div class="chat-header">
+                <h3>Stream Chat</h3>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <form class="chat-input-form" onsubmit="sendChatMessage(event)">
+                <input type="text" id="chat-input" placeholder="Send a message..." autocomplete="off">
+                <button type="submit" class="btn btn-primary btn-sm">Send</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=21"></script>
+    <script>
+        let streamId = null;
+        let streamData = null;
+        let chatWs = null;
+        let hls = null;
+
+        // Get stream ID from URL
+        const pathParts = window.location.pathname.split('/');
+        streamId = pathParts[pathParts.length - 1];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadStream();
+        });
+
+        async function loadStream() {
+            try {
+                const data = await Portal.fetchJSON(`/api/streams/${streamId}`);
+                streamData = data.stream;
+
+                document.title = `${streamData.name} - Portal Gateway`;
+                document.getElementById('stream-title').textContent = streamData.name;
+                document.getElementById('stream-owner').textContent = `by ${streamData.owner_username || 'Unknown'}`;
+
+                if (streamData.is_live) {
+                    document.getElementById('live-badge').style.display = 'flex';
+                    document.getElementById('viewer-count').style.display = 'flex';
+                    document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
+
+                    // Set up video
+                    setupVideo();
+
+                    // Connect to chat
+                    const chatKey = streamData.public_key || streamData.stream_key;
+                    if (chatKey) {
+                        connectChat(chatKey);
+                    }
+                } else {
+                    document.getElementById('stream-video').style.display = 'none';
+                    document.getElementById('offline-message').style.display = 'block';
+                }
+
+                // Periodically refresh stream info
+                setInterval(refreshStreamInfo, 15000);
+
+            } catch (error) {
+                console.error('Failed to load stream:', error);
+                document.getElementById('stream-title').textContent = 'Stream not found';
+            }
+        }
+
+        function setupVideo() {
+            const video = document.getElementById('stream-video');
+            const viewKey = streamData.public_key || streamData.stream_key;
+            const hlsUrl = `/api/stream/${viewKey}/hls/index.m3u8`;
+
+            if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS support (Safari)
+                video.src = hlsUrl;
+            } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                // Use hls.js
+                hls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                });
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    if (data.fatal) {
+                        console.error('HLS error:', data);
+                    }
+                });
+            } else {
+                console.error('HLS not supported');
+            }
+        }
+
+        async function refreshStreamInfo() {
+            try {
+                const data = await Portal.fetchJSON(`/api/streams/${streamId}`);
+                streamData = data.stream;
+
+                if (streamData.is_live) {
+                    document.getElementById('live-badge').style.display = 'flex';
+                    document.getElementById('viewer-count').style.display = 'flex';
+                    document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
+                    document.getElementById('stream-video').style.display = 'block';
+                    document.getElementById('offline-message').style.display = 'none';
+                } else {
+                    document.getElementById('live-badge').style.display = 'none';
+                    document.getElementById('viewer-count').style.display = 'none';
+                    document.getElementById('stream-video').style.display = 'none';
+                    document.getElementById('offline-message').style.display = 'block';
+                    if (hls) {
+                        hls.destroy();
+                        hls = null;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to refresh stream info:', error);
+            }
+        }
+
+        function connectChat(streamKey) {
+            if (chatWs) {
+                chatWs.close();
+            }
+
+            const wsUrl = Portal.getWebSocketUrl('/ws/chat');
+            chatWs = new WebSocket(wsUrl);
+
+            chatWs.onopen = () => {
+                chatWs.send(JSON.stringify({
+                    type: 'join',
+                    stream_key: streamKey
+                }));
+            };
+
+            chatWs.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'message') {
+                    appendChatMessage(data);
+                } else if (data.type === 'history') {
+                    document.getElementById('chat-messages').innerHTML = '';
+                    data.messages.forEach(msg => appendChatMessage(msg));
+                }
+            };
+
+            chatWs.onclose = () => {
+                chatWs = null;
+                // Reconnect after a delay
+                setTimeout(() => {
+                    if (streamData && streamData.is_live) {
+                        const chatKey = streamData.public_key || streamData.stream_key;
+                        if (chatKey) connectChat(chatKey);
+                    }
+                }, 3000);
+            };
+
+            chatWs.onerror = (error) => {
+                console.error('Chat WebSocket error:', error);
+            };
+        }
+
+        function appendChatMessage(msg) {
+            const messagesEl = document.getElementById('chat-messages');
+            const messageEl = document.createElement('div');
+            messageEl.className = 'chat-message';
+            messageEl.innerHTML = `
+                <span class="chat-username">${escapeHtml(msg.username)}</span>
+                <span class="chat-text">${escapeHtml(msg.message)}</span>
+            `;
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function sendChatMessage(event) {
+            event.preventDefault();
+
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+
+            if (!message || !chatWs) return;
+
+            chatWs.send(JSON.stringify({
+                type: 'message',
+                message: message
+            }));
+
+            input.value = '';
+        }
+
+        function toggleChat() {
+            document.getElementById('chat-section').classList.toggle('open');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Clean up on close
+        window.addEventListener('beforeunload', () => {
+            if (chatWs) chatWs.close();
+            if (hls) hls.destroy();
+        });
+    </script>
+</body>
+</html>

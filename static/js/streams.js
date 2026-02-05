@@ -521,51 +521,10 @@ async function deleteStream(streamId) {
 }
 
 /**
- * View a community stream
+ * View a community stream - opens in a new window
  */
-async function viewStream(streamId) {
-    currentStreamId = streamId;
-
-    try {
-        const data = await Portal.fetchJSON(`/api/streams/${streamId}`);
-        const stream = data.stream;
-
-        if (!stream.is_live) {
-            alert('This stream is currently offline');
-            return;
-        }
-
-        document.getElementById('view-stream-title').textContent = `${stream.name} - ${stream.owner_username}`;
-
-        // Set up video player with HLS - routed through Portal on port 443
-        // Use public_key for viewing (read-only access)
-        const video = document.getElementById('stream-video');
-        const viewKey = stream.public_key || stream.stream_key;
-        const hlsUrl = `/api/stream/${viewKey}/hls/index.m3u8`;
-
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = hlsUrl;
-        } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-            const hls = new Hls();
-            hls.loadSource(hlsUrl);
-            hls.attachMedia(video);
-        } else {
-            alert('HLS playback not supported in your browser');
-            return;
-        }
-
-        // Connect to chat using stream key (same auth as video)
-        const chatKey = stream.public_key || stream.stream_key;
-        if (chatKey) {
-            connectStreamChat(chatKey);
-        }
-
-        showModal('view-stream-modal');
-
-    } catch (error) {
-        console.error('Failed to load stream:', error);
-        alert('Failed to load stream');
-    }
+function viewStream(streamId) {
+    window.open(`/watch/${streamId}`, '_blank', 'width=1280,height=720');
 }
 
 /**

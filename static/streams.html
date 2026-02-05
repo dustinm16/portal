@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portal Gateway - Community Streams</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=20">
+    <link rel="stylesheet" href="/static/css/portal.css?v=23">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <style>
         /* Unified navbar section styling */
@@ -1238,6 +1238,12 @@
         }
 
         async function openStream(streamId) {
+            // Open stream in a new window
+            window.open(`/watch/${streamId}`, '_blank', 'width=1280,height=720');
+        }
+
+        // Legacy function kept for reference - viewer now opens in new window
+        async function openStreamInOverlay(streamId) {
             try {
                 const response = await fetch(`/api/streams/${streamId}`, { credentials: 'include' });
                 const data = await response.json();
