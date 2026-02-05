@@ -1203,6 +1203,184 @@ async function submitChangePassword(event) {
     }
 }
 
+
+// =============================================================================
+// Two-Factor Authentication Functions
+// =============================================================================
+
+/**
+ * Load 2FA status when profile modal opens
+ */
+async function load2FAStatus() {
+    const loadingEl = document.getElementById('2fa-status-loading');
+    const enabledEl = document.getElementById('2fa-enabled-section');
+    const disabledEl = document.getElementById('2fa-disabled-section');
+
+    loadingEl.style.display = 'flex';
+    enabledEl.style.display = 'none';
+    disabledEl.style.display = 'none';
+
+    try {
+        const data = await Portal.fetchJSON('/api/user/2fa/status');
+        loadingEl.style.display = 'none';
+
+        if (data.enabled) {
+            enabledEl.style.display = 'block';
+            document.getElementById('backup-codes-count').textContent = data.backup_codes_remaining;
+        } else {
+            disabledEl.style.display = 'block';
+        }
+    } catch (error) {
+        loadingEl.style.display = 'none';
+        disabledEl.style.display = 'block';
+        console.error('Failed to load 2FA status:', error);
+    }
+}
+
+/**
+ * Start 2FA setup process
+ */
+async function setup2FA() {
+    try {
+        const response = await Portal.fetch('/api/user/2fa/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to start 2FA setup');
+        }
+
+        const data = await response.json();
+
+        // Display secret
+        document.getElementById('2fa-secret-display').textContent = data.secret;
+
+        // Generate QR code
+        const canvas = document.getElementById('2fa-qr-canvas');
+        if (typeof QRCode !== 'undefined') {
+            QRCode.toCanvas(canvas, data.uri, { width: 200, margin: 1 }, function(error) {
+                if (error) console.error('QR code generation error:', error);
+            });
+        } else {
+            console.error('QRCode library not loaded');
+            canvas.style.display = 'none';
+        }
+
+        // Reset and show setup modal
+        document.getElementById('2fa-verify-code').value = '';
+        document.getElementById('2fa-setup-step1').style.display = 'block';
+        document.getElementById('2fa-setup-step2').style.display = 'none';
+        showModal('2fa-setup-modal');
+
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to start 2FA setup', 'error');
+        console.error('2FA setup error:', error);
+    }
+}
+
+/**
+ * Verify 2FA setup code
+ */
+async function verify2FASetup() {
+    const code = document.getElementById('2fa-verify-code').value.trim();
+    if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
+        Portal.toast('Please enter a valid 6-digit code', 'error');
+        return;
+    }
+
+    try {
+        const response = await Portal.fetch('/api/user/2fa/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Verification failed');
+        }
+
+        // Show backup codes
+        const codesHtml = data.backup_codes.map(c => `<div>${c}</div>`).join('');
+        document.getElementById('2fa-backup-codes').innerHTML = codesHtml;
+        document.getElementById('2fa-setup-step1').style.display = 'none';
+        document.getElementById('2fa-setup-step2').style.display = 'block';
+
+        Portal.toast('2FA verification successful');
+
+    } catch (error) {
+        Portal.toast(error.message || 'Invalid verification code', 'error');
+        console.error('2FA verify error:', error);
+    }
+}
+
+/**
+ * Finish 2FA setup
+ */
+function finish2FASetup() {
+    closeModal('2fa-setup-modal');
+    load2FAStatus();
+    Portal.toast('Two-factor authentication enabled successfully');
+}
+
+/**
+ * Show 2FA disable confirmation modal
+ */
+function show2FADisableModal() {
+    document.getElementById('2fa-disable-form').reset();
+    showModal('2fa-disable-modal');
+}
+
+/**
+ * Disable 2FA
+ */
+async function disable2FA(event) {
+    event.preventDefault();
+
+    const password = document.getElementById('2fa-disable-password').value;
+
+    try {
+        const response = await Portal.fetch('/api/user/2fa/disable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: password })
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || 'Failed to disable 2FA');
+        }
+
+        closeModal('2fa-disable-modal');
+        load2FAStatus();
+        Portal.toast('Two-factor authentication disabled');
+
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to disable 2FA', 'error');
+        console.error('2FA disable error:', error);
+    }
+}
+
+// Override showProfileModal to also load 2FA status
+const originalShowProfileModal = typeof showProfileModal === 'function' ? showProfileModal : null;
+function showProfileModal() {
+    if (originalShowProfileModal) {
+        originalShowProfileModal();
+    } else {
+        // Fallback if original not defined
+        document.getElementById('profile-username').textContent = currentUser?.username || 'Unknown';
+        document.getElementById('profile-role').textContent = currentUser?.is_admin ? 'Administrator' : 'User';
+        document.getElementById('change-password-form').reset();
+        showModal('profile-modal');
+    }
+    // Load 2FA status
+    load2FAStatus();
+}
+
+
 // Initialize admin UI when page loads
 document.addEventListener('DOMContentLoaded', () => {
     console.log('admin.js DOMContentLoaded');

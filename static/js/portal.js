@@ -159,8 +159,13 @@ const Portal = {
                 window.open(`/github/${service.id}`, '_blank', 'width=1400,height=900');
                 break;
             case 'http_proxy':
-                // For HTTP proxy, connect to the service path directly
-                window.open(service.path, '_blank');
+                // For HTTP proxy, validate and connect to the service path
+                if (service.path && typeof service.path === 'string' && !service.path.includes('..')) {
+                    window.open(service.path, '_blank');
+                } else {
+                    console.warn('Invalid http_proxy service path:', service.path);
+                    Portal.toast('Invalid service path configuration', 'error');
+                }
                 break;
             default:
                 console.warn(`Unknown plugin type: ${plugin}`);

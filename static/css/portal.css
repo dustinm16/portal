@@ -1474,3 +1474,159 @@ select option {
     background: rgba(34, 197, 94, 0.2);
     color: var(--accent-green);
 }
+
+/* =============================================================================
+   API Keys & User Connections Styles
+   ============================================================================= */
+
+/* API Keys actions */
+.api-keys-actions,
+.connections-actions {
+    margin-bottom: 1.5rem;
+}
+
+/* Badge variants */
+.badge-success {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--accent-green);
+}
+
+.badge-warning {
+    background: rgba(251, 191, 36, 0.2);
+    color: var(--accent-yellow);
+}
+
+.badge-danger {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--accent-red);
+}
+
+/* Inactive row styling */
+.row-inactive {
+    opacity: 0.6;
+}
+
+.row-inactive:hover {
+    opacity: 0.8;
+}
+
+/* Connections Grid */
+.connections-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 1rem;
+}
+
+.connection-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.connection-card:hover {
+    background: var(--card-hover);
+    border-color: var(--accent-blue);
+    transform: translateY(-2px);
+}
+
+.connection-card-actions {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    display: flex;
+    gap: 0.25rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.connection-card:hover .connection-card-actions {
+    opacity: 1;
+}
+
+.btn-icon {
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    color: var(--text-secondary);
+    padding: 0.375rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-icon:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: var(--text-primary);
+}
+
+.btn-icon-danger:hover {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--accent-red);
+}
+
+.connection-icon {
+    width: 48px;
+    height: 48px;
+    background: rgba(96, 165, 250, 0.1);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 0.75rem;
+}
+
+.connection-icon svg {
+    width: 24px;
+    height: 24px;
+    color: var(--accent-blue);
+}
+
+.connection-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.connection-type {
+    font-size: 0.75rem;
+    color: var(--accent-blue);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+}
+
+.connection-host {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    font-family: monospace;
+    margin-bottom: 1rem;
+    word-break: break-all;
+}
+
+.connection-connect-btn {
+    width: 100%;
+}
+
+/* Connection type specific fields */
+.connection-type-fields {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--card-border);
+}
+
+/* Warning button */
+.btn-warning {
+    background: rgba(251, 191, 36, 0.2);
+    color: var(--accent-yellow);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.btn-warning:hover {
+    background: rgba(251, 191, 36, 0.3);
+}

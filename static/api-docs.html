@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal Gateway - API Documentation</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=15">
+    <style>
+        .docs-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .docs-nav {
+            position: sticky;
+            top: 80px;
+            max-height: calc(100vh - 100px);
+            overflow-y: auto;
+            padding-right: 1rem;
+        }
+        .docs-nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .docs-nav li {
+            margin: 0.25rem 0;
+        }
+        .docs-nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            display: block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+        }
+        .docs-nav a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.05);
+        }
+        .docs-nav a.active {
+            color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .docs-nav h4 {
+            color: var(--text-primary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin: 1rem 0 0.5rem 0;
+        }
+        .docs-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .docs-content h1 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+        .docs-content h2 {
+            color: var(--text-primary);
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .docs-content h3 {
+            color: var(--text-secondary);
+            margin-top: 2rem;
+        }
+        .docs-content p {
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+        .endpoint {
+            background: var(--bg-secondary);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            margin: 1rem 0;
+            overflow: hidden;
+        }
+        .endpoint-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background: rgba(0,0,0,0.2);
+            cursor: pointer;
+        }
+        .endpoint-header:hover {
+            background: rgba(0,0,0,0.3);
+        }
+        .method {
+            font-family: monospace;
+            font-weight: bold;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            min-width: 60px;
+            text-align: center;
+        }
+        .method-get { background: #10b981; color: white; }
+        .method-post { background: #3b82f6; color: white; }
+        .method-put { background: #f59e0b; color: white; }
+        .method-delete { background: #ef4444; color: white; }
+        .method-ws { background: #8b5cf6; color: white; }
+        .endpoint-path {
+            font-family: monospace;
+            color: var(--text-primary);
+            flex: 1;
+        }
+        .endpoint-desc {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        .endpoint-body {
+            padding: 1rem;
+            display: none;
+        }
+        .endpoint.expanded .endpoint-body {
+            display: block;
+        }
+        .code-block {
+            background: #1a1a2e;
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+        .code-block pre {
+            margin: 0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.875rem;
+            color: #e2e8f0;
+        }
+        .code-block .comment { color: #6b7280; }
+        .code-block .string { color: #10b981; }
+        .code-block .keyword { color: #8b5cf6; }
+        .code-block .number { color: #f59e0b; }
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+        .param-table th, .param-table td {
+            text-align: left;
+            padding: 0.75rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .param-table th {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+        .param-name {
+            font-family: monospace;
+            color: var(--accent-blue);
+        }
+        .param-type {
+            font-family: monospace;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        .param-required {
+            color: var(--accent-red);
+            font-size: 0.75rem;
+        }
+        .badge-admin {
+            background: var(--accent-red);
+            color: white;
+            font-size: 0.625rem;
+            padding: 0.125rem 0.375rem;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+        }
+        .alert {
+            padding: 1rem;
+            border-radius: 6px;
+            margin: 1rem 0;
+        }
+        .alert-info {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: var(--text-secondary);
+        }
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: var(--text-secondary);
+        }
+        .docs-grid {
+            display: grid;
+            grid-template-columns: 220px 1fr;
+            gap: 2rem;
+        }
+        @media (max-width: 900px) {
+            .docs-grid {
+                grid-template-columns: 1fr;
+            }
+            .docs-nav {
+                position: static;
+                max-height: none;
+                margin-bottom: 2rem;
+            }
+        }
+        .try-it {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .try-it-input {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .try-it-input input {
+            flex: 1;
+            padding: 0.5rem;
+            background: var(--bg-primary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: monospace;
+        }
+        .try-it-output {
+            background: #1a1a2e;
+            border-radius: 6px;
+            padding: 1rem;
+            max-height: 300px;
+            overflow: auto;
+            font-family: monospace;
+            font-size: 0.875rem;
+            white-space: pre-wrap;
+            color: #e2e8f0;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <a href="/dashboard" style="display: flex; align-items: center; gap: 0.5rem; color: inherit; text-decoration: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                </svg>
+                Portal Gateway
+            </a>
+        </div>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/docs" class="active">API Docs</a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="docs-container">
+        <div class="docs-grid">
+            <nav class="docs-nav">
+                <h4>Getting Started</h4>
+                <ul>
+                    <li><a href="#introduction">Introduction</a></li>
+                    <li><a href="#authentication">Authentication</a></li>
+                    <li><a href="#api-keys">API Keys</a></li>
+                </ul>
+                <h4>Core Endpoints</h4>
+                <ul>
+                    <li><a href="#services">Services</a></li>
+                    <li><a href="#connections">User Connections</a></li>
+                    <li><a href="#users">User Management</a></li>
+                </ul>
+                <h4>Security</h4>
+                <ul>
+                    <li><a href="#ssh-keys">SSH Keys</a></li>
+                    <li><a href="#2fa">Two-Factor Auth</a></li>
+                </ul>
+                <h4>WebSocket API</h4>
+                <ul>
+                    <li><a href="#ws-relay">Service Relay</a></li>
+                    <li><a href="#ws-terminal">Terminal</a></li>
+                    <li><a href="#ws-vnc">VNC/RDP</a></li>
+                    <li><a href="#ws-tunnel">TCP Tunnel</a></li>
+                </ul>
+                <h4>Community</h4>
+                <ul>
+                    <li><a href="#chat">Chat/Forum</a></li>
+                </ul>
+                <h4>Admin Only</h4>
+                <ul>
+                    <li><a href="#metrics">Metrics</a></li>
+                    <li><a href="#logs">Logs</a></li>
+                    <li><a href="#vulnerability">Vulnerability Scanner</a></li>
+                </ul>
+            </nav>
+
+            <main class="docs-content">
+                <h1>API Documentation</h1>
+                <p>Complete reference for the Portal Gateway REST API and WebSocket interfaces.</p>
+
+                <!-- Introduction -->
+                <h2 id="introduction">Introduction</h2>
+                <p>Portal Gateway provides a unified API for managing remote access to your infrastructure. All API endpoints return JSON responses and require authentication unless otherwise noted.</p>
+
+                <div class="alert alert-info">
+                    <strong>Base URL:</strong> All API endpoints are relative to your Portal Gateway installation (e.g., <code>https://portal.example.com</code>)
+                </div>
+
+                <h3>Response Format</h3>
+                <p>All successful responses return JSON. Error responses include an <code>error</code> field:</p>
+                <div class="code-block">
+<pre>{
+  <span class="string">"error"</span>: <span class="string">"Unauthorized"</span>,
+  <span class="string">"status"</span>: <span class="number">401</span>
+}</pre>
+                </div>
+
+                <!-- Authentication -->
+                <h2 id="authentication">Authentication</h2>
+                <p>Portal Gateway supports two authentication methods:</p>
+                <ul>
+                    <li><strong>JWT Tokens</strong> - Session-based authentication via cookies (used by the web UI)</li>
+                    <li><strong>API Keys</strong> - Long-lived keys for programmatic access</li>
+                </ul>
+
+                <h3>Using API Keys</h3>
+                <p>Include your API key in the <code>Authorization</code> header:</p>
+                <div class="code-block">
+<pre><span class="keyword">Authorization:</span> Bearer YOUR_API_KEY</pre>
+                </div>
+
+                <p>Or pass it as a query parameter (not recommended for sensitive operations):</p>
+                <div class="code-block">
+<pre>GET /api/services?token=YOUR_API_KEY</pre>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/token</span>
+                        <span class="endpoint-desc">Create session token (login)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Authenticate with username and password to receive a JWT token.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">username</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Your username <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">password</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Your password <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">totp_code</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>6-digit 2FA code (if 2FA enabled)</td>
+                            </tr>
+                        </table>
+                        <h4>Example</h4>
+                        <div class="code-block">
+<pre>curl -X POST https://portal.example.com/api/token \
+  -H "Content-Type: application/json" \
+  -d '{"username": "user", "password": "pass"}'</pre>
+                        </div>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"token"</span>: <span class="string">"eyJhbGciOiJIUzI1NiIs..."</span>,
+  <span class="string">"expires_at"</span>: <span class="string">"2024-01-15T12:00:00Z"</span>,
+  <span class="string">"user"</span>: {
+    <span class="string">"id"</span>: <span class="number">1</span>,
+    <span class="string">"username"</span>: <span class="string">"user"</span>,
+    <span class="string">"is_admin"</span>: <span class="keyword">false</span>
+  }
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Keys Section -->
+                <h2 id="api-keys">API Keys</h2>
+                <p>API keys provide long-lived authentication for scripts and integrations. Keys can be scoped to limit access.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/api-keys</span>
+                        <span class="endpoint-desc">Create new API key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Descriptive name for the key <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">scopes</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Comma-separated scopes (default: "*" for full access)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">expires_in_days</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Days until expiration (null for never)</td>
+                            </tr>
+                        </table>
+                        <div class="alert alert-warning">
+                            <strong>Important:</strong> The full API key is only shown once upon creation. Store it securely.
+                        </div>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">1</span>,
+  <span class="string">"name"</span>: <span class="string">"My Integration"</span>,
+  <span class="string">"api_key"</span>: <span class="string">"portal_abc123..."</span>,
+  <span class="string">"key_prefix"</span>: <span class="string">"portal_abc"</span>,
+  <span class="string">"scopes"</span>: <span class="string">"*"</span>,
+  <span class="string">"expires_at"</span>: <span class="keyword">null</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/api-keys</span>
+                        <span class="endpoint-desc">List your API keys</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all API keys for the authenticated user. Keys are shown with prefix only (not full key).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/api-keys/{id}/revoke</span>
+                        <span class="endpoint-desc">Revoke an API key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Revokes the API key. The key will no longer work for authentication but remains in your key list.</p>
+                    </div>
+                </div>
+
+                <!-- Services -->
+                <h2 id="services">Services</h2>
+                <p>Services are shared infrastructure endpoints configured by administrators. Users can list and connect to services they have access to.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/services</span>
+                        <span class="endpoint-desc">List available services</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all services the authenticated user has access to based on their scopes.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"services"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"name"</span>: <span class="string">"Home Server"</span>,
+      <span class="string">"plugin"</span>: <span class="string">"ssh"</span>,
+      <span class="string">"path"</span>: <span class="string">"/homeserver"</span>,
+      <span class="string">"icon"</span>: <span class="string">"terminal"</span>,
+      <span class="string">"category"</span>: <span class="string">"Servers"</span>,
+      <span class="string">"enabled"</span>: <span class="keyword">true</span>
+    }
+  ]
+}</pre>
+                        </div>
+                        <div class="try-it">
+                            <h4>Try It</h4>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/services', this)">Send Request</button>
+                            <div class="try-it-output" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/services/{id}</span>
+                        <span class="endpoint-desc">Get service details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns detailed information about a specific service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/services/{id}/health</span>
+                        <span class="endpoint-desc">Check service health</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Checks if the backend service is reachable and responding.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"healthy"</span>: <span class="keyword">true</span>,
+  <span class="string">"latency_ms"</span>: <span class="number">45</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/services</span>
+                        <span class="endpoint-desc">Create service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create a new service. Requires admin privileges.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Display name <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">plugin</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Plugin type (ssh, vnc, terminal, etc.) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">path</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>URL path prefix <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">config</span></td>
+                                <td><span class="param-type">object</span></td>
+                                <td>Plugin-specific configuration</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">required_scopes</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Comma-separated scopes required to access</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- User Connections -->
+                <h2 id="connections">User Connections</h2>
+                <p>User Connections are personal remote access points that you configure for your own use. Unlike Services (admin-configured), connections are private to each user.</p>
+
+                <div class="alert alert-warning">
+                    <strong>Security:</strong> User connections cannot target localhost or local network addresses (127.x.x.x, ::1, etc.) for security reasons.
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/connections/types</span>
+                        <span class="endpoint-desc">List connection types</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns available connection types with their plugin schemas for form generation.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"types"</span>: {
+    <span class="string">"ssh"</span>: {
+      <span class="string">"name"</span>: <span class="string">"SSH Terminal"</span>,
+      <span class="string">"icon"</span>: <span class="string">"terminal"</span>,
+      <span class="string">"default_port"</span>: <span class="number">22</span>,
+      <span class="string">"plugin"</span>: <span class="string">"ssh"</span>,
+      <span class="string">"config_schema"</span>: {...}
+    },
+    <span class="string">"vnc"</span>: {...},
+    <span class="string">"rdp"</span>: {...}
+  }
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/connections</span>
+                        <span class="endpoint-desc">List your connections</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all connections for the authenticated user.</p>
+                        <div class="try-it">
+                            <h4>Try It</h4>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/connections', this)">Send Request</button>
+                            <div class="try-it-output" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/connections</span>
+                        <span class="endpoint-desc">Create connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Display name <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Connection type (ssh, vnc, rdp, etc.) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">host</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Remote host address <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">port</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Port number (uses default if omitted)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">config</span></td>
+                                <td><span class="param-type">object</span></td>
+                                <td>Type-specific configuration (username, auth_method, etc.)</td>
+                            </tr>
+                        </table>
+                        <h4>Example</h4>
+                        <div class="code-block">
+<pre>curl -X POST https://portal.example.com/api/connections \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My Home Server",
+    "type": "ssh",
+    "host": "192.168.1.100",
+    "port": 22,
+    "config": {
+      "username": "admin",
+      "auth_method": "password"
+    }
+  }'</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/connections/{id}/connect</span>
+                        <span class="endpoint-desc">Get connection info</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the information needed to establish a connection (WebSocket URL, credentials, etc.).</p>
+                    </div>
+                </div>
+
+                <!-- Users -->
+                <h2 id="users">User Management</h2>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/me</span>
+                        <span class="endpoint-desc">Get current user info</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns information about the authenticated user.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">1</span>,
+  <span class="string">"username"</span>: <span class="string">"myuser"</span>,
+  <span class="string">"is_admin"</span>: <span class="keyword">false</span>,
+  <span class="string">"scopes"</span>: <span class="string">"access:*"</span>,
+  <span class="string">"created_at"</span>: <span class="string">"2024-01-01T00:00:00Z"</span>,
+  <span class="string">"totp_enabled"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                        <div class="try-it">
+                            <h4>Try It</h4>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/me', this)">Send Request</button>
+                            <div class="try-it-output" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/me/password</span>
+                        <span class="endpoint-desc">Change password</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">current_password</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Current password <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">new_password</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>New password (min 8 chars) <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- SSH Keys -->
+                <h2 id="ssh-keys">SSH Keys</h2>
+                <p>Generate and manage SSH key pairs for authentication. Private keys are generated on the server and returned only once - they are never stored.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/ssh-keys</span>
+                        <span class="endpoint-desc">Generate SSH key pair</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Key name <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">key_type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>"ed25519" (default) or "rsa"</td>
+                            </tr>
+                        </table>
+                        <div class="alert alert-warning">
+                            <strong>Important:</strong> The private key is only returned once. Save it immediately.
+                        </div>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">1</span>,
+  <span class="string">"name"</span>: <span class="string">"my-key"</span>,
+  <span class="string">"public_key"</span>: <span class="string">"ssh-ed25519 AAAA..."</span>,
+  <span class="string">"private_key"</span>: <span class="string">"-----BEGIN OPENSSH PRIVATE KEY-----\n..."</span>,
+  <span class="string">"fingerprint"</span>: <span class="string">"SHA256:..."</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/ssh-keys</span>
+                        <span class="endpoint-desc">List SSH keys</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all SSH keys for the authenticated user (public keys only).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/ssh-keys/authorized</span>
+                        <span class="endpoint-desc">Get authorized_keys format</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all your public keys in authorized_keys format for adding to remote servers.</p>
+                    </div>
+                </div>
+
+                <!-- 2FA -->
+                <h2 id="2fa">Two-Factor Authentication</h2>
+                <p>Enable TOTP-based two-factor authentication for enhanced security.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/user/2fa/status</span>
+                        <span class="endpoint-desc">Get 2FA status</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"enabled"</span>: <span class="keyword">false</span>,
+  <span class="string">"backup_codes_remaining"</span>: <span class="number">0</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/user/2fa/setup</span>
+                        <span class="endpoint-desc">Start 2FA setup</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Generates a TOTP secret and provisioning URI for authenticator apps.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"secret"</span>: <span class="string">"JBSWY3DPEHPK3PXP"</span>,
+  <span class="string">"provisioning_uri"</span>: <span class="string">"otpauth://totp/Portal:user?secret=..."</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/user/2fa/verify</span>
+                        <span class="endpoint-desc">Enable 2FA</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Verify a TOTP code to enable 2FA. Returns backup codes.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">code</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>6-digit TOTP code <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- WebSocket Relay -->
+                <h2 id="ws-relay">WebSocket Service Relay</h2>
+                <p>Portal Gateway uses WebSocket connections to relay traffic to backend services. This enables real-time bidirectional communication for terminals, VNC, and other interactive protocols.</p>
+
+                <h3>Connection URL Format</h3>
+                <div class="code-block">
+<pre>wss://portal.example.com/ws/{plugin}/{service_id}?token=YOUR_TOKEN</pre>
+                </div>
+
+                <h3>Supported Plugins</h3>
+                <table class="param-table">
+                    <tr><th>Plugin</th><th>Description</th><th>Data Format</th></tr>
+                    <tr>
+                        <td><span class="param-name">terminal</span></td>
+                        <td>Local PTY terminal</td>
+                        <td>JSON messages</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">ssh</span></td>
+                        <td>SSH over WebSocket</td>
+                        <td>JSON messages</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">vnc</span></td>
+                        <td>VNC relay (for noVNC)</td>
+                        <td>Binary frames</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">spice</span></td>
+                        <td>SPICE VM console</td>
+                        <td>Binary frames</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">tcp_tunnel</span></td>
+                        <td>Generic TCP tunnel</td>
+                        <td>Binary frames</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">secure_tunnel</span></td>
+                        <td>Multiplexed secure tunnel</td>
+                        <td>Binary frames</td>
+                    </tr>
+                </table>
+
+                <!-- Terminal WebSocket -->
+                <h3 id="ws-terminal">Terminal WebSocket Protocol</h3>
+                <p>Terminal sessions use JSON messages for communication:</p>
+
+                <h4>Client Messages</h4>
+                <div class="code-block">
+<pre><span class="comment">// Send input</span>
+{<span class="string">"type"</span>: <span class="string">"input"</span>, <span class="string">"data"</span>: <span class="string">"ls -la\n"</span>}
+
+<span class="comment">// Resize terminal</span>
+{<span class="string">"type"</span>: <span class="string">"resize"</span>, <span class="string">"cols"</span>: <span class="number">120</span>, <span class="string">"rows"</span>: <span class="number">40</span>}
+
+<span class="comment">// Ping (keep-alive)</span>
+{<span class="string">"type"</span>: <span class="string">"ping"</span>}</pre>
+                </div>
+
+                <h4>Server Messages</h4>
+                <div class="code-block">
+<pre><span class="comment">// Terminal output</span>
+{<span class="string">"type"</span>: <span class="string">"output"</span>, <span class="string">"data"</span>: <span class="string">"total 128\ndrwxr-xr-x..."</span>}
+
+<span class="comment">// Pong response</span>
+{<span class="string">"type"</span>: <span class="string">"pong"</span>}
+
+<span class="comment">// Error</span>
+{<span class="string">"type"</span>: <span class="string">"error"</span>, <span class="string">"message"</span>: <span class="string">"Connection failed"</span>}</pre>
+                </div>
+
+                <h4>JavaScript Example</h4>
+                <div class="code-block">
+<pre><span class="keyword">const</span> ws = <span class="keyword">new</span> WebSocket(<span class="string">'wss://portal.example.com/ws/ssh/1?token=...'</span>);
+
+ws.onopen = () => {
+  <span class="comment">// Send terminal size</span>
+  ws.send(JSON.stringify({
+    type: <span class="string">'resize'</span>,
+    cols: terminal.cols,
+    rows: terminal.rows
+  }));
+};
+
+ws.onmessage = (event) => {
+  <span class="keyword">const</span> msg = JSON.parse(event.data);
+  <span class="keyword">if</span> (msg.type === <span class="string">'output'</span>) {
+    terminal.write(msg.data);
+  }
+};
+
+<span class="comment">// Send user input</span>
+terminal.onData(data => {
+  ws.send(JSON.stringify({type: <span class="string">'input'</span>, data}));
+});</pre>
+                </div>
+
+                <!-- VNC WebSocket -->
+                <h3 id="ws-vnc">VNC/RDP WebSocket Protocol</h3>
+                <p>VNC connections relay raw binary RFB protocol frames:</p>
+                <div class="code-block">
+<pre>wss://portal.example.com/ws/vnc/{service_id}?token=YOUR_TOKEN</pre>
+                </div>
+                <p>Use with noVNC client library:</p>
+                <div class="code-block">
+<pre><span class="keyword">import</span> RFB <span class="keyword">from</span> <span class="string">'@novnc/novnc/core/rfb'</span>;
+
+<span class="keyword">const</span> rfb = <span class="keyword">new</span> RFB(
+  document.getElementById(<span class="string">'vnc-container'</span>),
+  <span class="string">'wss://portal.example.com/ws/vnc/1?token=...'</span>
+);
+
+rfb.scaleViewport = <span class="keyword">true</span>;
+rfb.resizeSession = <span class="keyword">true</span>;</pre>
+                </div>
+
+                <!-- TCP Tunnel -->
+                <h3 id="ws-tunnel">TCP Tunnel Protocol</h3>
+                <p>Generic TCP tunneling for databases, Redis, and other TCP services:</p>
+                <div class="code-block">
+<pre>wss://portal.example.com/ws/tunnel/{service_id}?token=YOUR_TOKEN</pre>
+                </div>
+                <p>Data is sent as binary WebSocket frames, directly relayed to/from the TCP backend.</p>
+
+                <!-- User Connections WebSocket -->
+                <h3>User Connection WebSocket</h3>
+                <p>Connect to your personal connections via:</p>
+                <div class="code-block">
+<pre>wss://portal.example.com/ws/connection/{connection_id}?token=YOUR_TOKEN</pre>
+                </div>
+
+                <!-- Chat/Forum -->
+                <h2 id="chat">Chat/Forum</h2>
+                <p>Real-time multi-user chat with channels. Messages are encrypted at rest and automatically deleted after 7 days.</p>
+
+                <div class="alert alert-info">
+                    <strong>Security:</strong> All messages are encrypted using AES-256 (Fernet) before storage. Messages older than 7 days are automatically purged.
+                </div>
+
+                <h3>REST API</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/channels</span>
+                        <span class="endpoint-desc">List chat channels</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all available chat channels.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"channels"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"name"</span>: <span class="string">"general"</span>,
+      <span class="string">"description"</span>: <span class="string">"General discussion"</span>,
+      <span class="string">"is_default"</span>: <span class="number">1</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/chat/channels</span>
+                        <span class="endpoint-desc">Create channel</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Channel name (lowercase, hyphens allowed) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">description</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Channel description</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <h3>WebSocket API</h3>
+                <p>Connect to the chat WebSocket for real-time messaging:</p>
+                <div class="code-block">
+<pre>wss://portal.example.com/ws/chat</pre>
+                </div>
+
+                <h4>Client Messages</h4>
+                <div class="code-block">
+<pre><span class="comment">// Join a channel</span>
+{<span class="string">"type"</span>: <span class="string">"join"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}
+
+<span class="comment">// Send a message</span>
+{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
+
+<span class="comment">// Typing indicator</span>
+{<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}</pre>
+                </div>
+
+                <h4>Server Messages</h4>
+                <div class="code-block">
+<pre><span class="comment">// Channel info (after joining)</span>
+{<span class="string">"type"</span>: <span class="string">"channel_info"</span>, <span class="string">"name"</span>: <span class="string">"general"</span>, <span class="string">"topic"</span>: <span class="string">"..."</span>}
+
+<span class="comment">// Message history</span>
+{<span class="string">"type"</span>: <span class="string">"history"</span>, <span class="string">"messages"</span>: [...]}
+
+<span class="comment">// New message</span>
+{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
+
+<span class="comment">// User joined/left</span>
+{<span class="string">"type"</span>: <span class="string">"user_joined"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
+{<span class="string">"type"</span>: <span class="string">"user_left"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
+
+<span class="comment">// Online users list</span>
+{<span class="string">"type"</span>: <span class="string">"users"</span>, <span class="string">"users"</span>: [<span class="string">"alice"</span>, <span class="string">"bob"</span>]}</pre>
+                </div>
+
+                <h4>JavaScript Example</h4>
+                <div class="code-block">
+<pre><span class="keyword">const</span> ws = <span class="keyword">new</span> WebSocket(<span class="string">'wss://portal.example.com/ws/chat'</span>);
+
+ws.onopen = () => {
+  <span class="comment">// Join the general channel</span>
+  ws.send(JSON.stringify({type: <span class="string">'join'</span>, channel: <span class="string">'general'</span>}));
+};
+
+ws.onmessage = (event) => {
+  <span class="keyword">const</span> data = JSON.parse(event.data);
+  <span class="keyword">if</span> (data.type === <span class="string">'message'</span>) {
+    console.log(`${data.username}: ${data.message}`);
+  }
+};
+
+<span class="comment">// Send a message</span>
+ws.send(JSON.stringify({
+  type: <span class="string">'message'</span>,
+  channel: <span class="string">'general'</span>,
+  message: <span class="string">'Hello everyone!'</span>
+}));</pre>
+                </div>
+
+                <!-- Metrics (Admin) -->
+                <h2 id="metrics">Traffic Metrics <span class="badge-admin">ADMIN</span></h2>
+                <p>Real-time traffic monitoring and statistics.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics</span>
+                        <span class="endpoint-desc">Get metrics summary</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns overall traffic metrics including active connections, bandwidth, and request counts.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/services</span>
+                        <span class="endpoint-desc">Per-service metrics</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns traffic breakdown by service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/active</span>
+                        <span class="endpoint-desc">Active connections</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns list of currently active connections with user and service info.</p>
+                    </div>
+                </div>
+
+                <!-- Logs (Admin) -->
+                <h2 id="logs">Server Logs <span class="badge-admin">ADMIN</span></h2>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/logs</span>
+                        <span class="endpoint-desc">Get log contents</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">lines</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Number of lines to return (default: 100)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">file</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Log file name (default: current)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Vulnerability Scanner (Admin) -->
+                <h2 id="vulnerability">Vulnerability Scanner <span class="badge-admin">ADMIN</span></h2>
+                <p>Scan hosts and services for known vulnerabilities using nmap and CVE databases.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/scan/{host}</span>
+                        <span class="endpoint-desc">Scan host for vulnerabilities</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">ports</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Port range to scan (default: "1-1000")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">scan_type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>basic, version, vulnerability, or full</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/cve/{cve_id}</span>
+                        <span class="endpoint-desc">Look up CVE details</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Fetch detailed information about a specific CVE from NVD.</p>
+                        <h4>Example</h4>
+                        <div class="code-block">
+<pre>GET /api/vuln/cve/CVE-2024-6387</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/search</span>
+                        <span class="endpoint-desc">Search CVEs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">q</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Search keyword (product, vendor, etc.)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2>Rate Limits</h2>
+                <p>API requests are rate limited to prevent abuse:</p>
+                <ul>
+                    <li><strong>Authentication endpoints:</strong> 10 requests per minute</li>
+                    <li><strong>General API:</strong> 60 requests per minute</li>
+                    <li><strong>WebSocket connections:</strong> 10 concurrent per user</li>
+                </ul>
+                <p>Rate limit headers are included in responses:</p>
+                <div class="code-block">
+<pre>X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 58
+X-RateLimit-Reset: 1704067200</pre>
+                </div>
+
+                <h2>Error Codes</h2>
+                <table class="param-table">
+                    <tr><th>Code</th><th>Description</th></tr>
+                    <tr><td>400</td><td>Bad Request - Invalid parameters</td></tr>
+                    <tr><td>401</td><td>Unauthorized - Missing or invalid authentication</td></tr>
+                    <tr><td>403</td><td>Forbidden - Insufficient permissions or blocked action</td></tr>
+                    <tr><td>404</td><td>Not Found - Resource doesn't exist</td></tr>
+                    <tr><td>429</td><td>Too Many Requests - Rate limit exceeded</td></tr>
+                    <tr><td>500</td><td>Internal Server Error</td></tr>
+                </table>
+
+            </main>
+        </div>
+    </div>
+
+    <script>
+        function toggleEndpoint(header) {
+            const endpoint = header.closest('.endpoint');
+            endpoint.classList.toggle('expanded');
+        }
+
+        async function tryEndpoint(method, path, button) {
+            const output = button.nextElementSibling;
+            output.style.display = 'block';
+            output.textContent = 'Loading...';
+
+            try {
+                const response = await fetch(path, {
+                    method: method,
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                output.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                output.textContent = 'Error: ' + error.message;
+            }
+        }
+
+        // Highlight current section in nav
+        document.addEventListener('scroll', () => {
+            const sections = document.querySelectorAll('h2[id], h3[id]');
+            let current = '';
+
+            sections.forEach(section => {
+                const rect = section.getBoundingClientRect();
+                if (rect.top <= 150) {
+                    current = section.id;
+                }
+            });
+
+            document.querySelectorAll('.docs-nav a').forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

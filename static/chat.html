@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal Gateway - Chat</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=15">
+    <style>
+        .chat-container {
+            display: grid;
+            grid-template-columns: 200px 1fr 200px;
+            height: calc(100vh - 60px);
+            background: var(--bg-primary);
+        }
+
+        /* Sidebar - Channels */
+        .chat-sidebar {
+            background: var(--bg-secondary);
+            border-right: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-sidebar h3 {
+            padding: 1rem;
+            margin: 0;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .channel-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+
+        .channel-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: background 0.2s;
+        }
+
+        .channel-item:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .channel-item.active {
+            background: rgba(59, 130, 246, 0.2);
+            color: var(--accent-blue);
+        }
+
+        .channel-item::before {
+            content: '#';
+            color: var(--text-muted);
+        }
+
+        .channel-actions {
+            padding: 0.5rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        /* Main Chat Area */
+        .chat-main {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .chat-header {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            background: var(--bg-secondary);
+        }
+
+        .chat-header h2 {
+            margin: 0;
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .chat-header h2::before {
+            content: '#';
+            color: var(--text-muted);
+        }
+
+        .chat-topic {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .message {
+            display: flex;
+            gap: 0.75rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .message:hover {
+            background: rgba(255,255,255,0.02);
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+
+        .message-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .message-header {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+
+        .message-username {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .message-time {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .message-text {
+            color: var(--text-secondary);
+            line-height: 1.5;
+            word-break: break-word;
+        }
+
+        .message-text a {
+            color: var(--accent-blue);
+        }
+
+        .message.system {
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            padding: 0.25rem;
+        }
+
+        .message.system .message-text {
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        /* Input Area */
+        .chat-input-container {
+            padding: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            background: var(--bg-secondary);
+        }
+
+        .chat-input-wrapper {
+            display: flex;
+            gap: 0.5rem;
+            background: var(--bg-primary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 0.5rem;
+        }
+
+        .chat-input-wrapper:focus-within {
+            border-color: var(--accent-blue);
+        }
+
+        #chat-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-primary);
+            font-size: 1rem;
+            padding: 0.5rem;
+            outline: none;
+        }
+
+        #chat-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .chat-send-btn {
+            background: var(--accent-blue);
+            border: none;
+            border-radius: 6px;
+            padding: 0.5rem 1rem;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .chat-send-btn:hover {
+            background: #2563eb;
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Users Sidebar */
+        .users-sidebar {
+            background: var(--bg-secondary);
+            border-left: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .users-sidebar h3 {
+            padding: 1rem;
+            margin: 0;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .user-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+
+        .user-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .user-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+        }
+
+        .user-name {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .user-count {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            padding: 0 1rem 0.5rem;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-red);
+        }
+
+        .status-dot.connected {
+            background: var(--accent-green);
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .chat-container {
+                grid-template-columns: 1fr;
+            }
+            .chat-sidebar, .users-sidebar {
+                display: none;
+            }
+        }
+
+        /* Typing indicator */
+        .typing-indicator {
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-style: italic;
+            min-height: 1.5rem;
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-backdrop {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+        }
+        .modal-content {
+            position: relative;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-width: 400px;
+            width: 90%;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .modal-header h3 {
+            margin: 0;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <a href="/dashboard" style="display: flex; align-items: center; gap: 0.5rem; color: inherit; text-decoration: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                </svg>
+                Portal Gateway
+            </a>
+        </div>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/chat" class="active">Chat</a>
+            <a href="/docs">API Docs</a>
+            <span id="username-display" style="color: var(--text-muted);"></span>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="chat-container">
+        <!-- Channels Sidebar -->
+        <aside class="chat-sidebar">
+            <h3>Channels</h3>
+            <div class="channel-list" id="channel-list">
+                <!-- Channels populated by JS -->
+            </div>
+            <div class="channel-actions">
+                <button class="btn btn-secondary btn-sm" onclick="showCreateChannelModal()" style="width: 100%;">
+                    + New Channel
+                </button>
+            </div>
+            <div class="connection-status">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="connection-text">Connecting...</span>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-main">
+            <div class="chat-header">
+                <h2 id="channel-name">general</h2>
+                <div class="chat-topic" id="channel-topic">General discussion</div>
+            </div>
+            <div class="chat-messages" id="chat-messages">
+                <!-- Messages populated by JS -->
+            </div>
+            <div class="typing-indicator" id="typing-indicator"></div>
+            <div class="chat-input-container">
+                <div class="chat-input-wrapper">
+                    <input type="text" id="chat-input" placeholder="Type a message..." autocomplete="off">
+                    <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                        </svg>
+                        Send
+                    </button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Users Sidebar -->
+        <aside class="users-sidebar">
+            <h3>Online Users</h3>
+            <div class="user-count" id="user-count">0 online</div>
+            <div class="user-list" id="user-list">
+                <!-- Users populated by JS -->
+            </div>
+        </aside>
+    </div>
+
+    <!-- Create Channel Modal -->
+    <div id="create-channel-modal" class="modal">
+        <div class="modal-backdrop" onclick="closeModal('create-channel-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create Channel</h3>
+                <button class="modal-close" onclick="closeModal('create-channel-modal')">&times;</button>
+            </div>
+            <form onsubmit="createChannel(event)">
+                <div class="form-group">
+                    <label for="channel-name-input">Channel Name</label>
+                    <input type="text" id="channel-name-input" required pattern="[a-z0-9-]+" placeholder="my-channel">
+                    <small style="color: var(--text-muted);">Lowercase letters, numbers, and hyphens only</small>
+                </div>
+                <div class="form-group">
+                    <label for="channel-description">Description (optional)</label>
+                    <input type="text" id="channel-description" placeholder="What's this channel about?">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('create-channel-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create Channel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let currentChannel = 'general';
+        let currentUser = null;
+        let reconnectAttempts = 0;
+        let typingTimeout = null;
+        let onlineUsers = new Set();
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadUserInfo();
+            await loadChannels();
+            connectWebSocket();
+
+            // Enter key to send
+            document.getElementById('chat-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+
+            // Typing indicator
+            document.getElementById('chat-input').addEventListener('input', () => {
+                sendTyping();
+            });
+        });
+
+        async function loadUserInfo() {
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                currentUser = await response.json();
+                document.getElementById('username-display').textContent = currentUser.username;
+            } catch (error) {
+                console.error('Failed to load user:', error);
+            }
+        }
+
+        async function loadChannels() {
+            try {
+                const response = await fetch('/api/chat/channels', { credentials: 'include' });
+                const data = await response.json();
+                renderChannels(data.channels || []);
+            } catch (error) {
+                console.error('Failed to load channels:', error);
+            }
+        }
+
+        function renderChannels(channels) {
+            const list = document.getElementById('channel-list');
+            list.innerHTML = channels.map(ch => `
+                <div class="channel-item ${ch.name === currentChannel ? 'active' : ''}"
+                     onclick="switchChannel('${ch.name}')" data-channel="${ch.name}">
+                    ${escapeHtml(ch.name)}
+                </div>
+            `).join('');
+        }
+
+        function switchChannel(channelName) {
+            currentChannel = channelName;
+
+            // Update UI
+            document.querySelectorAll('.channel-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.channel === channelName);
+            });
+
+            // Clear messages
+            document.getElementById('chat-messages').innerHTML = '';
+
+            // Request channel info and history
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'join',
+                    channel: channelName
+                }));
+            }
+        }
+
+        function connectWebSocket() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}/ws/chat`);
+
+            ws.onopen = () => {
+                console.log('Chat connected');
+                updateConnectionStatus(true);
+                reconnectAttempts = 0;
+
+                // Join current channel
+                ws.send(JSON.stringify({
+                    type: 'join',
+                    channel: currentChannel
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+
+            ws.onclose = () => {
+                console.log('Chat disconnected');
+                updateConnectionStatus(false);
+
+                // Reconnect with exponential backoff
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                reconnectAttempts++;
+                setTimeout(connectWebSocket, delay);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'message':
+                    appendMessage(data);
+                    break;
+                case 'history':
+                    renderHistory(data.messages);
+                    break;
+                case 'channel_info':
+                    updateChannelInfo(data);
+                    break;
+                case 'users':
+                    updateUserList(data.users);
+                    break;
+                case 'user_joined':
+                    onlineUsers.add(data.username);
+                    appendSystemMessage(`${data.username} joined the channel`);
+                    updateUserCount();
+                    break;
+                case 'user_left':
+                    onlineUsers.delete(data.username);
+                    appendSystemMessage(`${data.username} left the channel`);
+                    updateUserCount();
+                    break;
+                case 'typing':
+                    showTypingIndicator(data.username);
+                    break;
+                case 'error':
+                    alert(data.message);
+                    break;
+            }
+        }
+
+        function renderHistory(messages) {
+            const container = document.getElementById('chat-messages');
+            container.innerHTML = '';
+            messages.forEach(msg => appendMessage(msg, false));
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function appendMessage(data, scroll = true) {
+            const container = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.dataset.messageId = data.id;
+
+            const initial = (data.username || 'U')[0].toUpperCase();
+            const time = formatTime(data.created_at || new Date().toISOString());
+
+            div.innerHTML = `
+                <div class="message-avatar">${initial}</div>
+                <div class="message-content">
+                    <div class="message-header">
+                        <span class="message-username">${escapeHtml(data.username)}</span>
+                        <span class="message-time">${time}</span>
+                    </div>
+                    <div class="message-text">${formatMessage(data.message)}</div>
+                </div>
+            `;
+
+            container.appendChild(div);
+            if (scroll) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+
+        function appendSystemMessage(text) {
+            const container = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = 'message system';
+            div.innerHTML = `<div class="message-text">${escapeHtml(text)}</div>`;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function updateChannelInfo(data) {
+            document.getElementById('channel-name').textContent = data.name;
+            document.getElementById('channel-topic').textContent = data.topic || data.description || 'No topic set';
+        }
+
+        function updateUserList(users) {
+            onlineUsers = new Set(users);
+            const list = document.getElementById('user-list');
+            list.innerHTML = users.map(user => `
+                <div class="user-item">
+                    <span class="user-status"></span>
+                    <span class="user-name">${escapeHtml(user)}</span>
+                </div>
+            `).join('');
+            updateUserCount();
+        }
+
+        function updateUserCount() {
+            document.getElementById('user-count').textContent = `${onlineUsers.size} online`;
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+
+            if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'message',
+                channel: currentChannel,
+                message: message
+            }));
+
+            input.value = '';
+        }
+
+        function sendTyping() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            if (typingTimeout) clearTimeout(typingTimeout);
+
+            ws.send(JSON.stringify({
+                type: 'typing',
+                channel: currentChannel
+            }));
+
+            typingTimeout = setTimeout(() => {
+                typingTimeout = null;
+            }, 3000);
+        }
+
+        function showTypingIndicator(username) {
+            if (username === currentUser?.username) return;
+
+            const indicator = document.getElementById('typing-indicator');
+            indicator.textContent = `${username} is typing...`;
+
+            setTimeout(() => {
+                indicator.textContent = '';
+            }, 3000);
+        }
+
+        function updateConnectionStatus(connected) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('connection-text');
+
+            if (connected) {
+                dot.classList.add('connected');
+                text.textContent = 'Connected';
+            } else {
+                dot.classList.remove('connected');
+                text.textContent = 'Reconnecting...';
+            }
+
+            document.getElementById('send-btn').disabled = !connected;
+        }
+
+        function showCreateChannelModal() {
+            document.getElementById('create-channel-modal').style.display = 'flex';
+            document.getElementById('channel-name-input').focus();
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).style.display = 'none';
+        }
+
+        async function createChannel(event) {
+            event.preventDefault();
+
+            const name = document.getElementById('channel-name-input').value.trim().toLowerCase();
+            const description = document.getElementById('channel-description').value.trim();
+
+            try {
+                const response = await fetch('/api/chat/channels', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to create channel');
+                }
+
+                closeModal('create-channel-modal');
+                document.getElementById('channel-name-input').value = '';
+                document.getElementById('channel-description').value = '';
+
+                await loadChannels();
+                switchChannel(name);
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        function formatTime(isoString) {
+            const date = new Date(isoString);
+            const now = new Date();
+            const isToday = date.toDateString() === now.toDateString();
+
+            if (isToday) {
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } else {
+                return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+                       date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+        }
+
+        function formatMessage(text) {
+            // Escape HTML first
+            text = escapeHtml(text);
+            // Convert URLs to links
+            text = text.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+            // Convert newlines to br
+            text = text.replace(/\n/g, '<br>');
+            return text;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

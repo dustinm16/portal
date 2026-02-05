@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portal Gateway - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=13">
+    <link rel="stylesheet" href="/static/css/portal.css?v=15">
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
     <nav class="navbar">
@@ -61,6 +62,38 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                         </svg>
                         SSH Keys
+                    </a>
+                </li>
+                <li>
+                    <a href="#" onclick="showApiKeysModal(); return false;">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                        </svg>
+                        API Keys
+                    </a>
+                </li>
+                <li>
+                    <a href="#" onclick="showConnectionsModal(); return false;">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                        </svg>
+                        My Connections
+                    </a>
+                </li>
+                <li>
+                    <a href="/docs">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                        </svg>
+                        API Documentation
+                    </a>
+                </li>
+                <li>
+                    <a href="/chat">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                        Community Chat
                     </a>
                 </li>
             </ul>
@@ -480,6 +513,103 @@
                         <button type="submit" class="btn btn-primary">Change Password</button>
                     </div>
                 </form>
+
+                <hr style="border-color: var(--card-border); margin: 1.5rem 0;">
+
+                <h4 style="margin-bottom: 1rem;">Two-Factor Authentication</h4>
+                <div id="2fa-section">
+                    <div id="2fa-status-loading" class="loading" style="padding: 1rem;">
+                        <div class="spinner"></div>
+                        <span>Loading 2FA status...</span>
+                    </div>
+                    <div id="2fa-enabled-section" style="display: none;">
+                        <div style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 1rem; display: flex; align-items: center; gap: 0.75rem;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20" style="color: var(--accent-green);">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                            <span style="color: var(--accent-green);">2FA is enabled (<span id="backup-codes-count">0</span> backup codes remaining)</span>
+                        </div>
+                        <button class="btn btn-danger btn-sm" style="margin-top: 1rem;" onclick="show2FADisableModal()">Disable 2FA</button>
+                    </div>
+                    <div id="2fa-disabled-section" style="display: none;">
+                        <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                            Add an extra layer of security to your account by enabling two-factor authentication with an authenticator app.
+                        </p>
+                        <button class="btn btn-primary" onclick="setup2FA()">Enable 2FA</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2FA Setup Modal -->
+    <div id="2fa-setup-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('2fa-setup-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Set Up Two-Factor Authentication</h3>
+                <button class="modal-close" onclick="closeModal('2fa-setup-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="2fa-setup-step1">
+                    <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                        Scan this QR code with your authenticator app (Google Authenticator, Authy, Microsoft Authenticator, etc.):
+                    </p>
+                    <div style="text-align: center; margin: 1.5rem 0;">
+                        <div id="2fa-qr-container" style="display: inline-block; padding: 1rem; background: white; border-radius: 8px;">
+                            <canvas id="2fa-qr-canvas"></canvas>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 1rem;">
+                        Or enter this code manually: <code id="2fa-secret-display" style="user-select: all; cursor: text;"></code>
+                    </p>
+                    <div class="form-group">
+                        <label for="2fa-verify-code">Enter the 6-digit code from your app:</label>
+                        <input type="text" id="2fa-verify-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" autocomplete="off" style="text-align: center; font-size: 1.5rem; letter-spacing: 0.5em;">
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('2fa-setup-modal')">Cancel</button>
+                        <button type="button" class="btn btn-primary" onclick="verify2FASetup()">Verify & Enable</button>
+                    </div>
+                </div>
+                <div id="2fa-setup-step2" style="display: none;">
+                    <div style="background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                        <strong style="color: var(--accent-yellow);">Save these backup codes!</strong>
+                        <p style="color: var(--text-secondary); margin-top: 0.5rem; font-size: 0.875rem;">
+                            You can use these codes to access your account if you lose your authenticator device. Each code can only be used once.
+                        </p>
+                    </div>
+                    <div id="2fa-backup-codes" style="background: var(--code-bg); padding: 1rem; border-radius: 8px; font-family: monospace; font-size: 0.875rem; line-height: 2; text-align: center;"></div>
+                    <div class="form-actions" style="margin-top: 1.5rem;">
+                        <button type="button" class="btn btn-primary" onclick="finish2FASetup()">I've Saved These Codes</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2FA Disable Modal -->
+    <div id="2fa-disable-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('2fa-disable-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Disable Two-Factor Authentication</h3>
+                <button class="modal-close" onclick="closeModal('2fa-disable-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Enter your password to confirm disabling two-factor authentication:
+                </p>
+                <form id="2fa-disable-form" onsubmit="disable2FA(event)">
+                    <div class="form-group">
+                        <label for="2fa-disable-password">Password</label>
+                        <input type="password" id="2fa-disable-password" required autocomplete="current-password">
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('2fa-disable-modal')">Cancel</button>
+                        <button type="submit" class="btn btn-danger">Disable 2FA</button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>
@@ -575,10 +705,383 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=13"></script>
-    <script src="/static/js/dashboard.js?v=13"></script>
-    <script src="/static/js/admin.js?v=13"></script>
-    <script src="/static/js/ssh-keys.js?v=13"></script>
+    <!-- API Keys Modal -->
+    <div id="api-keys-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('api-keys-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>API Keys</h3>
+                <button class="modal-close" onclick="closeModal('api-keys-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    API keys allow programmatic access to Portal Gateway services. Use them in scripts or applications.
+                </p>
+                <div class="api-keys-actions">
+                    <button class="btn btn-primary" onclick="showCreateApiKeyForm()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        Create API Key
+                    </button>
+                </div>
+
+                <!-- Create API Key Form -->
+                <div id="create-api-key-form" class="create-key-form" style="display: none;">
+                    <h4>Create New API Key</h4>
+                    <form onsubmit="submitCreateApiKey(event)">
+                        <div class="form-group">
+                            <label for="api-key-name">Key Name</label>
+                            <input type="text" id="api-key-name" required placeholder="My Application">
+                        </div>
+                        <div class="form-group">
+                            <label for="api-key-scopes">Scopes (comma-separated)</label>
+                            <input type="text" id="api-key-scopes" placeholder="*" value="*">
+                            <small style="color: var(--text-muted);">Use * for full access, or specific scopes like "relay:read,connections:write"</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="api-key-expiry">Expiration (days, 0 = never)</label>
+                            <input type="number" id="api-key-expiry" min="0" value="0" placeholder="0">
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" onclick="hideCreateApiKeyForm()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Create</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- New API Key Display -->
+                <div id="new-api-key-display" class="new-key-display" style="display: none;">
+                    <div class="alert alert-warning">
+                        <strong>Copy this API key now!</strong> It will not be shown again.
+                    </div>
+                    <div class="key-info">
+                        <p><strong>Name:</strong> <span id="new-api-key-name"></span></p>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <div style="display: flex; gap: 0.5rem; align-items: center;">
+                            <input type="text" id="new-api-key-value" readonly style="font-family: monospace; flex: 1;">
+                            <button class="btn btn-secondary btn-sm" onclick="copyApiKey()">Copy</button>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 1rem;">
+                        Use this key with the <code>Api-Key</code> or <code>X-API-Key</code> header.
+                    </p>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" onclick="hideNewApiKeyDisplay()">Done - I've Copied the Key</button>
+                    </div>
+                </div>
+
+                <!-- API Keys List -->
+                <div id="api-keys-loading" class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading API keys...</span>
+                </div>
+                <table id="api-keys-table" class="data-table" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Prefix</th>
+                            <th>Scopes</th>
+                            <th>Created</th>
+                            <th>Last Used</th>
+                            <th>Expires</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="api-keys-tbody"></tbody>
+                </table>
+                <div id="api-keys-empty" class="empty-state-small" style="display: none;">
+                    <p>No API keys yet. Create one to enable programmatic access.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Connections Modal -->
+    <div id="connections-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('connections-modal')"></div>
+        <div class="modal-content modal-xlarge">
+            <div class="modal-header">
+                <h3>My Connections</h3>
+                <button class="modal-close" onclick="closeModal('connections-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Personal connections for SSH, RDP, databases, and other services. These are private to your account.
+                </p>
+                <div class="connections-actions">
+                    <button class="btn btn-primary" onclick="showAddConnectionModal()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        Add Connection
+                    </button>
+                </div>
+
+                <!-- Connections List -->
+                <div id="connections-loading" class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading connections...</span>
+                </div>
+                <div id="connections-grid" class="connections-grid" style="display: none;"></div>
+                <div id="connections-empty" class="empty-state-small" style="display: none;">
+                    <p>No connections yet. Add one to get started.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Connection Modal -->
+    <div id="add-connection-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('add-connection-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="connection-modal-title">Add Connection</h3>
+                <button class="modal-close" onclick="closeModal('add-connection-modal')">&times;</button>
+            </div>
+            <form id="connection-form" onsubmit="submitConnection(event)">
+                <input type="hidden" id="connection-id">
+
+                <!-- Quick Start Presets -->
+                <div class="form-group">
+                    <label for="connection-preset">Quick Start (Optional)</label>
+                    <select id="connection-preset" onchange="applyConnectionPreset()">
+                        <option value="">-- Select a preset --</option>
+                        <optgroup label="Remote Access">
+                            <option value="ssh-server">SSH Server</option>
+                            <option value="vnc-server">VNC Desktop</option>
+                            <option value="rdp-server">RDP Desktop</option>
+                            <option value="spice-console">SPICE Console</option>
+                        </optgroup>
+                        <optgroup label="Media & Streaming">
+                            <option value="mediamtx-rtsp">MediaMTX RTSP</option>
+                            <option value="ip-camera">IP Camera Stream</option>
+                        </optgroup>
+                        <optgroup label="Virtualization">
+                            <option value="proxmox-ve">Proxmox VE</option>
+                        </optgroup>
+                        <optgroup label="Network Tools">
+                            <option value="tcp-tunnel">TCP Tunnel</option>
+                            <option value="secure-tunnel">Encrypted Tunnel</option>
+                            <option value="http-proxy">HTTP Reverse Proxy</option>
+                        </optgroup>
+                        <optgroup label="Databases">
+                            <option value="mysql-db">MySQL Database</option>
+                            <option value="postgres-db">PostgreSQL Database</option>
+                            <option value="redis-db">Redis</option>
+                        </optgroup>
+                    </select>
+                </div>
+
+                <hr style="border-color: rgba(255,255,255,0.1); margin: 1rem 0;">
+
+                <div class="form-group">
+                    <label for="connection-name">Connection Name</label>
+                    <input type="text" id="connection-name" required placeholder="My Server">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="connection-type">Type</label>
+                        <select id="connection-type" required onchange="onConnectionTypeChange()">
+                            <optgroup label="Remote Access">
+                                <option value="ssh">SSH Terminal</option>
+                                <option value="vnc">VNC Desktop</option>
+                                <option value="rdp">RDP Desktop</option>
+                                <option value="spice">SPICE Console</option>
+                            </optgroup>
+                            <optgroup label="Media & Streaming">
+                                <option value="mediamtx">MediaMTX Stream</option>
+                                <option value="stream">Generic Stream</option>
+                            </optgroup>
+                            <optgroup label="Virtualization">
+                                <option value="proxmox">Proxmox VE</option>
+                            </optgroup>
+                            <optgroup label="Development">
+                                <option value="github">GitHub</option>
+                            </optgroup>
+                            <optgroup label="Network & Tunneling">
+                                <option value="tcp_tunnel">TCP Tunnel</option>
+                                <option value="secure_tunnel">Secure Tunnel</option>
+                                <option value="http_proxy">HTTP Proxy</option>
+                            </optgroup>
+                            <optgroup label="Web Services">
+                                <option value="http">HTTP</option>
+                                <option value="https">HTTPS</option>
+                            </optgroup>
+                            <optgroup label="Databases">
+                                <option value="database">Database</option>
+                                <option value="redis">Redis</option>
+                            </optgroup>
+                            <optgroup label="Other">
+                                <option value="custom">Custom</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="connection-icon">Icon</label>
+                        <select id="connection-icon">
+                            <option value="terminal">Terminal</option>
+                            <option value="desktop">Desktop</option>
+                            <option value="server">Server</option>
+                            <option value="database">Database</option>
+                            <option value="globe">Globe</option>
+                            <option value="play">Play/Stream</option>
+                            <option value="lock">Lock</option>
+                            <option value="link" selected>Link</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="connection-host">Host</label>
+                        <input type="text" id="connection-host" required placeholder="192.168.1.100 or hostname">
+                        <small style="color: var(--text-muted);">Note: localhost is not allowed for security</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="connection-port">Port</label>
+                        <input type="number" id="connection-port" min="1" max="65535" placeholder="Auto">
+                    </div>
+                </div>
+
+                <!-- Dynamic Plugin Config Fields (generated by JavaScript) -->
+                <div id="connection-config-fields"></div>
+
+                <!-- Legacy static fields for backward compatibility -->
+                <!-- SSH-specific fields -->
+                <div id="connection-ssh-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-ssh-user">Username</label>
+                            <input type="text" id="connection-ssh-user" placeholder="root">
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-ssh-auth">Authentication</label>
+                            <select id="connection-ssh-auth" onchange="onSSHAuthChange()">
+                                <option value="password">Password (enter when connecting)</option>
+                                <option value="key">Private Key</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="connection-ssh-key-fields" style="display: none;">
+                        <div class="form-group">
+                            <label for="connection-ssh-private-key">Private Key (PEM format)</label>
+                            <textarea id="connection-ssh-private-key" rows="6" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" style="font-family: monospace; font-size: 0.75rem;"></textarea>
+                            <small style="color: var(--text-muted);">Paste your private key here.</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RDP-specific fields -->
+                <div id="connection-rdp-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-rdp-user">Username</label>
+                            <input type="text" id="connection-rdp-user" placeholder="Administrator">
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-rdp-domain">Domain (optional)</label>
+                            <input type="text" id="connection-rdp-domain" placeholder="WORKGROUP">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stream-specific fields -->
+                <div id="connection-stream-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-stream-protocol">Protocol</label>
+                            <select id="connection-stream-protocol">
+                                <option value="rtsp">RTSP</option>
+                                <option value="rtmp">RTMP</option>
+                                <option value="hls">HLS</option>
+                                <option value="webrtc">WebRTC</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-stream-path">Stream Path</label>
+                            <input type="text" id="connection-stream-path" placeholder="/live/stream1">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Database-specific fields -->
+                <div id="connection-db-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-db-type">Database Type</label>
+                            <select id="connection-db-type">
+                                <option value="mysql">MySQL</option>
+                                <option value="postgresql">PostgreSQL</option>
+                                <option value="mariadb">MariaDB</option>
+                                <option value="mssql">MS SQL Server</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-db-name">Database Name</label>
+                            <input type="text" id="connection-db-name" placeholder="mydb">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-db-user">Username</label>
+                            <input type="text" id="connection-db-user" placeholder="dbuser">
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-db-password">Password</label>
+                            <input type="password" id="connection-db-password" placeholder="Optional">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Proxmox-specific fields -->
+                <div id="connection-proxmox-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-proxmox-node">Default Node</label>
+                            <input type="text" id="connection-proxmox-node" placeholder="pve">
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-proxmox-verify-ssl">
+                                <input type="checkbox" id="connection-proxmox-verify-ssl">
+                                Verify SSL
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HTTP Proxy fields -->
+                <div id="connection-http-proxy-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-group">
+                        <label for="connection-http-path">Path Prefix (optional)</label>
+                        <input type="text" id="connection-http-path" placeholder="/api">
+                    </div>
+                </div>
+
+                <!-- Custom/Generic fields -->
+                <div id="connection-custom-fields" class="connection-type-fields" style="display: none;">
+                    <div class="form-group">
+                        <label for="connection-custom-protocol">Protocol</label>
+                        <input type="text" id="connection-custom-protocol" placeholder="tcp, udp, etc.">
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('add-connection-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="connection-submit-btn">Add Connection</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=15"></script>
+    <script src="/static/js/dashboard.js?v=15"></script>
+    <script src="/static/js/admin.js?v=15"></script>
+    <script src="/static/js/ssh-keys.js?v=15"></script>
+    <script src="/static/js/user-connections.js?v=15"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

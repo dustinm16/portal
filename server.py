@@ -35,6 +35,10 @@ from auth import (
     get_daily_invite_code,
     hash_password,
     verify_password,
+    generate_totp_secret,
+    get_totp_uri,
+    verify_totp,
+    generate_backup_codes,
 )
 from plugins import (
     load_builtin_plugins,
@@ -186,14 +190,26 @@ def create_ssl_context() -> ssl.SSLContext:
 
 
 async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
-    """Authenticate a request via header, query param, or session cookie."""
-    # Check Authorization header
+    """Authenticate a request via header, query param, session cookie, or API key."""
+    # Check Authorization header for Bearer token
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         try:
             return await validate_token(auth_header[7:])
         except AuthError:
             pass
+
+    # Check for API key authentication (Authorization: Api-Key portal_xxx or X-API-Key header)
+    api_key = None
+    if auth_header.startswith("Api-Key "):
+        api_key = auth_header[8:].strip()
+    elif request.headers.get("X-API-Key"):
+        api_key = request.headers.get("X-API-Key").strip()
+
+    if api_key:
+        token_payload = await authenticate_api_key(api_key)
+        if token_payload:
+            return token_payload
 
     # Check query parameter
     token_str = request.query.get("token")
@@ -212,6 +228,58 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
             pass
 
     return None
+
+
+async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
+    """Authenticate using an API key.
+
+    Args:
+        api_key: The full API key (portal_xxx...)
+
+    Returns:
+        TokenPayload if valid, None otherwise
+    """
+    from auth import parse_api_key, verify_api_key
+    from datetime import datetime, timezone
+
+    # Parse key to get prefix
+    prefix = parse_api_key(api_key)
+    if not prefix:
+        return None
+
+    # Look up key by prefix
+    key_record = await db.get_api_key_by_prefix(prefix)
+    if not key_record:
+        return None
+
+    # Check if revoked
+    if key_record.get("revoked"):
+        return None
+
+    # Check expiration
+    expires_at = key_record.get("expires_at")
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if exp_dt < datetime.now(timezone.utc):
+                return None
+        except ValueError:
+            pass
+
+    # Verify the key hash
+    if not verify_api_key(api_key, key_record["key_hash"]):
+        return None
+
+    # Update last used timestamp
+    await db.update_api_key_last_used(key_record["id"])
+
+    # Create a TokenPayload for the API key
+    scopes = key_record.get("scopes", "*").split(",")
+    return TokenPayload(
+        user_id=key_record["user_id"],
+        username=key_record["username"],
+        scopes=scopes
+    )
 
 
 # =============================================================================
@@ -689,7 +757,7 @@ async def http_get_log_settings(request: web.Request) -> web.Response:
 
 
 async def http_update_log_settings(request: web.Request) -> web.Response:
-    """Update log settings (admin only)."""
+    """Update log settings (admin only) - persists to database."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -704,7 +772,13 @@ async def http_update_log_settings(request: web.Request) -> web.Response:
 
     try:
         settings = update_log_settings(data)
-        logger.info(f"Log settings updated by user {token.user_id}: {data}")
+        # Persist log settings to database
+        await db.set_setting("log_settings", json.dumps({
+            "level": settings["level"],
+            "max_size_mb": settings["max_size_mb"],
+            "backup_count": settings["backup_count"],
+        }))
+        logger.info(f"Log settings updated and persisted by user {token.user_id}: {data}")
         return web.json_response(settings)
     except ValueError as e:
         return web.json_response({"error": safe_error_message(e)}, status=400)
@@ -881,6 +955,437 @@ async def http_admin_list_all_keys(request: web.Request) -> web.Response:
 
 
 # =============================================================================
+# API Key Management
+# =============================================================================
+
+from auth import generate_api_key, verify_api_key, parse_api_key
+
+
+async def http_create_api_key(request: web.Request) -> web.Response:
+    """Create a new API key for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = data.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "API key name required"}, status=400)
+
+    # Optional: scopes (comma-separated) and expiration
+    scopes = data.get("scopes", "*")
+    expires_days = data.get("expires_days")  # None = never expires
+
+    expires_at = None
+    if expires_days:
+        try:
+            expires_days = int(expires_days)
+            if expires_days > 0:
+                from datetime import datetime, timezone, timedelta
+                expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
+        except ValueError:
+            pass
+
+    try:
+        # Generate the API key
+        full_key, key_hash, key_prefix = generate_api_key()
+
+        # Store in database
+        key_id = await db.create_api_key(
+            user_id=token.user_id,
+            name=name,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            scopes=scopes,
+            expires_at=expires_at
+        )
+
+        logger.info(f"API key '{name}' created for user {token.user_id}")
+
+        # Return the full key ONLY ONCE - it cannot be retrieved later
+        return web.json_response({
+            "id": key_id,
+            "name": name,
+            "key": full_key,  # Only shown once!
+            "prefix": key_prefix,
+            "scopes": scopes,
+            "expires_at": expires_at,
+            "warning": "Save this key now - it cannot be retrieved later!"
+        }, status=201)
+
+    except Exception as e:
+        if "UNIQUE constraint" in str(e):
+            return web.json_response({"error": "API key with this name already exists"}, status=400)
+        logger.error(f"Failed to create API key: {e}")
+        return web.json_response({"error": "Failed to create API key"}, status=500)
+
+
+async def http_list_api_keys(request: web.Request) -> web.Response:
+    """List API keys for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        keys = await db.get_user_api_keys(token.user_id)
+        return web.json_response({"api_keys": keys})
+    except Exception as e:
+        logger.error(f"Failed to list API keys: {e}")
+        return web.json_response({"error": "Failed to list API keys"}, status=500)
+
+
+async def http_revoke_api_key(request: web.Request) -> web.Response:
+    """Revoke an API key (soft delete)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    key_id = request.match_info.get("id")
+    if not key_id or not key_id.isdigit():
+        return web.json_response({"error": "Invalid key ID"}, status=400)
+
+    if await db.revoke_api_key(int(key_id), token.user_id):
+        logger.info(f"API key {key_id} revoked by user {token.user_id}")
+        return web.json_response({"status": "revoked"})
+    else:
+        return web.json_response({"error": "API key not found"}, status=404)
+
+
+async def http_delete_api_key(request: web.Request) -> web.Response:
+    """Delete an API key permanently."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    key_id = request.match_info.get("id")
+    if not key_id or not key_id.isdigit():
+        return web.json_response({"error": "Invalid key ID"}, status=400)
+
+    if await db.delete_api_key(int(key_id), token.user_id):
+        logger.info(f"API key {key_id} deleted by user {token.user_id}")
+        return web.json_response({"status": "deleted"})
+    else:
+        return web.json_response({"error": "API key not found"}, status=404)
+
+
+# =============================================================================
+# User Connections Management
+# =============================================================================
+
+# Blocked hosts for user connections (security - no local server access)
+BLOCKED_HOSTS = {'localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal', 'kubernetes.default'}
+
+
+def is_blocked_host(host: str) -> bool:
+    """Check if host is blocked for user connections (localhost variants)."""
+    if not host:
+        return False
+    h = host.lower().strip()
+    # Direct matches
+    if h in BLOCKED_HOSTS:
+        return True
+    # 127.x.x.x range
+    if h.startswith('127.'):
+        return True
+    # IPv6 localhost variants
+    if h.startswith('::ffff:127.'):
+        return True
+    return False
+
+
+# Connection types mapped to plugins with full config support
+CONNECTION_TYPES = {
+    # Remote Access
+    "ssh": {"name": "SSH Terminal", "icon": "terminal", "default_port": 22, "plugin": "ssh"},
+    "vnc": {"name": "VNC Desktop", "icon": "desktop", "default_port": 5900, "plugin": "vnc"},
+    "rdp": {"name": "RDP Desktop", "icon": "desktop", "default_port": 3389, "plugin": "vnc"},
+    "spice": {"name": "SPICE Console", "icon": "desktop", "default_port": 5930, "plugin": "spice"},
+
+    # Media & Streaming
+    "mediamtx": {"name": "MediaMTX Stream", "icon": "play", "default_port": 8554, "plugin": "mediamtx"},
+    "stream": {"name": "Media Stream", "icon": "play", "default_port": None, "plugin": "mediamtx"},
+
+    # Virtualization
+    "proxmox": {"name": "Proxmox VE", "icon": "server", "default_port": 8006, "plugin": "proxmox"},
+
+    # Development
+    "github": {"name": "GitHub", "icon": "globe", "default_port": 443, "plugin": "github"},
+
+    # Network & Tunneling
+    "tcp_tunnel": {"name": "TCP Tunnel", "icon": "link", "default_port": None, "plugin": "tcp_tunnel"},
+    "secure_tunnel": {"name": "Secure Tunnel", "icon": "lock", "default_port": None, "plugin": "secure_tunnel"},
+    "vpn_tunnel": {"name": "VPN Bridge", "icon": "link", "default_port": None, "plugin": "vpn_tunnel"},
+    "http_proxy": {"name": "HTTP Proxy", "icon": "globe", "default_port": 80, "plugin": "http_proxy"},
+
+    # Web Services
+    "http": {"name": "HTTP Service", "icon": "globe", "default_port": 80, "plugin": "http_proxy"},
+    "https": {"name": "HTTPS Service", "icon": "lock", "default_port": 443, "plugin": "http_proxy"},
+
+    # Databases (via TCP tunnel)
+    "database": {"name": "Database", "icon": "database", "default_port": 3306, "plugin": "tcp_tunnel"},
+    "redis": {"name": "Redis", "icon": "database", "default_port": 6379, "plugin": "tcp_tunnel"},
+
+    # Generic
+    "custom": {"name": "Custom", "icon": "link", "default_port": None, "plugin": "tcp_tunnel"},
+}
+
+
+async def http_create_user_connection(request: web.Request) -> web.Response:
+    """Create a new user connection."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = data.get("name", "").strip()
+    conn_type = data.get("type", "").strip().lower()
+    host = data.get("host", "").strip()
+    port = data.get("port")
+    config = data.get("config", {})
+    ssh_key_id = data.get("ssh_key_id")
+    icon = data.get("icon")
+
+    # Validate required fields
+    if not name:
+        return web.json_response({"error": "Connection name required"}, status=400)
+
+    if conn_type not in CONNECTION_TYPES:
+        return web.json_response({
+            "error": f"Invalid connection type. Use one of: {', '.join(CONNECTION_TYPES.keys())}"
+        }, status=400)
+
+    if not host:
+        return web.json_response({"error": "Host required"}, status=400)
+
+    # Block localhost for user connections (security)
+    if is_blocked_host(host):
+        return web.json_response({
+            "error": "Local server access not allowed for user connections"
+        }, status=403)
+
+    # Get default port if not specified
+    type_info = CONNECTION_TYPES[conn_type]
+    if port is None:
+        port = type_info["default_port"]
+    elif port:
+        try:
+            port = int(port)
+            if port < 1 or port > 65535:
+                return web.json_response({"error": "Invalid port number"}, status=400)
+        except ValueError:
+            return web.json_response({"error": "Invalid port number"}, status=400)
+
+    # Validate SSH key ownership if specified
+    if ssh_key_id:
+        from ssh_keys import get_key_by_id
+        key = await get_key_by_id(int(ssh_key_id))
+        if not key or key["user_id"] != token.user_id:
+            return web.json_response({"error": "Invalid SSH key"}, status=400)
+
+    # Use default icon if not specified
+    if not icon:
+        icon = type_info["icon"]
+
+    try:
+        conn_id = await db.create_user_connection(
+            user_id=token.user_id,
+            name=name,
+            conn_type=conn_type,
+            host=host,
+            port=port,
+            config=json.dumps(config) if isinstance(config, dict) else config,
+            ssh_key_id=ssh_key_id,
+            icon=icon
+        )
+
+        logger.info(f"Connection '{name}' ({conn_type}) created by user {token.user_id}")
+
+        return web.json_response({
+            "id": conn_id,
+            "name": name,
+            "type": conn_type,
+            "host": host,
+            "port": port,
+            "icon": icon
+        }, status=201)
+
+    except Exception as e:
+        if "UNIQUE constraint" in str(e):
+            return web.json_response({"error": "Connection with this name already exists"}, status=400)
+        logger.error(f"Failed to create connection: {e}")
+        return web.json_response({"error": "Failed to create connection"}, status=500)
+
+
+async def http_list_user_connections(request: web.Request) -> web.Response:
+    """List all connections for the authenticated user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    # Optional filter by type
+    conn_type = request.query.get("type")
+
+    try:
+        if conn_type:
+            connections = await db.get_user_connections_by_type(token.user_id, conn_type)
+        else:
+            connections = await db.get_user_connections(token.user_id)
+
+        return web.json_response({"connections": connections})
+    except Exception as e:
+        logger.error(f"Failed to list connections: {e}")
+        return web.json_response({"error": "Failed to list connections"}, status=500)
+
+
+async def http_get_user_connection(request: web.Request) -> web.Response:
+    """Get a specific user connection."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    conn_id = request.match_info.get("id")
+    if not conn_id or not conn_id.isdigit():
+        return web.json_response({"error": "Invalid connection ID"}, status=400)
+
+    connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+
+    return web.json_response(connection)
+
+
+async def http_update_user_connection(request: web.Request) -> web.Response:
+    """Update a user connection."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    conn_id = request.match_info.get("id")
+    if not conn_id or not conn_id.isdigit():
+        return web.json_response({"error": "Invalid connection ID"}, status=400)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # Validate port if being updated
+    if "port" in data and data["port"]:
+        try:
+            port = int(data["port"])
+            if port < 1 or port > 65535:
+                return web.json_response({"error": "Invalid port number"}, status=400)
+            data["port"] = port
+        except ValueError:
+            return web.json_response({"error": "Invalid port number"}, status=400)
+
+    # Block localhost for user connections (security)
+    if "host" in data and is_blocked_host(data["host"]):
+        return web.json_response({
+            "error": "Local server access not allowed for user connections"
+        }, status=403)
+
+    # Preserve existing private_key if not provided but auth_method is 'key'
+    config = data.get("config", {})
+    if isinstance(config, dict) and config.get("auth_method") == "key" and not config.get("private_key"):
+        # Fetch existing connection to preserve the key
+        existing = await db.get_user_connection(int(conn_id), token.user_id)
+        if existing:
+            existing_config = existing.get("config", {})
+            if isinstance(existing_config, str):
+                existing_config = json.loads(existing_config) if existing_config else {}
+            if existing_config.get("private_key"):
+                config["private_key"] = existing_config["private_key"]
+                data["config"] = config
+
+    try:
+        if await db.update_user_connection(int(conn_id), token.user_id, **data):
+            logger.info(f"Connection {conn_id} updated by user {token.user_id}")
+            return web.json_response({"status": "updated"})
+        else:
+            return web.json_response({"error": "Connection not found or no changes"}, status=404)
+    except Exception as e:
+        if "UNIQUE constraint" in str(e):
+            return web.json_response({"error": "Connection with this name already exists"}, status=400)
+        logger.error(f"Failed to update connection: {e}")
+        return web.json_response({"error": "Failed to update connection"}, status=500)
+
+
+async def http_delete_user_connection(request: web.Request) -> web.Response:
+    """Delete a user connection."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    conn_id = request.match_info.get("id")
+    if not conn_id or not conn_id.isdigit():
+        return web.json_response({"error": "Invalid connection ID"}, status=400)
+
+    if await db.delete_user_connection(int(conn_id), token.user_id):
+        logger.info(f"Connection {conn_id} deleted by user {token.user_id}")
+        return web.json_response({"status": "deleted"})
+    else:
+        return web.json_response({"error": "Connection not found"}, status=404)
+
+
+async def http_get_connection_types(request: web.Request) -> web.Response:
+    """Get available connection types with plugin config schemas."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    # Include plugin schemas for dynamic form generation
+    types_with_schemas = {}
+    for type_name, type_info in CONNECTION_TYPES.items():
+        plugin_name = type_info.get("plugin")
+        plugin = get_plugin(plugin_name) if plugin_name else None
+
+        types_with_schemas[type_name] = {
+            **type_info,
+            "config_schema": plugin.info.config_schema if plugin and hasattr(plugin, 'info') else {}
+        }
+
+    return web.json_response({"types": types_with_schemas})
+
+
+async def http_connect_user_connection(request: web.Request) -> web.Response:
+    """Get connection details for launching a user connection."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    conn_id = request.match_info.get("id")
+    if not conn_id or not conn_id.isdigit():
+        return web.json_response({"error": "Invalid connection ID"}, status=400)
+
+    connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+
+    # Get SSH key public key if associated
+    ssh_public_key = None
+    if connection.get("ssh_key_id"):
+        from ssh_keys import get_key_by_id
+        key = await get_key_by_id(connection["ssh_key_id"])
+        if key:
+            ssh_public_key = key["public_key"]
+
+    return web.json_response({
+        "connection": connection,
+        "ssh_public_key": ssh_public_key,
+        "websocket_url": f"/ws/user-connection/{conn_id}"
+    })
+
+
+# =============================================================================
 # Traffic Metrics API
 # =============================================================================
 
@@ -983,7 +1488,7 @@ async def http_shodan_lookup(request: web.Request) -> web.Response:
     if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip):
         return web.json_response({"error": "Invalid IP address format"}, status=400)
 
-    if not Config.SHODAN_API_KEY:
+    if not Config.SHODAN_API_KEY and not shodan_client.api_key:
         return web.json_response({"error": "Shodan API key not configured"}, status=503)
 
     result = await shodan_client.lookup_host(ip)
@@ -1002,7 +1507,7 @@ async def http_shodan_search(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    if not Config.SHODAN_API_KEY:
+    if not Config.SHODAN_API_KEY and not shodan_client.api_key:
         return web.json_response({"error": "Shodan API key not configured"}, status=503)
 
     query = request.query.get("query")
@@ -1025,7 +1530,8 @@ async def http_shodan_api_info(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    if not Config.SHODAN_API_KEY:
+    # Check both Config and the client (client may have been set at runtime)
+    if not Config.SHODAN_API_KEY and not shodan_client.api_key:
         return web.json_response({
             "configured": False,
             "message": "Shodan API key not configured"
@@ -1041,13 +1547,13 @@ async def http_shodan_api_info(request: web.Request) -> web.Response:
         })
     else:
         return web.json_response({
-            "configured": True,
+            "configured": bool(Config.SHODAN_API_KEY or shodan_client.api_key),
             "error": "Failed to get API info"
         }, status=500)
 
 
 async def http_shodan_set_api_key(request: web.Request) -> web.Response:
-    """Set Shodan API key (admin only) - stores in memory only."""
+    """Set Shodan API key (admin only) - persists to database."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1064,13 +1570,16 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
     if not api_key:
         return web.json_response({"error": "API key required"}, status=400)
 
-    # Set the API key (memory only - for persistence, set SHODAN_API_KEY env var)
+    # Set the API key in both the client and Config
     shodan_client.set_api_key(api_key)
+    Config.SHODAN_API_KEY = api_key
 
-    # Verify the key works
+    # Verify the key works before persisting
     info = await shodan_client.get_api_info()
     if info:
-        logger.info(f"Shodan API key updated by user {token.user_id}")
+        # Persist to database for survival across restarts
+        await db.set_setting("shodan_api_key", api_key)
+        logger.info(f"Shodan API key updated and persisted by user {token.user_id}")
         return web.json_response({
             "status": "success",
             "plan": info.get("plan", "unknown"),
@@ -1086,7 +1595,13 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
 
 
 async def http_vuln_scan_host(request: web.Request) -> web.Response:
-    """Scan a host for vulnerabilities (admin only)."""
+    """Scan a host for vulnerabilities (admin only).
+
+    Query parameters:
+    - ports: Comma-separated list of ports to scan (optional)
+    - scan_type: Type of scan - "basic", "version", "vuln", "full" (default: "version")
+    - use_nmap: Whether to use nmap if available (default: true)
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1117,17 +1632,36 @@ async def http_vuln_scan_host(request: web.Request) -> web.Response:
         except ValueError:
             return web.json_response({"error": "Invalid ports format"}, status=400)
 
+    # Parse scan type - basic, version, vuln, full
+    scan_type = request.query.get("scan_type", "version")
+    if scan_type not in ("basic", "version", "vuln", "full"):
+        return web.json_response({"error": "Invalid scan_type. Use: basic, version, vuln, or full"}, status=400)
+
+    # Parse use_nmap flag
+    use_nmap = request.query.get("use_nmap", "true").lower() != "false"
+
     try:
-        result = await vulnerability_scanner.scan_host(host, ports)
-        logger.info(f"Vulnerability scan completed for {host} by user {token.user_id}")
+        result = await vulnerability_scanner.scan_host(
+            host, ports,
+            scan_type=scan_type,
+            use_nmap=use_nmap
+        )
+        logger.info(f"Vulnerability scan ({scan_type}) completed for {host} by user {token.user_id}")
         return web.json_response(result.to_dict())
+    except RuntimeError as e:
+        logger.warning(f"Vulnerability scan warning for {host}: {e}")
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
         logger.error(f"Vulnerability scan failed for {host}: {e}")
         return web.json_response({"error": "Scan failed"}, status=500)
 
 
 async def http_vuln_scan_service(request: web.Request) -> web.Response:
-    """Scan a Portal service for vulnerabilities (admin only)."""
+    """Scan a Portal service for vulnerabilities (admin only).
+
+    Query parameters:
+    - scan_type: Type of scan - "basic", "version", "vuln", "full" (default: "version")
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1149,9 +1683,14 @@ async def http_vuln_scan_service(request: web.Request) -> web.Response:
     if not port:
         return web.json_response({"error": "Service has no port configured"}, status=400)
 
+    # Parse scan type
+    scan_type = request.query.get("scan_type", "version")
+    if scan_type not in ("basic", "version", "vuln", "full"):
+        scan_type = "version"
+
     try:
-        result = await vulnerability_scanner.scan_host(host, [port])
-        logger.info(f"Vulnerability scan completed for service {service_id} by user {token.user_id}")
+        result = await vulnerability_scanner.scan_host(host, [port], scan_type=scan_type)
+        logger.info(f"Vulnerability scan ({scan_type}) completed for service {service_id} by user {token.user_id}")
         return web.json_response({
             "service": {
                 "id": service["id"],
@@ -1161,9 +1700,95 @@ async def http_vuln_scan_service(request: web.Request) -> web.Response:
             },
             "scan": result.to_dict()
         })
+    except RuntimeError as e:
+        logger.warning(f"Vulnerability scan warning for service {service_id}: {e}")
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
         logger.error(f"Vulnerability scan failed for service {service_id}: {e}")
         return web.json_response({"error": "Scan failed"}, status=500)
+
+
+async def http_vuln_search_cves(request: web.Request) -> web.Response:
+    """Search CVEs by keyword (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    keyword = request.query.get("q", "").strip()
+    if not keyword or len(keyword) < 2:
+        return web.json_response({"error": "Search query must be at least 2 characters"}, status=400)
+
+    limit = min(int(request.query.get("limit", "20")), 50)
+
+    try:
+        results = await vulnerability_scanner.search_cves(keyword, limit)
+        logger.info(f"CVE search for '{keyword}' by user {token.user_id}: {len(results)} results")
+        return web.json_response({
+            "query": keyword,
+            "count": len(results),
+            "cves": results
+        })
+    except Exception as e:
+        logger.error(f"CVE search failed: {e}")
+        return web.json_response({"error": "Search failed"}, status=500)
+
+
+async def http_vuln_scanner_status(request: web.Request) -> web.Response:
+    """Get vulnerability scanner status (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    return web.json_response({
+        "nmap_available": vulnerability_scanner.nmap.is_available(),
+        "nmap_path": vulnerability_scanner.nmap.nmap_path,
+        "nvd_api_configured": bool(vulnerability_scanner.cve_db._nvd_api_key),
+        "cache_ttl": vulnerability_scanner._cache_ttl,
+        "scan_timeout": vulnerability_scanner.nmap.timeout,
+        "known_cves_count": len(KNOWN_CVES)
+    })
+
+
+async def http_vuln_set_nvd_api_key(request: web.Request) -> web.Response:
+    """Set NVD API key (admin only) - persists to database."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    api_key = data.get("api_key", "").strip()
+    if not api_key:
+        return web.json_response({"error": "API key required"}, status=400)
+
+    # Set the API key in the scanner and Config
+    vulnerability_scanner.set_nvd_api_key(api_key)
+    Config.NVD_API_KEY = api_key
+
+    # Persist to database for survival across restarts
+    await db.set_setting("nvd_api_key", api_key)
+    logger.info(f"NVD API key updated and persisted by user {token.user_id}")
+
+    return web.json_response({
+        "status": "success",
+        "message": "NVD API key configured. You now have higher rate limits (50 requests/30 seconds)."
+    })
+
+
+# Import KNOWN_CVES for the status endpoint
+from vulnerability_scanner import KNOWN_CVES
 
 
 async def http_vuln_lookup_cve(request: web.Request) -> web.Response:
@@ -1238,6 +1863,126 @@ async def http_vuln_known_cves(request: web.Request) -> web.Response:
     cves.sort(key=lambda x: x["cvss"], reverse=True)
 
     return web.json_response({"cves": cves})
+
+
+# =============================================================================
+# Session Recording Endpoints
+# =============================================================================
+
+async def http_list_recordings(request: web.Request) -> web.Response:
+    """List all recordings (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    recordings = await db.get_all_recordings()
+
+    logger.debug(f"Recordings list requested by user {token.user_id}: {len(recordings)} records")
+
+    return web.json_response({
+        "recordings": [
+            {
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "username": r["username"],
+                "service_id": r["service_id"],
+                "service_name": r["service_name"],
+                "filename": r["filename"],
+                "format": r["format"],
+                "size": r["size"],
+                "duration": r["duration"],
+                "created_at": r["created_at"]
+            }
+            for r in recordings
+        ]
+    })
+
+
+async def http_get_recording(request: web.Request) -> web.Response:
+    """Get recording metadata by ID (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    recording_id = request.match_info.get("id")
+    if not recording_id or not recording_id.isdigit():
+        return web.json_response({"error": "Invalid recording ID"}, status=400)
+
+    recording = await db.get_recording(int(recording_id))
+    if not recording:
+        return web.json_response({"error": "Recording not found"}, status=404)
+
+    return web.json_response(recording)
+
+
+async def http_download_recording(request: web.Request) -> web.Response:
+    """Download recording file (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    recording_id = request.match_info.get("id")
+    if not recording_id or not recording_id.isdigit():
+        return web.json_response({"error": "Invalid recording ID"}, status=400)
+
+    recording = await db.get_recording(int(recording_id))
+    if not recording:
+        return web.json_response({"error": "Recording not found"}, status=404)
+
+    filepath = Path(Config.RECORDINGS_DIR) / recording["filename"]
+    if not filepath.exists():
+        logger.warning(f"Recording file not found: {filepath}")
+        return web.json_response({"error": "Recording file not found"}, status=404)
+
+    logger.info(f"Recording {recording_id} downloaded by user {token.user_id}")
+
+    return web.FileResponse(
+        filepath,
+        headers={
+            "Content-Disposition": f'attachment; filename="{recording["filename"]}"',
+            "Content-Type": "application/json"  # asciicast is JSON
+        }
+    )
+
+
+async def http_delete_recording(request: web.Request) -> web.Response:
+    """Delete a recording (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    recording_id = request.match_info.get("id")
+    if not recording_id or not recording_id.isdigit():
+        return web.json_response({"error": "Invalid recording ID"}, status=400)
+
+    recording = await db.get_recording(int(recording_id))
+    if not recording:
+        return web.json_response({"error": "Recording not found"}, status=404)
+
+    # Delete file if it exists
+    filepath = Path(Config.RECORDINGS_DIR) / recording["filename"]
+    if filepath.exists():
+        filepath.unlink()
+        logger.info(f"Recording file deleted: {filepath}")
+
+    # Delete database record
+    await db.delete_recording(int(recording_id))
+
+    logger.info(f"Recording {recording_id} deleted by user {token.user_id}")
+
+    return web.json_response({"status": "deleted"})
 
 
 async def http_stats(request: web.Request) -> web.Response:
@@ -1360,6 +2105,29 @@ async def http_service_health(request: web.Request) -> web.Response:
 
 
 # =============================================================================
+# Root Redirect Handler
+# =============================================================================
+
+async def http_root_redirect(request: web.Request) -> web.Response:
+    """Redirect root path to dashboard or login based on auth status."""
+    # Check if this is a WebSocket upgrade request
+    # Connection header can contain multiple values like "keep-alive, Upgrade"
+    upgrade_header = request.headers.get("Upgrade", "").lower()
+    connection_header = request.headers.get("Connection", "").lower()
+
+    if upgrade_header == "websocket" or "upgrade" in connection_header:
+        # WebSocket request - delegate to websocket_handler
+        return await websocket_handler(request)
+
+    # HTTP request - redirect based on auth status
+    token = await authenticate_request(request)
+    if token:
+        raise web.HTTPFound("/dashboard")
+    else:
+        raise web.HTTPFound("/login")
+
+
+# =============================================================================
 # WebSocket Handler
 # =============================================================================
 
@@ -1369,10 +2137,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     path = request.path
 
     # Check if this is a WebSocket upgrade request
-    is_websocket = (
-        request.headers.get("Upgrade", "").lower() == "websocket" or
-        request.headers.get("Connection", "").lower() == "upgrade"
-    )
+    # Connection header can contain multiple values like "keep-alive, Upgrade"
+    upgrade_header = request.headers.get("Upgrade", "").lower()
+    connection_header = request.headers.get("Connection", "").lower()
+    is_websocket = (upgrade_header == "websocket" or "upgrade" in connection_header)
 
     # Rate limiting
     if not check_rate_limit(client_ip):
@@ -1418,6 +2186,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             await handle_ping_ws(ws, token)
         elif path == "/ws/terminal/local":
             await handle_local_terminal_ws(ws, token, client_ip)
+        elif path.startswith("/ws/user-connection/"):
+            await handle_user_connection_ws(ws, path, token, client_ip)
         else:
             await handle_relay_ws(ws, path, token, client_ip)
     finally:
@@ -1500,6 +2270,90 @@ async def handle_local_terminal_ws(
         if not ws.closed:
             await ws.send_json({"type": "error", "message": f"Terminal error: {type(e).__name__}"})
             await ws.close(code=4500, message=b"Terminal error")
+
+
+async def handle_user_connection_ws(
+    ws: web.WebSocketResponse,
+    path: str,
+    token: TokenPayload,
+    client_ip: str
+) -> None:
+    """Handle WebSocket for user-defined connections using plugin system."""
+    import re
+
+    # Extract connection ID from path
+    match = re.match(r"^/ws/user-connection/(\d+)$", path)
+    if not match:
+        await ws.send_json({"type": "error", "message": "Invalid connection path"})
+        await ws.close(code=4004, message=b"Invalid path")
+        return
+
+    conn_id = int(match.group(1))
+
+    # Fetch connection (ensures user owns it)
+    connection = await db.get_user_connection(conn_id, token.user_id)
+    if not connection:
+        logger.warning(f"User {token.user_id} tried to access non-existent connection {conn_id}")
+        await ws.send_json({"type": "error", "message": "Connection not found"})
+        await ws.close(code=4004, message=b"Connection not found")
+        return
+
+    conn_type = connection.get("type", "custom")
+    config = connection.get("config", {})
+    if isinstance(config, str):
+        import json as json_module
+        config = json_module.loads(config) if config else {}
+
+    # Get plugin from CONNECTION_TYPES mapping
+    type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
+    plugin_name = type_info.get("plugin", "tcp_tunnel")
+
+    # Ensure host/port are in config for plugins that need them
+    config["host"] = connection.get("host")
+    config["port"] = connection.get("port") or type_info.get("default_port")
+
+    # Plugin-specific adjustments
+    if plugin_name == "ssh":
+        # SSH: set known_hosts to ignore for user connections
+        config.setdefault("known_hosts", "ignore")
+        if config.get("auth_method") == "key" and config.get("private_key"):
+            logger.info(f"Using SSH key auth for connection {conn_id}")
+        elif not config.get("auth_method"):
+            config["auth_method"] = "password"
+    elif plugin_name == "http_proxy":
+        # HTTP proxy: build target_url if not set
+        if not config.get("target_url"):
+            scheme = "https" if conn_type == "https" else "http"
+            port = config.get("port") or (443 if conn_type == "https" else 80)
+            config["target_url"] = f"{scheme}://{config['host']}:{port}"
+
+    # Get the plugin
+    plugin = get_plugin(plugin_name)
+    if not plugin:
+        logger.error(f"Plugin not found: {plugin_name} for user connection {conn_id}")
+        await ws.send_json({"type": "error", "message": f"Plugin not found: {plugin_name}"})
+        await ws.close(code=4005, message=b"Plugin not found")
+        return
+
+    # Create ServiceTarget
+    target = ServiceTarget(
+        id=f"user-conn-{conn_id}",
+        name=connection.get("name", f"Connection {conn_id}"),
+        plugin=plugin_name,
+        host=connection.get("host", ""),
+        port=connection.get("port") or type_info.get("default_port") or 0,
+        config=config
+    )
+
+    logger.info(f"User connection {conn_id} ({conn_type}) for user {token.user_id} via {plugin_name}")
+
+    try:
+        await plugin.handle_websocket(ws, target, token.user_id)
+    except Exception as e:
+        logger.error(f"User connection {conn_id} error: {e}")
+        if not ws.closed:
+            await ws.send_json({"type": "error", "message": f"Connection error: {type(e).__name__}"})
+            await ws.close(code=4500, message=b"Connection error")
 
 
 async def handle_relay_ws(
@@ -1663,7 +2517,7 @@ async def http_login_page(request: web.Request) -> web.Response:
 
 
 async def http_login_submit(request: web.Request) -> web.Response:
-    """Handle login form submission."""
+    """Handle login form submission with optional 2FA support."""
     client_ip = get_client_ip(request)
 
     if not check_rate_limit(client_ip):
@@ -1681,6 +2535,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
     username = data.get("username")
     password = data.get("password")
+    totp_code = data.get("totp_code")  # Optional 2FA code
 
     if not username or not password:
         if "application/json" in content_type:
@@ -1701,6 +2556,26 @@ async def http_login_submit(request: web.Request) -> web.Response:
             text=load_static_file("login.html"),
             content_type="text/html"
         )
+
+    # Check if 2FA is enabled for this user
+    if user.get("totp_enabled"):
+        if not totp_code:
+            # 2FA required but not provided - request it
+            logger.info(f"2FA required for user '{username}' from {client_ip}")
+            return web.json_response({
+                "status": "2fa_required",
+                "message": "Two-factor authentication required"
+            }, status=200)
+
+        # Verify TOTP code
+        if not verify_totp(user.get("totp_secret"), totp_code):
+            # Try backup code
+            if not await db.use_backup_code(user["id"], totp_code):
+                logger.warning(f"Failed 2FA for user '{username}' from {client_ip}")
+                return web.json_response({"error": "Invalid 2FA code"}, status=401)
+            logger.info(f"Backup code used for user '{username}' from {client_ip}")
+        else:
+            logger.info(f"2FA verified for user '{username}' from {client_ip}")
 
     # Create session token
     scopes = ["*"] if user["is_admin"] else ["services:read", "access:*"]
@@ -1923,6 +2798,294 @@ async def http_admin_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def http_api_docs_page(request: web.Request) -> web.Response:
+    """Serve API documentation page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    html = load_static_file("api-docs.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_chat_page(request: web.Request) -> web.Response:
+    """Serve chat page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    html = load_static_file("chat.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+# =============================================================================
+# Chat/Forum System
+# =============================================================================
+
+# Chat room state: channel -> set of (ws, user_id, username)
+chat_rooms: dict[str, set] = {}
+
+
+async def http_get_chat_channels(request: web.Request) -> web.Response:
+    """Get all chat channels."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    channels = await db.get_chat_channels()
+    return web.json_response({"channels": channels})
+
+
+async def http_create_chat_channel(request: web.Request) -> web.Response:
+    """Create a new chat channel."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = data.get("name", "").strip().lower()
+    description = data.get("description", "").strip()
+
+    if not name:
+        return web.json_response({"error": "Channel name is required"}, status=400)
+
+    # Validate channel name
+    import re
+    if not re.match(r'^[a-z0-9-]+$', name):
+        return web.json_response({
+            "error": "Channel name must be lowercase letters, numbers, and hyphens only"
+        }, status=400)
+
+    if len(name) > 32:
+        return web.json_response({"error": "Channel name too long (max 32 chars)"}, status=400)
+
+    # Check if exists
+    existing = await db.get_chat_channel_by_name(name)
+    if existing:
+        return web.json_response({"error": "Channel already exists"}, status=409)
+
+    channel_id = await db.create_chat_channel(name, description, token.user_id)
+
+    return web.json_response({
+        "id": channel_id,
+        "name": name,
+        "description": description
+    }, status=201)
+
+
+async def http_update_chat_channel(request: web.Request) -> web.Response:
+    """Update a chat channel (topic, description)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    channel_id = int(request.match_info["id"])
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    success = await db.update_chat_channel(channel_id, **data)
+    if not success:
+        return web.json_response({"error": "Channel not found or no updates"}, status=404)
+
+    return web.json_response({"success": True})
+
+
+async def http_delete_chat_channel(request: web.Request) -> web.Response:
+    """Delete a chat channel (admin only, cannot delete defaults)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    channel_id = int(request.match_info["id"])
+    success = await db.delete_chat_channel(channel_id)
+
+    if not success:
+        return web.json_response({
+            "error": "Channel not found or is a default channel"
+        }, status=400)
+
+    return web.json_response({"success": True})
+
+
+async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
+    """Handle chat WebSocket connections."""
+    token = await authenticate_request(request)
+    if not token:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.send_json({"type": "error", "message": "Authentication required"})
+        await ws.close()
+        return ws
+
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.send_json({"type": "error", "message": "User not found"})
+        await ws.close()
+        return ws
+
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+
+    username = user["username"]
+    user_id = user["id"]
+    current_channel = None
+    user_entry = (ws, user_id, username)
+
+    logger.info(f"[Chat] User {username} connected")
+
+    try:
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    msg_type = data.get("type")
+
+                    if msg_type == "join":
+                        channel_name = data.get("channel", "general")
+
+                        # Leave current channel
+                        if current_channel and current_channel in chat_rooms:
+                            chat_rooms[current_channel].discard(user_entry)
+                            await broadcast_to_channel(current_channel, {
+                                "type": "user_left",
+                                "username": username
+                            }, exclude=ws)
+
+                        # Get channel info
+                        channel = await db.get_chat_channel_by_name(channel_name)
+                        if not channel:
+                            await ws.send_json({"type": "error", "message": "Channel not found"})
+                            continue
+
+                        # Join new channel
+                        current_channel = channel_name
+                        if current_channel not in chat_rooms:
+                            chat_rooms[current_channel] = set()
+                        chat_rooms[current_channel].add(user_entry)
+
+                        # Send channel info
+                        await ws.send_json({
+                            "type": "channel_info",
+                            "id": channel["id"],
+                            "name": channel["name"],
+                            "description": channel.get("description"),
+                            "topic": channel.get("topic")
+                        })
+
+                        # Send message history
+                        messages = await db.get_chat_messages(channel["id"], limit=50)
+                        await ws.send_json({
+                            "type": "history",
+                            "messages": messages
+                        })
+
+                        # Send user list
+                        users = [entry[2] for entry in chat_rooms[current_channel]]
+                        await ws.send_json({
+                            "type": "users",
+                            "users": sorted(set(users))
+                        })
+
+                        # Notify others
+                        await broadcast_to_channel(current_channel, {
+                            "type": "user_joined",
+                            "username": username
+                        }, exclude=ws)
+
+                    elif msg_type == "message":
+                        if not current_channel:
+                            continue
+
+                        message_text = data.get("message", "").strip()
+                        if not message_text or len(message_text) > 4000:
+                            continue
+
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+
+                        # Save message
+                        msg_id = await db.create_chat_message(
+                            channel["id"], user_id, username, message_text
+                        )
+
+                        # Broadcast to channel
+                        await broadcast_to_channel(current_channel, {
+                            "type": "message",
+                            "id": msg_id,
+                            "username": username,
+                            "message": message_text,
+                            "created_at": datetime.now(timezone.utc).isoformat()
+                        })
+
+                    elif msg_type == "typing":
+                        if current_channel:
+                            await broadcast_to_channel(current_channel, {
+                                "type": "typing",
+                                "username": username
+                            }, exclude=ws)
+
+                except json.JSONDecodeError:
+                    await ws.send_json({"type": "error", "message": "Invalid JSON"})
+
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                logger.error(f"[Chat] WebSocket error: {ws.exception()}")
+                break
+
+    except Exception as e:
+        logger.error(f"[Chat] Error: {e}")
+
+    finally:
+        # Clean up
+        if current_channel and current_channel in chat_rooms:
+            chat_rooms[current_channel].discard(user_entry)
+            await broadcast_to_channel(current_channel, {
+                "type": "user_left",
+                "username": username
+            })
+            # Remove empty rooms
+            if not chat_rooms[current_channel]:
+                del chat_rooms[current_channel]
+
+        logger.info(f"[Chat] User {username} disconnected")
+
+    return ws
+
+
+async def broadcast_to_channel(channel: str, message: dict, exclude=None):
+    """Broadcast a message to all users in a channel."""
+    if channel not in chat_rooms:
+        return
+
+    dead_connections = set()
+    for entry in chat_rooms[channel]:
+        ws, user_id, username = entry
+        if ws == exclude:
+            continue
+        try:
+            if not ws.closed:
+                await ws.send_json(message)
+            else:
+                dead_connections.add(entry)
+        except Exception:
+            dead_connections.add(entry)
+
+    # Clean up dead connections
+    chat_rooms[channel] -= dead_connections
+
+
 async def http_get_current_user(request: web.Request) -> web.Response:
     """Get current authenticated user info."""
     token = await authenticate_request(request)
@@ -1987,6 +3150,146 @@ async def http_change_password(request: web.Request) -> web.Response:
     logger.info(f"Password changed for user {token.user_id}")
 
     return web.json_response({"message": "Password changed successfully"})
+
+
+# =============================================================================
+# Two-Factor Authentication Endpoints
+# =============================================================================
+
+async def http_2fa_status(request: web.Request) -> web.Response:
+    """Get 2FA status for current user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    backup_codes_remaining = 0
+    if user.get("backup_codes"):
+        backup_codes_remaining = len([c for c in user["backup_codes"].split(",") if c])
+
+    logger.debug(f"2FA status checked for user {token.user_id}")
+
+    return web.json_response({
+        "enabled": bool(user.get("totp_enabled")),
+        "backup_codes_remaining": backup_codes_remaining
+    })
+
+
+async def http_2fa_setup(request: web.Request) -> web.Response:
+    """Start 2FA setup - generate secret and return provisioning URI."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    if user.get("totp_enabled"):
+        return web.json_response({"error": "2FA is already enabled"}, status=400)
+
+    # Generate new TOTP secret
+    secret = generate_totp_secret()
+    uri = get_totp_uri(secret, user["username"], Config.TOTP_ISSUER)
+
+    # Store secret temporarily (not enabled yet until verified)
+    await db.set_user_totp_secret(token.user_id, secret)
+
+    logger.info(f"2FA setup initiated for user {token.user_id}")
+
+    return web.json_response({
+        "secret": secret,
+        "uri": uri,
+        "issuer": Config.TOTP_ISSUER
+    })
+
+
+async def http_2fa_verify(request: web.Request) -> web.Response:
+    """Verify TOTP code and enable 2FA."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    code = data.get("code")
+    if not code:
+        return web.json_response({"error": "Verification code required"}, status=400)
+
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    if user.get("totp_enabled"):
+        return web.json_response({"error": "2FA is already enabled"}, status=400)
+
+    secret = user.get("totp_secret")
+    if not secret:
+        return web.json_response(
+            {"error": "2FA not set up. Call /api/user/2fa/setup first"},
+            status=400
+        )
+
+    # Verify the code
+    if not verify_totp(secret, code):
+        logger.warning(f"Invalid 2FA verification code for user {token.user_id}")
+        return web.json_response({"error": "Invalid verification code"}, status=400)
+
+    # Generate backup codes and enable 2FA
+    backup_codes = generate_backup_codes(10)
+    await db.enable_user_totp(token.user_id, backup_codes)
+
+    logger.info(f"2FA enabled for user {token.user_id}")
+
+    return web.json_response({
+        "status": "enabled",
+        "backup_codes": backup_codes,
+        "message": "2FA enabled successfully. Save your backup codes securely."
+    })
+
+
+async def http_2fa_disable(request: web.Request) -> web.Response:
+    """Disable 2FA (requires password confirmation)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    password = data.get("password")
+    if not password:
+        return web.json_response({"error": "Password required to disable 2FA"}, status=400)
+
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    if not user.get("totp_enabled"):
+        return web.json_response({"error": "2FA is not enabled"}, status=400)
+
+    # Verify password
+    if not verify_password(password, user["password_hash"]):
+        logger.warning(f"Failed 2FA disable attempt for user {token.user_id} - wrong password")
+        return web.json_response({"error": "Invalid password"}, status=401)
+
+    # Disable 2FA
+    await db.disable_user_totp(token.user_id)
+
+    logger.info(f"2FA disabled for user {token.user_id}")
+
+    return web.json_response({
+        "status": "disabled",
+        "message": "Two-factor authentication has been disabled"
+    })
 
 
 async def http_list_users(request: web.Request) -> web.Response:
@@ -2185,6 +3488,12 @@ def create_app() -> web.Application:
     app.router.add_get("/api/me", http_get_current_user)
     app.router.add_post("/api/me/password", http_change_password)
 
+    # Two-Factor Authentication
+    app.router.add_get("/api/user/2fa/status", http_2fa_status)
+    app.router.add_post("/api/user/2fa/setup", http_2fa_setup)
+    app.router.add_post("/api/user/2fa/verify", http_2fa_verify)
+    app.router.add_post("/api/user/2fa/disable", http_2fa_disable)
+
     # Registration (public with invite code)
     app.router.add_post("/api/register", http_register)
     app.router.add_get("/api/invite-code", http_get_invite_code)
@@ -2202,6 +3511,21 @@ def create_app() -> web.Application:
     app.router.add_get("/api/ssh-keys/authorized", http_get_authorized_keys)
     app.router.add_get("/api/ssh-keys/{id}", http_get_ssh_key)
     app.router.add_delete("/api/ssh-keys/{id}", http_delete_ssh_key)
+
+    # API Keys
+    app.router.add_post("/api/api-keys", http_create_api_key)
+    app.router.add_get("/api/api-keys", http_list_api_keys)
+    app.router.add_post("/api/api-keys/{id}/revoke", http_revoke_api_key)
+    app.router.add_delete("/api/api-keys/{id}", http_delete_api_key)
+
+    # User Connections
+    app.router.add_get("/api/connections/types", http_get_connection_types)
+    app.router.add_post("/api/connections", http_create_user_connection)
+    app.router.add_get("/api/connections", http_list_user_connections)
+    app.router.add_get("/api/connections/{id}", http_get_user_connection)
+    app.router.add_put("/api/connections/{id}", http_update_user_connection)
+    app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
+    app.router.add_get("/api/connections/{id}/connect", http_connect_user_connection)
 
     # Traffic Metrics (admin only)
     app.router.add_get("/api/metrics", http_get_metrics_summary)
@@ -2222,6 +3546,15 @@ def create_app() -> web.Application:
     app.router.add_get("/api/vuln/cve/{cve_id}", http_vuln_lookup_cve)
     app.router.add_get("/api/vuln/mitigations/{cve_id}", http_vuln_get_mitigations)
     app.router.add_get("/api/vuln/known-cves", http_vuln_known_cves)
+    app.router.add_get("/api/vuln/search", http_vuln_search_cves)
+    app.router.add_get("/api/vuln/status", http_vuln_scanner_status)
+    app.router.add_post("/api/vuln/nvd-api-key", http_vuln_set_nvd_api_key)
+
+    # Session Recordings (admin only)
+    app.router.add_get("/api/recordings", http_list_recordings)
+    app.router.add_get("/api/recordings/{id}", http_get_recording)
+    app.router.add_get("/api/recordings/{id}/download", http_download_recording)
+    app.router.add_delete("/api/recordings/{id}", http_delete_recording)
 
     # Web UI routes
     app.router.add_get("/login", http_login_page)
@@ -2236,9 +3569,21 @@ def create_app() -> web.Application:
     app.router.add_get("/github/{service_id}", http_github_page)
     app.router.add_get("/admin", http_admin_page)
     app.router.add_get("/admin/", http_admin_page)  # Handle trailing slash
+    app.router.add_get("/docs", http_api_docs_page)
+    app.router.add_get("/api-docs", http_api_docs_page)  # Alias
+    app.router.add_get("/chat", http_chat_page)
 
+    # Chat API
+    app.router.add_get("/api/chat/channels", http_get_chat_channels)
+    app.router.add_post("/api/chat/channels", http_create_chat_channel)
+    app.router.add_put("/api/chat/channels/{id}", http_update_chat_channel)
+    app.router.add_delete("/api/chat/channels/{id}", http_delete_chat_channel)
+
+    # Root redirect (handles both HTTP and WebSocket upgrade)
+    app.router.add_get("/", http_root_redirect)
+    # Chat WebSocket (before catch-all)
+    app.router.add_get("/ws/chat", handle_chat_websocket)
     # WebSocket endpoints - catch all paths for relay (must be last)
-    app.router.add_get("/", websocket_handler)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_get("/ws/{path:.*}", websocket_handler)
 
@@ -2263,23 +3608,47 @@ class PortalServer:
         await db.connect()
         logger.info(f"Database connected: {Config.DATABASE_PATH}")
 
+        # Load persisted settings from database
+        log_settings_json = await db.get_setting("log_settings")
+        if log_settings_json:
+            try:
+                log_settings_data = json.loads(log_settings_json)
+                update_log_settings(log_settings_data)
+                logger.info("Log settings restored from database")
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Could not restore log settings: {e}")
+
         # Load and initialize plugins
         load_builtin_plugins()
         await initialize_plugins()
         logger.info("Plugins initialized")
 
-        # Initialize Shodan client if API key is configured
-        if Config.SHODAN_API_KEY:
-            await init_shodan(Config.SHODAN_API_KEY)
-            logger.info("Shodan integration initialized")
+        # Initialize Shodan client - check database first, then env var
+        shodan_api_key = await db.get_setting("shodan_api_key") or Config.SHODAN_API_KEY
+        if shodan_api_key:
+            await init_shodan(shodan_api_key)
+            Config.SHODAN_API_KEY = shodan_api_key  # Update Config for runtime checks
+            shodan_client.set_api_key(shodan_api_key)  # Ensure client has the key
+            logger.info("Shodan integration initialized (key from database)" if await db.get_setting("shodan_api_key") else "Shodan integration initialized (key from env)")
 
         # Start traffic metrics recorder
         if Config.METRICS_ENABLED:
             await start_metrics_recorder()
             logger.info("Traffic metrics recorder started")
 
-        # Initialize vulnerability scanner
-        await init_scanner()
+        # Start chat message cleanup task (runs every 6 hours)
+        asyncio.create_task(self._chat_cleanup_task())
+
+        # Initialize vulnerability scanner - check database for NVD API key
+        nvd_api_key = await db.get_setting("nvd_api_key") or Config.NVD_API_KEY
+        await init_scanner(
+            nvd_api_key=nvd_api_key or None,
+            nmap_path=Config.NMAP_PATH,
+            cache_ttl=Config.CVE_CACHE_TTL,
+            timeout=Config.VULN_SCAN_TIMEOUT
+        )
+        if nvd_api_key:
+            Config.NVD_API_KEY = nvd_api_key
         logger.info("Vulnerability scanner initialized")
 
         # Create SSL context
@@ -2310,6 +3679,19 @@ class PortalServer:
         logger.info(f"  - Dashboard:  GET  /dashboard")
         logger.info(f"  - Register:   POST /api/register (requires invite code)")
         logger.info(f"  - WebSocket:  wss://{Config.HOSTNAME}/ws/")
+
+    async def _chat_cleanup_task(self) -> None:
+        """Background task to clean up old chat messages (runs every 6 hours)."""
+        while True:
+            try:
+                await asyncio.sleep(6 * 60 * 60)  # 6 hours
+                deleted = await db.cleanup_old_chat_messages(days=7)
+                if deleted > 0:
+                    logger.info(f"[Chat] Cleaned up {deleted} messages older than 7 days")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[Chat] Cleanup error: {e}")
 
     async def stop(self) -> None:
         """Stop the server gracefully."""

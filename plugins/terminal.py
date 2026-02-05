@@ -20,13 +20,103 @@ import termios
 import logging
 import json
 import errno
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 from aiohttp import web, WSMsgType
 
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
+from config import Config
+from database import db
 
 logger = logging.getLogger("portal.plugins.terminal")
+
+
+class AsciicastRecorder:
+    """Records terminal session in asciicast v2 format.
+
+    Asciicast v2 format:
+    - First line: JSON header with version, width, height, timestamp
+    - Subsequent lines: [time, type, data] events
+    """
+
+    def __init__(self, user_id: int, service_id: int, cols: int = 80, rows: int = 24):
+        self.user_id = user_id
+        self.service_id = service_id
+        self.cols = cols
+        self.rows = rows
+        self.start_time = time.time()
+        self.events: list[tuple[float, str, str]] = []
+        self.recording_id: Optional[int] = None
+        self.filename: Optional[str] = None
+        self._active = False
+
+    async def start(self) -> int:
+        """Start recording and create database entry."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.filename = f"rec_{self.user_id}_{self.service_id}_{timestamp}.cast"
+
+        self.recording_id = await db.create_recording(
+            user_id=self.user_id,
+            service_id=self.service_id,
+            filename=self.filename,
+            format="asciicast"
+        )
+        self._active = True
+        logger.info(f"Recording started: {self.filename} (id={self.recording_id})")
+        return self.recording_id
+
+    def record_output(self, data: str) -> None:
+        """Record terminal output."""
+        if not self._active:
+            return
+        elapsed = time.time() - self.start_time
+        self.events.append((elapsed, "o", data))
+
+    def record_input(self, data: str) -> None:
+        """Record terminal input (optional, for debugging)."""
+        if not self._active:
+            return
+        elapsed = time.time() - self.start_time
+        self.events.append((elapsed, "i", data))
+
+    async def finish(self) -> None:
+        """Finalize recording and write to file."""
+        if not self._active or not self.filename:
+            return
+
+        self._active = False
+        duration = time.time() - self.start_time
+
+        # Ensure recordings directory exists
+        recordings_dir = Path(Config.RECORDINGS_DIR)
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath = recordings_dir / self.filename
+
+        # Write asciicast v2 format
+        header = {
+            "version": 2,
+            "width": self.cols,
+            "height": self.rows,
+            "timestamp": int(self.start_time),
+            "env": {"TERM": "xterm-256color"}
+        }
+
+        try:
+            with open(filepath, "w") as f:
+                f.write(json.dumps(header) + "\n")
+                for event in self.events:
+                    f.write(json.dumps(list(event)) + "\n")
+
+            size = filepath.stat().st_size
+            await db.update_recording(self.recording_id, size, duration)
+            logger.info(f"Recording saved: {self.filename} ({size} bytes, {duration:.1f}s)")
+        except Exception as e:
+            logger.error(f"Failed to save recording {self.filename}: {e}")
 
 
 @register_plugin
@@ -37,7 +127,7 @@ class TerminalPlugin(PluginBase):
         name="terminal",
         display_name="Web Terminal",
         description="Browser-based terminal with PTY support",
-        version="1.0.0",
+        version="1.1.0",
         icon="terminal",
         protocols=["websocket"],
         config_schema={
@@ -67,6 +157,11 @@ class TerminalPlugin(PluginBase):
                     "type": "integer",
                     "description": "Initial terminal rows",
                     "default": 24
+                },
+                "recording": {
+                    "type": "boolean",
+                    "description": "Enable session recording (asciicast format)",
+                    "default": False
                 }
             }
         }
@@ -110,6 +205,14 @@ class TerminalPlugin(PluginBase):
         if not os.path.isdir(working_dir):
             logger.warning(f"Working directory not found, using /tmp: {working_dir}")
             working_dir = "/tmp"
+
+        # Initialize session recording if enabled
+        recorder: Optional[AsciicastRecorder] = None
+        recording_enabled = config.get("recording", False) and Config.RECORDING_ENABLED
+        if recording_enabled:
+            recorder = AsciicastRecorder(user_id, target.id, cols, rows)
+            await recorder.start()
+            logger.info(f"Session recording enabled for user {user_id}, service {target.id}")
 
         master_fd = None
         pid = None
@@ -164,11 +267,12 @@ class TerminalPlugin(PluginBase):
                 # Send connected message
                 await ws.send_json({
                     "type": "connected",
-                    "message": f"Terminal ready ({shell})"
+                    "message": f"Terminal ready ({shell})",
+                    "recording": recording_enabled
                 })
 
                 try:
-                    await self._terminal_loop(ws, master_fd, pid, user_id)
+                    await self._terminal_loop(ws, master_fd, pid, user_id, recorder)
                 except Exception as e:
                     logger.error(f"Terminal loop error for user {user_id}: {e}")
 
@@ -199,6 +303,10 @@ class TerminalPlugin(PluginBase):
                 except OSError:
                     pass
 
+            # Finalize recording if enabled
+            if recorder:
+                await recorder.finish()
+
             logger.info(f"Terminal session ended for user {user_id}")
 
     async def _terminal_loop(
@@ -206,7 +314,8 @@ class TerminalPlugin(PluginBase):
         ws: web.WebSocketResponse,
         master_fd: int,
         pid: int,
-        user_id: int
+        user_id: int,
+        recorder: Optional[AsciicastRecorder] = None
     ) -> None:
         """Main terminal I/O loop."""
         loop = asyncio.get_event_loop()
@@ -215,7 +324,7 @@ class TerminalPlugin(PluginBase):
 
         # Create tasks for reading from PTY and WebSocket
         pty_reader = asyncio.create_task(
-            self._read_pty(master_fd, ws, loop),
+            self._read_pty(master_fd, ws, loop, recorder),
             name=f"pty_reader_{user_id}"
         )
         ws_reader = asyncio.create_task(
@@ -261,7 +370,8 @@ class TerminalPlugin(PluginBase):
         self,
         master_fd: int,
         ws: web.WebSocketResponse,
-        loop: asyncio.AbstractEventLoop
+        loop: asyncio.AbstractEventLoop,
+        recorder: Optional[AsciicastRecorder] = None
     ) -> None:
         """Read from PTY and send to WebSocket."""
         logger.debug(f"PTY reader started for fd={master_fd}")
@@ -282,8 +392,12 @@ class TerminalPlugin(PluginBase):
                 try:
                     data = os.read(master_fd, 16384)  # Larger buffer for better throughput
                     if data:
+                        decoded = data.decode("utf-8", errors="replace")
                         if not ws.closed:
-                            await ws.send_str(data.decode("utf-8", errors="replace"))
+                            await ws.send_str(decoded)
+                        # Record output if recording is enabled
+                        if recorder:
+                            recorder.record_output(decoded)
                     else:
                         # EOF - PTY closed
                         logger.debug("PTY EOF received")

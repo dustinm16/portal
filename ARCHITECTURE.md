@@ -200,6 +200,95 @@ Services are stored in the database with plugin-specific configuration:
 }
 ```
 
+## User Connections vs Admin Services
+
+Portal Gateway provides two complementary access models:
+
+### Admin Services (Shared Infrastructure)
+- Created by administrators through the Admin panel
+- Visible to all users with matching scopes
+- Intended for **shared infrastructure** used by many users
+- **Can target localhost** (for local terminals, PTY, etc.)
+- Full plugin access including local PTY terminal
+- Configurable access scopes
+
+**Examples:**
+- Community forum for all users
+- Video streaming relay (Twitch/Kick/YouTube alternative)
+- Shared file storage server
+- Company-wide development tools
+
+### User Connections (Personal Remote Access)
+- Created by individual users through the Connections modal
+- **Private to the creating user** (not shared)
+- Intended for **personal remote resources** the user owns
+- **Cannot target localhost** (security restriction - returns 403)
+- Uses same plugin system as services
+- No scope configuration needed (user owns it)
+
+**Examples:**
+- My home SSH server
+- My NAS at home
+- My personal database server
+- My Proxmox cluster
+
+### Security: Localhost Blocking
+
+User Connections block access to local addresses for security:
+
+| Blocked Pattern | Reason |
+|-----------------|--------|
+| `localhost` | Local loopback |
+| `127.0.0.1` | IPv4 loopback |
+| `127.*.*.*` | All IPv4 loopback range |
+| `::1` | IPv6 loopback |
+| `::ffff:127.*` | IPv4-mapped IPv6 loopback |
+| `0.0.0.0` | All interfaces |
+| `host.docker.internal` | Docker host access |
+| `kubernetes.default` | Kubernetes internal |
+
+Attempting to create a User Connection to a blocked host returns HTTP 403.
+
+### Connection Types to Plugin Mapping
+
+User Connections support all remote-access plugins:
+
+| Connection Type | Plugin | Default Port | Use Case |
+|-----------------|--------|--------------|----------|
+| ssh | ssh | 22 | Remote shell access |
+| vnc | vnc | 5900 | Remote desktop (VNC) |
+| rdp | vnc | 3389 | Windows remote desktop |
+| spice | spice | 5930 | VM console (SPICE) |
+| mediamtx | mediamtx | 8554 | Media streaming |
+| proxmox | proxmox | 8006 | Proxmox VE management |
+| github | github | 443 | GitHub integration |
+| tcp_tunnel | tcp_tunnel | - | Generic TCP forwarding |
+| secure_tunnel | secure_tunnel | - | Encrypted tunnel |
+| http_proxy | http_proxy | 80 | HTTP reverse proxy |
+| database | tcp_tunnel | 3306 | Database access |
+| redis | tcp_tunnel | 6379 | Redis access |
+| custom | tcp_tunnel | - | Custom TCP service |
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/connections` | List user's connections |
+| POST | `/api/connections` | Create connection |
+| GET | `/api/connections/{id}` | Get connection details |
+| PUT | `/api/connections/{id}` | Update connection |
+| DELETE | `/api/connections/{id}` | Delete connection |
+| GET | `/api/connections/{id}/connect` | Get connect info |
+| GET | `/api/connections/types` | List types with schemas |
+
+### WebSocket Endpoints
+
+| Path | Description |
+|------|-------------|
+| `/ws/connection/{id}` | Connect to user connection |
+
+---
+
 ## Supported Plugins
 
 ### Terminal (terminal.py)
@@ -516,6 +605,25 @@ CREATE TABLE sessions (
 );
 ```
 
+### user_connections
+```sql
+CREATE TABLE user_connections (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER,
+    icon TEXT,
+    config TEXT,  -- JSON with plugin-specific settings
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+```
+
+**Note:** User connections are private to each user. The `type` maps to a plugin via `CONNECTION_TYPES` in server.py. The `config` field stores plugin-specific settings as JSON.
+
 ### ssh_keys
 ```sql
 CREATE TABLE ssh_keys (
@@ -533,6 +641,36 @@ CREATE TABLE ssh_keys (
 ```
 
 **Security Note:** Only public keys are stored in the database. Private keys are generated in-memory and returned to the user exactly once during key creation. They are never persisted, ensuring that even a database breach cannot expose private keys.
+
+### recordings
+```sql
+CREATE TABLE recordings (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    service_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    format TEXT NOT NULL DEFAULT 'asciicast',
+    size INTEGER DEFAULT 0,
+    duration REAL DEFAULT 0,
+    created_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+);
+```
+
+### settings
+```sql
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Persistent configuration storage for admin-configurable settings that survive service restarts:
+- `shodan_api_key` - Shodan API key
+- `nvd_api_key` - NVD API key for vulnerability scanning
+- `log_settings` - JSON with log level, max_size_mb, backup_count
 
 ## Database Usage
 
@@ -606,16 +744,36 @@ The admin panel provides system monitoring and security scanning capabilities.
 - Risk scoring based on open ports and CVEs
 - Vulnerability tracking
 - Service discovery
-- API key management
+- API key management (persisted to database)
 
 ### CVE Analysis & Vulnerability Scanner
-- Host vulnerability scanning with configurable ports
-- Known CVE database with 13+ critical vulnerabilities
-- Real-time version detection via banner grabbing
+- **Nmap Integration**: Full nmap support with multiple scan types
+  - Basic: Quick port scan (`-sS -T4`)
+  - Version: Service version detection (`-sV -sC -T4`)
+  - Vulnerability: NSE scripts (`--script=vuln,vulners,vulscan`)
+  - Full: Comprehensive scan (`-A` + vuln scripts)
+- **Dynamic CVE Database**: Real-time CVE fetching from multiple sources
+  - NVD (NIST National Vulnerability Database) API
+  - CIRCL CVE database (fallback)
+  - Local curated CVE database with mitigations
+  - File and memory caching with configurable TTL
+- **CPE-based Matching**: Accurate vulnerability detection using Common Platform Enumeration
+- **CVE Search**: Search NVD by keyword (product, vendor, etc.)
 - Automated risk scoring (0-100) and severity levels
 - Mitigation recommendations for each vulnerability
-- NVD (National Vulnerability Database) API integration
-- CVE lookup with detailed remediation steps
+- OS detection and service fingerprinting
+
+#### API Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/vuln/scan/{host}` | Scan host (query: ports, scan_type, use_nmap) |
+| GET | `/api/vuln/scan-service/{id}` | Scan Portal service |
+| GET | `/api/vuln/cve/{cve_id}` | Lookup CVE details |
+| GET | `/api/vuln/mitigations/{cve_id}` | Get mitigation steps |
+| GET | `/api/vuln/known-cves` | List local CVE database |
+| GET | `/api/vuln/search?q={keyword}` | Search NVD by keyword |
+| GET | `/api/vuln/status` | Scanner status (nmap, NVD API) |
+| POST | `/api/vuln/nvd-api-key` | Set NVD API key (persisted) |
 
 #### Known CVE Coverage
 | CVE ID | Service | Severity | Description |
@@ -628,14 +786,28 @@ The admin panel provides system monitoring and security scanning capabilities.
 | CVE-2022-0543 | Redis | Critical | Lua sandbox escape |
 | CVE-GENERIC-* | Various | High | Telnet, FTP, SMB, RDP exposure |
 
+### Session Recording
+- Terminal session recording in asciicast v2 format
+- Automatic recording when enabled per-service
+- Admin panel for viewing and downloading recordings
+- Playback with `asciinema play recording.cast`
+
 ### Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SHODAN_API_KEY` | Shodan API key | - |
+| `SHODAN_API_KEY` | Shodan API key (also settable via Admin UI) | - |
 | `METRICS_ENABLED` | Enable metrics | true |
 | `METRICS_RETENTION_HOURS` | Data retention | 24 |
-| `NVD_API_KEY` | NVD API key (optional, higher rate limits) | - |
+| `NVD_API_KEY` | NVD API key (also settable via Admin UI) | - |
+| `NMAP_PATH` | Path to nmap binary | /usr/bin/nmap |
+| `CVE_CACHE_TTL` | CVE cache duration in seconds | 3600 |
+| `VULN_SCAN_TIMEOUT` | Vulnerability scan timeout | 300 |
+| `TOTP_ISSUER` | 2FA issuer name | Portal Gateway |
+| `RECORDINGS_DIR` | Session recordings directory | ./recordings |
+| `RECORDING_ENABLED` | Enable session recording | true |
+
+**Note:** API keys (Shodan, NVD) can be configured via environment variables or through the Admin UI. Keys set via the Admin UI are persisted to the database and survive service restarts.
 
 ## Security
 
@@ -662,6 +834,11 @@ The admin panel provides system monitoring and security scanning capabilities.
    - Password strength indicator
    - Session timeout warnings
    - Remember me option (30 days)
+10. **Two-Factor Authentication (TOTP)**:
+    - Time-based One-Time Password support
+    - QR code setup with authenticator apps
+    - 10 backup codes for recovery
+    - Secure secret storage with Argon2
 
 ## Roadmap
 
@@ -704,21 +881,25 @@ The admin panel provides system monitoring and security scanning capabilities.
 - [x] Daily invite code system
 - [x] Mobile-friendly design
 
-### Phase 7: Advanced Features (Current)
-- [ ] Two-factor authentication (TOTP)
+### Phase 7: Advanced Features ✓
+- [x] Two-factor authentication (TOTP with QR codes and backup codes)
 - [x] SSH key management (secure, no private key storage)
-- [ ] Connection recording
+- [x] Session recording (asciicast v2 format)
 - [x] Bandwidth monitoring and limiting
 - [x] Connection statistics tracking
 - [x] Secure tunnel with multiplexing
 - [x] VPN tunnel (TUN/TAP/SOCKS)
 - [x] HTTP reverse proxy
-- [x] Shodan API integration
+- [x] Shodan API integration (with database persistence)
 - [x] Traffic metrics dashboard
 - [x] Admin panel with monitoring
 - [x] Security headers middleware
 - [x] Enhanced login page (password strength, visibility toggle)
 - [x] CVE analysis and vulnerability scanner
+- [x] Nmap integration for advanced scanning
+- [x] Dynamic CVE fetching from NVD/CIRCL
+- [x] CPE-based vulnerability matching
 - [x] Known CVE database with mitigations
 - [x] Host port scanning with risk scoring
 - [x] NVD API integration for CVE lookups
+- [x] Persistent settings storage (Shodan/NVD keys, log settings)

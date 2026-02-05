@@ -204,6 +204,16 @@
                     </div>
                 </div>
 
+                <!-- 2FA Code (shown when required) -->
+                <div class="form-group hidden" id="totp-group">
+                    <label for="totp-code">Two-Factor Authentication Code</label>
+                    <input type="text" id="totp-code" name="totp_code" maxlength="8"
+                           placeholder="Enter 6-digit code or backup code"
+                           autocomplete="one-time-code"
+                           style="text-align: center; font-size: 1.25rem; letter-spacing: 0.3em;">
+                    <span class="input-hint">Enter the code from your authenticator app, or a backup code</span>
+                </div>
+
                 <div class="remember-me">
                     <input type="checkbox" id="remember-me" name="remember">
                     <label for="remember-me">Remember me for 30 days</label>
@@ -450,11 +460,17 @@
             btnText.textContent = text;
         }
 
+        // Track if 2FA is required
+        let awaiting2FA = false;
+
         // Login form handler
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const btn = document.getElementById('login-btn');
-            setButtonLoading(btn, true, 'Signing in...');
+            const totpGroup = document.getElementById('totp-group');
+            const totpInput = document.getElementById('totp-code');
+
+            setButtonLoading(btn, true, awaiting2FA ? 'Verifying...' : 'Signing in...');
             messageContainer.innerHTML = '';
 
             const rememberMe = document.getElementById('remember-me').checked;
@@ -463,6 +479,11 @@
                 password: document.getElementById('login-password').value,
                 remember: rememberMe
             };
+
+            // Include TOTP code if 2FA is required
+            if (awaiting2FA && totpInput.value.trim()) {
+                data.totp_code = totpInput.value.trim();
+            }
 
             try {
                 const response = await fetch('/login', {
@@ -475,16 +496,32 @@
                     credentials: 'same-origin'
                 });
 
+                const result = await response.json();
+
                 if (response.ok) {
+                    // Check if 2FA is required
+                    if (result.status === '2fa_required') {
+                        awaiting2FA = true;
+                        totpGroup.classList.remove('hidden');
+                        totpInput.focus();
+                        showError('Two-factor authentication required. Enter your code below.');
+                        setButtonLoading(btn, false, 'Verify & Sign In');
+                        return;
+                    }
+                    // Success - redirect to dashboard
                     window.location.href = '/dashboard';
                 } else {
-                    const result = await response.json();
+                    // If 2FA was wrong, keep the field visible
+                    if (awaiting2FA) {
+                        totpInput.value = '';
+                        totpInput.focus();
+                    }
                     showError(result.error || 'Invalid credentials');
                 }
             } catch (error) {
                 showError('Connection error. Please try again.');
             } finally {
-                setButtonLoading(btn, false, 'Sign In');
+                setButtonLoading(btn, false, awaiting2FA ? 'Verify & Sign In' : 'Sign In');
             }
         });
 

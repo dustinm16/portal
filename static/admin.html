@@ -231,6 +231,7 @@
                 <button class="tab-btn" onclick="showTab('vuln')">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
                 <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
+                <button class="tab-btn" onclick="showTab('recordings')">Session Recordings</button>
             </div>
 
             <!-- Overview Tab -->
@@ -335,9 +336,10 @@
             <div id="tab-vuln" class="tab-content">
                 <div class="section-header">
                     <h2>CVE Analysis & Vulnerability Scanner</h2>
+                    <div id="scanner-status" style="font-size: 0.75rem; color: var(--text-muted);"></div>
                 </div>
 
-                <div class="admin-grid">
+                <div class="admin-grid" style="grid-template-columns: repeat(3, 1fr);">
                     <div class="admin-card">
                         <h3>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -349,9 +351,18 @@
                             <input type="text" id="vuln-host" placeholder="IP or hostname (e.g., 192.168.1.1)">
                             <button class="btn btn-primary" style="width: auto;" onclick="scanHost()">Scan</button>
                         </div>
-                        <div class="form-group" style="margin-bottom: 0;">
+                        <div class="form-group" style="margin-bottom: 0.5rem;">
                             <label style="font-size: 0.75rem; color: var(--text-muted);">Custom Ports (optional)</label>
                             <input type="text" id="vuln-ports" placeholder="22,80,443,3389" style="font-size: 0.875rem; padding: 0.5rem;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-size: 0.75rem; color: var(--text-muted);">Scan Type</label>
+                            <select id="vuln-scan-type" style="font-size: 0.875rem; padding: 0.5rem;">
+                                <option value="basic">Basic (Port scan only)</option>
+                                <option value="version" selected>Version Detection (nmap -sV)</option>
+                                <option value="vuln">Vulnerability Scripts (nmap --script=vuln)</option>
+                                <option value="full">Full Scan (nmap -A + vuln scripts)</option>
+                            </select>
                         </div>
                     </div>
                     <div class="admin-card">
@@ -366,6 +377,19 @@
                             <button class="btn btn-secondary" style="width: auto;" onclick="lookupCVE()">Lookup</button>
                         </div>
                         <p style="font-size: 0.75rem; color: var(--text-muted);">Search NVD and local database for CVE details and mitigations.</p>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16l2.879-2.879m0 0a3 3 0 104.243-4.242 3 3 0 00-4.243 4.242zM21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            CVE Search
+                        </h3>
+                        <div class="shodan-lookup">
+                            <input type="text" id="cve-search" placeholder="Search: nginx, apache, ssh...">
+                            <button class="btn btn-secondary" style="width: auto;" onclick="searchCVEs()">Search</button>
+                        </div>
+                        <p style="font-size: 0.75rem; color: var(--text-muted);">Search NVD database by keyword (product, vendor, etc).</p>
                     </div>
                 </div>
 
@@ -383,16 +407,35 @@
                     </div>
                 </div>
 
-                <div class="admin-card" style="margin-top: 1.5rem;">
-                    <h3>
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                        </svg>
-                        Known CVE Database
-                        <button class="btn btn-secondary btn-sm" style="margin-left: auto;" onclick="loadKnownCVEs()">Refresh</button>
-                    </h3>
-                    <div id="known-cves" style="max-height: 400px; overflow-y: auto;">
-                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                <div class="admin-grid" style="margin-top: 1.5rem;">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                            </svg>
+                            NVD API Key
+                        </h3>
+                        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+                            Configure NVD API key for higher rate limits (50 req/30s vs 5 req/30s). Get a free key at
+                            <a href="https://nvd.nist.gov/developers/request-an-api-key" target="_blank" style="color: var(--accent-blue);">nvd.nist.gov</a>.
+                            Key persists across restarts.
+                        </p>
+                        <div class="shodan-lookup">
+                            <input type="password" id="nvd-api-key" placeholder="Enter NVD API key">
+                            <button class="btn btn-primary" style="width: auto;" onclick="setNvdApiKey()">Save</button>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                            </svg>
+                            Known CVE Database
+                            <button class="btn btn-secondary btn-sm" style="margin-left: auto;" onclick="loadKnownCVEs()">Refresh</button>
+                        </h3>
+                        <div id="known-cves" style="max-height: 400px; overflow-y: auto;">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -414,6 +457,27 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Session Recordings Tab -->
+            <div id="tab-recordings" class="tab-content">
+                <div class="section-header">
+                    <h2>Session Recordings</h2>
+                    <button class="btn btn-secondary refresh-btn" onclick="loadRecordings()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+                <div class="admin-card">
+                    <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.875rem;">
+                        Terminal session recordings are stored in asciicast v2 format. Enable recording per-service by editing the service configuration.
+                    </p>
+                    <div id="recordings-list">
+                        <div class="loading"><div class="spinner"></div> Loading recordings...</div>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -430,9 +494,10 @@
             switch(tabName) {
                 case 'overview': loadOverview(); break;
                 case 'metrics': loadMetrics(); break;
-                case 'vuln': loadKnownCVEs(); break;
+                case 'vuln': loadKnownCVEs(); loadScannerStatus(); break;
                 case 'shodan': loadShodanConfig(); break;
                 case 'connections': loadActiveConnections(); break;
+                case 'recordings': loadRecordings(); break;
             }
         }
 
@@ -646,13 +711,14 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>
-                            <span>Shodan API key not configured. Set SHODAN_API_KEY environment variable or enter below.</span>
+                            <span>Shodan API key not configured. Enter your key below to enable Shodan integration.</span>
                         </div>
                         <div class="config-form">
                             <label>Shodan API Key</label>
                             <input type="password" id="new-api-key" placeholder="Enter your Shodan API key">
                             <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">
-                                Get your API key from <a href="https://account.shodan.io" target="_blank" style="color: var(--accent-blue);">account.shodan.io</a>
+                                Get your API key from <a href="https://account.shodan.io" target="_blank" style="color: var(--accent-blue);">account.shodan.io</a>.
+                                Key is saved to database and persists across service restarts.
                             </p>
                             <button class="btn btn-primary btn-sm" style="width: auto; margin-top: 0.75rem;" onclick="saveShodanKey()">Save API Key</button>
                         </div>
@@ -826,8 +892,156 @@
         }
 
         // =================================================================
+        // Session Recordings Functions
+        // =================================================================
+
+        // Load session recordings
+        async function loadRecordings() {
+            try {
+                const data = await Portal.fetchJSON('/api/recordings');
+                const recordings = data.recordings || [];
+
+                if (recordings.length === 0) {
+                    document.getElementById('recordings-list').innerHTML = `
+                        <p style="color: var(--text-muted); text-align: center; padding: 2rem;">
+                            No recordings found. Enable recording in service configuration to start capturing sessions.
+                        </p>
+                    `;
+                    return;
+                }
+
+                document.getElementById('recordings-list').innerHTML = `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>User</th>
+                                <th>Service</th>
+                                <th>Duration</th>
+                                <th>Size</th>
+                                <th>Date</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${recordings.map(r => `
+                                <tr>
+                                    <td>${r.id}</td>
+                                    <td>${escapeHtml(r.username)}</td>
+                                    <td>${escapeHtml(r.service_name)}</td>
+                                    <td>${formatDuration(r.duration)}</td>
+                                    <td>${formatBytes(r.size)}</td>
+                                    <td>${new Date(r.created_at + 'Z').toLocaleString()}</td>
+                                    <td>
+                                        <button class="btn btn-secondary btn-sm" onclick="downloadRecording(${r.id})" title="Download">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                            </svg>
+                                        </button>
+                                        <button class="btn btn-danger btn-sm" onclick="deleteRecording(${r.id})" title="Delete">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (error) {
+                console.error('Failed to load recordings:', error);
+                document.getElementById('recordings-list').innerHTML = '<p style="color: var(--accent-red);">Failed to load recordings.</p>';
+            }
+        }
+
+        // Download a recording
+        function downloadRecording(id) {
+            window.location.href = `/api/recordings/${id}/download`;
+        }
+
+        // Delete a recording
+        async function deleteRecording(id) {
+            if (!confirm('Are you sure you want to delete this recording? This action cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const response = await Portal.fetch(`/api/recordings/${id}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    Portal.toast('Recording deleted successfully');
+                    loadRecordings();
+                } else {
+                    const data = await response.json().catch(() => ({}));
+                    Portal.toast(data.error || 'Failed to delete recording', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to delete recording', 'error');
+                console.error('Delete recording error:', error);
+            }
+        }
+
+        // Escape HTML helper
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        // =================================================================
         // Vulnerability Scanner Functions
         // =================================================================
+
+        // Load scanner status
+        async function loadScannerStatus() {
+            try {
+                const status = await Portal.fetchJSON('/api/vuln/status');
+                const statusEl = document.getElementById('scanner-status');
+                if (statusEl) {
+                    const nmapStatus = status.nmap_available
+                        ? '<span style="color: var(--accent-green);">nmap available</span>'
+                        : '<span style="color: var(--accent-yellow);">nmap not available (basic scan only)</span>';
+                    const nvdStatus = status.nvd_api_configured
+                        ? '<span style="color: var(--accent-green);">NVD API configured</span>'
+                        : '<span style="color: var(--text-muted);">NVD API not configured (rate limited)</span>';
+                    statusEl.innerHTML = `${nmapStatus} | ${nvdStatus} | ${status.known_cves_count} local CVEs`;
+                }
+            } catch (error) {
+                console.log('Could not load scanner status');
+            }
+        }
+
+        // Set NVD API key
+        async function setNvdApiKey() {
+            const apiKey = document.getElementById('nvd-api-key').value.trim();
+            if (!apiKey) {
+                Portal.toast('Please enter an API key', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/vuln/nvd-api-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    Portal.toast('NVD API key saved successfully');
+                    document.getElementById('nvd-api-key').value = '';
+                    loadScannerStatus();
+                } else {
+                    Portal.toast(result.error || 'Failed to save API key', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to save API key', 'error');
+                console.error('Set NVD API key error:', error);
+            }
+        }
 
         // Scan a host for vulnerabilities
         async function scanHost() {
@@ -838,15 +1052,27 @@
             }
 
             const portsInput = document.getElementById('vuln-ports').value.trim();
+            const scanType = document.getElementById('vuln-scan-type').value;
+
+            // Build URL with query parameters
+            const params = new URLSearchParams();
+            if (portsInput) params.append('ports', portsInput);
+            params.append('scan_type', scanType);
+
             let url = `/api/vuln/scan/${encodeURIComponent(host)}`;
-            if (portsInput) {
-                url += `?ports=${encodeURIComponent(portsInput)}`;
-            }
+            if (params.toString()) url += `?${params.toString()}`;
+
+            const scanTypeLabels = {
+                'basic': 'Basic port scan',
+                'version': 'Version detection scan',
+                'vuln': 'Vulnerability script scan',
+                'full': 'Full comprehensive scan'
+            };
 
             document.getElementById('vuln-results').innerHTML = `
                 <div class="loading" style="padding: 2rem;">
                     <div class="spinner"></div>
-                    <span>Scanning ${host}... This may take a moment.</span>
+                    <span>Running ${scanTypeLabels[scanType]} on ${host}... This may take a few minutes.</span>
                 </div>
             `;
 
@@ -855,15 +1081,99 @@
                 displayScanResults(result);
             } catch (error) {
                 console.error('Scan failed:', error);
+                const errorMsg = error.message || 'Scan failed. Please check the host and try again.';
                 document.getElementById('vuln-results').innerHTML = `
                     <div class="warning-banner">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                         </svg>
-                        <span>Scan failed. Please check the host and try again.</span>
+                        <span>${escapeHtml(errorMsg)}</span>
                     </div>
                 `;
             }
+        }
+
+        // Search CVEs by keyword
+        async function searchCVEs() {
+            const query = document.getElementById('cve-search').value.trim();
+            if (!query || query.length < 2) {
+                Portal.toast('Please enter at least 2 characters to search', 'error');
+                return;
+            }
+
+            document.getElementById('vuln-results').innerHTML = `
+                <div class="loading" style="padding: 2rem;">
+                    <div class="spinner"></div>
+                    <span>Searching NVD for "${query}"...</span>
+                </div>
+            `;
+
+            try {
+                const result = await Portal.fetchJSON(`/api/vuln/search?q=${encodeURIComponent(query)}&limit=20`);
+                displayCVESearchResults(result);
+            } catch (error) {
+                console.error('CVE search failed:', error);
+                document.getElementById('vuln-results').innerHTML = `
+                    <div class="warning-banner">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>Search failed. The NVD API may be rate-limited. Try again in a moment.</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Display CVE search results
+        function displayCVESearchResults(result) {
+            const cves = result.cves || [];
+
+            if (cves.length === 0) {
+                document.getElementById('vuln-results').innerHTML = `
+                    <div class="info-banner">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>No CVEs found for "${escapeHtml(result.query)}"</span>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = `
+                <div class="scan-results">
+                    <div class="scan-header">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16l2.879-2.879m0 0a3 3 0 104.243-4.242 3 3 0 00-4.243 4.242zM21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Search: "${escapeHtml(result.query)}"
+                        </h4>
+                        <span style="color: var(--text-muted);">${result.count} results</span>
+                    </div>
+                    <div class="scan-body">
+            `;
+
+            cves.forEach(cve => {
+                html += `
+                    <div class="port-item" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; width: 100%;">
+                            <span class="risk-badge ${cve.severity}" style="font-size: 0.625rem;">${cve.severity}</span>
+                            <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${cve.cve_id}')">${cve.cve_id}</span>
+                            <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${cve.cvss || 'N/A'}</span>
+                            ${cve.published ? `<span style="font-size: 0.75rem; color: var(--text-muted);">${new Date(cve.published).toLocaleDateString()}</span>` : ''}
+                        </div>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">${escapeHtml((cve.description || '').substring(0, 200))}${cve.description?.length > 200 ? '...' : ''}</p>
+                    </div>
+                `;
+            });
+
+            html += `
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('vuln-results').innerHTML = html;
         }
 
         // Display scan results
@@ -872,6 +1182,16 @@
             const vulns = result.vulnerabilities || [];
             const ports = result.open_ports || [];
             const recommendations = result.recommendations || [];
+            const osDetection = result.os_detection;
+            const scanType = result.scan_type || 'basic';
+
+            const scanTypeLabels = {
+                'basic': 'Basic Scan',
+                'basic_fallback': 'Basic (nmap unavailable)',
+                'version': 'Version Detection',
+                'vuln': 'Vulnerability Scripts',
+                'full': 'Full Scan'
+            };
 
             let html = `
                 <div class="scan-results">
@@ -880,12 +1200,17 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                             </svg>
-                            ${result.target}
+                            ${escapeHtml(result.target)}
                         </h4>
                         <span class="risk-badge ${result.risk_level}">${result.risk_level} risk (${result.risk_score}/100)</span>
                     </div>
                     <div class="scan-body">
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                        <div style="display: flex; gap: 1rem; margin-bottom: 1rem; font-size: 0.75rem; color: var(--text-muted);">
+                            <span><strong>Scan Type:</strong> ${scanTypeLabels[scanType] || scanType}</span>
+                            <span><strong>Duration:</strong> ${result.scan_duration_seconds?.toFixed(1)}s</span>
+                            ${osDetection ? `<span><strong>OS:</strong> ${escapeHtml(osDetection.name || 'Unknown')} (${osDetection.accuracy || '?'}%)</span>` : ''}
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
                             <div style="text-align: center; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 6px;">
                                 <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-primary);">${summary.total_ports || 0}</div>
                                 <div style="font-size: 0.75rem; color: var(--text-muted);">Open Ports</div>
@@ -901,6 +1226,10 @@
                             <div style="text-align: center; padding: 0.75rem; background: rgba(251,191,36,0.1); border-radius: 6px;">
                                 <div style="font-size: 1.5rem; font-weight: bold; color: var(--accent-yellow);">${summary.medium || 0}</div>
                                 <div style="font-size: 0.75rem; color: var(--text-muted);">Medium</div>
+                            </div>
+                            <div style="text-align: center; padding: 0.75rem; background: rgba(34,197,94,0.1); border-radius: 6px;">
+                                <div style="font-size: 1.5rem; font-weight: bold; color: var(--accent-green);">${summary.low || 0}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Low</div>
                             </div>
                         </div>
             `;
@@ -923,17 +1252,25 @@
                 vulns.forEach(v => {
                     html += `
                         <div class="port-item" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem;">
-                            <div style="display: flex; align-items: center; gap: 0.5rem; width: 100%;">
+                            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; width: 100%;">
                                 <span class="risk-badge ${v.severity}" style="font-size: 0.625rem;">${v.severity}</span>
                                 <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${v.cve_id}')">${v.cve_id}</span>
                                 <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${v.cvss}</span>
                                 ${v.port ? `<span style="font-size: 0.75rem; color: var(--text-muted);">Port: ${v.port}</span>` : ''}
+                                ${v.detected_version ? `<span style="font-size: 0.75rem; color: var(--accent-cyan);">v${escapeHtml(v.detected_version)}</span>` : ''}
+                                ${v.confidence ? `<span style="font-size: 0.625rem; padding: 0.1rem 0.3rem; background: rgba(255,255,255,0.1); border-radius: 3px; color: var(--text-muted);">${v.confidence}</span>` : ''}
                             </div>
                             <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">${escapeHtml(v.description)}</p>
+                            ${v.cpe ? `<p style="font-size: 0.65rem; color: var(--text-muted); font-family: monospace; margin: 0;">CPE: ${escapeHtml(v.cpe)}</p>` : ''}
                             ${v.mitigation && v.mitigation.length > 0 ? `
                                 <div style="background: rgba(34,197,94,0.1); padding: 0.5rem 0.75rem; border-radius: 4px; width: 100%; margin-top: 0.25rem;">
                                     <p style="color: var(--accent-green); font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem;">Mitigation:</p>
                                     <p style="color: var(--text-secondary); font-size: 0.75rem; margin: 0;">${escapeHtml(v.mitigation[0])}</p>
+                                </div>
+                            ` : ''}
+                            ${v.references && v.references.length > 0 ? `
+                                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">
+                                    References: ${v.references.slice(0, 2).map(r => `<a href="${escapeHtml(r)}" target="_blank" style="color: var(--accent-blue);">${escapeHtml(new URL(r).hostname)}</a>`).join(', ')}
                                 </div>
                             ` : ''}
                         </div>
@@ -945,11 +1282,16 @@
             if (ports.length > 0) {
                 html += `<h4 style="font-size: 0.875rem; margin: 1rem 0 0.75rem; color: var(--text-primary);">Open Ports (${ports.length})</h4>`;
                 ports.forEach(p => {
+                    const versionInfo = p.version ? ` v${escapeHtml(p.version)}` : '';
+                    const productInfo = p.product ? escapeHtml(p.product) : '';
+                    const cpeInfo = p.cpe && p.cpe.length > 0 ? p.cpe[0] : '';
+
                     html += `
-                        <div class="port-item">
-                            <span class="port-number">${p.port}</span>
-                            <span class="port-service">${p.service_name || p.service}</span>
+                        <div class="port-item" style="flex-wrap: wrap;">
+                            <span class="port-number">${p.port}/${p.protocol || 'tcp'}</span>
+                            <span class="port-service">${escapeHtml(productInfo || p.service_name || p.service)}${versionInfo}</span>
                             <span class="risk-badge ${p.risk}" style="font-size: 0.625rem;">${p.risk}</span>
+                            ${cpeInfo ? `<span style="font-size: 0.65rem; color: var(--text-muted); font-family: monospace; margin-left: auto;">${escapeHtml(cpeInfo)}</span>` : ''}
                         </div>
                     `;
                 });
@@ -957,7 +1299,7 @@
 
             html += `
                         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem;">
-                            Scan completed in ${result.scan_duration_seconds?.toFixed(2) || '?'}s at ${new Date(result.scan_time).toLocaleString()}
+                            Scan completed at ${new Date(result.scan_time).toLocaleString()}
                         </p>
                     </div>
                 </div>

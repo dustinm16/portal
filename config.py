@@ -55,6 +55,21 @@ class Config:
     METRICS_ENABLED: bool = os.getenv("METRICS_ENABLED", "true").lower() == "true"
     METRICS_RETENTION_HOURS: int = int(os.getenv("METRICS_RETENTION_HOURS", "24"))
 
+    # Two-Factor Authentication Settings
+    TOTP_ISSUER: str = os.getenv("TOTP_ISSUER", "Portal Gateway")
+
+    # Session Recording Settings
+    RECORDINGS_DIR: str = os.getenv(
+        "RECORDINGS_DIR", str(Path(__file__).parent / "recordings")
+    )
+    RECORDING_ENABLED: bool = os.getenv("RECORDING_ENABLED", "true").lower() == "true"
+
+    # Vulnerability Scanner Settings
+    NVD_API_KEY: str = os.getenv("NVD_API_KEY", "")
+    NMAP_PATH: str = os.getenv("NMAP_PATH", "/usr/bin/nmap")
+    CVE_CACHE_TTL: int = int(os.getenv("CVE_CACHE_TTL", "3600"))  # 1 hour default
+    VULN_SCAN_TIMEOUT: int = int(os.getenv("VULN_SCAN_TIMEOUT", "300"))  # 5 minutes
+
     @classmethod
     def validate(cls) -> list[str]:
         """Validate configuration and return list of errors."""

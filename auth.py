@@ -4,6 +4,7 @@ import secrets
 import hashlib
 import logging
 import jwt
+import pyotp
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -336,3 +337,117 @@ def log_invite_code_usage(username: str, success: bool, client_ip: str) -> None:
     log_message = f"INVITE_CODE_USAGE user={username} status={status} ip={client_ip}"
     print(f"[PORTAL] {log_message}")
     logger.info(log_message)
+
+
+# =============================================================================
+# Two-Factor Authentication (TOTP)
+# =============================================================================
+
+def generate_totp_secret() -> str:
+    """Generate a new random TOTP secret.
+
+    Returns:
+        Base32-encoded secret string for TOTP
+    """
+    return pyotp.random_base32()
+
+
+def get_totp_uri(secret: str, username: str, issuer: str = None) -> str:
+    """Get TOTP provisioning URI for QR code generation.
+
+    Args:
+        secret: Base32-encoded TOTP secret
+        username: User's account name
+        issuer: Application name (defaults to Config.TOTP_ISSUER)
+
+    Returns:
+        otpauth:// URI for QR code
+    """
+    if issuer is None:
+        issuer = getattr(Config, 'TOTP_ISSUER', 'Portal Gateway')
+    totp = pyotp.TOTP(secret)
+    return totp.provisioning_uri(name=username, issuer_name=issuer)
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    """Verify a TOTP code against a secret.
+
+    Args:
+        secret: Base32-encoded TOTP secret
+        code: 6-digit TOTP code from authenticator app
+
+    Returns:
+        True if code is valid (within 1 time window drift)
+    """
+    if not secret or not code:
+        return False
+    try:
+        totp = pyotp.TOTP(secret)
+        # Allow 1 window drift (30 seconds before/after)
+        return totp.verify(code.strip(), valid_window=1)
+    except Exception as e:
+        logger.warning(f"TOTP verification error: {e}")
+        return False
+
+
+def generate_backup_codes(count: int = 10) -> list[str]:
+    """Generate one-time backup codes for 2FA recovery.
+
+    Args:
+        count: Number of backup codes to generate (default 10)
+
+    Returns:
+        List of uppercase hex backup codes (8 characters each)
+    """
+    return [secrets.token_hex(4).upper() for _ in range(count)]
+
+
+# =============================================================================
+# API Key Management
+# =============================================================================
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Generate a new API key for programmatic access.
+
+    Returns:
+        Tuple of (full_key, key_hash, key_prefix)
+        - full_key: The complete API key to show user once (portal_XXXXXXXX...)
+        - key_hash: Argon2 hash of the key for storage
+        - key_prefix: First 8 chars for identification (portal_XX)
+    """
+    # Generate 32 random bytes = 64 hex characters
+    key_body = secrets.token_hex(32)
+    full_key = f"portal_{key_body}"
+    key_prefix = full_key[:10]  # "portal_XX" prefix for lookup
+
+    # Hash the full key for secure storage
+    key_hash = hash_password(full_key)
+
+    return full_key, key_hash, key_prefix
+
+
+def verify_api_key(full_key: str, stored_hash: str) -> bool:
+    """Verify an API key against its stored hash.
+
+    Args:
+        full_key: The full API key provided by user
+        stored_hash: The Argon2 hash stored in database
+
+    Returns:
+        True if key is valid
+    """
+    return verify_password(full_key, stored_hash)
+
+
+def parse_api_key(key: str) -> Optional[str]:
+    """Parse and validate API key format.
+
+    Args:
+        key: The API key to parse
+
+    Returns:
+        The key prefix for database lookup, or None if invalid format
+    """
+    if not key or not key.startswith("portal_") or len(key) < 10:
+        return None
+    return key[:10]
