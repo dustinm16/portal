@@ -114,23 +114,37 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
 │   ├── vpn_tunnel.py      # VPN bridge (TUN/TAP/SOCKS)
 │   └── http_proxy.py      # HTTP reverse proxy
 │
+├── services/              # Managed service implementations
+│   ├── __init__.py        # Service registry
+│   ├── base.py            # Base managed service class
+│   └── mediamtx.py        # MediaMTX media server service
+│
 ├── static/                # Web assets
-│   ├── index.html         # Dashboard with service management
+│   ├── index.html         # Dashboard with tabs
 │   ├── login.html         # Login page with security features
-│   ├── admin.html         # Admin panel (metrics, Shodan, monitoring)
+│   ├── admin.html         # Admin panel (services, users, logs)
+│   ├── chat.html          # Community chat page
+│   ├── streams.html       # Community streams page
 │   ├── terminal.html      # Terminal UI (xterm.js)
 │   ├── vnc.html           # VNC viewer (noVNC)
 │   ├── spice.html         # SPICE viewer
 │   ├── proxmox.html       # Proxmox management UI
 │   ├── github.html        # GitHub repository browser
 │   ├── media.html         # MediaMTX streaming player
+│   ├── api-docs.html      # API documentation
 │   ├── unauthorized.html  # Auth error page
 │   ├── css/portal.css     # Shared dark theme styles
 │   └── js/
 │       ├── portal.js      # Core utilities
 │       ├── dashboard.js   # Service grid and categories
-│       ├── admin.js       # Service/user management
-│       └── ssh-keys.js    # SSH key management
+│       ├── admin.js       # Admin panel (services, users)
+│       ├── ssh-keys.js    # SSH key management
+│       ├── user-connections.js  # User connections
+│       └── streams.js     # User streams management
+│
+├── docs/                  # Documentation
+│   ├── API.md             # API reference
+│   └── ARCHITECTURE.md    # Architecture docs
 │
 ├── templates/             # HTML templates
 ├── certs/                 # SSL certificates
@@ -533,6 +547,64 @@ Real-time encrypted messaging system for authenticated users.
 - User presence tracking (connect/disconnect events)
 - Message history with pagination
 
+### User Streams (OBS/RTMP Broadcasting)
+
+User streams allow broadcasting from OBS or other streaming software with TLS encryption.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/streams` | List user's streams |
+| POST | `/api/streams` | Create new stream |
+| GET | `/api/streams/public` | List public (community) streams |
+| GET | `/api/streams/{id}` | Get stream details |
+| PUT | `/api/streams/{id}` | Update stream settings |
+| DELETE | `/api/streams/{id}` | Delete stream |
+| POST | `/api/streams/{id}/regenerate-key` | Regenerate stream key |
+| POST | `/api/stream/auth` | MediaMTX auth hook (internal) |
+
+**Features:**
+- Stream key generation for OBS authentication
+- Public/private stream visibility toggle
+- Integrated chat channels for public streams
+- Viewer count and total views tracking
+- HLS and WebRTC playback support
+
+**Streaming Ports (all TLS encrypted):**
+| Protocol | Port | Use |
+|----------|------|-----|
+| RTMPS | 1936 | OBS ingest |
+| RTSPS | 8322 | RTSP playback |
+| HLS | 8888 | Web playback |
+| WebRTC | 8889 | Low-latency playback |
+
+### Managed Services (Server Processes)
+
+Managed services are background server processes that Portal runs and monitors.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/managed-services/types` | List available service types |
+| GET | `/api/managed-services` | List all managed services |
+| POST | `/api/managed-services` | Create service (admin) |
+| GET | `/api/managed-services/{id}` | Get service details |
+| PUT | `/api/managed-services/{id}` | Update service (admin) |
+| DELETE | `/api/managed-services/{id}` | Delete service (admin) |
+| POST | `/api/managed-services/{id}/start` | Start service (admin) |
+| POST | `/api/managed-services/{id}/stop` | Stop service (admin) |
+| POST | `/api/managed-services/{id}/restart` | Restart service (admin) |
+| GET | `/api/managed-services/{id}/status` | Get service status |
+| GET | `/api/managed-services/{id}/logs` | Get service logs |
+
+**Features:**
+- Automatic process management with health monitoring
+- Config file generation for each service type
+- Automatic restart on failure
+- Log capture and viewing
+- TLS certificate auto-generation
+
+**Available Service Types:**
+- `mediamtx` - MediaMTX media streaming server (RTSP/RTMP/HLS/WebRTC)
+
 ### WebSocket Endpoints
 
 | Path | Description |
@@ -554,15 +626,16 @@ Real-time encrypted messaging system for authenticated users.
 |------|-------------|
 | `/login` | Login page |
 | `/logout` | Logout (clears session) |
-| `/dashboard` | Main dashboard |
-| `/admin` | Admin panel (metrics, security, monitoring) |
+| `/dashboard` | Main dashboard with tabs |
+| `/admin` | Admin panel (metrics, services, users) |
 | `/terminal/{service_id}` | Terminal UI |
 | `/vnc/{service_id}` | VNC viewer |
 | `/spice/{service_id}` | SPICE viewer |
 | `/proxmox/{service_id}` | Proxmox management |
 | `/github/{service_id}` | GitHub browser |
 | `/media/{service_id}` | Media player |
-| `/chat` | Real-time chat system |
+| `/chat` | Community chat system |
+| `/streams` | Community streams viewer |
 | `/docs` | API documentation |
 
 ## Service Presets
@@ -727,6 +800,65 @@ CREATE TABLE chat_messages (
 ```
 
 **Note:** Chat messages are encrypted at rest using Fernet (AES-128-CBC) derived from JWT_SECRET via PBKDF2.
+
+### managed_services
+```sql
+CREATE TABLE managed_services (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
+    display_name TEXT,
+    description TEXT,
+    config TEXT,  -- JSON configuration
+    enabled INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'stopped',
+    pid INTEGER,
+    port INTEGER,
+    working_dir TEXT,
+    last_health_check TEXT,
+    health_status TEXT DEFAULT 'unknown',
+    restart_count INTEGER DEFAULT 0,
+    last_started_at TEXT,
+    error_message TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Note:** Managed services are background processes Portal runs and monitors. The `config` field contains service-specific settings as JSON.
+
+### user_streams
+```sql
+CREATE TABLE user_streams (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    stream_key TEXT NOT NULL UNIQUE,
+    description TEXT,
+    is_public INTEGER DEFAULT 0,
+    is_live INTEGER DEFAULT 0,
+    viewer_count INTEGER DEFAULT 0,
+    chat_channel_id INTEGER,
+    total_views INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (chat_channel_id) REFERENCES chat_channels(id) ON DELETE SET NULL,
+    UNIQUE(user_id, name)
+);
+```
+
+**Note:** User streams enable OBS broadcasting. The `stream_key` is used for RTMP authentication. Public streams create an associated chat channel.
+
+### service_logs
+```sql
+CREATE TABLE service_logs (
+    id INTEGER PRIMARY KEY,
+    service_id INTEGER NOT NULL,
+    level TEXT DEFAULT 'info',
+    message TEXT NOT NULL,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+);
+```
 
 ## Database Usage
 

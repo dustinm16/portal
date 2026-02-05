@@ -584,14 +584,27 @@ Handles stream start/stop events to update live status.
 
 ---
 
-### OBS Configuration
+### Streaming Configuration
 
-To stream to Portal:
+**OBS Studio Settings:**
+1. Go to Settings > Stream
+2. Service: Custom...
+3. Server: `rtmps://your-server.com:1936/live`
+4. Stream Key: Your stream key from the My Streams tab
 
-1. **Server:** `rtmps://your-server.com:1936/live`
-2. **Stream Key:** Your stream key from the dashboard
+**Playback URLs (all TLS encrypted):**
+- HLS: `https://your-server.com:8888/{stream_key}/index.m3u8`
+- WebRTC WHEP: `https://your-server.com:8889/{stream_key}/whep`
+- RTSPS: `rtsps://your-server.com:8322/{stream_key}`
 
-All streaming traffic uses TLS encryption (RTMPS on port 1936, RTSPS on port 8322).
+**Ports (all encrypted):**
+| Protocol | Port | Description |
+|----------|------|-------------|
+| RTMPS | 1936 | RTMP with TLS (ingest) |
+| RTSPS | 8322 | RTSP with TLS |
+| HLS | 8888 | HTTP Live Streaming (HTTPS) |
+| WebRTC | 8889 | WebRTC signaling (HTTPS) |
+| API | 9997 | MediaMTX API (HTTPS, internal) |
 
 ---
 
@@ -978,6 +991,26 @@ Get logs for a managed service.
 | 429 | Too Many Requests | Rate limit exceeded |
 | 500 | Internal Server Error | Server error |
 | 503 | Service Unavailable | Service not running |
+
+---
+
+## Web Pages
+
+| Path | Description |
+|------|-------------|
+| `/login` | Login page |
+| `/logout` | Logout (clears session) |
+| `/dashboard` | Main dashboard with tabs |
+| `/admin` | Admin panel (metrics, services, users) |
+| `/chat` | Community chat |
+| `/streams` | Community streams |
+| `/docs` | API documentation |
+| `/terminal/{id}` | Terminal UI |
+| `/vnc/{id}` | VNC viewer |
+| `/spice/{id}` | SPICE viewer |
+| `/proxmox/{id}` | Proxmox management |
+| `/github/{id}` | GitHub browser |
+| `/media/{id}` | Media player |
 
 ---
 
