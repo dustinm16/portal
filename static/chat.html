@@ -298,14 +298,15 @@
             font-style: italic;
         }
 
-        /* Role badges */
+        /* Role badges - permission level indicators */
         .role-badge {
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.2rem;
             padding: 0.1rem 0.4rem;
             border-radius: 3px;
             font-size: 0.65rem;
             font-weight: 600;
-            text-transform: uppercase;
             margin-left: 0.25rem;
             vertical-align: middle;
         }
@@ -316,12 +317,12 @@
         }
 
         .role-badge.admin {
-            background: var(--accent-red);
+            background: linear-gradient(135deg, #dc2626, #991b1b);
             color: white;
         }
 
         .role-badge.moderator {
-            background: var(--accent-blue);
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
             color: white;
         }
 
@@ -329,27 +330,38 @@
             display: none; /* Don't show badge for regular users */
         }
 
-        /* Mini badge for user list */
+        /* Permission stars inside badge */
+        .role-badge .perm-stars {
+            letter-spacing: -2px;
+            font-size: 0.6rem;
+        }
+
+        /* Mini badge for user list - shield icons */
         .role-badge-mini {
-            display: inline-block;
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            border-radius: 2px;
             margin-left: 4px;
             vertical-align: middle;
+            font-size: 0.5rem;
+            font-weight: bold;
+            color: white;
         }
 
         .role-badge-mini.superadmin {
             background: linear-gradient(135deg, #f59e0b, #ef4444);
-            box-shadow: 0 0 4px #f59e0b;
+            box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
         }
 
         .role-badge-mini.admin {
-            background: var(--accent-red);
+            background: linear-gradient(135deg, #dc2626, #991b1b);
         }
 
         .role-badge-mini.moderator {
-            background: var(--accent-blue);
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
         }
 
         /* @mention highlights */
@@ -857,17 +869,31 @@
 
         function getRoleBadge(role) {
             if (!role || role === 'user') return '';
-            const labels = {
-                'superadmin': 'Owner',
-                'admin': 'Admin',
-                'moderator': 'Mod'
+            // Permission levels: superadmin=4, admin=3, moderator=2, user=1
+            const config = {
+                'superadmin': { label: 'Owner', level: 4, stars: '★★★★' },
+                'admin': { label: 'Admin', level: 3, stars: '★★★' },
+                'moderator': { label: 'Mod', level: 2, stars: '★★' }
             };
-            return `<span class="role-badge ${role}">${labels[role] || role}</span>`;
+            const c = config[role];
+            if (!c) return '';
+            return `<span class="role-badge ${role}" title="Permission Level ${c.level}"><span class="perm-stars">${c.stars}</span> ${c.label}</span>`;
         }
 
         function getRoleBadgeMini(role) {
             if (!role || role === 'user') return '';
-            return `<span class="role-badge-mini ${role}" title="${role}"></span>`;
+            // Show permission level number in mini badge
+            const levels = {
+                'superadmin': '4',
+                'admin': '3',
+                'moderator': '2'
+            };
+            const titles = {
+                'superadmin': 'Owner - Full Permissions',
+                'admin': 'Admin - User Management',
+                'moderator': 'Moderator - Chat Moderation'
+            };
+            return `<span class="role-badge-mini ${role}" title="${titles[role]}">${levels[role]}</span>`;
         }
 
         function initEmojiPicker() {
