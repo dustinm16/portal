@@ -999,34 +999,57 @@ The admin panel provides system monitoring and security scanning capabilities.
 
 ## Security
 
+### Network Security
+- **HTTPS Only**: All connections use port 443 with TLS encryption
+- **No HTTP**: Plain HTTP is not supported - all traffic is encrypted
+- **TLS 1.2+**: Minimum TLS version enforced with modern cipher suites
+- **HSTS**: HTTP Strict Transport Security header (1 year, includeSubDomains, preload)
+- **WSS Only**: All WebSocket connections use WSS (WebSocket Secure)
+
+### Authentication & Authorization
 1. **Authentication**: JWT tokens with configurable expiry
 2. **Authorization**: Scope-based access control per service
-3. **Encryption**: TLS 1.2+ for all connections
-4. **Rate Limiting**: Per-IP request limits
+3. **API Keys**: Prefixed keys (portal_xxx) with hash-only storage
+4. **Session Cookies**: Secure, HttpOnly, SameSite=Lax
+
+### Data Protection
+4. **Rate Limiting**: Per-IP request limits (100/min default)
 5. **Session Tracking**: Audit log of connections
-6. **Credential Storage**: Encrypted service credentials
+6. **Credential Storage**: Encrypted service credentials (Argon2id)
 7. **SSH Key Security**:
    - Private keys are NEVER stored in the database
    - Keys are generated in-memory and returned to user only once
    - Only public keys and fingerprints are persisted
    - Database breach cannot expose private keys
    - Supports Ed25519 (recommended) and RSA 4096-bit keys
-8. **Security Headers**:
-   - X-Frame-Options: SAMEORIGIN
-   - X-Content-Type-Options: nosniff
-   - Content-Security-Policy (HTML pages)
-   - Referrer-Policy: strict-origin-when-cross-origin
-   - Permissions-Policy restrictions
-9. **Login Security**:
-   - Password visibility toggle
-   - Password strength indicator
-   - Session timeout warnings
-   - Remember me option (30 days)
-10. **Two-Factor Authentication (TOTP)**:
-    - Time-based One-Time Password support
-    - QR code setup with authenticator apps
-    - 10 backup codes for recovery
-    - Secure secret storage with Argon2
+
+### Security Headers
+All responses include:
+- **Strict-Transport-Security**: max-age=31536000; includeSubDomains; preload
+- **X-Frame-Options**: SAMEORIGIN
+- **X-Content-Type-Options**: nosniff
+- **X-XSS-Protection**: 1; mode=block
+- **Content-Security-Policy**: Restricts sources, WSS-only WebSockets
+- **Referrer-Policy**: strict-origin-when-cross-origin
+- **Permissions-Policy**: Disables geolocation, microphone, camera, payment
+
+### Login Security
+- Password visibility toggle
+- Password strength indicator
+- Session timeout warnings
+- Remember me option (30 days)
+
+### Two-Factor Authentication (TOTP)
+- Time-based One-Time Password support
+- QR code setup with authenticator apps
+- 10 backup codes for recovery
+- Secure secret storage with Argon2
+
+### Logging Security
+- Sensitive data (passwords, tokens, keys) automatically redacted from logs
+- Admin credentials written to secure file (chmod 600) instead of stdout
+- Structured JSON logging option available
+- Audit log for security events
 
 ## Roadmap
 

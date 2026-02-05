@@ -1083,8 +1083,8 @@
                 <hr style="border-color: rgba(255,255,255,0.1); margin: 1rem 0;">
 
                 <div class="form-group">
-                    <label for="connection-name">Connection Name</label>
-                    <input type="text" id="connection-name" required placeholder="My Server">
+                    <label for="connection-name">Connection Name <span style="color: var(--accent-red);">*</span></label>
+                    <input type="text" id="connection-name" required placeholder="My Server" aria-required="true">
                 </div>
 
                 <div class="form-row">
@@ -1143,13 +1143,13 @@
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="connection-host">Host</label>
-                        <input type="text" id="connection-host" required placeholder="192.168.1.100 or hostname">
-                        <small style="color: var(--text-muted);">Note: localhost is not allowed for security</small>
+                        <label for="connection-host">Host <span style="color: var(--accent-red);">*</span></label>
+                        <input type="text" id="connection-host" required placeholder="192.168.1.100 or hostname" aria-required="true">
+                        <small style="color: var(--text-muted);">Note: localhost/127.0.0.1 blocked for security</small>
                     </div>
                     <div class="form-group">
                         <label for="connection-port">Port</label>
-                        <input type="number" id="connection-port" min="1" max="65535" placeholder="Auto">
+                        <input type="number" id="connection-port" min="1" max="65535" placeholder="Auto (uses default)">
                     </div>
                 </div>
 
@@ -1273,6 +1273,26 @@
                         <label for="connection-custom-protocol">Protocol</label>
                         <input type="text" id="connection-custom-protocol" placeholder="tcp, udp, etc.">
                     </div>
+                </div>
+
+                <!-- Access Control -->
+                <hr style="border-color: rgba(255,255,255,0.1); margin: 1.5rem 0;">
+                <div class="form-group">
+                    <label style="margin-bottom: 0.75rem;">Access Control</label>
+                    <div class="checkbox-group" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="connection-portal-access" checked>
+                            <span>Access from Portal Dashboard</span>
+                        </label>
+                        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="connection-api-access">
+                            <span>Allow API relay access (share via API with authorized users)</span>
+                        </label>
+                    </div>
+                    <small style="color: var(--text-muted); margin-top: 0.5rem; display: block;">
+                        <strong>Portal access:</strong> Shows in your dashboard.
+                        <strong>API access:</strong> Allows authorized users to connect through the API.
+                    </small>
                 </div>
 
                 <div class="form-actions">

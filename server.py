@@ -1416,6 +1416,8 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     config = data.get("config", {})
     ssh_key_id = data.get("ssh_key_id")
     icon = data.get("icon")
+    portal_access = 1 if data.get("portal_access", 1) else 0
+    api_access = 1 if data.get("api_access", 0) else 0
 
     # Validate required fields
     if not name:
@@ -1467,7 +1469,9 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
             port=port,
             config=json.dumps(config) if isinstance(config, dict) else config,
             ssh_key_id=ssh_key_id,
-            icon=icon
+            icon=icon,
+            portal_access=portal_access,
+            api_access=api_access
         )
 
         logger.info(f"Connection '{name}' ({conn_type}) created by user {token.user_id}")
@@ -1478,7 +1482,9 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
             "type": conn_type,
             "host": host,
             "port": port,
-            "icon": icon
+            "icon": icon,
+            "portal_access": portal_access,
+            "api_access": api_access
         }, status=201)
 
     except Exception as e:
@@ -4558,6 +4564,10 @@ async def security_headers_middleware(request: web.Request, handler):
     """Add security headers to all responses."""
     response = await handler(request)
 
+    # HSTS - Enforce HTTPS for 1 year, include subdomains
+    response.headers.setdefault('Strict-Transport-Security',
+        'max-age=31536000; includeSubDomains; preload')
+
     # Prevent clickjacking
     response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
 
@@ -4927,14 +4937,19 @@ async def init_admin_user() -> None:
     if not admin:
         password = secrets.token_urlsafe(16)
         await create_user("admin", password, is_admin=True)
+        # Write to secure file instead of stdout for security
+        creds_file = Path(__file__).parent / "admin_credentials.txt"
+        creds_file.write_text(f"Username: admin\nPassword: {password}\n")
+        creds_file.chmod(0o600)  # Only owner can read
+        logger.warning(f"Initial admin user created. Credentials saved to: {creds_file}")
         print(f"\n{'='*50}")
         print("INITIAL ADMIN USER CREATED")
         print(f"Username: admin")
-        print(f"Password: {password}")
-        print("SAVE THIS PASSWORD - it will not be shown again!")
+        print(f"Credentials saved to: {creds_file}")
+        print("IMPORTANT: Read and delete this file after noting the password!")
         print(f"{'='*50}\n")
     else:
-        print("Admin user already exists.")
+        logger.info("Admin user already exists.")
 
     await db.close()
 
@@ -4996,6 +5011,9 @@ def show_invite_code() -> None:
     code = get_daily_invite_code()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    # Log securely (code is time-based so less sensitive than password)
+    logger.info(f"Daily invite code requested for {today}")
+
     print(f"\n{'='*50}")
     print("PORTAL GATEWAY - DAILY INVITE CODE")
     print(f"{'='*50}")
@@ -5004,7 +5022,7 @@ def show_invite_code() -> None:
     print(f"Expires: {today} 23:59:59 UTC")
     print(f"{'='*50}")
     print("\nUsers can register at POST /api/register with:")
-    print('  {"username": "...", "password": "...", "invite_code": "' + code + '"}')
+    print('  {"username": "...", "password": "...", "invite_code": "<code>"}')
     print(f"{'='*50}\n")
 
 

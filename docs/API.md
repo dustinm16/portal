@@ -1,5 +1,14 @@
 # Portal Gateway - API Reference
 
+## Security
+
+**All API traffic must use HTTPS on port 443.** HTTP is not supported.
+
+- **Protocol**: HTTPS only (TLS 1.2+)
+- **Port**: 443
+- **WebSocket**: WSS only (wss://portal.dddvm.xyz/ws/)
+- **HSTS**: Enabled with 1-year max-age
+
 ## Authentication
 
 All API endpoints require authentication via one of:
@@ -368,9 +377,17 @@ Create a new connection.
     "username": "dustin",
     "auth_method": "key"
   },
-  "ssh_key_id": 1
+  "ssh_key_id": 1,
+  "portal_access": 1,
+  "api_access": 0
 }
 ```
+
+**Access Control Fields:**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `portal_access` | int | 1 | Show connection in user's Portal dashboard |
+| `api_access` | int | 0 | Allow other authorized users to connect via API relay |
 
 **Connection Types:**
 - `ssh` - SSH terminal
@@ -380,8 +397,11 @@ Create a new connection.
 - `proxmox` - Proxmox VE
 - `http` / `https` - Web proxy
 - `tcp_tunnel` - Generic TCP
+- `secure_tunnel` - Encrypted tunnel
+- `vpn_tunnel` - VPN bridge
 - `database` - Database connection
 - `redis` - Redis connection
+- `custom` - Custom protocol
 
 ---
 

@@ -343,6 +343,9 @@ MIGRATIONS = [
         working_dir, ports, last_health_check, health_status, restart_count,
         last_started_at, last_stopped_at, error_message
     FROM managed_services""",
+    # Connection access control fields
+    "ALTER TABLE user_connections ADD COLUMN portal_access INTEGER DEFAULT 1",
+    "ALTER TABLE user_connections ADD COLUMN api_access INTEGER DEFAULT 0",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1237,14 +1240,16 @@ class Database:
         port: Optional[int] = None,
         config: str = "{}",
         ssh_key_id: Optional[int] = None,
-        icon: str = "link"
+        icon: str = "link",
+        portal_access: int = 1,
+        api_access: int = 0
     ) -> int:
         """Create a new user connection and return its ID."""
         cursor = await self.conn.execute(
             """INSERT INTO user_connections
-               (user_id, name, type, host, port, config, ssh_key_id, icon)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, name, conn_type, host, port, config, ssh_key_id, icon)
+               (user_id, name, type, host, port, config, ssh_key_id, icon, portal_access, api_access)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, conn_type, host, port, config, ssh_key_id, icon, portal_access, api_access)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -1298,7 +1303,7 @@ class Database:
         **kwargs
     ) -> bool:
         """Update a user connection (must be owned by user)."""
-        allowed_fields = {"name", "type", "host", "port", "config", "ssh_key_id", "icon"}
+        allowed_fields = {"name", "type", "host", "port", "config", "ssh_key_id", "icon", "portal_access", "api_access"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False

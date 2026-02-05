@@ -512,6 +512,10 @@ async function showAddConnectionModal() {
     const configFields = document.getElementById('connection-config-fields');
     if (configFields) configFields.innerHTML = '';
 
+    // Reset access control checkboxes to defaults
+    document.getElementById('connection-portal-access').checked = true;
+    document.getElementById('connection-api-access').checked = false;
+
     // Show appropriate fields for default type
     onConnectionTypeChange();
 
@@ -746,8 +750,14 @@ async function submitConnection(event) {
     const port = parseInt(document.getElementById('connection-port').value) || null;
     const icon = document.getElementById('connection-icon').value;
 
-    if (!name || !host) {
-        Portal.toast('Name and host are required', 'error');
+    if (!name) {
+        Portal.toast('Connection name is required', 'error');
+        document.getElementById('connection-name').focus();
+        return;
+    }
+    if (!host) {
+        Portal.toast('Host address is required (e.g., 192.168.1.100)', 'error');
+        document.getElementById('connection-host').focus();
         return;
     }
 
@@ -797,7 +807,11 @@ async function submitConnection(event) {
         // For other types, config comes from dynamic fields (already collected above)
     }
 
-    const data = { name, type, host, port, icon, config };
+    // Access control options
+    const portalAccess = document.getElementById('connection-portal-access').checked ? 1 : 0;
+    const apiAccess = document.getElementById('connection-api-access').checked ? 1 : 0;
+
+    const data = { name, type, host, port, icon, config, portal_access: portalAccess, api_access: apiAccess };
 
     try {
         const url = isEdit ? `/api/connections/${connectionId}` : '/api/connections';
@@ -820,7 +834,16 @@ async function submitConnection(event) {
         await loadConnections();
     } catch (error) {
         console.error('[Connections] Error saving:', error);
-        Portal.toast(error.message || 'Failed to save connection', 'error');
+        // Provide more helpful error messages
+        let msg = error.message || 'Failed to save connection';
+        if (msg.includes('UNIQUE constraint')) {
+            msg = 'A connection with this name already exists. Please choose a different name.';
+        } else if (msg.includes('Local server')) {
+            msg = 'Localhost access is blocked for security. Use a remote host address.';
+        } else if (msg.includes('Invalid port')) {
+            msg = 'Port must be between 1 and 65535.';
+        }
+        Portal.toast(msg, 'error');
     }
 }
 
@@ -889,6 +912,10 @@ async function editConnection(connectionId) {
                 populateDynamicConfigFields(config);
                 break;
         }
+
+        // Populate access control checkboxes
+        document.getElementById('connection-portal-access').checked = conn.portal_access !== 0;
+        document.getElementById('connection-api-access').checked = conn.api_access === 1;
 
         document.getElementById('connection-modal-title').textContent = 'Edit Connection';
         document.getElementById('connection-submit-btn').textContent = 'Save Changes';

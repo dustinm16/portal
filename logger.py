@@ -1,9 +1,21 @@
-"""Portal Gateway - Logging Configuration."""
+"""Portal Gateway - Logging Configuration.
 
+Features:
+- Structured JSON logging support
+- Sensitive data filtering (passwords, tokens, keys)
+- Rotating file handler with configurable size
+- Runtime log level adjustment
+- Security audit logging
+
+All traffic uses HTTPS on port 443. Logging excludes sensitive data.
+"""
+
+import json
 import logging
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -11,6 +23,16 @@ from typing import Optional
 # Default log directory
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_FILE = LOG_DIR / "portal.log"
+AUDIT_FILE = LOG_DIR / "audit.log"
+
+# Patterns to filter from logs (security)
+SENSITIVE_PATTERNS = [
+    (re.compile(r'(password["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'(token["\s:=]+)[A-Za-z0-9_-]{20,}', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'(api[_-]?key["\s:=]+)portal_[A-Za-z0-9_-]+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'(secret["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'(-----BEGIN[^-]+-----)[^-]+(-----END[^-]+-----)', re.DOTALL), r'\1[REDACTED]\2'),
+]
 
 # Log settings (can be modified at runtime)
 LOG_SETTINGS = {
@@ -19,7 +41,53 @@ LOG_SETTINGS = {
     "backup_count": 5,
     "console_enabled": True,
     "file_enabled": True,
+    "structured": False,  # JSON format
+    "filter_sensitive": True,  # Redact sensitive data
 }
+
+
+class SensitiveDataFilter(logging.Filter):
+    """Filter to redact sensitive data from log messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if LOG_SETTINGS.get("filter_sensitive", True):
+            msg = str(record.msg)
+            for pattern, replacement in SENSITIVE_PATTERNS:
+                msg = pattern.sub(replacement, msg)
+            record.msg = msg
+            # Also filter args if present
+            if record.args:
+                args = []
+                for arg in record.args:
+                    if isinstance(arg, str):
+                        for pattern, replacement in SENSITIVE_PATTERNS:
+                            arg = pattern.sub(replacement, arg)
+                    args.append(arg)
+                record.args = tuple(args)
+        return True
+
+
+class StructuredFormatter(logging.Formatter):
+    """JSON structured log formatter."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        # Add exception info if present
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+        # Add extra fields if present
+        for key in ['user_id', 'client_ip', 'request_id', 'action', 'resource']:
+            if hasattr(record, key):
+                log_data[key] = getattr(record, key)
+        return json.dumps(log_data)
 
 
 def setup_logging(
@@ -29,9 +97,12 @@ def setup_logging(
     backup_count: int = None,
     console_enabled: bool = None,
     file_enabled: bool = None,
+    structured: bool = None,
 ) -> None:
     """Configure logging with rotation."""
     global LOG_SETTINGS, LOG_DIR, LOG_FILE
+
+    global LOG_DIR, LOG_FILE, AUDIT_FILE
 
     # Update settings
     if level:
@@ -44,9 +115,12 @@ def setup_logging(
         LOG_SETTINGS["console_enabled"] = console_enabled
     if file_enabled is not None:
         LOG_SETTINGS["file_enabled"] = file_enabled
+    if structured is not None:
+        LOG_SETTINGS["structured"] = structured
     if log_dir:
         LOG_DIR = Path(log_dir)
         LOG_FILE = LOG_DIR / "portal.log"
+        AUDIT_FILE = LOG_DIR / "audit.log"
 
     # Create log directory
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,11 +132,18 @@ def setup_logging(
     # Clear existing handlers
     root_logger.handlers.clear()
 
-    # Create formatter
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    # Add sensitive data filter
+    sensitive_filter = SensitiveDataFilter()
+    root_logger.addFilter(sensitive_filter)
+
+    # Create formatter based on settings
+    if LOG_SETTINGS.get("structured", False):
+        formatter = StructuredFormatter()
+    else:
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
 
     # Console handler
     if LOG_SETTINGS["console_enabled"]:
