@@ -733,12 +733,164 @@ System statistics.
 
 ---
 
-### Managed Services (Server Processes)
+### Services
 
-Managed services are server processes that Portal runs and manages (e.g., MediaMTX media server, TURN server). These are different from user connections which are remote resources users connect to.
+Services are backend endpoints that Portal routes traffic to. There are two types:
 
-#### GET /api/managed-services/types
-Get available managed service types.
+- **Proxy Services** (`service_type: "proxy"`) - External backend servers that Portal proxies to
+- **Managed Services** (`service_type: "managed"`) - Server processes that Portal runs and manages (e.g., MediaMTX media server, TURN server)
+
+All services use the unified `/api/services` endpoint.
+
+#### GET /api/services
+List all services.
+
+**Query Parameters:**
+- `type` (optional): Filter by service type (`proxy`, `managed`)
+
+**Response:**
+```json
+{
+  "services": [
+    {
+      "id": 1,
+      "name": "homeassistant",
+      "display_name": "Home Assistant",
+      "service_type": "proxy",
+      "host": "192.168.1.50",
+      "port": 8123,
+      "status": "stopped",
+      "health_status": "unknown",
+      "enabled": true
+    },
+    {
+      "id": 2,
+      "name": "media-server",
+      "display_name": "Media Server",
+      "service_type": "managed",
+      "host": "127.0.0.1",
+      "port": 8554,
+      "status": "running",
+      "pid": 12345,
+      "health_status": "healthy",
+      "enabled": true
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/services
+Create a new service (admin only).
+
+**Request (Proxy Service):**
+```json
+{
+  "name": "homeassistant",
+  "display_name": "Home Assistant",
+  "service_type": "proxy",
+  "plugin": "http",
+  "path": "/ha",
+  "host": "192.168.1.50",
+  "port": 8123,
+  "icon": "home"
+}
+```
+
+**Request (Managed Service):**
+```json
+{
+  "name": "media-server",
+  "display_name": "Media Server",
+  "service_type": "managed",
+  "plugin": "mediamtx",
+  "description": "Primary media streaming server",
+  "binary_path": "/usr/local/bin/mediamtx",
+  "working_dir": "/var/lib/mediamtx",
+  "config": {
+    "rtsp_port": 8554,
+    "rtmp_port": 1935
+  },
+  "ports": [8554, 1935, 8888, 8889],
+  "enabled": false
+}
+```
+
+**Response:**
+```json
+{
+  "service": {
+    "id": 1,
+    "name": "media-server",
+    "service_type": "managed",
+    "status": "stopped",
+    "enabled": false
+  },
+  "message": "Service created successfully"
+}
+```
+
+---
+
+#### GET /api/services/:id
+Get a service by ID.
+
+**Response:**
+```json
+{
+  "service": {
+    "id": 1,
+    "name": "media-server",
+    "display_name": "Media Server",
+    "service_type": "managed",
+    "status": "running",
+    "pid": 12345,
+    "enabled": true,
+    "port": 8554,
+    "ports": [8554, 1935, 8888, 8889],
+    "config": {"rtsp_port": 8554},
+    "health_status": "healthy",
+    "last_health_check": "2026-02-05T12:00:00Z",
+    "restart_count": 0
+  }
+}
+```
+
+---
+
+#### PUT /api/services/:id
+Update a service (admin only).
+
+**Request:**
+```json
+{
+  "display_name": "Updated Name",
+  "config": {
+    "rtsp_port": 8555,
+    "log_level": "debug"
+  },
+  "enabled": true
+}
+```
+
+---
+
+#### DELETE /api/services/:id
+Delete a service (admin only).
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Service deleted"
+}
+```
+
+---
+
+#### GET /api/services/types
+Get available managed service types (for creating managed services).
 
 **Response:**
 ```json
@@ -768,117 +920,8 @@ Get available managed service types.
 
 ---
 
-#### GET /api/managed-services
-List all managed services.
-
-**Response:**
-```json
-{
-  "managed_services": [
-    {
-      "id": 1,
-      "name": "media-server",
-      "display_name": "Media Server",
-      "status": "running",
-      "pid": 12345,
-      "enabled": true,
-      "port": 8554,
-      "config": {"rtsp_port": 8554}
-    }
-  ]
-}
-```
-
----
-
-#### POST /api/managed-services
-Create a new managed service (admin only).
-
-**Request:**
-```json
-{
-  "name": "media-server",
-  "type": "mediamtx",
-  "display_name": "Media Server",
-  "description": "Primary media streaming server",
-  "config": {
-    "rtsp_port": 8554,
-    "rtmp_port": 1935
-  },
-  "enabled": false
-}
-```
-
-**Response:**
-```json
-{
-  "service": {
-    "id": 1,
-    "name": "media-server",
-    "status": "stopped",
-    "enabled": false
-  },
-  "message": "Service created successfully"
-}
-```
-
----
-
-#### GET /api/managed-services/:id
-Get a managed service by ID.
-
-**Response:**
-```json
-{
-  "service": {
-    "id": 1,
-    "name": "media-server",
-    "display_name": "Media Server",
-    "status": "running",
-    "pid": 12345,
-    "enabled": true,
-    "port": 8554,
-    "config": {"rtsp_port": 8554},
-    "health_status": "healthy",
-    "last_health_check": "2026-02-05T12:00:00Z",
-    "restart_count": 0
-  }
-}
-```
-
----
-
-#### PUT /api/managed-services/:id
-Update a managed service (admin only).
-
-**Request:**
-```json
-{
-  "config": {
-    "rtsp_port": 8555,
-    "log_level": "debug"
-  },
-  "enabled": true
-}
-```
-
----
-
-#### DELETE /api/managed-services/:id
-Delete a managed service (admin only).
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Service deleted"
-}
-```
-
----
-
-#### POST /api/managed-services/:id/start
-Start a managed service (admin only).
+#### POST /api/services/:id/start
+Start a managed service (admin only). Only valid for `service_type: "managed"`.
 
 **Response:**
 ```json
@@ -894,8 +937,8 @@ Start a managed service (admin only).
 
 ---
 
-#### POST /api/managed-services/:id/stop
-Stop a managed service (admin only).
+#### POST /api/services/:id/stop
+Stop a managed service (admin only). Only valid for `service_type: "managed"`.
 
 **Response:**
 ```json
@@ -911,8 +954,8 @@ Stop a managed service (admin only).
 
 ---
 
-#### POST /api/managed-services/:id/restart
-Restart a managed service (admin only).
+#### POST /api/services/:id/restart
+Restart a managed service (admin only). Only valid for `service_type: "managed"`.
 
 **Response:**
 ```json
@@ -928,30 +971,8 @@ Restart a managed service (admin only).
 
 ---
 
-#### GET /api/managed-services/:id/status
-Get detailed status of a managed service.
-
-**Response:**
-```json
-{
-  "status": {
-    "id": 1,
-    "name": "media-server",
-    "status": "running",
-    "pid": 12345,
-    "health_status": "healthy",
-    "last_health_check": "2026-02-05T12:00:00Z",
-    "restart_count": 2,
-    "last_started_at": "2026-02-05T10:00:00Z",
-    "error_message": null
-  }
-}
-```
-
----
-
-#### GET /api/managed-services/:id/logs
-Get logs for a managed service.
+#### GET /api/services/:id/logs
+Get logs for a managed service. Only valid for `service_type: "managed"`.
 
 **Query Parameters:**
 - `limit` (optional): Max log entries (default: 100)
@@ -976,6 +997,24 @@ Get logs for a managed service.
   ]
 }
 ```
+
+---
+
+### Deprecated Endpoints
+
+The following endpoints are deprecated and will be removed in a future version. Use the unified `/api/services` endpoints instead.
+
+| Deprecated | Use Instead |
+|------------|-------------|
+| `GET /api/managed-services` | `GET /api/services?type=managed` |
+| `POST /api/managed-services` | `POST /api/services` with `service_type: "managed"` |
+| `GET /api/managed-services/:id` | `GET /api/services/:id` |
+| `PUT /api/managed-services/:id` | `PUT /api/services/:id` |
+| `DELETE /api/managed-services/:id` | `DELETE /api/services/:id` |
+| `POST /api/managed-services/:id/start` | `POST /api/services/:id/start` |
+| `POST /api/managed-services/:id/stop` | `POST /api/services/:id/stop` |
+| `POST /api/managed-services/:id/restart` | `POST /api/services/:id/restart` |
+| `GET /api/managed-services/:id/logs` | `GET /api/services/:id/logs` |
 
 ---
 
@@ -1023,21 +1062,21 @@ Dashboard | Chat | Streams | API Docs | [username] | Logout
 
 | Tab | Visibility | Description |
 |-----|------------|-------------|
-| Service Routes | Admin only | Backend proxy routing configuration |
+| Services | Admin only | Backend services (proxy routes and managed processes) |
 | My Connections | All users | Personal SSH, VNC, RDP, database connections |
 | My Streams | All users | Personal streaming configurations |
 | Quick Access | All users | Shortcuts to SSH Keys, API Keys, Profile |
 
-Regular users default to the "My Connections" tab. Admins default to "Service Routes".
+Regular users default to the "My Connections" tab. Admins default to "Services".
 
 ### Dashboard Sidebar
 
 | Section | Description |
 |---------|-------------|
-| Categories | Filter service routes by category |
+| Categories | Filter services by category |
 | Community | Links to Chat and Streams pages |
-| Quick Actions | Refresh Routes button |
-| Administration | Admin-only: Add Route, Manage Users, Invite Code, View Logs, Admin Panel |
+| Quick Actions | Refresh Services button |
+| Administration | Admin-only: Add Service, Manage Users, Invite Code, View Logs, Admin Panel |
 
 ---
 

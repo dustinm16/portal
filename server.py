@@ -402,31 +402,58 @@ async def http_list_tokens(request: web.Request) -> web.Response:
 
 
 async def http_list_services(request: web.Request) -> web.Response:
-    """List available services."""
+    """List available services.
+
+    Query params:
+        type: Filter by service_type ('proxy' or 'managed')
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
-    services = await db.get_all_services()
+    # Check for type filter
+    service_type = request.query.get("type")
+    if service_type and service_type in ("proxy", "managed"):
+        services = await db.get_enabled_services_by_type(service_type)
+    else:
+        services = await db.get_all_services()
+
+    def serialize_service(s):
+        """Serialize service for API response."""
+        result = {
+            "id": s["id"],
+            "name": s["name"],
+            "path": s["path"],
+            "plugin": s.get("plugin", "tcp_tunnel"),
+            "host": s.get("host", ""),
+            "port": s.get("port", 0),
+            "required_scopes": s["required_scopes"],
+            "enabled": bool(s["enabled"]),
+            "service_type": s.get("service_type", "proxy"),
+            "icon": s.get("icon", "server"),
+        }
+        # Include process management fields for managed services
+        if s.get("service_type") == "managed":
+            result.update({
+                "display_name": s.get("display_name") or s["name"],
+                "description": s.get("description", ""),
+                "status": s.get("status", "stopped"),
+                "pid": s.get("pid"),
+                "health_status": s.get("health_status", "unknown"),
+            })
+        return result
+
     return web.json_response({
-        "services": [
-            {
-                "id": s["id"],
-                "name": s["name"],
-                "path": s["path"],
-                "plugin": s.get("plugin", "tcp_tunnel"),
-                "host": s.get("host", ""),
-                "port": s.get("port", 0),
-                "required_scopes": s["required_scopes"],
-                "enabled": bool(s["enabled"])
-            }
-            for s in services
-        ]
+        "services": [serialize_service(s) for s in services]
     })
 
 
 async def http_create_service(request: web.Request) -> web.Response:
-    """Create a new relay service (admin only)."""
+    """Create a new service (admin only).
+
+    Supports both proxy services (routing to external backends) and
+    managed services (Portal-run processes).
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -448,6 +475,15 @@ async def http_create_service(request: web.Request) -> web.Response:
     config = data.get("config", {})
     required_scopes = data.get("required_scopes", "*")
 
+    # Unified services fields
+    service_type = data.get("service_type", "proxy")
+    display_name = data.get("display_name")
+    description = data.get("description")
+    binary_path = data.get("binary_path")
+    working_dir = data.get("working_dir")
+    ports = data.get("ports", [])
+    icon = data.get("icon", "server")
+
     # Handle scopes as string or list
     if isinstance(required_scopes, str):
         required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
@@ -458,6 +494,17 @@ async def http_create_service(request: web.Request) -> web.Response:
             status=400
         )
 
+    # Validate service_type
+    if service_type not in ("proxy", "managed"):
+        return web.json_response(
+            {"error": "service_type must be 'proxy' or 'managed'"},
+            status=400
+        )
+
+    # For managed services, use 127.0.0.1 as default host
+    if service_type == "managed" and host == "localhost":
+        host = "127.0.0.1"
+
     try:
         service_id = await db.create_service(
             name=name,
@@ -466,18 +513,35 @@ async def http_create_service(request: web.Request) -> web.Response:
             host=host,
             port=port,
             config=config,
-            required_scopes=required_scopes
+            required_scopes=required_scopes,
+            icon=icon,
+            service_type=service_type,
+            display_name=display_name,
+            description=description,
+            binary_path=binary_path,
+            working_dir=working_dir,
+            ports=ports
         )
-        logger.info(f"Service '{name}' created by user {token.user_id}")
-        return web.json_response({
+        logger.info(f"Service '{name}' ({service_type}) created by user {token.user_id}")
+
+        response = {
             "id": service_id,
             "name": name,
             "path": path,
             "plugin": plugin,
             "host": host,
             "port": port,
-            "required_scopes": required_scopes
-        }, status=201)
+            "required_scopes": required_scopes,
+            "service_type": service_type,
+            "icon": icon,
+        }
+        if service_type == "managed":
+            response.update({
+                "display_name": display_name or name,
+                "description": description,
+                "status": "stopped",
+            })
+        return web.json_response(response, status=201)
     except Exception as e:
         logger.warning(f"Failed to create service: {e}")
         return web.json_response({"error": safe_error_message(e)}, status=400)
@@ -504,7 +568,7 @@ async def http_delete_service(request: web.Request) -> web.Response:
 
 
 async def http_update_service(request: web.Request) -> web.Response:
-    """Update a relay service (admin only)."""
+    """Update a service (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -530,16 +594,10 @@ async def http_update_service(request: web.Request) -> web.Response:
 
     # Build update fields
     updates = {}
-    if "name" in data:
-        updates["name"] = data["name"]
-    if "path" in data:
-        updates["path"] = data["path"]
-    if "plugin" in data:
-        updates["plugin"] = data["plugin"]
-    if "host" in data:
-        updates["host"] = data["host"]
-    if "port" in data:
-        updates["port"] = data["port"]
+    # Common fields
+    for field in ["name", "path", "plugin", "host", "port", "icon"]:
+        if field in data:
+            updates[field] = data[field]
     if "enabled" in data:
         updates["enabled"] = 1 if data["enabled"] else 0
     if "required_scopes" in data:
@@ -551,26 +609,26 @@ async def http_update_service(request: web.Request) -> web.Response:
         import json as json_module
         updates["config"] = json_module.dumps(data["config"])
 
+    # Managed service fields
+    for field in ["display_name", "description", "binary_path", "working_dir"]:
+        if field in data:
+            updates[field] = data[field]
+    if "ports" in data:
+        import json as json_module
+        updates["ports"] = json_module.dumps(data["ports"])
+
     if not updates:
         return web.json_response({"error": "No fields to update"}, status=400)
 
     try:
-        # Build SQL
-        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-        set_clause += ", updated_at = ?"
-        values = list(updates.values()) + [datetime.now(timezone.utc).isoformat(), service_id]
-
-        await db.conn.execute(
-            f"UPDATE services SET {set_clause} WHERE id = ?",
-            values
-        )
-        await db.conn.commit()
+        # Use the unified update method
+        await db.update_service_full(service_id, **updates)
 
         # Get updated service
         updated = await db.get_service_by_id(service_id)
         logger.info(f"Service {service_id} updated by user {token.user_id}: {list(updates.keys())}")
 
-        return web.json_response({
+        response = {
             "id": updated["id"],
             "name": updated["name"],
             "path": updated["path"],
@@ -578,8 +636,17 @@ async def http_update_service(request: web.Request) -> web.Response:
             "host": updated.get("host", ""),
             "port": updated.get("port", 0),
             "enabled": bool(updated["enabled"]),
-            "required_scopes": updated["required_scopes"]
-        })
+            "required_scopes": updated["required_scopes"],
+            "service_type": updated.get("service_type", "proxy"),
+            "icon": updated.get("icon", "server"),
+        }
+        if updated.get("service_type") == "managed":
+            response.update({
+                "display_name": updated.get("display_name") or updated["name"],
+                "description": updated.get("description", ""),
+                "status": updated.get("status", "stopped"),
+            })
+        return web.json_response(response)
     except Exception as e:
         logger.warning(f"Failed to update service {service_id}: {e}")
         return web.json_response({"error": safe_error_message(e)}, status=400)
@@ -604,7 +671,7 @@ async def http_get_service(request: web.Request) -> web.Response:
         if not check_service_authorization(service, token):
             return web.json_response({"error": "Access denied"}, status=403)
 
-    return web.json_response({
+    response = {
         "id": service["id"],
         "name": service["name"],
         "path": service["path"],
@@ -613,8 +680,193 @@ async def http_get_service(request: web.Request) -> web.Response:
         "port": service.get("port", 0),
         "enabled": bool(service["enabled"]),
         "required_scopes": service["required_scopes"],
-        "config": service.get("config", {})
-    })
+        "config": service.get("config", {}),
+        "service_type": service.get("service_type", "proxy"),
+        "icon": service.get("icon", "server"),
+    }
+
+    # Include process management fields for managed services
+    if service.get("service_type") == "managed":
+        response.update({
+            "display_name": service.get("display_name") or service["name"],
+            "description": service.get("description", ""),
+            "status": service.get("status", "stopped"),
+            "pid": service.get("pid"),
+            "binary_path": service.get("binary_path"),
+            "working_dir": service.get("working_dir"),
+            "ports": service.get("ports", []),
+            "health_status": service.get("health_status", "unknown"),
+            "last_health_check": service.get("last_health_check"),
+            "restart_count": service.get("restart_count", 0),
+            "last_started_at": service.get("last_started_at"),
+            "last_stopped_at": service.get("last_stopped_at"),
+            "error_message": service.get("error_message"),
+        })
+
+    return web.json_response(response)
+
+
+async def http_get_service_types(request: web.Request) -> web.Response:
+    """Get available managed service types."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    types = get_available_service_types()
+    return web.json_response({"types": types})
+
+
+async def http_start_service(request: web.Request) -> web.Response:
+    """Start a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service_id = int(service_id)
+
+    # Check service exists and is managed type
+    service = await db.get_service_by_id(service_id)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+    if service.get("service_type") != "managed":
+        return web.json_response({"error": "Only managed services can be started"}, status=400)
+
+    success, error = await _service_manager.start_service(service_id)
+    if success:
+        logger.info(f"Service {service_id} started by user {token.user_id}")
+        updated = await db.get_service_by_id(service_id)
+        return web.json_response({
+            "success": True,
+            "service": {
+                "id": updated["id"],
+                "name": updated["name"],
+                "status": updated.get("status", "stopped"),
+                "pid": updated.get("pid"),
+            }
+        })
+    else:
+        return web.json_response({"error": error}, status=400)
+
+
+async def http_stop_service(request: web.Request) -> web.Response:
+    """Stop a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service_id = int(service_id)
+
+    # Check service exists and is managed type
+    service = await db.get_service_by_id(service_id)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+    if service.get("service_type") != "managed":
+        return web.json_response({"error": "Only managed services can be stopped"}, status=400)
+
+    success, error = await _service_manager.stop_service(service_id)
+    if success:
+        logger.info(f"Service {service_id} stopped by user {token.user_id}")
+        updated = await db.get_service_by_id(service_id)
+        return web.json_response({
+            "success": True,
+            "service": {
+                "id": updated["id"],
+                "name": updated["name"],
+                "status": updated.get("status", "stopped"),
+                "pid": updated.get("pid"),
+            }
+        })
+    else:
+        return web.json_response({"error": error}, status=400)
+
+
+async def http_restart_service(request: web.Request) -> web.Response:
+    """Restart a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service_id = int(service_id)
+
+    # Check service exists and is managed type
+    service = await db.get_service_by_id(service_id)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+    if service.get("service_type") != "managed":
+        return web.json_response({"error": "Only managed services can be restarted"}, status=400)
+
+    success, error = await _service_manager.restart_service(service_id)
+    if success:
+        logger.info(f"Service {service_id} restarted by user {token.user_id}")
+        updated = await db.get_service_by_id(service_id)
+        return web.json_response({
+            "success": True,
+            "service": {
+                "id": updated["id"],
+                "name": updated["name"],
+                "status": updated.get("status", "stopped"),
+                "pid": updated.get("pid"),
+            }
+        })
+    else:
+        return web.json_response({"error": error}, status=400)
+
+
+async def http_get_service_logs(request: web.Request) -> web.Response:
+    """Get logs for a managed service."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    service_id = request.match_info.get("id")
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    service_id = int(service_id)
+
+    # Check service exists and is managed type
+    service = await db.get_service_by_id(service_id)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+    if service.get("service_type") != "managed":
+        return web.json_response({"error": "Only managed services have logs"}, status=400)
+
+    # Get query params
+    limit = min(int(request.query.get("limit", 100)), 1000)
+    level = request.query.get("level")
+
+    logs = await db.get_service_logs(service_id, limit=limit, level=level)
+    return web.json_response({"logs": logs})
 
 
 async def http_create_user(request: web.Request) -> web.Response:
@@ -4480,15 +4732,20 @@ def create_app() -> web.Application:
     app.router.add_post("/api/token/revoke", http_revoke_token)
     app.router.add_get("/api/tokens", http_list_tokens)
 
-    # Service management (relay services / remote connections)
+    # Unified service management (proxy routes + managed processes)
     app.router.add_get("/api/services", http_list_services)
     app.router.add_post("/api/services", http_create_service)
+    app.router.add_get("/api/services/types", http_get_service_types)
     app.router.add_get("/api/services/{id}", http_get_service)
     app.router.add_put("/api/services/{id}", http_update_service)
     app.router.add_delete("/api/services/{id}", http_delete_service)
     app.router.add_get("/api/services/{id}/health", http_service_health)
+    app.router.add_post("/api/services/{id}/start", http_start_service)
+    app.router.add_post("/api/services/{id}/stop", http_stop_service)
+    app.router.add_post("/api/services/{id}/restart", http_restart_service)
+    app.router.add_get("/api/services/{id}/logs", http_get_service_logs)
 
-    # Managed services (server processes Portal runs)
+    # Managed services (DEPRECATED - use /api/services with service_type=managed)
     app.router.add_get("/api/managed-services/types", http_get_managed_service_types)
     app.router.add_get("/api/managed-services", http_list_managed_services)
     app.router.add_post("/api/managed-services", http_create_managed_service)

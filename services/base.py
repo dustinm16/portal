@@ -35,7 +35,7 @@ class ManagedService(ABC):
         """Initialize from database record.
 
         Args:
-            service_data: Dict from managed_services table
+            service_data: Dict from unified services table (service_type='managed')
         """
         self.id = service_data['id']
         self.name = service_data['name']
@@ -171,7 +171,7 @@ class ManagedService(ABC):
 
             # Update database
             if self._db:
-                await self._db.update_service_status(self.id, 'running', self.process.pid)
+                await self._db.update_service_process_status(self.id, 'running', self.process.pid)
 
             # Start log reader task
             self._log_task = asyncio.create_task(self._read_process_output())
@@ -184,7 +184,7 @@ class ManagedService(ABC):
             await self._log("error", error)
             self.status = 'error'
             if self._db:
-                await self._db.update_service_status(self.id, 'error', error_message=error)
+                await self._db.update_service_process_status(self.id, 'error', error_message=error)
             return False, error
 
         except Exception as e:
@@ -192,7 +192,7 @@ class ManagedService(ABC):
             await self._log("error", error)
             self.status = 'error'
             if self._db:
-                await self._db.update_service_status(self.id, 'error', error_message=error)
+                await self._db.update_service_process_status(self.id, 'error', error_message=error)
             return False, error
 
     async def stop(self, timeout: float = 10.0) -> tuple[bool, str]:
@@ -207,7 +207,7 @@ class ManagedService(ABC):
         if not self.process:
             self.status = 'stopped'
             if self._db:
-                await self._db.update_service_status(self.id, 'stopped')
+                await self._db.update_service_process_status(self.id, 'stopped')
             return True, ""
 
         try:
@@ -233,7 +233,7 @@ class ManagedService(ABC):
 
             # Update database
             if self._db:
-                await self._db.update_service_status(self.id, 'stopped')
+                await self._db.update_service_process_status(self.id, 'stopped')
 
             await self._log("info", "Service stopped")
             return True, ""
@@ -263,7 +263,7 @@ class ManagedService(ABC):
             return False, f"Failed to start: {error}"
 
         if self._db:
-            await self._db.increment_service_restart_count(self.id)
+            await self._db.increment_service_restart(self.id)
 
         return True, ""
 
@@ -296,14 +296,14 @@ class ManagedService(ABC):
                 await self._log("error", f"Process exited with code {code}")
                 self.status = 'error'
                 if self._db:
-                    await self._db.update_service_status(
+                    await self._db.update_service_process_status(
                         self.id, 'error',
                         error_message=f"Process exited with code {code}"
                     )
             else:
                 self.status = 'stopped'
                 if self._db:
-                    await self._db.update_service_status(self.id, 'stopped')
+                    await self._db.update_service_process_status(self.id, 'stopped')
 
     async def _log(self, level: str, message: str):
         """Log a message for this service."""

@@ -315,6 +315,34 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_user_streams_user ON user_streams(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_user_streams_stream_key ON user_streams(stream_key)",
     "CREATE INDEX IF NOT EXISTS idx_user_streams_public ON user_streams(is_public, is_live)",
+    # Unified services - add process management fields to services table
+    "ALTER TABLE services ADD COLUMN service_type TEXT DEFAULT 'proxy'",
+    "ALTER TABLE services ADD COLUMN display_name TEXT",
+    "ALTER TABLE services ADD COLUMN description TEXT",
+    "ALTER TABLE services ADD COLUMN status TEXT DEFAULT 'stopped'",
+    "ALTER TABLE services ADD COLUMN pid INTEGER",
+    "ALTER TABLE services ADD COLUMN binary_path TEXT",
+    "ALTER TABLE services ADD COLUMN config_path TEXT",
+    "ALTER TABLE services ADD COLUMN working_dir TEXT",
+    "ALTER TABLE services ADD COLUMN ports TEXT DEFAULT '[]'",
+    "ALTER TABLE services ADD COLUMN last_health_check TEXT",
+    "ALTER TABLE services ADD COLUMN health_status TEXT DEFAULT 'unknown'",
+    "ALTER TABLE services ADD COLUMN restart_count INTEGER DEFAULT 0",
+    "ALTER TABLE services ADD COLUMN last_started_at TEXT",
+    "ALTER TABLE services ADD COLUMN last_stopped_at TEXT",
+    "ALTER TABLE services ADD COLUMN error_message TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_services_service_type ON services(service_type)",
+    "CREATE INDEX IF NOT EXISTS idx_services_status ON services(status)",
+    # Migrate managed_services data to unified services table
+    """INSERT OR IGNORE INTO services (name, plugin, path, host, port, config, icon, enabled,
+        service_type, display_name, description, status, pid, binary_path, config_path,
+        working_dir, ports, last_health_check, health_status, restart_count,
+        last_started_at, last_stopped_at, error_message)
+    SELECT name, type, '/managed/' || name, '127.0.0.1', port, config, icon, enabled,
+        'managed', display_name, description, status, pid, binary_path, config_path,
+        working_dir, ports, last_health_check, health_status, restart_count,
+        last_started_at, last_stopped_at, error_message
+    FROM managed_services""",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -661,13 +689,32 @@ class Database:
         port: int = None,
         config: dict = None,
         icon: str = "server",
-        category_id: int = None
+        category_id: int = None,
+        # Unified services - process management fields
+        service_type: str = "proxy",
+        display_name: str = None,
+        description: str = None,
+        binary_path: str = None,
+        working_dir: str = None,
+        ports: list = None
     ) -> int:
-        """Create a new service and return its ID."""
+        """Create a new service and return its ID.
+
+        Args:
+            service_type: 'proxy' for external backends, 'managed' for Portal-run processes
+            display_name: Human-readable name (defaults to name)
+            description: Service description
+            binary_path: Path to executable (for managed services)
+            working_dir: Working directory (for managed services)
+            ports: Additional ports list (for managed services)
+        """
         import json
+        now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            """INSERT INTO services (name, plugin, path, host, port, config, required_scopes, icon, category_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO services (name, plugin, path, host, port, config, required_scopes,
+               icon, category_id, service_type, display_name, description, binary_path,
+               working_dir, ports, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 plugin,
@@ -677,7 +724,15 @@ class Database:
                 json.dumps(config or {}),
                 ",".join(required_scopes or []),
                 icon,
-                category_id
+                category_id,
+                service_type,
+                display_name or name,
+                description,
+                binary_path,
+                working_dir,
+                json.dumps(ports or []),
+                now,
+                now
             )
         )
         await self.conn.commit()
@@ -698,6 +753,15 @@ class Database:
             service["config"] = json.loads(config_str) if config_str else {}
         except json.JSONDecodeError:
             service["config"] = {}
+        # Parse JSON ports array (for managed services)
+        ports_str = service.get("ports", "[]")
+        try:
+            service["ports"] = json.loads(ports_str) if ports_str else []
+        except json.JSONDecodeError:
+            service["ports"] = []
+        # Ensure service_type has a default
+        if not service.get("service_type"):
+            service["service_type"] = "proxy"
         return service
 
     async def get_service_by_path(self, path: str) -> Optional[dict]:
@@ -791,6 +855,122 @@ class Database:
         """Delete a service by ID."""
         cursor = await self.conn.execute(
             "DELETE FROM services WHERE id = ?", (service_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    # Unified services - process management methods
+
+    async def get_services_by_type(self, service_type: str) -> list[dict]:
+        """Get all services of a specific type (proxy or managed)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM services WHERE service_type = ? ORDER BY sort_order, name",
+            (service_type,)
+        )
+        rows = await cursor.fetchall()
+        return [self._parse_service(row) for row in rows]
+
+    async def get_enabled_services_by_type(self, service_type: str) -> list[dict]:
+        """Get enabled services of a specific type."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM services WHERE service_type = ? AND enabled = 1 ORDER BY sort_order, name",
+            (service_type,)
+        )
+        rows = await cursor.fetchall()
+        return [self._parse_service(row) for row in rows]
+
+    async def get_service_by_plugin_type(self, plugin: str) -> Optional[dict]:
+        """Get first managed service using a specific plugin."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM services WHERE plugin = ? AND service_type = 'managed' LIMIT 1",
+            (plugin,)
+        )
+        row = await cursor.fetchone()
+        return self._parse_service(row) if row else None
+
+    async def update_service_process_status(
+        self,
+        service_id: int,
+        status: str,
+        pid: int = None,
+        error_message: str = None
+    ) -> bool:
+        """Update service process status and optional PID/error."""
+        import json
+        now = datetime.now(timezone.utc).isoformat()
+        updates = ["status = ?", "updated_at = ?"]
+        params = [status, now]
+
+        if status == 'running':
+            updates.extend(["last_started_at = ?", "error_message = ?", "pid = ?"])
+            params.extend([now, None, pid])
+        elif status == 'stopped':
+            updates.extend(["last_stopped_at = ?", "pid = ?"])
+            params.extend([now, None])
+        elif status == 'error':
+            updates.extend(["error_message = ?", "pid = ?"])
+            params.extend([error_message, None])
+        else:
+            updates.append("pid = ?")
+            params.append(pid)
+
+        params.append(service_id)
+        cursor = await self.conn.execute(
+            f"UPDATE services SET {', '.join(updates)} WHERE id = ?",
+            params
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_service_health_status(
+        self,
+        service_id: int,
+        health_status: str
+    ) -> bool:
+        """Update service health status."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """UPDATE services
+               SET health_status = ?, last_health_check = ?, updated_at = ?
+               WHERE id = ?""",
+            (health_status, now, now, service_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def increment_service_restart(self, service_id: int) -> bool:
+        """Increment the restart count for a service."""
+        cursor = await self.conn.execute(
+            """UPDATE services
+               SET restart_count = restart_count + 1, updated_at = ?
+               WHERE id = ?""",
+            (datetime.now(timezone.utc).isoformat(), service_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_service_full(self, service_id: int, **updates) -> bool:
+        """Update any service fields (unified method)."""
+        import json
+        if not updates:
+            return False
+
+        # Handle JSON fields
+        if 'config' in updates and isinstance(updates['config'], dict):
+            updates['config'] = json.dumps(updates['config'])
+        if 'ports' in updates and isinstance(updates['ports'], list):
+            updates['ports'] = json.dumps(updates['ports'])
+        if 'required_scopes' in updates and isinstance(updates['required_scopes'], list):
+            updates['required_scopes'] = ','.join(updates['required_scopes'])
+
+        updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [service_id]
+
+        cursor = await self.conn.execute(
+            f"UPDATE services SET {set_clause} WHERE id = ?",
+            values
         )
         await self.conn.commit()
         return cursor.rowcount > 0

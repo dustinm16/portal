@@ -4,8 +4,8 @@
 
 Portal Gateway is a secure, authenticated gateway for home infrastructure that provides:
 
-1. **Managed Services** - Server processes Portal provisions and manages (MediaMTX, TURN, etc.)
-2. **Remote Connections** - Authenticated access to external resources (SSH, VNC, Proxmox, etc.)
+1. **Unified Services** - Both proxy routes to external backends AND managed server processes (MediaMTX, TURN, etc.)
+2. **User Connections** - Personal authenticated access to external resources (SSH, VNC, Proxmox, etc.)
 3. **Community Features** - Chat, user management, and collaboration tools
 
 **Public Endpoint:** `https://portal.dddvm.xyz`
@@ -78,18 +78,28 @@ Portal Gateway is a secure, authenticated gateway for home infrastructure that p
 
 ## Key Concepts
 
-### 1. Managed Services vs Service Routes vs User Connections
+### 1. Unified Services Model
 
-| Aspect | Managed Services | Service Routes | User Connections |
-|--------|------------------|----------------|------------------|
-| **Definition** | Server processes Portal runs | Proxy routing configurations | Personal remote connections |
-| **Lifecycle** | Start/stop/restart by Portal | Static configuration | Static configuration |
-| **Examples** | MediaMTX server, TURN server | "Proxy /ssh to 192.168.1.10:22" | "My home server SSH" |
-| **Storage** | `managed_services` table | `services` table | `user_connections` table |
+Services are stored in a single `services` table with a `service_type` field:
+
+| Aspect | Proxy Services | Managed Services | User Connections |
+|--------|----------------|------------------|------------------|
+| **service_type** | `proxy` | `managed` | N/A (separate table) |
+| **Definition** | Proxy routing to external backend | Server process Portal runs | Personal remote connections |
+| **Lifecycle** | Static configuration | Start/stop/restart by Portal | Static configuration |
+| **Examples** | "Proxy /ssh to 192.168.1.10:22" | MediaMTX server, TURN server | "My home server SSH" |
+| **Storage** | `services` table | `services` table | `user_connections` table |
 | **Ownership** | System-wide (admin only) | System-wide (admin only) | Per-user (private) |
-| **Process** | Runs on Portal server | No process (just routing) | No process (just routing) |
-| **UI Location** | Admin Panel > Managed Services | Dashboard > Service Routes (admin only) | Dashboard > My Connections |
-| **Visibility** | Admin only | Admin only | All users (own connections) |
+| **Process** | No process (just routing) | Runs on Portal server | No process (just routing) |
+| **UI Location** | Dashboard > Services (admin) | Dashboard > Services (admin) | Dashboard > My Connections |
+| **API** | `/api/services` | `/api/services` + `/start`, `/stop`, `/restart` | `/api/connections` |
+
+**Unified API:**
+- `GET /api/services` - List all services (use `?type=proxy` or `?type=managed` to filter)
+- `POST /api/services/{id}/start` - Start a managed service
+- `POST /api/services/{id}/stop` - Stop a managed service
+- `POST /api/services/{id}/restart` - Restart a managed service
+- `GET /api/services/{id}/logs` - Get logs for a managed service
 
 ### 2. Authentication Model
 

@@ -68,15 +68,16 @@ class ServiceManager:
     async def initialize(self):
         """Initialize services from database.
 
-        Loads all services and starts enabled ones.
+        Loads all managed services (service_type='managed') and starts enabled ones.
         """
         logger.info("Initializing service manager...")
 
-        # Load all services from database
-        services = await self._db.get_all_managed_services()
+        # Load all managed services from unified services table
+        services = await self._db.get_services_by_type('managed')
 
         for svc_data in services:
-            service_type = svc_data.get('type')
+            # In unified table, 'plugin' field stores the handler type (e.g., 'mediamtx')
+            service_type = svc_data.get('plugin')
             handler_class = get_service_class(service_type)
 
             if not handler_class:
@@ -132,7 +133,8 @@ class ServiceManager:
         description: str = None,
         config: dict = None,
         port: int = None,
-        enabled: bool = False
+        enabled: bool = False,
+        path: str = None
     ) -> Optional[ManagedService]:
         """Create a new managed service.
 
@@ -144,6 +146,7 @@ class ServiceManager:
             config: Service configuration
             port: Primary port
             enabled: Whether to enable immediately
+            path: URL path for service (defaults to /managed/{name})
 
         Returns:
             The created ManagedService or None on error
@@ -159,19 +162,26 @@ class ServiceManager:
             if port is None:
                 port = info.default_port
 
-            # Create in database
-            service_id = await self._db.create_managed_service(
+            # Generate path if not provided
+            if path is None:
+                path = f"/managed/{name}"
+
+            # Create in unified services table
+            service_id = await self._db.create_service(
                 name=name,
-                service_type=service_type,
+                path=path,
+                plugin=service_type,
+                host='127.0.0.1',
+                port=port,
+                config=config,
+                icon=info.icon,
+                service_type='managed',
                 display_name=display_name or name,
                 description=description,
-                config=config,
-                port=port,
-                icon=info.icon
             )
 
             # Load the service
-            svc_data = await self._db.get_managed_service(service_id)
+            svc_data = await self._db.get_service_by_id(service_id)
             service = handler_class(svc_data)
             service._db = self._db
             self._services[service_id] = service
@@ -206,7 +216,8 @@ class ServiceManager:
             await service.cleanup()
             del self._services[service_id]
 
-        success = await self._db.delete_managed_service(service_id)
+        # Delete from unified services table
+        success = await self._db.delete_service(service_id)
         if success:
             logger.info(f"Deleted service ID {service_id}")
         return success
@@ -304,7 +315,7 @@ class ServiceManager:
         service = self._services.get(service_id)
         if service:
             service.enabled = True
-        return await self._db.update_managed_service(service_id, enabled=1)
+        return await self._db.update_service_full(service_id, enabled=1)
 
     async def disable_service(self, service_id: int) -> bool:
         """Disable a service (won't auto-start).
@@ -318,7 +329,7 @@ class ServiceManager:
         service = self._services.get(service_id)
         if service:
             service.enabled = False
-        return await self._db.update_managed_service(service_id, enabled=0)
+        return await self._db.update_service_full(service_id, enabled=0)
 
     async def update_service_config(
         self,
@@ -343,8 +354,8 @@ class ServiceManager:
         if not valid:
             return False, error
 
-        # Update in database
-        await self._db.update_managed_service(service_id, config=config)
+        # Update in unified services table
+        await self._db.update_service_full(service_id, config=config)
 
         # Update in memory
         service.config = config
@@ -371,8 +382,8 @@ class ServiceManager:
 
         status = service.get_status()
 
-        # Add health info from database
-        svc_data = await self._db.get_managed_service(service_id)
+        # Add health info from unified services table
+        svc_data = await self._db.get_service_by_id(service_id)
         if svc_data:
             status['health_status'] = svc_data.get('health_status', 'unknown')
             status['last_health_check'] = svc_data.get('last_health_check')
@@ -415,7 +426,7 @@ class ServiceManager:
                         healthy = await service.health_check()
                         health_status = 'healthy' if healthy else 'unhealthy'
 
-                        await self._db.update_service_health(service.id, health_status)
+                        await self._db.update_service_health_status(service.id, health_status)
 
                         if not healthy:
                             logger.warning(f"Service {service.name} is unhealthy")
@@ -426,7 +437,7 @@ class ServiceManager:
 
                     except Exception as e:
                         logger.error(f"Health check failed for {service.name}: {e}")
-                        await self._db.update_service_health(service.id, 'unknown')
+                        await self._db.update_service_health_status(service.id, 'unknown')
 
             except Exception as e:
                 logger.error(f"Health monitor error: {e}")
@@ -436,7 +447,7 @@ class ServiceManager:
 
     async def _handle_crashed_service(self, service: ManagedService):
         """Handle a crashed service with exponential backoff restart."""
-        svc_data = await self._db.get_managed_service(service.id)
+        svc_data = await self._db.get_service_by_id(service.id)
         restart_count = svc_data.get('restart_count', 0) + 1
 
         # Exponential backoff: 5s, 10s, 20s, 40s, ... max 5 min
@@ -455,7 +466,7 @@ class ServiceManager:
         if not self._shutdown:
             success, error = await service.start()
             if success:
-                await self._db.increment_service_restart_count(service.id)
+                await self._db.increment_service_restart(service.id)
             else:
                 logger.error(f"Failed to restart {service.name}: {error}")
 
