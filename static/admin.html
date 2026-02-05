@@ -299,6 +299,10 @@
         </div>
         <div class="navbar-menu">
             <a href="/dashboard">Dashboard</a>
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
+            <a href="/docs">API Docs</a>
+            <span id="username-display" style="color: var(--text-muted);"></span>
             <a href="/logout">Logout</a>
         </div>
     </nav>
@@ -1965,6 +1969,17 @@
                 }
             }
         }, 30000);
+
+        // Load username for navbar
+        (async function() {
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.ok) {
+                    const user = await response.json();
+                    document.getElementById('username-display').textContent = user.username;
+                }
+            } catch (e) {}
+        })();
     </script>
 </body>
 </html>

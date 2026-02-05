@@ -1012,6 +1012,24 @@ Get logs for a managed service.
 | `/github/{id}` | GitHub browser |
 | `/media/{id}` | Media player |
 
+### Navigation Structure
+
+All pages use a standardized navbar:
+```
+Dashboard | Chat | Streams | API Docs | [username] | Logout
+```
+
+### Dashboard Tabs
+
+| Tab | Visibility | Description |
+|-----|------------|-------------|
+| Service Routes | Admin only | Backend proxy routing configuration |
+| My Connections | All users | Personal SSH, VNC, RDP, database connections |
+| My Streams | All users | Personal streaming configurations |
+| Quick Access | All users | Shortcuts to SSH Keys, API Keys, Profile |
+
+Regular users default to the "My Connections" tab. Admins default to "Service Routes".
+
 ---
 
 ## Rate Limiting

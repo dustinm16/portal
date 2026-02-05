@@ -246,7 +246,10 @@
         </div>
         <div class="navbar-menu">
             <a href="/dashboard">Dashboard</a>
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
             <a href="/docs" class="active">API Docs</a>
+            <span id="username-display" style="color: var(--text-muted);"></span>
             <a href="/logout">Logout</a>
         </div>
     </nav>
@@ -264,6 +267,7 @@
                 <ul>
                     <li><a href="#services">Services</a></li>
                     <li><a href="#connections">User Connections</a></li>
+                    <li><a href="#streams">User Streams</a></li>
                     <li><a href="#users">User Management</a></li>
                 </ul>
                 <h4>Security</h4>
@@ -284,6 +288,7 @@
                 </ul>
                 <h4>Admin Only</h4>
                 <ul>
+                    <li><a href="#managed-services">Managed Services</a></li>
                     <li><a href="#metrics">Metrics</a></li>
                     <li><a href="#logs">Logs</a></li>
                     <li><a href="#vulnerability">Vulnerability Scanner</a></li>
@@ -668,6 +673,239 @@
                     <div class="endpoint-body">
                         <p>Returns the information needed to establish a connection (WebSocket URL, credentials, etc.).</p>
                     </div>
+                </div>
+
+                <!-- User Streams -->
+                <h2 id="streams">User Streams</h2>
+                <p>Stream live video using RTMPS, RTSPS, or WebRTC. Streams can be public (visible to all users) or private. Each stream gets an integrated chat channel for viewer interaction.</p>
+
+                <div class="alert alert-info">
+                    <strong>TLS Required:</strong> All streaming protocols use mandatory TLS encryption. Self-signed certificates are auto-generated if not configured.
+                </div>
+
+                <h3>Streaming Configuration</h3>
+                <table class="param-table">
+                    <tr><th>Protocol</th><th>Port</th><th>URL Format</th></tr>
+                    <tr>
+                        <td><span class="param-name">RTMPS</span></td>
+                        <td>1936</td>
+                        <td><code>rtmps://portal.example.com:1936/live/{stream_key}</code></td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">RTSPS</span></td>
+                        <td>8322</td>
+                        <td><code>rtsps://portal.example.com:8322/{stream_key}</code></td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">HLS</span></td>
+                        <td>8888</td>
+                        <td><code>https://portal.example.com:8888/{stream_key}/index.m3u8</code></td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">WebRTC</span></td>
+                        <td>8889</td>
+                        <td><code>https://portal.example.com:8889/{stream_key}/</code></td>
+                    </tr>
+                </table>
+
+                <h3>OBS Studio Setup</h3>
+                <p>To broadcast with OBS Studio:</p>
+                <ol style="color: var(--text-secondary); line-height: 1.8;">
+                    <li>Go to <strong>Settings → Stream</strong></li>
+                    <li>Set Service to <strong>Custom</strong></li>
+                    <li>Server: <code>rtmps://portal.example.com:1936/live</code></li>
+                    <li>Stream Key: Your stream key from the API (e.g., <code>sk_abc123...</code>)</li>
+                    <li>Click OK and Start Streaming</li>
+                </ol>
+
+                <h3>REST API</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams</span>
+                        <span class="endpoint-desc">List your streams</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all streams owned by the authenticated user.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"streams"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"title"</span>: <span class="string">"My Live Stream"</span>,
+      <span class="string">"stream_key"</span>: <span class="string">"sk_abc123..."</span>,
+      <span class="string">"is_live"</span>: <span class="keyword">false</span>,
+      <span class="string">"is_public"</span>: <span class="keyword">true</span>,
+      <span class="string">"viewer_count"</span>: <span class="number">0</span>,
+      <span class="string">"chat_channel_id"</span>: <span class="number">5</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>
+    }
+  ]
+}</pre>
+                        </div>
+                        <div class="try-it">
+                            <h4>Try It</h4>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/streams', this)">Send Request</button>
+                            <div class="try-it-output" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams</span>
+                        <span class="endpoint-desc">Create a new stream</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Creates a new stream with a unique stream key. An associated chat channel is automatically created.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">title</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Stream title <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">description</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Stream description</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">is_public</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Whether stream is publicly visible (default: true)</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">1</span>,
+  <span class="string">"title"</span>: <span class="string">"My Stream"</span>,
+  <span class="string">"stream_key"</span>: <span class="string">"sk_abc123def456..."</span>,
+  <span class="string">"chat_channel_id"</span>: <span class="number">5</span>,
+  <span class="string">"playback_urls"</span>: {
+    <span class="string">"hls"</span>: <span class="string">"https://portal.example.com:8888/sk_abc123.../index.m3u8"</span>,
+    <span class="string">"webrtc"</span>: <span class="string">"https://portal.example.com:8889/sk_abc123.../"</span>
+  }
+}</pre>
+                        </div>
+                        <div class="alert alert-warning">
+                            <strong>Important:</strong> The stream key is only shown once. Store it securely for use with OBS or other broadcast software.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/live</span>
+                        <span class="endpoint-desc">List public live streams</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all public streams that are currently live. Used by the community streams page.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"streams"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"title"</span>: <span class="string">"Gaming Stream"</span>,
+      <span class="string">"username"</span>: <span class="string">"alice"</span>,
+      <span class="string">"viewer_count"</span>: <span class="number">42</span>,
+      <span class="string">"started_at"</span>: <span class="string">"2024-01-15T14:30:00Z"</span>,
+      <span class="string">"playback_url"</span>: <span class="string">"https://..."</span>
+    }
+  ]
+}</pre>
+                        </div>
+                        <div class="try-it">
+                            <h4>Try It</h4>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/streams/live', this)">Send Request</button>
+                            <div class="try-it-output" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/{id}</span>
+                        <span class="endpoint-desc">Get stream details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns detailed information about a specific stream including playback URLs.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/streams/{id}</span>
+                        <span class="endpoint-desc">Update stream settings</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update title, description, or visibility of your stream.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">title</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>New stream title</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">description</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>New description</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">is_public</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Change visibility</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/regenerate-key</span>
+                        <span class="endpoint-desc">Regenerate stream key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Generate a new stream key, invalidating the old one. Use this if your key is compromised.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/streams/{id}</span>
+                        <span class="endpoint-desc">Delete stream</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete a stream and its associated chat channel.</p>
+                    </div>
+                </div>
+
+                <h3>Watching Streams</h3>
+                <p>Viewers can watch streams using HLS.js in browser or any HLS-compatible player:</p>
+                <div class="code-block">
+<pre><span class="keyword">import</span> Hls <span class="keyword">from</span> <span class="string">'hls.js'</span>;
+
+<span class="keyword">const</span> video = document.getElementById(<span class="string">'video'</span>);
+<span class="keyword">const</span> hls = <span class="keyword">new</span> Hls();
+
+hls.loadSource(<span class="string">'https://portal.example.com:8888/sk_abc123/index.m3u8'</span>);
+hls.attachMedia(video);
+hls.on(Hls.Events.MANIFEST_PARSED, () => {
+  video.play();
+});</pre>
                 </div>
 
                 <!-- Users -->
@@ -1097,6 +1335,156 @@ ws.send(JSON.stringify({
 }));</pre>
                 </div>
 
+                <!-- Managed Services (Admin) -->
+                <h2 id="managed-services">Managed Services <span class="badge-admin">ADMIN</span></h2>
+                <p>Managed Services are background server processes that Portal can start, stop, and monitor. This includes the MediaMTX streaming server and other infrastructure components.</p>
+
+                <div class="alert alert-info">
+                    <strong>Service Lifecycle:</strong> Services are started automatically when needed. Logs are captured and retained for 7 days.
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services</span>
+                        <span class="endpoint-desc">List all managed services</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all managed services and their current status.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"services"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"name"</span>: <span class="string">"mediamtx"</span>,
+      <span class="string">"display_name"</span>: <span class="string">"MediaMTX Streaming Server"</span>,
+      <span class="string">"status"</span>: <span class="string">"running"</span>,
+      <span class="string">"pid"</span>: <span class="number">12345</span>,
+      <span class="string">"started_at"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>,
+      <span class="string">"auto_start"</span>: <span class="keyword">true</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{name}</span>
+                        <span class="endpoint-desc">Get service status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns detailed status for a specific managed service.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"name"</span>: <span class="string">"mediamtx"</span>,
+  <span class="string">"status"</span>: <span class="string">"running"</span>,
+  <span class="string">"pid"</span>: <span class="number">12345</span>,
+  <span class="string">"uptime_seconds"</span>: <span class="number">3600</span>,
+  <span class="string">"memory_mb"</span>: <span class="number">128</span>,
+  <span class="string">"cpu_percent"</span>: <span class="number">2.5</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{name}/start</span>
+                        <span class="endpoint-desc">Start a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Start a stopped managed service.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"status"</span>: <span class="string">"started"</span>,
+  <span class="string">"pid"</span>: <span class="number">12345</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{name}/stop</span>
+                        <span class="endpoint-desc">Stop a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Stop a running managed service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{name}/restart</span>
+                        <span class="endpoint-desc">Restart a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Stop and start a managed service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{name}/logs</span>
+                        <span class="endpoint-desc">Get service logs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns recent log entries for a managed service.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">lines</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Number of lines to return (default: 100)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">level</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Filter by level: debug, info, warning, error</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"logs"</span>: [
+    {
+      <span class="string">"timestamp"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>,
+      <span class="string">"level"</span>: <span class="string">"info"</span>,
+      <span class="string">"message"</span>: <span class="string">"MediaMTX started on RTMPS port 1936"</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>Available Services</h3>
+                <table class="param-table">
+                    <tr><th>Name</th><th>Description</th><th>Ports</th></tr>
+                    <tr>
+                        <td><span class="param-name">mediamtx</span></td>
+                        <td>MediaMTX streaming server for RTMPS/HLS/WebRTC</td>
+                        <td>1936, 8322, 8888, 8889</td>
+                    </tr>
+                </table>
+
                 <!-- Metrics (Admin) -->
                 <h2 id="metrics">Traffic Metrics <span class="badge-admin">ADMIN</span></h2>
                 <p>Real-time traffic monitoring and statistics.</p>
@@ -1303,6 +1691,17 @@ X-RateLimit-Reset: 1704067200</pre>
                 }
             });
         });
+
+        // Load username for navbar
+        (async function() {
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.ok) {
+                    const user = await response.json();
+                    document.getElementById('username-display').textContent = user.username;
+                }
+            } catch (e) {}
+        })();
     </script>
 </body>
 </html>

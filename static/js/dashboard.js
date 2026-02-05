@@ -52,6 +52,14 @@ async function loadUserInfo() {
             if (adminSection) adminSection.style.display = 'block';
         }
 
+        // Hide Service Routes tab for non-admin users and switch to My Connections
+        if (!currentUser.is_admin && role !== 'superadmin' && role !== 'admin') {
+            const serviceRoutesTab = document.getElementById('tab-btn-services');
+            if (serviceRoutesTab) serviceRoutesTab.style.display = 'none';
+            // Switch to My Connections as default tab for regular users
+            switchTab('my-connections');
+        }
+
         // Set profile modal info
         const profileUsername = document.getElementById('profile-username');
         const profileRole = document.getElementById('profile-role');

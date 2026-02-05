@@ -88,7 +88,8 @@ Portal Gateway is a secure, authenticated gateway for home infrastructure that p
 | **Storage** | `managed_services` table | `services` table | `user_connections` table |
 | **Ownership** | System-wide (admin only) | System-wide (admin only) | Per-user (private) |
 | **Process** | Runs on Portal server | No process (just routing) | No process (just routing) |
-| **UI Location** | Admin Panel > Managed Services | Dashboard > Service Routes | Dashboard > My Connections |
+| **UI Location** | Admin Panel > Managed Services | Dashboard > Service Routes (admin only) | Dashboard > My Connections |
+| **Visibility** | Admin only | Admin only | All users (own connections) |
 
 ### 2. Authentication Model
 
