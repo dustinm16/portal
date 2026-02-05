@@ -4583,7 +4583,7 @@ async def security_headers_middleware(request: web.Request, handler):
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "img-src 'self' data: https:; "
             "font-src 'self' https://cdn.jsdelivr.net; "
-            "connect-src 'self' wss: ws:; "
+            "connect-src 'self' wss:;"
             "frame-ancestors 'self'; "
             "base-uri 'self'; "
             "form-action 'self';"

@@ -197,7 +197,6 @@ Permission Hierarchy:
 │   └── SERVICES_PLAN.md   # Service implementation plan
 │
 ├── certs/                 # SSL certificates
-├── recordings/            # Session recordings
 └── portal.db              # SQLite database
 ```
 
@@ -358,31 +357,21 @@ DELETE /api/connections/:id     - Delete connection
 GET  /api/connections/types     - Available connection types
 ```
 
-### Service Routes (Admin)
+### Services (Admin) - Unified API
+
+All services (proxy routes and managed processes) use a single API endpoint.
 
 ```
-GET  /api/services              - List service routes
-POST /api/services              - Create route
-GET  /api/services/:id          - Get route details
-PUT  /api/services/:id          - Update route
-DELETE /api/services/:id        - Delete route
-GET  /api/services/:id/health   - Check target health
-```
-
-### Managed Services (Admin)
-
-```
-GET  /api/managed-services/types     - Available service types
-GET  /api/managed-services           - List managed services
-POST /api/managed-services           - Create service
-GET  /api/managed-services/:id       - Get service details
-PUT  /api/managed-services/:id       - Update service config
-DELETE /api/managed-services/:id     - Delete service
-POST /api/managed-services/:id/start - Start service process
-POST /api/managed-services/:id/stop  - Stop service process
-POST /api/managed-services/:id/restart - Restart service
-GET  /api/managed-services/:id/status  - Get service status
-GET  /api/managed-services/:id/logs    - Get service logs
+GET  /api/services              - List all services (?type=proxy|managed)
+POST /api/services              - Create service
+GET  /api/services/:id          - Get service details
+PUT  /api/services/:id          - Update service
+DELETE /api/services/:id        - Delete service
+GET  /api/services/types        - Available managed service types
+POST /api/services/:id/start    - Start managed service
+POST /api/services/:id/stop     - Stop managed service
+POST /api/services/:id/restart  - Restart managed service
+GET  /api/services/:id/logs     - Get managed service logs
 ```
 
 ### Chat
@@ -486,14 +475,18 @@ Client Request
 
 ### Security Features
 
-1. **Password Security** - Argon2id hashing
-2. **JWT Tokens** - Short-lived, scoped access
+Portal Gateway is designed with privacy and security as core principles:
+
+1. **Password Security** - Argon2id hashing with secure defaults
+2. **JWT Tokens** - Short-lived, scoped access tokens
 3. **API Keys** - Prefix-based lookup, hashed storage
-4. **2FA Support** - TOTP with backup codes
+4. **2FA Support** - TOTP with encrypted backup codes
 5. **Rate Limiting** - Per-IP request throttling
 6. **Localhost Blocking** - User connections cannot target localhost
 7. **Chat Encryption** - Messages encrypted at rest (Fernet)
-8. **HTTPS Only** - TLS termination via Cloudflare
+8. **HTTPS/WSS Only** - All traffic encrypted via TLS
+9. **No Session Recording** - Privacy-first design, no session logging
+10. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
 
 ---
 
