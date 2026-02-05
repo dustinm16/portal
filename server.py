@@ -2922,6 +2922,47 @@ async def http_delete_chat_channel(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+async def http_clear_chat_channel(request: web.Request) -> web.Response:
+    """Clear all messages in a chat channel (superadmin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    # Only superadmins can clear channel history
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role != "superadmin":
+        return web.json_response({"error": "Super admin access required"}, status=403)
+
+    channel_id = int(request.match_info["id"])
+
+    # Get channel info for broadcasting
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    # Clear all messages
+    deleted_count = await db.clear_channel_messages(channel_id)
+
+    # Broadcast to channel that history was cleared
+    channel_name = channel["name"]
+    if channel_name in chat_rooms:
+        await broadcast_to_channel(channel_name, {
+            "type": "channel_cleared",
+            "channel": channel_name,
+            "cleared_by": user["username"],
+            "message_count": deleted_count
+        })
+
+    return web.json_response({
+        "success": True,
+        "deleted_count": deleted_count
+    })
+
+
 async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     """Handle chat WebSocket connections."""
     token = await authenticate_request(request)
@@ -3943,6 +3984,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/chat/channels", http_create_chat_channel)
     app.router.add_put("/api/chat/channels/{id}", http_update_chat_channel)
     app.router.add_delete("/api/chat/channels/{id}", http_delete_chat_channel)
+    app.router.add_post("/api/chat/channels/{id}/clear", http_clear_chat_channel)
 
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)

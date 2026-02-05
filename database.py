@@ -1246,6 +1246,15 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount
 
+    async def clear_channel_messages(self, channel_id: int) -> int:
+        """Delete all messages in a channel. Returns count deleted."""
+        cursor = await self.conn.execute(
+            "DELETE FROM chat_messages WHERE channel_id = ?",
+            (channel_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
 
 # Global database instance
 db = Database()

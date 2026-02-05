@@ -79,6 +79,13 @@
             background: var(--bg-secondary);
         }
 
+        .chat-header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
         .chat-header h2 {
             margin: 0;
             font-size: 1.25rem;
@@ -90,6 +97,21 @@
         .chat-header h2::before {
             content: '#';
             color: var(--text-muted);
+        }
+
+        .clear-channel-btn {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .clear-channel-btn:hover {
+            background: rgba(239, 68, 68, 0.3);
         }
 
         .chat-topic {
@@ -815,7 +837,12 @@
         <!-- Main Chat Area -->
         <main class="chat-main">
             <div class="chat-header">
-                <h2 id="channel-name">general</h2>
+                <div class="chat-header-top">
+                    <h2 id="channel-name">general</h2>
+                    <button class="clear-channel-btn" id="clear-channel-btn" onclick="confirmClearChannel()" title="Clear channel history" style="display: none;">
+                        🗑️ Clear
+                    </button>
+                </div>
                 <div class="chat-topic" id="channel-topic">General discussion</div>
             </div>
             <div class="chat-messages" id="chat-messages">
@@ -999,6 +1026,11 @@
                 }
                 updateAvatarPreview();
 
+                // Show clear channel button for superadmins
+                if (currentUser.role === 'superadmin') {
+                    document.getElementById('clear-channel-btn').style.display = 'block';
+                }
+
                 // Initialize emoji picker
                 initEmojiPicker();
             } catch (error) {
@@ -1167,6 +1199,11 @@
                         user.avatar = data.avatar;
                         renderUserList();
                     }
+                    break;
+                case 'channel_cleared':
+                    // Clear messages and show system message
+                    document.getElementById('chat-messages').innerHTML = '';
+                    appendSystemMessage(`Channel cleared by ${data.cleared_by} (${data.message_count} messages removed)`);
                     break;
                 case 'typing':
                     showTypingIndicator(data.username);
@@ -1402,6 +1439,43 @@
                 switchChannel(name);
             } catch (error) {
                 alert(error.message);
+            }
+        }
+
+        async function confirmClearChannel() {
+            const channelName = currentChannel;
+            if (!confirm(`Are you sure you want to clear ALL messages in #${channelName}?\n\nThis action cannot be undone.`)) {
+                return;
+            }
+
+            // Double confirm for safety
+            if (!confirm(`FINAL WARNING: This will permanently delete all message history in #${channelName}.\n\nType OK to proceed.`)) {
+                return;
+            }
+
+            try {
+                // Get channel ID
+                const channelsResponse = await fetch('/api/chat/channels', { credentials: 'include' });
+                const channelsData = await channelsResponse.json();
+                const channel = channelsData.channels.find(c => c.name === channelName);
+
+                if (!channel) {
+                    alert('Channel not found');
+                    return;
+                }
+
+                const response = await fetch(`/api/chat/channels/${channel.id}/clear`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to clear channel');
+                }
+            } catch (error) {
+                console.error('Failed to clear channel:', error);
+                alert('Failed to clear channel');
             }
         }
 
