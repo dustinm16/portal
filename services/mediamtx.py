@@ -181,12 +181,14 @@ serverCert: {cert_path}
 ###############################################
 # Authentication settings
 # Uses Portal Gateway for stream key validation
+# API is excluded since it's localhost-only
 
 authMethod: http
 authHTTPAddress: {portal_url}/api/stream/auth
 authHTTPExclude:
   - action: read
   - action: playback
+  - action: api
 
 ###############################################
 # API settings (TLS encrypted)
