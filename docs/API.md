@@ -1030,6 +1030,15 @@ Dashboard | Chat | Streams | API Docs | [username] | Logout
 
 Regular users default to the "My Connections" tab. Admins default to "Service Routes".
 
+### Dashboard Sidebar
+
+| Section | Description |
+|---------|-------------|
+| Categories | Filter service routes by category |
+| Community | Links to Chat and Streams pages |
+| Quick Actions | Refresh Routes button |
+| Administration | Admin-only: Add Route, Manage Users, Invite Code, View Logs, Admin Panel |
+
 ---
 
 ## Rate Limiting
