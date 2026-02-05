@@ -113,6 +113,20 @@
             opacity: 0.5;
         }
 
+        .stream-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .stream-thumbnail .thumbnail-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .stream-live-badge {
             position: absolute;
             top: 0.5rem;
@@ -701,12 +715,20 @@
 
         function renderStreamCard(stream) {
             const initial = (stream.owner_username || '?')[0].toUpperCase();
+            const thumbnailContent = stream.thumbnail_url
+                ? `<img src="${escapeHtml(stream.thumbnail_url)}" alt="${escapeHtml(stream.name)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                   <div class="thumbnail-placeholder" style="display: none;">
+                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                       </svg>
+                   </div>`
+                : `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                   </svg>`;
             return `
                 <div class="stream-card" onclick="openStream(${stream.id})">
                     <div class="stream-thumbnail">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
+                        ${thumbnailContent}
                         ${stream.is_live ? `
                             <div class="stream-live-badge">
                                 <span class="pulse"></span>

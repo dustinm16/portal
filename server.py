@@ -4,9 +4,11 @@
 import asyncio
 import json
 import logging
+import os
 import signal
 import ssl
 import sys
+import uuid
 import weakref
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -1877,6 +1879,119 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
     if success:
         return web.json_response({"stream_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
+
+
+async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
+    """Upload a thumbnail for a stream (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+
+    # Get existing stream to check ownership
+    stream = await db.get_user_stream(int(stream_id))
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    if stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Not authorized"}, status=403)
+
+    # Parse multipart data
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+
+        if field is None or field.name != "thumbnail":
+            return web.json_response({"error": "No thumbnail file provided"}, status=400)
+
+        # Validate content type
+        content_type = field.headers.get(aiohttp.hdrs.CONTENT_TYPE, "")
+        if not content_type.startswith("image/"):
+            return web.json_response({"error": "File must be an image"}, status=400)
+
+        # Determine file extension
+        ext_map = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+        }
+        ext = ext_map.get(content_type, ".jpg")
+
+        # Generate unique filename
+        filename = f"{uuid.uuid4().hex}{ext}"
+        upload_dir = Path(__file__).parent / "static" / "uploads" / "thumbnails"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filepath = upload_dir / filename
+
+        # Read and save file (limit to 5MB)
+        size = 0
+        max_size = 5 * 1024 * 1024  # 5MB
+
+        with open(filepath, "wb") as f:
+            while True:
+                chunk = await field.read_chunk()
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_size:
+                    f.close()
+                    filepath.unlink()
+                    return web.json_response({"error": "File too large (max 5MB)"}, status=400)
+                f.write(chunk)
+
+        # Delete old thumbnail if exists
+        if stream.get("thumbnail_url"):
+            old_path = Path(__file__).parent / stream["thumbnail_url"].lstrip("/")
+            if old_path.exists() and "uploads/thumbnails" in str(old_path):
+                try:
+                    old_path.unlink()
+                except Exception:
+                    pass
+
+        # Update database with new thumbnail URL
+        thumbnail_url = f"/static/uploads/thumbnails/{filename}"
+        await db.update_user_stream(int(stream_id), user_id=token.user_id, thumbnail_url=thumbnail_url)
+
+        return web.json_response({
+            "success": True,
+            "thumbnail_url": thumbnail_url
+        })
+
+    except Exception as e:
+        logger.error(f"Thumbnail upload error: {e}")
+        return web.json_response({"error": "Upload failed"}, status=500)
+
+
+async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
+    """Delete a stream's thumbnail (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+
+    stream = await db.get_user_stream(int(stream_id))
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    if stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Not authorized"}, status=403)
+
+    # Delete file if exists
+    if stream.get("thumbnail_url"):
+        old_path = Path(__file__).parent / stream["thumbnail_url"].lstrip("/")
+        if old_path.exists() and "uploads/thumbnails" in str(old_path):
+            try:
+                old_path.unlink()
+            except Exception:
+                pass
+
+    # Clear thumbnail URL in database
+    await db.update_user_stream(int(stream_id), user_id=token.user_id, thumbnail_url=None)
+
+    return web.json_response({"success": True})
 
 
 async def http_get_stream_bans(request: web.Request) -> web.Response:
@@ -5367,6 +5482,9 @@ def create_app() -> web.Application:
     app.router.add_put("/api/streams/{id}", http_update_user_stream)
     app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
     app.router.add_post("/api/streams/{id}/regenerate-key", http_regenerate_stream_key)
+    # Stream thumbnails
+    app.router.add_post("/api/streams/{id}/thumbnail", http_upload_stream_thumbnail)
+    app.router.add_delete("/api/streams/{id}/thumbnail", http_delete_stream_thumbnail)
     # Stream moderation (owner can ban users from stream chat)
     app.router.add_get("/api/streams/{id}/bans", http_get_stream_bans)
     app.router.add_post("/api/streams/{id}/bans", http_create_stream_ban)
@@ -5491,6 +5609,9 @@ class PortalServer:
         # Start chat message cleanup task (runs every 6 hours)
         asyncio.create_task(self._chat_cleanup_task())
 
+        # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
+        asyncio.create_task(self._viewer_sync_task())
+
         # Initialize vulnerability scanner - check database for NVD API key
         nvd_api_key = await db.get_setting("nvd_api_key") or Config.NVD_API_KEY
         await init_scanner(
@@ -5550,6 +5671,61 @@ class PortalServer:
                 break
             except Exception as e:
                 logger.error(f"[Chat] Cleanup error: {e}")
+
+    async def _viewer_sync_task(self) -> None:
+        """Background task to sync viewer counts from MediaMTX (runs every 10 seconds)."""
+        while True:
+            try:
+                await asyncio.sleep(10)  # 10 seconds
+
+                # Get MediaMTX API config
+                mtx_config = await _get_mediamtx_config()
+                if not mtx_config:
+                    continue
+
+                api_port = mtx_config.get("api_port", 9997)
+
+                # Query MediaMTX paths API for reader counts
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"https://127.0.0.1:{api_port}/v3/paths/list",
+                            ssl=False,
+                            timeout=aiohttp.ClientTimeout(total=5)
+                        ) as resp:
+                            if resp.status != 200:
+                                continue
+                            data = await resp.json()
+                except Exception:
+                    continue
+
+                # Update viewer counts for each active path
+                items = data.get("items") or []
+                for item in items:
+                    path_name = item.get("name", "")
+                    readers = item.get("readers") or []
+                    reader_count = len(readers)
+
+                    # Path format is "live/{stream_key}"
+                    if path_name.startswith("live/"):
+                        stream_key = path_name[5:]  # Remove "live/" prefix
+
+                        # Get current stream
+                        stream = await db.get_stream_by_key(stream_key)
+                        if stream and stream.get("is_live"):
+                            # Update viewer count directly
+                            current_count = stream.get("viewer_count", 0)
+                            if current_count != reader_count:
+                                await db.conn.execute(
+                                    "UPDATE user_streams SET viewer_count = ? WHERE id = ?",
+                                    (reader_count, stream["id"])
+                                )
+                                await db.conn.commit()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[Viewer sync] Error: {e}")
 
     async def stop(self) -> None:
         """Stop the server gracefully."""

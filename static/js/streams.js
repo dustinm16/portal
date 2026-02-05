@@ -88,59 +88,74 @@ function renderStreamCard(stream, isOwner = false) {
     const viewerCount = stream.is_live ? `${stream.viewer_count || 0} viewers` : '';
     const publicBadge = stream.is_public ? '<span class="badge badge-public">Public</span>' : '<span class="badge badge-private">Private</span>';
 
+    // Thumbnail HTML - show image if available, otherwise show placeholder
+    const thumbnailHtml = stream.thumbnail_url
+        ? `<img src="${escapeHtml(stream.thumbnail_url)}" alt="Stream thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+           <div class="stream-thumbnail-placeholder" style="display: none;">
+               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+               </svg>
+           </div>`
+        : `<div class="stream-thumbnail-placeholder">
+               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+               </svg>
+           </div>`;
+
     if (isOwner) {
         return `
-            <div class="connection-card stream-card ${stream.is_live ? 'stream-live' : ''}">
-                <div class="connection-header">
-                    <div class="connection-icon">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                    </div>
-                    <div class="connection-info">
-                        <h4>${escapeHtml(stream.name)}</h4>
-                        <span class="connection-type">
-                            <span class="stream-status ${statusClass}">${statusText}</span>
-                            ${viewerCount}
-                        </span>
-                    </div>
-                    ${publicBadge}
+            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : ''}">
+                <div class="stream-thumbnail">
+                    ${thumbnailHtml}
+                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : ''}
                 </div>
-                ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
-                <div class="connection-actions">
-                    <button class="btn btn-sm btn-primary" onclick="showStreamDetails(${stream.id})">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                        </svg>
-                        Stream Key
-                    </button>
-                    <button class="btn btn-sm btn-secondary" onclick="editStream(${stream.id})">Edit</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteStream(${stream.id})">Delete</button>
+                <div class="stream-card-content">
+                    <div class="connection-header">
+                        <div class="connection-info">
+                            <h4>${escapeHtml(stream.name)}</h4>
+                            <span class="connection-type">
+                                <span class="stream-status ${statusClass}">${statusText}</span>
+                                ${viewerCount}
+                            </span>
+                        </div>
+                        ${publicBadge}
+                    </div>
+                    ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
+                    <div class="connection-actions">
+                        <button class="btn btn-sm btn-primary" onclick="showStreamDetails(${stream.id})">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                            </svg>
+                            Stream Key
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onclick="editStream(${stream.id})">Edit</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteStream(${stream.id})">Delete</button>
+                    </div>
                 </div>
             </div>
         `;
     } else {
         // Community stream card
         return `
-            <div class="connection-card stream-card ${stream.is_live ? 'stream-live' : ''}" onclick="viewStream(${stream.id})" style="cursor: pointer;">
-                <div class="connection-header">
-                    <div class="connection-icon">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                    </div>
-                    <div class="connection-info">
-                        <h4>${escapeHtml(stream.name)}</h4>
-                        <span class="connection-type">
-                            by ${escapeHtml(stream.owner_username || 'Unknown')}
-                        </span>
-                    </div>
-                    <span class="stream-status ${statusClass}">${statusText}</span>
+            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : ''}" onclick="viewStream(${stream.id})" style="cursor: pointer;">
+                <div class="stream-thumbnail">
+                    ${thumbnailHtml}
+                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : ''}
+                    ${stream.is_live ? `<div class="stream-viewers"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>${stream.viewer_count || 0}</div>` : ''}
                 </div>
-                ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
-                <div class="stream-meta">
-                    ${stream.is_live ? `<span class="viewer-count">${stream.viewer_count || 0} watching</span>` : ''}
-                    <span class="total-views">${stream.total_views || 0} total views</span>
+                <div class="stream-card-content">
+                    <div class="connection-header">
+                        <div class="connection-info">
+                            <h4>${escapeHtml(stream.name)}</h4>
+                            <span class="connection-type">
+                                by ${escapeHtml(stream.owner_username || 'Unknown')}
+                            </span>
+                        </div>
+                    </div>
+                    ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
+                    <div class="stream-meta">
+                        <span class="total-views">${stream.total_views || 0} views</span>
+                    </div>
                 </div>
             </div>
         `;
@@ -210,6 +225,15 @@ async function showStreamDetails(streamId) {
         // HLS playback through Portal proxy on 443
         const hlsUrl = `https://${window.location.hostname}/api/stream/${stream.stream_key}/hls/index.m3u8`;
 
+        const thumbnailHtml = stream.thumbnail_url
+            ? `<img src="${escapeHtml(stream.thumbnail_url)}" alt="Thumbnail">`
+            : `<div class="upload-placeholder">
+                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                   </svg>
+                   <div>Click to upload thumbnail</div>
+               </div>`;
+
         document.getElementById('stream-details-content').innerHTML = `
             <div class="stream-details">
                 <div class="info-section">
@@ -218,6 +242,17 @@ async function showStreamDetails(streamId) {
                         ${stream.is_live ? 'LIVE' : 'Offline'}
                         ${stream.is_live ? `(${stream.viewer_count || 0} viewers)` : ''}
                     </p>
+                </div>
+
+                <div class="info-section">
+                    <h4>Thumbnail</h4>
+                    <p class="info-description">Upload an image to show when your stream is offline.</p>
+                    <div class="thumbnail-upload-area ${stream.thumbnail_url ? 'has-thumbnail' : ''}" onclick="document.getElementById('thumbnail-input').click()">
+                        ${thumbnailHtml}
+                    </div>
+                    <input type="file" id="thumbnail-input" accept="image/*" style="display: none;" onchange="uploadThumbnail(${stream.id}, this)">
+                    <div class="upload-hint">Max 5MB. Recommended 1280x720 (16:9)</div>
+                    ${stream.thumbnail_url ? `<button class="btn btn-sm btn-danger" style="margin-top: 0.5rem;" onclick="deleteThumbnail(${stream.id})">Remove Thumbnail</button>` : ''}
                 </div>
 
                 <div class="info-section">
@@ -326,6 +361,78 @@ async function toggleStreamPublic(streamId, isPublic) {
     } catch (error) {
         console.error('Failed to update stream:', error);
         alert('Failed to update stream');
+    }
+}
+
+/**
+ * Upload stream thumbnail
+ */
+async function uploadThumbnail(streamId, input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+        alert('Please select an image file');
+        return;
+    }
+
+    // Validate file size (5MB)
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Image must be less than 5MB');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('thumbnail', file);
+
+    try {
+        const response = await fetch(`/api/streams/${streamId}/thumbnail`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: formData
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            // Refresh the modal to show new thumbnail
+            showStreamDetails(streamId);
+            loadUserStreams();
+        } else {
+            const error = await response.json();
+            alert(error.error || 'Failed to upload thumbnail');
+        }
+    } catch (error) {
+        console.error('Failed to upload thumbnail:', error);
+        alert('Failed to upload thumbnail');
+    }
+
+    // Clear the input
+    input.value = '';
+}
+
+/**
+ * Delete stream thumbnail
+ */
+async function deleteThumbnail(streamId) {
+    if (!confirm('Remove the thumbnail?')) return;
+
+    try {
+        const response = await fetch(`/api/streams/${streamId}/thumbnail`, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        });
+
+        if (response.ok) {
+            showStreamDetails(streamId);
+            loadUserStreams();
+        } else {
+            const error = await response.json();
+            alert(error.error || 'Failed to remove thumbnail');
+        }
+    } catch (error) {
+        console.error('Failed to remove thumbnail:', error);
+        alert('Failed to remove thumbnail');
     }
 }
 
