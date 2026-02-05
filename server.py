@@ -1760,17 +1760,15 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
             is_public=is_public
         )
 
-        # If public, create a chat channel for the stream
-        chat_channel_id = None
-        if is_public:
-            user = await db.get_user_by_id(token.user_id)
-            channel_name = f"stream-{user['username']}-{stream_id}"
-            chat_channel_id = await db.create_chat_channel(
-                name=channel_name,
-                description=f"Chat for {name} by {user['username']}",
-                created_by=token.user_id
-            )
-            await db.update_user_stream(stream_id, chat_channel_id=chat_channel_id)
+        # Create a chat channel for every stream
+        user = await db.get_user_by_id(token.user_id)
+        channel_name = f"stream-{user['username']}-{stream_id}"
+        chat_channel_id = await db.create_chat_channel(
+            name=channel_name,
+            description=f"Chat for {name} by {user['username']}",
+            created_by=token.user_id
+        )
+        await db.update_user_stream(stream_id, chat_channel_id=chat_channel_id)
 
         stream = await db.get_user_stream(stream_id)
         return web.json_response({"stream": stream}, status=201)
@@ -1822,12 +1820,8 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
     if stream["user_id"] != token.user_id:
         return web.json_response({"error": "Not authorized"}, status=403)
 
-    # Handle public/private toggle
-    was_public = stream.get("is_public", False)
-    is_public = data.get("is_public", was_public)
-
-    # Create chat channel if becoming public
-    if is_public and not was_public and not stream.get("chat_channel_id"):
+    # Create chat channel if one doesn't exist (for legacy streams)
+    if not stream.get("chat_channel_id"):
         user = await db.get_user_by_id(token.user_id)
         channel_name = f"stream-{user['username']}-{stream_id}"
         chat_channel_id = await db.create_chat_channel(
@@ -2103,15 +2097,18 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
 
 
 async def http_get_public_streams(request: web.Request) -> web.Response:
-    """Get all public streams (community streams)."""
+    """Get all public streams (community streams).
+
+    This endpoint is accessible to all users (authenticated or not).
+    Stream keys are never included in the response.
+    """
+    # Authentication is optional - anyone can view public streams
     token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
 
     live_only = request.query.get("live", "false").lower() == "true"
     streams = await db.get_public_streams(live_only=live_only)
 
-    # Remove stream keys from public listing
+    # Remove stream keys from public listing (security)
     for stream in streams:
         stream.pop("stream_key", None)
 
@@ -2212,6 +2209,12 @@ async def http_stream_event(request: web.Request) -> web.Response:
         if stream:
             await db.set_stream_live(stream["id"], False)
             logger.info(f"Stream {stream['name']} ended")
+
+            # Clear chat history for the stream's channel
+            if stream.get("chat_channel_id"):
+                deleted = await db.clear_channel_messages(stream["chat_channel_id"])
+                if deleted > 0:
+                    logger.info(f"Cleared {deleted} chat messages for stream {stream['name']}")
 
     return web.json_response({"ok": True})
 
