@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Portal Gateway - Community Streams</title>
+    <meta name="robots" content="noindex, nofollow">
+    <title>Portal Gateway - Live Streams</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=24">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
-        /* Unified navbar section styling */
         .navbar-divider {
             width: 1px;
             height: 20px;
@@ -33,43 +33,6 @@
             grid-template-columns: 1fr;
             min-height: calc(100vh - 60px);
             background: var(--bg-primary);
-        }
-
-        .streams-header {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            background: var(--bg-secondary);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .streams-header-left {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .streams-header h1 {
-            margin: 0;
-            font-size: 1.25rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .streams-header h1 svg {
-            width: 24px;
-            height: 24px;
-            color: var(--accent-blue);
-        }
-
-        .streams-header p {
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 0.85rem;
         }
 
         .streams-content {
@@ -187,43 +150,6 @@
             opacity: 1;
         }
 
-        .stream-popout-btn {
-            position: absolute;
-            top: 0.5rem;
-            right: 0.5rem;
-            background: rgba(0,0,0,0.7);
-            border: none;
-            color: white;
-            width: 28px;
-            height: 28px;
-            border-radius: 4px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transition: opacity 0.2s, background 0.2s;
-            z-index: 10;
-        }
-
-        .stream-popout-btn svg {
-            width: 14px;
-            height: 14px;
-        }
-
-        .stream-card:hover .stream-popout-btn {
-            opacity: 1;
-        }
-
-        .stream-popout-btn:hover {
-            background: var(--accent-blue);
-        }
-
-        /* Move viewers badge when popout button is visible */
-        .stream-card:hover .stream-viewers {
-            top: 2.5rem;
-        }
-
         .stream-info {
             padding: 0.75rem;
         }
@@ -304,7 +230,7 @@
             gap: 0.75rem;
         }
 
-        /* Stream Viewer Modal */
+        /* Stream Viewer Overlay */
         .viewer-overlay {
             display: none;
             position: fixed;
@@ -511,192 +437,6 @@
             border-color: var(--accent-blue);
         }
 
-        /* Chat sidebar */
-        .viewer-chat {
-            width: 350px;
-            background: var(--bg-secondary);
-            border-left: 1px solid rgba(255,255,255,0.1);
-            display: flex;
-            flex-direction: column;
-        }
-
-        .viewer-chat-header {
-            padding: 1rem;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            font-weight: 600;
-        }
-
-        .viewer-chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
-        .chat-message {
-            padding: 0.5rem;
-            border-radius: 6px;
-            background: rgba(0,0,0,0.2);
-        }
-
-        .chat-message-header {
-            display: flex;
-            align-items: baseline;
-            gap: 0.5rem;
-            margin-bottom: 0.25rem;
-        }
-
-        .chat-username {
-            font-weight: 600;
-            color: var(--accent-blue);
-            font-size: 0.85rem;
-        }
-
-        .chat-time {
-            color: var(--text-muted);
-            font-size: 0.7rem;
-        }
-
-        .chat-text {
-            color: var(--text-primary);
-            font-size: 0.9rem;
-            word-wrap: break-word;
-        }
-
-        .viewer-chat-input {
-            display: flex;
-            gap: 0.5rem;
-            padding: 1rem;
-            border-top: 1px solid rgba(255,255,255,0.1);
-        }
-
-        .viewer-chat-input input {
-            flex: 1;
-            background: rgba(0,0,0,0.3);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 6px;
-            padding: 0.75rem;
-            color: var(--text-primary);
-            font-size: 0.9rem;
-        }
-
-        .viewer-chat-input input:focus {
-            outline: none;
-            border-color: var(--accent-blue);
-        }
-
-        .viewer-chat-input button {
-            background: var(--accent-blue);
-            border: none;
-            border-radius: 6px;
-            padding: 0.75rem 1rem;
-            color: white;
-            cursor: pointer;
-            font-weight: 500;
-        }
-
-        .viewer-chat-input button:hover {
-            background: #2563eb;
-        }
-
-        /* Moderation controls */
-        .chat-mod-btn {
-            background: none;
-            border: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            padding: 0.25rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-        }
-
-        .chat-mod-btn:hover {
-            background: rgba(255,255,255,0.1);
-            color: var(--accent-red, #ef4444);
-        }
-
-        .chat-username {
-            cursor: pointer;
-        }
-
-        .chat-username:hover {
-            text-decoration: underline;
-        }
-
-        .chat-system-message {
-            color: var(--text-muted);
-            font-style: italic;
-            text-align: center;
-            padding: 0.5rem;
-            font-size: 0.8rem;
-        }
-
-        .chat-ban-notice {
-            background: rgba(239, 68, 68, 0.1);
-            color: #ef4444;
-            padding: 0.5rem;
-            border-radius: 4px;
-            margin: 0.5rem 0;
-            font-size: 0.85rem;
-        }
-
-        .mod-menu {
-            position: absolute;
-            background: var(--surface-color);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            z-index: 1000;
-            min-width: 150px;
-        }
-
-        .mod-menu-item {
-            padding: 0.75rem 1rem;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .mod-menu-item:hover {
-            background: rgba(255,255,255,0.1);
-        }
-
-        .mod-menu-item.danger {
-            color: #ef4444;
-        }
-
-        .mod-badge {
-            background: var(--accent-blue);
-            color: white;
-            font-size: 0.65rem;
-            padding: 0.15rem 0.4rem;
-            border-radius: 3px;
-            margin-left: 0.25rem;
-        }
-
-        .viewer-chat-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .mod-settings-btn {
-            background: none;
-            border: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.8rem;
-        }
-
-        .mod-settings-btn:hover {
-            background: rgba(255,255,255,0.1);
-        }
-
         /* Stream offline state */
         .stream-offline {
             text-align: center;
@@ -712,22 +452,6 @@
         }
 
         /* Responsive */
-        @media (max-width: 900px) {
-            .viewer-container {
-                flex-direction: column;
-            }
-
-            .viewer-chat {
-                width: 100%;
-                height: 300px;
-            }
-
-            .viewer-video {
-                aspect-ratio: 16/9;
-                flex: none;
-            }
-        }
-
         @media (max-width: 600px) {
             .streams-grid {
                 grid-template-columns: 1fr;
@@ -742,32 +466,26 @@
 <body>
     <nav class="navbar">
         <div class="navbar-brand">
-            <a href="/dashboard" style="display: flex; align-items: center; gap: 0.5rem; color: inherit; text-decoration: none;">
+            <span style="display: flex; align-items: center; gap: 0.5rem; color: inherit;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
                 </svg>
                 Portal Gateway
-            </a>
+            </span>
             <span class="navbar-divider"></span>
             <span class="navbar-section">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                 </svg>
-                Streams
+                Live Streams
             </span>
         </div>
         <div class="navbar-menu">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/chat">Chat</a>
-            <a href="/streams" class="active">Streams</a>
-            <a href="/docs">API Docs</a>
-            <span id="username-display" style="color: var(--text-muted);"></span>
-            <a href="/logout">Logout</a>
+            <a href="/login">Sign In</a>
         </div>
     </nav>
 
     <div class="streams-container">
-
         <div class="streams-content">
             <div id="streams-loading" class="streams-loading">
                 <div class="spinner"></div>
@@ -813,9 +531,6 @@
                         <div class="stat-row"><span>Dropped:</span><span id="stat-dropped">--</span></div>
                         <div class="stat-row"><span>Total:</span><span id="stat-total">--</span></div>
                         <div class="stat-row"><span>Drop %:</span><span id="stat-drop-pct">--</span></div>
-                        <div class="stat-row" id="stat-public-key-row" style="display: none; border-top: 1px solid #444; margin-top: 4px; padding-top: 4px;">
-                            <span>API Key:</span><span id="stat-public-key" style="font-size: 0.65rem; word-break: break-all;">--</span>
-                        </div>
                     </div>
                 </div>
                 <div class="player-controls">
@@ -852,26 +567,11 @@
                 </div>
                 </div><!-- Close viewer-video-wrapper -->
             </div>
-            <div class="viewer-chat">
-                <div class="viewer-chat-header">
-                    <span>Stream Chat</span>
-                    <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">
-                        Bans
-                    </button>
-                </div>
-                <div class="viewer-chat-messages" id="chat-messages"></div>
-                <form class="viewer-chat-input" onsubmit="sendChatMessage(event)">
-                    <input type="text" id="chat-input" placeholder="Send a message..." autocomplete="off">
-                    <button type="submit">Send</button>
-                </form>
-            </div>
         </div>
     </div>
 
     <script>
-        let currentUser = null;
         let currentStream = null;
-        let chatWs = null;
         let hlsPlayer = null;
         let statsInterval = null;
 
@@ -897,9 +597,6 @@
             }
         };
 
-        /**
-         * Get HLS.js configuration based on buffer preset
-         */
         function getHlsConfig(bufferSetting) {
             const preset = bufferPresets[bufferSetting] || bufferPresets.normal;
             return {
@@ -910,9 +607,6 @@
             };
         }
 
-        /**
-         * Populate quality selector with available levels
-         */
         function populateQualityLevels(levels) {
             const select = document.getElementById('quality-selector');
             select.innerHTML = '<option value="-1">Auto</option>';
@@ -928,14 +622,9 @@
             });
         }
 
-        /**
-         * Update quality selector to show current level
-         */
         function updateQualityIndicator(level) {
             const select = document.getElementById('quality-selector');
-            // Only update if on Auto mode
             if (select.value === '-1' && hlsPlayer) {
-                // Highlight auto option to show current quality
                 const autoOption = select.options[0];
                 const levels = hlsPlayer.levels;
                 if (levels && levels[level]) {
@@ -945,33 +634,23 @@
             }
         }
 
-        /**
-         * Change video quality
-         */
         function changeQuality(level) {
             if (!hlsPlayer) return;
-
             level = parseInt(level);
             if (level === -1) {
-                hlsPlayer.currentLevel = -1; // Auto
+                hlsPlayer.currentLevel = -1;
                 hlsPlayer.loadLevel = -1;
             } else {
                 hlsPlayer.currentLevel = level;
             }
         }
 
-        /**
-         * Change buffer settings
-         */
         function changeBuffer(setting) {
             if (!hlsPlayer || !currentStream) return;
 
-            // Store current time
             const video = document.getElementById('stream-video');
             const wasPlaying = !video.paused;
-
-            // Recreate player with new settings - use public_key for viewing
-            const streamKey = currentStream.public_key || currentStream.stream_key;
+            const streamKey = currentStream.public_key;
             const hlsUrl = `/api/stream/${streamKey}/hls/index.m3u8`;
             const qualityLevel = hlsPlayer.currentLevel;
 
@@ -984,7 +663,6 @@
 
             hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
                 populateQualityLevels(data.levels);
-                // Restore quality setting
                 if (qualityLevel !== -1) {
                     hlsPlayer.currentLevel = qualityLevel;
                 }
@@ -998,34 +676,22 @@
             });
         }
 
-        /**
-         * Toggle stats overlay
-         */
         function toggleStats() {
             const stats = document.getElementById('player-stats');
-            if (stats.style.display === 'none') {
-                stats.style.display = 'block';
-            } else {
-                stats.style.display = 'none';
-            }
+            stats.style.display = stats.style.display === 'none' ? 'block' : 'none';
         }
 
-        /**
-         * Toggle fullscreen mode for the video wrapper (includes controls)
-         */
         function toggleFullscreen() {
             const wrapper = document.getElementById('video-wrapper');
             if (!wrapper) return;
 
             if (document.fullscreenElement || document.webkitFullscreenElement) {
-                // Exit fullscreen
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
                 } else if (document.webkitExitFullscreen) {
                     document.webkitExitFullscreen();
                 }
             } else {
-                // Enter fullscreen
                 if (wrapper.requestFullscreen) {
                     wrapper.requestFullscreen();
                 } else if (wrapper.webkitRequestFullscreen) {
@@ -1034,7 +700,6 @@
             }
         }
 
-        // Update fullscreen button text based on state
         document.addEventListener('fullscreenchange', updateFullscreenButton);
         document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
 
@@ -1052,36 +717,26 @@
                    </svg> Fullscreen`;
         }
 
-        /**
-         * Start stats update interval
-         */
         function startStatsUpdate() {
-            if (statsInterval) {
-                clearInterval(statsInterval);
-            }
+            if (statsInterval) clearInterval(statsInterval);
 
             statsInterval = setInterval(() => {
                 if (!hlsPlayer) return;
 
                 const video = document.getElementById('stream-video');
 
-                // Resolution, framerate, codec, bitrate
                 const level = hlsPlayer.currentLevel;
                 if (level >= 0 && hlsPlayer.levels[level]) {
                     const lvl = hlsPlayer.levels[level];
-                    document.getElementById('stat-resolution').textContent =
-                        `${lvl.width}x${lvl.height}`;
-                    document.getElementById('stat-bitrate').textContent =
-                        `${Math.round(lvl.bitrate / 1000)} kbps`;
+                    document.getElementById('stat-resolution').textContent = `${lvl.width}x${lvl.height}`;
+                    document.getElementById('stat-bitrate').textContent = `${Math.round(lvl.bitrate / 1000)} kbps`;
 
-                    // Framerate - from level attrs or video element
                     let fps = '--';
                     if (lvl.frameRate) {
                         fps = `${lvl.frameRate} fps`;
                     } else if (lvl.attrs && lvl.attrs['FRAME-RATE']) {
                         fps = `${parseFloat(lvl.attrs['FRAME-RATE']).toFixed(0)} fps`;
                     } else if (video.getVideoPlaybackQuality) {
-                        // Estimate from played frames
                         const quality = video.getVideoPlaybackQuality();
                         if (quality.totalVideoFrames > 0 && video.currentTime > 0) {
                             const estFps = quality.totalVideoFrames / video.currentTime;
@@ -1092,17 +747,14 @@
                     }
                     document.getElementById('stat-framerate').textContent = fps;
 
-                    // Codec - parse from codecs string
                     let codec = '--';
                     const codecs = lvl.codecs || (lvl.attrs && lvl.attrs.CODECS);
                     if (codecs) {
-                        // Parse codec string like "avc1.64001f,mp4a.40.2"
                         const parts = codecs.split(',');
                         const videoCodec = parts.find(c => c.startsWith('avc') || c.startsWith('hvc') || c.startsWith('hev') || c.startsWith('vp') || c.startsWith('av1'));
                         const audioCodec = parts.find(c => c.startsWith('mp4a') || c.startsWith('opus') || c.startsWith('ac-'));
 
                         if (videoCodec) {
-                            // Simplify codec names
                             if (videoCodec.startsWith('avc1')) codec = 'H.264';
                             else if (videoCodec.startsWith('hvc1') || videoCodec.startsWith('hev1')) codec = 'H.265';
                             else if (videoCodec.startsWith('vp9')) codec = 'VP9';
@@ -1110,10 +762,8 @@
                             else if (videoCodec.startsWith('av01')) codec = 'AV1';
                             else codec = videoCodec.split('.')[0].toUpperCase();
 
-                            // Add audio codec
                             if (audioCodec) {
-                                if (audioCodec.startsWith('mp4a.40.2')) codec += ' / AAC';
-                                else if (audioCodec.startsWith('mp4a')) codec += ' / AAC';
+                                if (audioCodec.startsWith('mp4a')) codec += ' / AAC';
                                 else if (audioCodec.startsWith('opus')) codec += ' / Opus';
                                 else if (audioCodec.startsWith('ac-3')) codec += ' / AC3';
                             }
@@ -1129,25 +779,20 @@
                     document.getElementById('stat-bitrate').textContent = '--';
                 }
 
-                // Buffer
                 if (video.buffered.length > 0) {
                     const bufferEnd = video.buffered.end(video.buffered.length - 1);
                     const bufferLength = bufferEnd - video.currentTime;
-                    document.getElementById('stat-buffer').textContent =
-                        `${bufferLength.toFixed(1)}s`;
+                    document.getElementById('stat-buffer').textContent = `${bufferLength.toFixed(1)}s`;
                 } else {
                     document.getElementById('stat-buffer').textContent = '--';
                 }
 
-                // Latency (difference between live edge and current position)
                 if (hlsPlayer.latency !== undefined) {
-                    document.getElementById('stat-latency').textContent =
-                        `${hlsPlayer.latency.toFixed(1)}s`;
+                    document.getElementById('stat-latency').textContent = `${hlsPlayer.latency.toFixed(1)}s`;
                 } else {
                     document.getElementById('stat-latency').textContent = '--';
                 }
 
-                // Dropped frames, total frames, drop percentage
                 if (video.getVideoPlaybackQuality) {
                     const quality = video.getVideoPlaybackQuality();
                     const dropped = quality.droppedVideoFrames;
@@ -1161,13 +806,9 @@
                     document.getElementById('stat-total').textContent = '--';
                     document.getElementById('stat-drop-pct').textContent = '--';
                 }
-
             }, 1000);
         }
 
-        /**
-         * Stop stats update interval
-         */
         function stopStatsUpdate() {
             if (statsInterval) {
                 clearInterval(statsInterval);
@@ -1177,50 +818,21 @@
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
-            await loadUserInfo();
             await loadStreams();
-
-            // Check if we should auto-open a stream (from dashboard redirect)
-            const hash = window.location.hash;
-            if (hash.startsWith('#watch-')) {
-                const streamId = hash.replace('#watch-', '');
-                if (streamId) {
-                    openStream(parseInt(streamId));
-                    // Clear the hash
-                    history.replaceState(null, '', window.location.pathname);
-                }
-            }
-
-            // Auto-refresh every 30 seconds
             setInterval(loadStreams, 30000);
         });
-
-        async function loadUserInfo() {
-            try {
-                const response = await fetch('/api/me', { credentials: 'include' });
-                if (response.status === 401) {
-                    window.location.href = '/login';
-                    return;
-                }
-                currentUser = await response.json();
-                document.getElementById('username-display').textContent = currentUser.nickname || currentUser.username;
-            } catch (error) {
-                console.error('Failed to load user:', error);
-            }
-        }
 
         async function loadStreams() {
             const loadingEl = document.getElementById('streams-loading');
             const gridEl = document.getElementById('streams-grid');
             const emptyEl = document.getElementById('streams-empty');
 
-            // Only show loading on first load
             if (gridEl.innerHTML === '') {
                 loadingEl.style.display = 'flex';
             }
 
             try {
-                const response = await fetch('/api/streams/public', { credentials: 'include' });
+                const response = await fetch('/api/streams/open');
                 const data = await response.json();
                 const streams = data.streams || [];
 
@@ -1246,10 +858,9 @@
         function renderStreamCard(stream) {
             const initial = (stream.owner_username || '?')[0].toUpperCase();
 
-            // Use dynamic thumbnail for live streams, static for offline
             let thumbnailUrl = stream.thumbnail_url;
             if (stream.is_live && stream.public_key) {
-                const cacheBuster = Math.floor(Date.now() / 15000); // Changes every 15 seconds
+                const cacheBuster = Math.floor(Date.now() / 15000);
                 thumbnailUrl = `/api/stream/${stream.public_key}/thumbnail?t=${cacheBuster}`;
             }
 
@@ -1263,15 +874,11 @@
                 : `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                    </svg>`;
+
             return `
-                <div class="stream-card ${stream.is_live ? '' : 'stream-offline'}" onclick="openStream(${stream.id})">
+                <div class="stream-card" onclick="openStream(${stream.id}, '${escapeHtml(stream.public_key || '')}', '${escapeHtml(stream.name)}', '${escapeHtml(stream.owner_username || 'Unknown')}', ${stream.is_live ? 'true' : 'false'})">
                     <div class="stream-thumbnail">
                         ${thumbnailContent}
-                        <button class="stream-popout-btn" onclick="openStreamNewWindow(${stream.id}, event)" title="Open in new window">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                            </svg>
-                        </button>
                         ${stream.is_live ? `
                             <div class="stream-live-badge">
                                 <span class="pulse"></span>
@@ -1298,134 +905,80 @@
             `;
         }
 
-        function openStreamNewWindow(streamId, event) {
-            // Prevent the card click from also triggering
-            if (event) {
-                event.stopPropagation();
+        function openStream(streamId, publicKey, name, broadcaster, isLive) {
+            currentStream = { id: streamId, public_key: publicKey, name: name, owner_username: broadcaster, is_live: isLive };
+
+            document.getElementById('viewer-title').textContent = name;
+            document.getElementById('viewer-broadcaster').textContent = broadcaster;
+            document.getElementById('viewer-avatar').textContent = (broadcaster || '?')[0].toUpperCase();
+
+            document.getElementById('viewer-overlay').classList.add('active');
+
+            const video = document.getElementById('stream-video');
+
+            if (!isLive) {
+                video.parentElement.innerHTML = `
+                    <div class="stream-offline">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                        <p>This stream is currently offline</p>
+                    </div>
+                `;
+                return;
             }
-            window.open(`/watch/${streamId}`, '_blank', 'width=1280,height=720');
-        }
 
-        async function openStream(streamId) {
-            try {
-                const response = await fetch(`/api/streams/${streamId}`, { credentials: 'include' });
-                const data = await response.json();
-                currentStream = data.stream;
+            const hlsUrl = `/api/stream/${publicKey}/hls/index.m3u8`;
 
-                if (!currentStream) {
-                    alert('Stream not found');
-                    return;
+            const qualitySelect = document.getElementById('quality-selector');
+            qualitySelect.innerHTML = '<option value="-1">Auto</option>';
+
+            if (Hls.isSupported()) {
+                if (hlsPlayer) {
+                    hlsPlayer.destroy();
                 }
 
-                // Update viewer UI
-                document.getElementById('viewer-title').textContent = currentStream.name;
-                document.getElementById('viewer-broadcaster').textContent = currentStream.owner_username || 'Unknown';
-                document.getElementById('viewer-avatar').textContent = (currentStream.owner_username || '?')[0].toUpperCase();
+                const bufferSetting = document.getElementById('buffer-selector').value;
+                const hlsConfig = getHlsConfig(bufferSetting);
 
-                // Clear previous chat
-                document.getElementById('chat-messages').innerHTML = '';
+                hlsPlayer = new Hls(hlsConfig);
+                hlsPlayer.loadSource(hlsUrl);
+                hlsPlayer.attachMedia(video);
 
-                // Show viewer
-                document.getElementById('viewer-overlay').classList.add('active');
+                hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                    populateQualityLevels(data.levels);
+                });
 
-                // Set up video
-                const video = document.getElementById('stream-video');
+                hlsPlayer.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+                    updateQualityIndicator(data.level);
+                });
 
-                if (!currentStream.is_live) {
-                    video.parentElement.innerHTML = `
-                        <div class="stream-offline">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                            </svg>
-                            <p>This stream is currently offline</p>
-                        </div>
-                    `;
-                } else {
-                    // Use HLS for playback - routed through Portal on port 443
-                    // Use public_key for viewing (read-only access)
-                    const streamKey = currentStream.public_key || currentStream.stream_key;
-                    const hlsUrl = `/api/stream/${streamKey}/hls/index.m3u8`;
+                startStatsUpdate();
 
-                    // Show public API key in stats overlay if available
-                    if (currentStream.public_key) {
-                        document.getElementById('stat-public-key').textContent = currentStream.public_key;
-                        document.getElementById('stat-public-key-row').style.display = 'flex';
-                    } else {
-                        document.getElementById('stat-public-key-row').style.display = 'none';
-                    }
-
-                    // Reset quality selector
-                    const qualitySelect = document.getElementById('quality-selector');
-                    qualitySelect.innerHTML = '<option value="-1">Auto</option>';
-
-                    if (Hls.isSupported()) {
-                        // Use hls.js - preferred for all browsers with MSE support
-                        if (hlsPlayer) {
-                            hlsPlayer.destroy();
-                        }
-
-                        const bufferSetting = document.getElementById('buffer-selector').value;
-                        const hlsConfig = getHlsConfig(bufferSetting);
-
-                        hlsPlayer = new Hls(hlsConfig);
-                        hlsPlayer.loadSource(hlsUrl);
-                        hlsPlayer.attachMedia(video);
-
-                        // Listen for manifest parsed to get quality levels
-                        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-                            populateQualityLevels(data.levels);
-                        });
-
-                        // Listen for level switched
-                        hlsPlayer.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
-                            updateQualityIndicator(data.level);
-                        });
-
-                        // Start stats update interval
-                        startStatsUpdate();
-
-                        document.querySelector('.player-controls').style.display = 'flex';
-                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        // Native HLS fallback (Safari) - limited controls
-                        video.src = hlsUrl;
-                        document.querySelector('.player-controls').style.display = 'none';
-                    } else {
-                        video.parentElement.innerHTML = `
-                            <div class="stream-offline">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                </svg>
-                                <p>Your browser doesn't support HLS playback</p>
-                            </div>
-                        `;
-                        document.querySelector('.player-controls').style.display = 'none';
-                    }
-                }
-
-                // Connect to chat using stream key (same auth as video)
-                const chatKey = currentStream.public_key || currentStream.stream_key;
-                if (chatKey) {
-                    connectChat(chatKey);
-                }
-
-            } catch (error) {
-                console.error('Failed to open stream:', error);
-                alert('Failed to load stream');
+                document.querySelector('.player-controls').style.display = 'flex';
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = hlsUrl;
+                document.querySelector('.player-controls').style.display = 'none';
+            } else {
+                video.parentElement.innerHTML = `
+                    <div class="stream-offline">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <p>Your browser doesn't support HLS playback</p>
+                    </div>
+                `;
+                document.querySelector('.player-controls').style.display = 'none';
             }
         }
 
         function closeViewer() {
             document.getElementById('viewer-overlay').classList.remove('active');
 
-            // Stop stats updates
             stopStatsUpdate();
 
-            // Hide stats overlay and reset public key display
             document.getElementById('player-stats').style.display = 'none';
-            document.getElementById('stat-public-key-row').style.display = 'none';
-            document.getElementById('stat-public-key').textContent = '--';
 
-            // Clean up video
             if (hlsPlayer) {
                 hlsPlayer.destroy();
                 hlsPlayer = null;
@@ -1437,296 +990,21 @@
                 video.src = '';
             }
 
-            // Reset quality selector
             const qualitySelect = document.getElementById('quality-selector');
             qualitySelect.innerHTML = '<option value="-1">Auto</option>';
-
-            // Disconnect chat
-            if (chatWs) {
-                chatWs.close();
-                chatWs = null;
-            }
 
             currentStream = null;
         }
 
-        function connectChat(streamKey) {
-            if (chatWs) {
-                chatWs.close();
-            }
-
-            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            chatWs = new WebSocket(`${protocol}//${location.host}/ws/chat`);
-
-            chatWs.onopen = () => {
-                // Use stream key for authentication (same as video playback)
-                chatWs.send(JSON.stringify({
-                    type: 'join',
-                    stream_key: streamKey
-                }));
-            };
-
-            chatWs.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                handleChatMessage(data);
-            };
-
-            chatWs.onclose = () => {
-                chatWs = null;
-            };
-        }
-
-        function handleChatMessage(data) {
-            const container = document.getElementById('chat-messages');
-            switch (data.type) {
-                case 'message':
-                    appendChatMessage(data);
-                    break;
-                case 'history':
-                    container.innerHTML = '';
-                    (data.messages || []).forEach(msg => appendChatMessage(msg, false));
-                    container.scrollTop = container.scrollHeight;
-                    break;
-                case 'user_banned':
-                    appendSystemMessage(`${data.username} has been banned by ${data.banned_by}${data.reason ? ': ' + data.reason : ''}`);
-                    break;
-                case 'ban_success':
-                    appendSystemMessage(`Successfully banned ${data.username}`);
-                    break;
-                case 'unban_success':
-                    appendSystemMessage(`Successfully unbanned ${data.username}`);
-                    break;
-                case 'bans_list':
-                    showBanListModal(data.bans);
-                    break;
-                case 'error':
-                    if (data.message) {
-                        appendSystemMessage(`Error: ${data.message}`, true);
-                    }
-                    break;
-                case 'channel_info':
-                    // Show mod button if user is stream owner
-                    if (currentStream && currentUser && currentStream.user_id === currentUser.id) {
-                        document.getElementById('mod-settings-btn').style.display = 'block';
-                    }
-                    break;
-            }
-        }
-
-        function appendSystemMessage(text, isError = false) {
-            const container = document.getElementById('chat-messages');
-            const div = document.createElement('div');
-            div.className = isError ? 'chat-ban-notice' : 'chat-system-message';
-            div.textContent = text;
-            container.appendChild(div);
-            container.scrollTop = container.scrollHeight;
-        }
-
-        function appendChatMessage(msg, scroll = true) {
-            const container = document.getElementById('chat-messages');
-            const div = document.createElement('div');
-            div.className = 'chat-message';
-
-            const time = formatTime(msg.created_at);
-            const displayName = msg.nickname || msg.username;
-
-            // Check if current user can moderate (stream owner or admin)
-            const canModerate = currentStream && currentUser && (
-                currentStream.user_id === currentUser.id ||
-                currentUser.role === 'admin' ||
-                currentUser.role === 'superadmin'
-            );
-
-            // Don't show ban button for own messages or stream owner
-            const showBanBtn = canModerate && msg.user_id !== currentUser.id &&
-                               msg.user_id !== currentStream.user_id;
-
-            const roleBadge = msg.role && msg.role !== 'user'
-                ? `<span class="mod-badge">${msg.role}</span>`
-                : '';
-
-            const banBtn = showBanBtn
-                ? `<button class="chat-mod-btn" onclick="banUser(${msg.user_id}, '${escapeHtml(displayName)}')" title="Ban user">Ban</button>`
-                : '';
-
-            div.innerHTML = `
-                <div class="chat-message-header">
-                    <span class="chat-username" onclick="showUserMenu(event, ${msg.user_id}, '${escapeHtml(displayName)}')">${escapeHtml(displayName)}${roleBadge}</span>
-                    <span style="flex: 1;"></span>
-                    ${banBtn}
-                    <span class="chat-time">${time}</span>
-                </div>
-                <div class="chat-text">${escapeHtml(msg.message)}</div>
-            `;
-
-            container.appendChild(div);
-            if (scroll) {
-                container.scrollTop = container.scrollHeight;
-            }
-        }
-
-        function sendChatMessage(event) {
-            event.preventDefault();
-
-            const input = document.getElementById('chat-input');
-            const message = input.value.trim();
-
-            if (!message || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
-
-            chatWs.send(JSON.stringify({
-                type: 'message',
-                message: message
-            }));
-
-            input.value = '';
-        }
-
-        // Moderation functions
-        function banUser(userId, username) {
-            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
-
-            const reason = prompt(`Ban ${username} from this stream's chat?\nEnter reason (optional):`);
-            if (reason === null) return; // Cancelled
-
-            chatWs.send(JSON.stringify({
-                type: 'ban',
-                user_id: userId,
-                reason: reason
-            }));
-        }
-
-        function unbanUser(userId) {
-            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
-
-            chatWs.send(JSON.stringify({
-                type: 'unban',
-                user_id: userId
-            }));
-        }
-
-        function showBanList() {
-            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
-
-            chatWs.send(JSON.stringify({
-                type: 'get_bans'
-            }));
-        }
-
-        function showBanListModal(bans) {
-            // Remove existing modal if any
-            const existing = document.getElementById('ban-list-modal');
-            if (existing) existing.remove();
-
-            const modal = document.createElement('div');
-            modal.id = 'ban-list-modal';
-            modal.style.cssText = `
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: rgba(0,0,0,0.8);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 1001;
-            `;
-
-            let banListHtml = bans.length === 0
-                ? '<p style="color: var(--text-muted);">No banned users</p>'
-                : bans.map(ban => `
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                        <div>
-                            <strong>${escapeHtml(ban.banned_username)}</strong>
-                            ${ban.reason ? `<br><small style="color: var(--text-muted);">Reason: ${escapeHtml(ban.reason)}</small>` : ''}
-                        </div>
-                        <button onclick="unbanUser(${ban.user_id}); document.getElementById('ban-list-modal').remove();"
-                                style="background: var(--accent-blue); border: none; padding: 0.5rem 1rem; border-radius: 4px; color: white; cursor: pointer;">
-                            Unban
-                        </button>
-                    </div>
-                `).join('');
-
-            modal.innerHTML = `
-                <div style="background: var(--surface-color); border-radius: 12px; width: 400px; max-width: 90vw; max-height: 80vh; overflow: hidden;">
-                    <div style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;">
-                        <h3 style="margin: 0;">Banned Users</h3>
-                        <button onclick="document.getElementById('ban-list-modal').remove()"
-                                style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">&times;</button>
-                    </div>
-                    <div style="max-height: 400px; overflow-y: auto;">
-                        ${banListHtml}
-                    </div>
-                </div>
-            `;
-
-            modal.addEventListener('click', (e) => {
-                if (e.target === modal) modal.remove();
-            });
-
-            document.body.appendChild(modal);
-        }
-
-        function showUserMenu(event, userId, username) {
-            event.stopPropagation();
-
-            // Don't show menu for self
-            if (currentUser && userId === currentUser.id) return;
-
-            // Remove existing menu
-            const existing = document.querySelector('.mod-menu');
-            if (existing) existing.remove();
-
-            // Check if can moderate
-            const canModerate = currentStream && currentUser && (
-                currentStream.user_id === currentUser.id ||
-                currentUser.role === 'admin' ||
-                currentUser.role === 'superadmin'
-            );
-
-            if (!canModerate || userId === currentStream.user_id) return;
-
-            const menu = document.createElement('div');
-            menu.className = 'mod-menu';
-            menu.style.left = event.pageX + 'px';
-            menu.style.top = event.pageY + 'px';
-
-            menu.innerHTML = `
-                <div class="mod-menu-item danger" onclick="banUser(${userId}, '${escapeHtml(username)}'); this.parentElement.remove();">
-                    Ban from chat
-                </div>
-            `;
-
-            document.body.appendChild(menu);
-
-            // Close menu on click outside
-            setTimeout(() => {
-                document.addEventListener('click', function closeMenu() {
-                    menu.remove();
-                    document.removeEventListener('click', closeMenu);
-                }, { once: true });
-            }, 0);
-        }
-
-        function formatTime(isoString) {
-            if (!isoString) return '';
-            let dateStr = isoString;
-            if (!dateStr.includes('+') && !dateStr.endsWith('Z')) {
-                dateStr = dateStr + 'Z';
-            }
-            const date = new Date(dateStr);
-            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        }
-
         function escapeHtml(text) {
             const div = document.createElement('div');
-            div.textContent = text || '';
+            div.textContent = text;
             return div.innerHTML;
         }
 
-        // Close viewer with Escape key
+        // Close viewer on Escape key
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && document.getElementById('viewer-overlay').classList.contains('active')) {
+            if (e.key === 'Escape') {
                 closeViewer();
             }
         });

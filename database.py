@@ -364,6 +364,8 @@ MIGRATIONS = [
     # Public key for read-only stream access (separate from private stream_key)
     "ALTER TABLE user_streams ADD COLUMN public_key TEXT",
     "CREATE INDEX IF NOT EXISTS idx_user_streams_public_key ON user_streams(public_key)",
+    # Allow unauthenticated public access to stream video
+    "ALTER TABLE user_streams ADD COLUMN allow_unauthenticated INTEGER DEFAULT 0",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1505,10 +1507,25 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    async def get_open_streams(self) -> list[dict]:
+        """Get streams that allow unauthenticated public access."""
+        query = """SELECT us.*, u.username as owner_username
+                   FROM user_streams us
+                   LEFT JOIN users u ON us.user_id = u.id
+                   WHERE us.is_public = 1 AND us.allow_unauthenticated = 1
+                   ORDER BY us.is_live DESC, us.viewer_count DESC, us.created_at DESC"""
+        cursor = await self.conn.execute(query)
+        rows = await cursor.fetchall()
+        streams = [dict(row) for row in rows]
+        for s in streams:
+            s.pop("stream_key", None)
+        return streams
+
     async def update_user_stream(self, stream_id: int, user_id: int = None, **kwargs) -> bool:
         """Update a user stream. If user_id is provided, verify ownership."""
         allowed_fields = {"name", "description", "is_public", "is_live", "viewer_count",
-                         "chat_channel_id", "thumbnail_url", "started_at", "ended_at"}
+                         "chat_channel_id", "thumbnail_url", "started_at", "ended_at",
+                         "allow_unauthenticated"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:

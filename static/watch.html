@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stream - Portal Gateway</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=23">
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link rel="stylesheet" href="/static/css/portal.css?v=24">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         body {
             margin: 0;
@@ -453,6 +453,8 @@
                     <div class="stat-row"><span>Buffer:</span><span id="stat-buffer">--</span></div>
                     <div class="stat-row"><span>Latency:</span><span id="stat-latency">--</span></div>
                     <div class="stat-row"><span>Dropped:</span><span id="stat-dropped">--</span></div>
+                    <div class="stat-row"><span>Total:</span><span id="stat-total">--</span></div>
+                    <div class="stat-row"><span>Drop %:</span><span id="stat-drop-pct">--</span></div>
                     <div class="stat-row" id="stat-public-key-row" style="display: none; border-top: 1px solid #444; margin-top: 4px; padding-top: 4px;">
                         <span>API Key:</span><span id="stat-public-key" style="font-size: 0.65rem; word-break: break-all;">--</span>
                     </div>
@@ -616,12 +618,8 @@
             const qualitySelect = document.getElementById('quality-selector');
             qualitySelect.innerHTML = '<option value="-1">Auto</option>';
 
-            if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                // Native HLS support (Safari) - limited controls
-                video.src = hlsUrl;
-                document.querySelector('.player-controls').style.display = 'none';
-            } else if (Hls.isSupported()) {
-                // Use hls.js with configurable settings
+            if (Hls.isSupported()) {
+                // Use hls.js - preferred for all browsers with MSE support
                 if (hlsPlayer) {
                     hlsPlayer.destroy();
                 }
@@ -648,6 +646,10 @@
                         console.error('HLS error:', data);
                     }
                 });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS fallback (Safari) - limited controls
+                video.src = hlsUrl;
+                document.querySelector('.player-controls').style.display = 'none';
             } else {
                 console.error('HLS not supported');
             }
@@ -781,12 +783,17 @@
                 document.getElementById('stat-latency').textContent = `${hlsPlayer.latency.toFixed(2)}s`;
             }
 
-            // Dropped frames and framerate
+            // Dropped frames, total frames, drop percentage, and framerate
             if (video.getVideoPlaybackQuality) {
                 const quality = video.getVideoPlaybackQuality();
-                document.getElementById('stat-dropped').textContent = quality.droppedVideoFrames;
+                const dropped = quality.droppedVideoFrames;
+                const total = quality.totalVideoFrames;
+                document.getElementById('stat-dropped').textContent = dropped;
+                document.getElementById('stat-total').textContent = total;
+                document.getElementById('stat-drop-pct').textContent =
+                    total > 0 ? `${(dropped / total * 100).toFixed(2)}%` : '0%';
                 if (video.currentTime > 0) {
-                    const fps = quality.totalVideoFrames / video.currentTime;
+                    const fps = total / video.currentTime;
                     document.getElementById('stat-framerate').textContent = `${fps.toFixed(1)} fps`;
                 }
             }
@@ -801,10 +808,18 @@
 
         function toggleFullscreen() {
             const wrapper = document.getElementById('video-wrapper');
-            if (document.fullscreenElement) {
-                document.exitFullscreen();
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                }
             } else {
-                wrapper.requestFullscreen();
+                if (wrapper.requestFullscreen) {
+                    wrapper.requestFullscreen();
+                } else if (wrapper.webkitRequestFullscreen) {
+                    wrapper.webkitRequestFullscreen();
+                }
             }
         }
 

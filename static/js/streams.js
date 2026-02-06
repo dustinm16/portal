@@ -130,7 +130,14 @@ function renderStreamCard(stream, isOwner = false) {
                     </div>
                     ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                     <div class="connection-actions">
-                        <button class="btn btn-sm btn-primary" onclick="showStreamDetails(${stream.id})">
+                        <button class="btn btn-sm btn-primary" onclick="viewStreamNewWindow(${stream.id}, event)">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Watch
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onclick="showStreamDetails(${stream.id})">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                             </svg>
@@ -296,6 +303,12 @@ async function showStreamDetails(streamId) {
                             <span>Public stream (visible to all users)</span>
                         </label>
                     </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" ${stream.allow_unauthenticated ? 'checked' : ''} onchange="toggleStreamUnauthenticated(${stream.id}, this.checked)">
+                            <span>Allow unauthenticated access (video visible on public /live page)</span>
+                        </label>
+                    </div>
                 </div>
 
                 ${stream.public_key ? `
@@ -374,6 +387,31 @@ async function toggleStreamPublic(streamId, isPublic) {
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
             body: JSON.stringify({ is_public: isPublic })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            alert(error.error || 'Failed to update stream');
+        } else {
+            loadUserStreams();
+        }
+    } catch (error) {
+        console.error('Failed to update stream:', error);
+        alert('Failed to update stream');
+    }
+}
+
+async function toggleStreamUnauthenticated(streamId, allowed) {
+    try {
+        // Enabling unauthenticated access implies public
+        const body = { allow_unauthenticated: allowed };
+        if (allowed) body.is_public = true;
+
+        const response = await fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body)
         });
 
         if (!response.ok) {

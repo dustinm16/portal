@@ -2138,6 +2138,23 @@ async def http_get_public_streams(request: web.Request) -> web.Response:
     return web.json_response({"streams": streams})
 
 
+async def http_get_open_streams(request: web.Request) -> web.Response:
+    """Get streams that allow unauthenticated public access.
+
+    No authentication required. Returns streams where
+    is_public=1 AND allow_unauthenticated=1.
+    Private stream_key is never included.
+    """
+    streams = await db.get_open_streams()
+    return web.json_response({"streams": streams})
+
+
+async def http_live_page(request: web.Request) -> web.Response:
+    """Serve the public live streams page (no auth required)."""
+    html = load_static_file("live.html")
+    return web.Response(text=html, content_type="text/html")
+
+
 async def http_stream_auth(request: web.Request) -> web.Response:
     """MediaMTX stream authentication hook.
 
@@ -2397,7 +2414,7 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
 
     # Check cache
     cache_key = stream["stream_key"]
-    now = time.time()
+    now = time()
     if cache_key in _thumbnail_cache:
         cached_time, cached_bytes = _thumbnail_cache[cache_key]
         if now - cached_time < _THUMBNAIL_CACHE_TTL:
@@ -5580,11 +5597,13 @@ async def security_headers_middleware(request: web.Request, handler):
     if 'text/html' in content_type:
         csp = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "img-src 'self' data: https:; "
             "font-src 'self' https://cdn.jsdelivr.net; "
-            "connect-src 'self' wss:;"
+            "connect-src 'self' wss:; "
+            "media-src 'self' blob:; "
+            "worker-src 'self' blob:; "
             "frame-ancestors 'self'; "
             "base-uri 'self'; "
             "form-action 'self';"
@@ -5697,6 +5716,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/streams", http_list_user_streams)
     app.router.add_post("/api/streams", http_create_user_stream)
     app.router.add_get("/api/streams/public", http_get_public_streams)
+    app.router.add_get("/api/streams/open", http_get_open_streams)
     app.router.add_get("/api/streams/{id}", http_get_user_stream)
     app.router.add_put("/api/streams/{id}", http_update_user_stream)
     app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
@@ -5745,6 +5765,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/vuln/nvd-api-key", http_vuln_set_nvd_api_key)
 
     # Web UI routes
+    app.router.add_get("/live", http_live_page)
     app.router.add_get("/login", http_login_page)
     app.router.add_post("/login", http_login_submit)
     app.router.add_get("/logout", http_logout)
