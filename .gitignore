@@ -14,6 +14,7 @@ env/
 
 # Secrets
 .invite_code
+.claude_test_creds
 certs/
 
 # IDE
@@ -21,6 +22,9 @@ certs/
 .vscode/
 *.swp
 *.swo
+
+# Uploads
+static/uploads/
 
 # OS
 .DS_Store
