@@ -521,9 +521,20 @@ async function deleteStream(streamId) {
 }
 
 /**
- * View a community stream - opens in a new window
+ * View a community stream - redirects to streams page
  */
 function viewStream(streamId) {
+    // Redirect to the streams page which has the full viewer
+    window.location.href = `/streams#watch-${streamId}`;
+}
+
+/**
+ * Open stream in a new window
+ */
+function viewStreamNewWindow(streamId, event) {
+    if (event) {
+        event.stopPropagation();
+    }
     window.open(`/watch/${streamId}`, '_blank', 'width=1280,height=720');
 }
 

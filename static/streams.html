@@ -187,6 +187,43 @@
             opacity: 1;
         }
 
+        .stream-popout-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background: rgba(0,0,0,0.7);
+            border: none;
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s, background 0.2s;
+            z-index: 10;
+        }
+
+        .stream-popout-btn svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .stream-card:hover .stream-popout-btn {
+            opacity: 1;
+        }
+
+        .stream-popout-btn:hover {
+            background: var(--accent-blue);
+        }
+
+        /* Move viewers badge when popout button is visible */
+        .stream-card:hover .stream-viewers {
+            top: 2.5rem;
+        }
+
         .stream-info {
             padding: 0.75rem;
         }
@@ -1135,6 +1172,17 @@
             await loadUserInfo();
             await loadStreams();
 
+            // Check if we should auto-open a stream (from dashboard redirect)
+            const hash = window.location.hash;
+            if (hash.startsWith('#watch-')) {
+                const streamId = hash.replace('#watch-', '');
+                if (streamId) {
+                    openStream(parseInt(streamId));
+                    // Clear the hash
+                    history.replaceState(null, '', window.location.pathname);
+                }
+            }
+
             // Auto-refresh every 30 seconds
             setInterval(loadStreams, 30000);
         });
@@ -1211,6 +1259,11 @@
                 <div class="stream-card ${stream.is_live ? '' : 'stream-offline'}" onclick="openStream(${stream.id})">
                     <div class="stream-thumbnail">
                         ${thumbnailContent}
+                        <button class="stream-popout-btn" onclick="openStreamNewWindow(${stream.id}, event)" title="Open in new window">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                        </button>
                         ${stream.is_live ? `
                             <div class="stream-live-badge">
                                 <span class="pulse"></span>
@@ -1237,13 +1290,15 @@
             `;
         }
 
-        async function openStream(streamId) {
-            // Open stream in a new window
+        function openStreamNewWindow(streamId, event) {
+            // Prevent the card click from also triggering
+            if (event) {
+                event.stopPropagation();
+            }
             window.open(`/watch/${streamId}`, '_blank', 'width=1280,height=720');
         }
 
-        // Legacy function kept for reference - viewer now opens in new window
-        async function openStreamInOverlay(streamId) {
+        async function openStream(streamId) {
             try {
                 const response = await fetch(`/api/streams/${streamId}`, { credentials: 'include' });
                 const data = await response.json();
