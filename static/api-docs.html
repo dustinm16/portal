@@ -719,7 +719,7 @@
                 <p>Stream live video using RTMPS, RTSPS, or WebRTC. Streams can be public (visible to all users) or private. Each stream gets an integrated chat channel for viewer interaction.</p>
 
                 <div class="alert alert-info">
-                    <strong>Architecture:</strong> Publishing uses a dedicated subdomain (<code>stream.dddvm.xyz</code>) for direct RTMPS access with Let's Encrypt TLS. Playback is proxied through Portal on port 443 via Cloudflare.
+                    <strong>Architecture:</strong> Publishing uses a dedicated subdomain (<code>stream.example.com</code>) for direct RTMPS access with Let's Encrypt TLS. Playback is proxied through Portal on port 443 via Cloudflare.
                 </div>
 
                 <h3>Streaming Configuration</h3>
@@ -727,23 +727,23 @@
                     <tr><th>Purpose</th><th>Host</th><th>URL Format</th></tr>
                     <tr>
                         <td><span class="param-name">RTMPS Publishing</span></td>
-                        <td>stream.dddvm.xyz:1936</td>
-                        <td><code>rtmps://stream.dddvm.xyz:1936/live</code></td>
+                        <td>stream.example.com:1936</td>
+                        <td><code>rtmps://stream.example.com:1936/live</code></td>
                     </tr>
                     <tr>
                         <td><span class="param-name">HLS Playback</span></td>
-                        <td>portal.dddvm.xyz:443</td>
-                        <td><code>https://portal.dddvm.xyz/api/stream/{stream_key}/hls/index.m3u8</code></td>
+                        <td>portal.example.com:443</td>
+                        <td><code>https://portal.example.com/api/stream/{stream_key}/hls/index.m3u8</code></td>
                     </tr>
                     <tr>
                         <td><span class="param-name">WebRTC Playback</span></td>
-                        <td>portal.dddvm.xyz:443</td>
-                        <td><code>https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whep</code></td>
+                        <td>portal.example.com:443</td>
+                        <td><code>https://portal.example.com/api/stream/{stream_key}/webrtc/whep</code></td>
                     </tr>
                     <tr>
                         <td><span class="param-name">WebRTC Publishing</span></td>
-                        <td>portal.dddvm.xyz:443</td>
-                        <td><code>https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whip</code></td>
+                        <td>portal.example.com:443</td>
+                        <td><code>https://portal.example.com/api/stream/{stream_key}/webrtc/whip</code></td>
                     </tr>
                 </table>
 
@@ -752,7 +752,7 @@
                 <ol style="color: var(--text-secondary); line-height: 1.8;">
                     <li>Go to <strong>Settings → Stream</strong></li>
                     <li>Set Service to <strong>Custom</strong></li>
-                    <li>Server: <code>rtmps://stream.dddvm.xyz:1936/live</code></li>
+                    <li>Server: <code>rtmps://stream.example.com:1936/live</code></li>
                     <li>Stream Key: Your stream key (e.g., <code>live_abc123...</code>)</li>
                     <li>Click OK and Start Streaming</li>
                 </ol>

@@ -6,7 +6,7 @@
 
 - **Protocol**: HTTPS only (TLS 1.2+)
 - **Port**: 443
-- **WebSocket**: WSS only (wss://portal.dddvm.xyz/ws/)
+- **WebSocket**: WSS only (wss://portal.example.com/ws/)
 - **HSTS**: Enabled with 1-year max-age
 
 ## Authentication
@@ -32,10 +32,10 @@ When authenticated with a stream key:
 **Example - Using stream key for API access:**
 ```bash
 # Check stream status using stream key
-curl -H "X-Stream-Key: live_abc123..." https://portal.dddvm.xyz/api/streams
+curl -H "X-Stream-Key: live_abc123..." https://portal.example.com/api/streams
 
 # Same result with Api-Key header
-curl -H "X-API-Key: portal_xxx..." https://portal.dddvm.xyz/api/streams
+curl -H "X-API-Key: portal_xxx..." https://portal.example.com/api/streams
 ```
 
 ---
@@ -190,8 +190,8 @@ Get current user information.
 ```json
 {
   "id": 1,
-  "username": "dustin",
-  "nickname": "Dustin",
+  "username": "john",
+  "nickname": "John",
   "role": "superadmin",
   "status": "online",
   "avatar": {"color": "#3b82f6", "emoji": null},
@@ -374,7 +374,7 @@ List user's remote connections.
       "type": "ssh",
       "host": "192.168.1.100",
       "port": 22,
-      "config": {"username": "dustin"},
+      "config": {"username": "john"},
       "icon": "terminal",
       "created_at": "2026-02-01T00:00:00Z"
     }
@@ -395,7 +395,7 @@ Create a new connection.
   "host": "192.168.1.100",
   "port": 22,
   "config": {
-    "username": "dustin",
+    "username": "john",
     "auth_method": "key"
   },
   "ssh_key_id": 1,
@@ -538,8 +538,8 @@ List all public (community) streams. Requires authentication.
     {
       "id": 1,
       "name": "Public Stream",
-      "owner_username": "dustin",
-      "owner_nickname": "Dustin",
+      "owner_username": "john",
+      "owner_nickname": "John",
       "public_key": "pub_xyz789...",
       "is_live": true,
       "viewer_count": 10,
@@ -676,11 +676,11 @@ Get stream information and playback URLs.
   "is_live": true,
   "is_public": true,
   "playback": {
-    "hls": "https://portal.dddvm.xyz/api/stream/pub_xyz789/hls/index.m3u8",
-    "webrtc_whep": "https://portal.dddvm.xyz/api/stream/pub_xyz789/webrtc/whep"
+    "hls": "https://portal.example.com/api/stream/pub_xyz789/hls/index.m3u8",
+    "webrtc_whep": "https://portal.example.com/api/stream/pub_xyz789/webrtc/whep"
   },
   "publish": {
-    "webrtc_whip": "https://portal.dddvm.xyz/api/stream/live_abc123/webrtc/whip"
+    "webrtc_whip": "https://portal.example.com/api/stream/live_abc123/webrtc/whip"
   }
 }
 ```
@@ -728,7 +728,7 @@ WebRTC WHIP endpoint for publishing.
 
 ### Streaming Configuration
 
-Portal Gateway provides a complete streaming solution with MediaMTX. Publishing uses a dedicated subdomain (`stream.dddvm.xyz`) for direct RTMPS access, while playback is proxied through Portal on port 443.
+Portal Gateway provides a complete streaming solution with MediaMTX. Publishing uses a dedicated subdomain (`stream.example.com`) for direct RTMPS access, while playback is proxied through Portal on port 443.
 
 **Key Types:**
 | Key | Format | Use Case |
@@ -741,42 +741,42 @@ Portal Gateway provides a complete streaming solution with MediaMTX. Publishing 
 **Publishing Options (requires private key `live_xxx`):**
 
 1. **RTMPS (Recommended for OBS)** - Direct connection with Let's Encrypt certificate
-   - Server: `rtmps://stream.dddvm.xyz:1936/live`
+   - Server: `rtmps://stream.example.com:1936/live`
    - Stream Key: Your private stream key from My Streams tab
    - Works with all versions of OBS Studio
 
 2. **WebRTC WHIP** - Works through port 443 (OBS 30.0+)
-   - URL: `https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whip`
+   - URL: `https://portal.example.com/api/stream/{stream_key}/webrtc/whip`
    - Service: WHIP in OBS settings
 
 **OBS Studio Settings (RTMPS - Recommended):**
 1. Go to Settings > Stream
 2. Service: Custom
-3. Server: `rtmps://stream.dddvm.xyz:1936/live`
+3. Server: `rtmps://stream.example.com:1936/live`
 4. Stream Key: Your private stream key (e.g., `live_abc123...`)
 
 **Playback URLs (accepts either key type):**
-- HLS: `https://portal.dddvm.xyz/api/stream/{key}/hls/index.m3u8`
-- WebRTC WHEP: `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whep`
+- HLS: `https://portal.example.com/api/stream/{key}/hls/index.m3u8`
+- WebRTC WHEP: `https://portal.example.com/api/stream/{key}/webrtc/whep`
 
 For public streams, share the `public_key` (`pub_xxx`) for playback URLs instead of the private key.
 
 **Using Stream Key for API Access:**
 ```bash
 # Your private stream key works as an API key for stream operations
-curl -H "X-Stream-Key: live_abc123..." https://portal.dddvm.xyz/api/streams
+curl -H "X-Stream-Key: live_abc123..." https://portal.example.com/api/streams
 ```
 
 **Network Architecture:**
 | Service | Host | Port | Description |
 |---------|------|------|-------------|
-| RTMPS Publishing | stream.dddvm.xyz | 1936 | Direct connection (Let's Encrypt TLS) |
-| HLS/WebRTC Playback | portal.dddvm.xyz | 443 | Proxied through Cloudflare |
-| Portal API | portal.dddvm.xyz | 443 | Proxied through Cloudflare |
+| RTMPS Publishing | stream.example.com | 1936 | Direct connection (Let's Encrypt TLS) |
+| HLS/WebRTC Playback | portal.example.com | 443 | Proxied through Cloudflare |
+| Portal API | portal.example.com | 443 | Proxied through Cloudflare |
 
 **TLS Certificates:**
-- `stream.dddvm.xyz` uses Let's Encrypt (auto-renewed via certbot)
-- `portal.dddvm.xyz` uses Cloudflare Origin CA
+- `stream.example.com` uses Let's Encrypt (auto-renewed via certbot)
+- `portal.example.com` uses Cloudflare Origin CA
 
 ---
 
@@ -942,10 +942,10 @@ Real-time chat.
 {"type": "channel_info", "name": "general", "description": "..."}
 {"type": "history", "messages": [...]}
 {"type": "users", "users": [...]}
-{"type": "message", "id": 1, "username": "dustin", "message": "Hello!", "role": "superadmin"}
+{"type": "message", "id": 1, "username": "john", "message": "Hello!", "role": "superadmin"}
 {"type": "user_joined", "username": "newuser"}
 {"type": "user_left", "username": "newuser"}
-{"type": "typing", "username": "dustin"}
+{"type": "typing", "username": "john"}
 {"type": "channel_cleared", "cleared_by": "admin", "message_count": 150}
 ```
 

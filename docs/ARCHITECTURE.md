@@ -8,7 +8,7 @@ Portal Gateway is a secure, authenticated gateway for home infrastructure that p
 2. **User Connections** - Personal authenticated access to external resources (SSH, VNC, Proxmox, etc.)
 3. **Community Features** - Chat, user management, and collaboration tools
 
-**Public Endpoint:** `https://portal.dddvm.xyz`
+**Public Endpoint:** `https://portal.example.com`
 
 ---
 
@@ -142,7 +142,7 @@ Permission Hierarchy:
 ## Directory Structure
 
 ```
-/home/dustin/scripts/portal/
+/opt/portal/
 ├── server.py              # Main aiohttp server (routes, handlers)
 ├── database.py            # SQLite async database layer
 ├── auth.py                # JWT/API key authentication
@@ -528,14 +528,14 @@ Portal Gateway is designed with privacy and security as core principles:
 # Server
 PORTAL_HOST=0.0.0.0
 PORTAL_PORT=443
-PORTAL_DOMAIN=portal.dddvm.xyz
+PORTAL_DOMAIN=portal.example.com
 
 # Security
 JWT_SECRET=<random-secret>
 INVITE_CODE_SEED=<random-seed>
 
 # Database
-DATABASE_PATH=/home/dustin/scripts/portal/portal.db
+DATABASE_PATH=/opt/portal/portal.db
 
 # SSL
 SSL_CERT=/path/to/cert.pem
@@ -559,9 +559,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=dustin
-WorkingDirectory=/home/dustin/scripts/portal
-ExecStart=/home/dustin/scripts/portal/venv/bin/python server.py serve
+User=portal
+WorkingDirectory=/opt/portal
+ExecStart=/opt/portal/venv/bin/python server.py serve
 Restart=always
 RestartSec=5
 
