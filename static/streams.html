@@ -1244,7 +1244,8 @@
         }
 
         function renderStreamCard(stream) {
-            const initial = (stream.owner_username || '?')[0].toUpperCase();
+            const displayName = stream.owner_nickname || stream.owner_username || 'Unknown';
+            const initial = displayName[0].toUpperCase();
 
             // Use dynamic thumbnail for live streams, static for offline
             let thumbnailUrl = stream.thumbnail_url;
@@ -1291,7 +1292,7 @@
                         ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                         <div class="stream-broadcaster">
                             <div class="stream-broadcaster-avatar">${initial}</div>
-                            ${escapeHtml(stream.owner_username || 'Unknown')}
+                            ${escapeHtml(displayName)}
                         </div>
                     </div>
                 </div>
@@ -1319,8 +1320,9 @@
 
                 // Update viewer UI
                 document.getElementById('viewer-title').textContent = currentStream.name;
-                document.getElementById('viewer-broadcaster').textContent = currentStream.owner_username || 'Unknown';
-                document.getElementById('viewer-avatar').textContent = (currentStream.owner_username || '?')[0].toUpperCase();
+                const broadcasterName = currentStream.owner_nickname || currentStream.owner_username || 'Unknown';
+                document.getElementById('viewer-broadcaster').textContent = broadcasterName;
+                document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
 
                 // Clear previous chat
                 document.getElementById('chat-messages').innerHTML = '';

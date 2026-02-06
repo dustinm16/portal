@@ -163,7 +163,7 @@ function renderStreamCard(stream, isOwner = false) {
                         <div class="connection-info">
                             <h4>${escapeHtml(stream.name)}</h4>
                             <span class="connection-type">
-                                by ${escapeHtml(stream.owner_username || 'Unknown')}
+                                by ${escapeHtml(stream.owner_nickname || stream.owner_username || 'Unknown')}
                             </span>
                         </div>
                     </div>

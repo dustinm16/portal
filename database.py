@@ -366,6 +366,21 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_user_streams_public_key ON user_streams(public_key)",
     # Allow unauthenticated public access to stream video
     "ALTER TABLE user_streams ADD COLUMN allow_unauthenticated INTEGER DEFAULT 0",
+    # VOD storage - per-user SFTP configuration for remote VOD files
+    """CREATE TABLE IF NOT EXISTS vod_storage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL UNIQUE,
+        name TEXT NOT NULL DEFAULT 'My VOD Storage',
+        host TEXT NOT NULL,
+        port INTEGER DEFAULT 22,
+        username TEXT NOT NULL,
+        auth_method TEXT NOT NULL DEFAULT 'password',
+        remote_path TEXT NOT NULL DEFAULT '/home/user/vods',
+        config TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1444,7 +1459,7 @@ class Database:
     async def get_user_streams(self, user_id: int) -> list[dict]:
         """Get all streams for a user."""
         cursor = await self.conn.execute(
-            """SELECT us.*, u.username as owner_username, c.name as chat_channel_name
+            """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname, c.name as chat_channel_name
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
                LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
@@ -1458,7 +1473,7 @@ class Database:
     async def get_user_stream(self, stream_id: int) -> Optional[dict]:
         """Get a specific stream by ID."""
         cursor = await self.conn.execute(
-            """SELECT us.*, u.username as owner_username, c.name as chat_channel_name
+            """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname, c.name as chat_channel_name
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
                LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
@@ -1471,7 +1486,7 @@ class Database:
     async def get_stream_by_key(self, stream_key: str) -> Optional[dict]:
         """Get a stream by its private stream key (for publishing authentication)."""
         cursor = await self.conn.execute(
-            """SELECT us.*, u.username as owner_username
+            """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
                WHERE us.stream_key = ?""",
@@ -1483,7 +1498,7 @@ class Database:
     async def get_stream_by_public_key(self, public_key: str) -> Optional[dict]:
         """Get a stream by its public key (for viewing access)."""
         cursor = await self.conn.execute(
-            """SELECT us.*, u.username as owner_username
+            """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
                WHERE us.public_key = ?""",
@@ -1494,7 +1509,7 @@ class Database:
 
     async def get_public_streams(self, live_only: bool = False) -> list[dict]:
         """Get all public streams, optionally only live ones."""
-        query = """SELECT us.*, u.username as owner_username, c.name as chat_channel_name
+        query = """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname, c.name as chat_channel_name
                    FROM user_streams us
                    LEFT JOIN users u ON us.user_id = u.id
                    LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
@@ -1509,7 +1524,7 @@ class Database:
 
     async def get_open_streams(self) -> list[dict]:
         """Get streams that allow unauthenticated public access."""
-        query = """SELECT us.*, u.username as owner_username
+        query = """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                    FROM user_streams us
                    LEFT JOIN users u ON us.user_id = u.id
                    WHERE us.is_public = 1 AND us.allow_unauthenticated = 1
@@ -1661,7 +1676,7 @@ class Database:
     async def get_stream_by_chat_channel(self, channel_id: int) -> Optional[dict]:
         """Get a stream by its chat channel ID."""
         cursor = await self.conn.execute(
-            """SELECT us.*, u.username as owner_username
+            """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                FROM user_streams us
                JOIN users u ON us.user_id = u.id
                WHERE us.chat_channel_id = ?""",
@@ -1669,6 +1684,65 @@ class Database:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    # VOD Storage operations
+    async def get_vod_storage(self, user_id: int) -> Optional[dict]:
+        """Get VOD storage config for a user."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM vod_storage WHERE user_id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def save_vod_storage(self, user_id: int, **kwargs) -> int:
+        """Create or update VOD storage config (upsert)."""
+        existing = await self.get_vod_storage(user_id)
+        now = datetime.now(timezone.utc).isoformat()
+
+        if existing:
+            allowed = {"name", "host", "port", "username", "auth_method",
+                       "remote_path", "config"}
+            updates = {k: v for k, v in kwargs.items() if k in allowed}
+            updates["updated_at"] = now
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [user_id]
+            await self.conn.execute(
+                f"UPDATE vod_storage SET {set_clause} WHERE user_id = ?",
+                values
+            )
+            await self.conn.commit()
+            return existing["id"]
+        else:
+            fields = {
+                "user_id": user_id,
+                "name": kwargs.get("name", "My VOD Storage"),
+                "host": kwargs["host"],
+                "port": kwargs.get("port", 22),
+                "username": kwargs["username"],
+                "auth_method": kwargs.get("auth_method", "password"),
+                "remote_path": kwargs.get("remote_path", "/home/user/vods"),
+                "config": kwargs.get("config", "{}"),
+                "created_at": now,
+                "updated_at": now,
+            }
+            columns = ", ".join(fields.keys())
+            placeholders = ", ".join("?" for _ in fields)
+            cursor = await self.conn.execute(
+                f"INSERT INTO vod_storage ({columns}) VALUES ({placeholders})",
+                list(fields.values())
+            )
+            await self.conn.commit()
+            return cursor.lastrowid
+
+    async def delete_vod_storage(self, user_id: int) -> bool:
+        """Delete VOD storage config for a user."""
+        cursor = await self.conn.execute(
+            "DELETE FROM vod_storage WHERE user_id = ?",
+            (user_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # Chat/Forum operations
     async def get_chat_channels(self) -> list[dict]:

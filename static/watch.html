@@ -557,8 +557,9 @@
 
                 document.title = `${streamData.name} - Portal Gateway`;
                 document.getElementById('viewer-title').textContent = streamData.name;
-                document.getElementById('viewer-broadcaster').textContent = streamData.owner_username || 'Unknown';
-                document.getElementById('viewer-avatar').textContent = (streamData.owner_username || '?')[0].toUpperCase();
+                const broadcasterName = streamData.owner_nickname || streamData.owner_username || 'Unknown';
+                document.getElementById('viewer-broadcaster').textContent = broadcasterName;
+                document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
 
                 if (streamData.is_live) {
                     document.getElementById('live-indicator').style.display = 'flex';

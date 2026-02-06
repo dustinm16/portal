@@ -277,6 +277,7 @@
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#streams">User Streams</a></li>
                     <li><a href="#encoder-settings">Encoder Settings</a></li>
+                    <li><a href="#vods">VOD Storage</a></li>
                     <li><a href="#users">User Management</a></li>
                 </ul>
                 <h4>Security</h4>
@@ -1083,6 +1084,129 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 <span class="comment">// Service: WHIP</span>
 <span class="comment">// Server: https://portal.example.com/api/stream/{stream_key}/webrtc/whip</span>
 <span class="comment">// Bearer Token: (leave empty - key is in URL)</span></pre>
+                </div>
+
+                <!-- VOD Storage -->
+                <h2 id="vods">VOD Storage</h2>
+                <p>Manage remote SFTP storage for recorded VODs (MKV files). Each user configures their own storage server.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods/storage</span>
+                        <span class="endpoint-desc">Get storage configuration</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the user's SFTP storage configuration. Passwords and private keys are redacted.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  "storage": {
+    "host": "storage.example.com",
+    "port": 22,
+    "username": "user",
+    "auth_method": "password",
+    "remote_path": "/home/user/vods",
+    "has_password": true,
+    "has_key": false
+  }
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/vods/storage</span>
+                        <span class="endpoint-desc">Save storage configuration</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">host</span></td><td><span class="param-type">string</span></td><td>SFTP server hostname</td></tr>
+                            <tr><td><span class="param-name">port</span></td><td><span class="param-type">integer</span></td><td>SSH port (default: 22)</td></tr>
+                            <tr><td><span class="param-name">username</span></td><td><span class="param-type">string</span></td><td>SSH username</td></tr>
+                            <tr><td><span class="param-name">auth_method</span></td><td><span class="param-type">string</span></td><td>"password" or "key"</td></tr>
+                            <tr><td><span class="param-name">password</span></td><td><span class="param-type">string</span></td><td>SSH password (if auth_method=password)</td></tr>
+                            <tr><td><span class="param-name">private_key</span></td><td><span class="param-type">string</span></td><td>SSH private key PEM (if auth_method=key)</td></tr>
+                            <tr><td><span class="param-name">remote_path</span></td><td><span class="param-type">string</span></td><td>Path to VOD directory on remote server</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/vods/storage</span>
+                        <span class="endpoint-desc">Remove storage configuration</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Removes the SFTP storage configuration. Does not delete any remote files.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/vods/storage/test</span>
+                        <span class="endpoint-desc">Test SFTP connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Tests the SFTP connection with the provided credentials and reports how many MKV files were found.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods</span>
+                        <span class="endpoint-desc">List VOD files</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Lists MKV files in the user's remote storage directory. Returns 404 if no storage is configured.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">sort</span></td><td><span class="param-type">string</span></td><td>Sort by: name, size, modified (default: modified)</td></tr>
+                            <tr><td><span class="param-name">order</span></td><td><span class="param-type">string</span></td><td>asc or desc (default: desc)</td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  "files": [
+    {
+      "name": "stream-2026-02-06.mkv",
+      "size": 1073741824,
+      "modified": 1738800000
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vods/download/{filename}</span>
+                        <span class="endpoint-desc">Download a VOD file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Streams the specified MKV file from remote storage. Only <code>.mkv</code> files are allowed. Path traversal is blocked.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/vods/{filename}</span>
+                        <span class="endpoint-desc">Delete a VOD file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Deletes the specified MKV file from remote storage. Only <code>.mkv</code> files can be deleted.</p>
+                    </div>
                 </div>
 
                 <!-- Users -->

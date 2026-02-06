@@ -856,7 +856,8 @@
         }
 
         function renderStreamCard(stream) {
-            const initial = (stream.owner_username || '?')[0].toUpperCase();
+            const displayName = stream.owner_nickname || stream.owner_username || 'Unknown';
+            const initial = displayName[0].toUpperCase();
 
             let thumbnailUrl = stream.thumbnail_url;
             if (stream.is_live && stream.public_key) {
@@ -876,7 +877,7 @@
                    </svg>`;
 
             return `
-                <div class="stream-card" onclick="openStream(${stream.id}, '${escapeHtml(stream.public_key || '')}', '${escapeHtml(stream.name)}', '${escapeHtml(stream.owner_username || 'Unknown')}', ${stream.is_live ? 'true' : 'false'})">
+                <div class="stream-card" onclick="openStream(${stream.id}, '${escapeHtml(stream.public_key || '')}', '${escapeHtml(stream.name)}', '${escapeHtml(displayName)}', ${stream.is_live ? 'true' : 'false'})">
                     <div class="stream-thumbnail">
                         ${thumbnailContent}
                         ${stream.is_live ? `
@@ -898,7 +899,7 @@
                         ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                         <div class="stream-broadcaster">
                             <div class="stream-broadcaster-avatar">${initial}</div>
-                            ${escapeHtml(stream.owner_username || 'Unknown')}
+                            ${escapeHtml(displayName)}
                         </div>
                     </div>
                 </div>

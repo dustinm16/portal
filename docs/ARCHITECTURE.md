@@ -189,6 +189,8 @@ Permission Hierarchy:
 │       ├── portal.js      # Core utilities
 │       ├── dashboard.js   # Dashboard logic
 │       ├── admin.js       # Admin panel
+│       ├── streams.js     # Stream management
+│       ├── vods.js        # VOD file manager
 │       └── ...
 │
 ├── docs/                  # Documentation
@@ -276,6 +278,22 @@ CREATE TABLE service_logs (
     level TEXT DEFAULT 'info',       -- debug, info, warn, error
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+);
+
+-- VOD remote storage config (per-user SFTP)
+CREATE TABLE vod_storage (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT 'My VOD Storage',
+    host TEXT NOT NULL,
+    port INTEGER DEFAULT 22,
+    username TEXT NOT NULL,
+    auth_method TEXT NOT NULL DEFAULT 'password',
+    remote_path TEXT NOT NULL DEFAULT '/home/user/vods',
+    config TEXT DEFAULT '{}',              -- JSON: password or private_key
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- API keys for programmatic access
@@ -372,6 +390,18 @@ POST /api/services/:id/start    - Start managed service
 POST /api/services/:id/stop     - Stop managed service
 POST /api/services/:id/restart  - Restart managed service
 GET  /api/services/:id/logs     - Get managed service logs
+```
+
+### VOD Storage (Personal)
+
+```
+GET  /api/vods/storage               - Get storage config
+POST /api/vods/storage               - Save storage config
+DELETE /api/vods/storage              - Remove storage config
+POST /api/vods/storage/test          - Test SFTP connection
+GET  /api/vods                       - List MKV files
+GET  /api/vods/download/{filename}   - Download VOD file
+DELETE /api/vods/{filename}          - Delete VOD file
 ```
 
 ### Chat

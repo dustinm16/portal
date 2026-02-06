@@ -2928,6 +2928,364 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
 
 
 # =============================================================================
+# VOD Manager API
+# =============================================================================
+
+
+async def _connect_vod_sftp(user_id: int):
+    """Connect to user's VOD SFTP storage. Returns (conn, sftp, None) or (None, None, error)."""
+    storage = await db.get_vod_storage(user_id)
+    if not storage:
+        return None, None, "No VOD storage configured"
+
+    config = json.loads(storage.get("config", "{}"))
+    connect_opts = {
+        "host": storage["host"],
+        "port": storage["port"] or 22,
+        "username": storage["username"],
+        "known_hosts": None,
+    }
+
+    if storage["auth_method"] == "key":
+        key_content = config.get("private_key")
+        if key_content:
+            connect_opts["client_keys"] = [asyncssh.import_private_key(key_content)]
+        else:
+            return None, None, "No private key configured"
+    elif storage["auth_method"] == "password":
+        connect_opts["password"] = config.get("password", "")
+
+    try:
+        conn = await asyncio.wait_for(asyncssh.connect(**connect_opts), timeout=10)
+        sftp = await conn.start_sftp_client()
+        return conn, sftp, None
+    except asyncio.TimeoutError:
+        return None, None, "Connection timed out"
+    except asyncssh.Error as e:
+        return None, None, f"SSH error: {e}"
+    except OSError as e:
+        return None, None, f"Connection error: {e}"
+
+
+async def http_get_vod_storage(request: web.Request) -> web.Response:
+    """Get current user's VOD storage config (password/key redacted)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    storage = await db.get_vod_storage(token.user_id)
+    if not storage:
+        return web.json_response({"storage": None})
+
+    # Redact sensitive fields
+    config = json.loads(storage.get("config", "{}"))
+    redacted = dict(storage)
+    redacted_config = {}
+    if config.get("password"):
+        redacted_config["password"] = "***"
+    if config.get("private_key"):
+        redacted_config["private_key"] = "***"
+    redacted["config"] = json.dumps(redacted_config)
+    redacted["has_password"] = bool(config.get("password"))
+    redacted["has_key"] = bool(config.get("private_key"))
+
+    return web.json_response({"storage": redacted})
+
+
+async def http_save_vod_storage(request: web.Request) -> web.Response:
+    """Create or update VOD storage config."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    host = data.get("host", "").strip()
+    username = data.get("username", "").strip()
+    remote_path = data.get("remote_path", "").strip()
+    auth_method = data.get("auth_method", "password")
+
+    if not host:
+        return web.json_response({"error": "Host is required"}, status=400)
+    if not username:
+        return web.json_response({"error": "Username is required"}, status=400)
+    if not remote_path:
+        return web.json_response({"error": "Remote path is required"}, status=400)
+    if auth_method not in ("password", "key"):
+        return web.json_response({"error": "Invalid auth method"}, status=400)
+
+    port = data.get("port", 22)
+    try:
+        port = int(port)
+        if port < 1 or port > 65535:
+            raise ValueError
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid port"}, status=400)
+
+    # Build config JSON with sensitive data
+    config = {}
+    if auth_method == "password":
+        password = data.get("password", "")
+        # If password is "***", keep existing password
+        if password == "***":
+            existing = await db.get_vod_storage(token.user_id)
+            if existing:
+                existing_config = json.loads(existing.get("config", "{}"))
+                password = existing_config.get("password", "")
+        config["password"] = password
+    elif auth_method == "key":
+        private_key = data.get("private_key", "")
+        # If key is "***", keep existing key
+        if private_key == "***":
+            existing = await db.get_vod_storage(token.user_id)
+            if existing:
+                existing_config = json.loads(existing.get("config", "{}"))
+                private_key = existing_config.get("private_key", "")
+        config["private_key"] = private_key
+
+    storage_id = await db.save_vod_storage(
+        token.user_id,
+        name=data.get("name", "My VOD Storage"),
+        host=host,
+        port=port,
+        username=username,
+        auth_method=auth_method,
+        remote_path=remote_path,
+        config=json.dumps(config),
+    )
+
+    return web.json_response({"id": storage_id, "message": "Storage config saved"})
+
+
+async def http_delete_vod_storage(request: web.Request) -> web.Response:
+    """Delete VOD storage config."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    deleted = await db.delete_vod_storage(token.user_id)
+    if not deleted:
+        return web.json_response({"error": "No storage config found"}, status=404)
+    return web.json_response({"message": "Storage config deleted"})
+
+
+async def http_test_vod_storage(request: web.Request) -> web.Response:
+    """Test SFTP connection with provided or saved credentials."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    host = data.get("host", "").strip()
+    username = data.get("username", "").strip()
+    remote_path = data.get("remote_path", "").strip()
+    auth_method = data.get("auth_method", "password")
+    port = int(data.get("port", 22))
+
+    if not host or not username:
+        return web.json_response({"error": "Host and username are required"}, status=400)
+
+    connect_opts = {
+        "host": host,
+        "port": port,
+        "username": username,
+        "known_hosts": None,
+    }
+
+    # Resolve credentials (may need to fetch existing if "***")
+    if auth_method == "key":
+        private_key = data.get("private_key", "")
+        if private_key == "***":
+            existing = await db.get_vod_storage(token.user_id)
+            if existing:
+                existing_config = json.loads(existing.get("config", "{}"))
+                private_key = existing_config.get("private_key", "")
+        if private_key:
+            try:
+                connect_opts["client_keys"] = [asyncssh.import_private_key(private_key)]
+            except asyncssh.KeyImportError as e:
+                return web.json_response({"success": False, "error": f"Invalid private key: {e}"})
+    else:
+        password = data.get("password", "")
+        if password == "***":
+            existing = await db.get_vod_storage(token.user_id)
+            if existing:
+                existing_config = json.loads(existing.get("config", "{}"))
+                password = existing_config.get("password", "")
+        connect_opts["password"] = password
+
+    conn = None
+    try:
+        conn = await asyncio.wait_for(asyncssh.connect(**connect_opts), timeout=10)
+        sftp = await conn.start_sftp_client()
+
+        # Try to list the remote path
+        if remote_path:
+            files = await sftp.listdir(remote_path)
+            mkv_count = sum(1 for f in files if f.lower().endswith(".mkv"))
+            return web.json_response({
+                "success": True,
+                "message": f"Connected successfully. Found {mkv_count} MKV file(s) in {remote_path}."
+            })
+        else:
+            return web.json_response({"success": True, "message": "Connected successfully."})
+
+    except asyncio.TimeoutError:
+        return web.json_response({"success": False, "error": "Connection timed out"})
+    except asyncssh.Error as e:
+        return web.json_response({"success": False, "error": f"SSH error: {e}"})
+    except OSError as e:
+        return web.json_response({"success": False, "error": f"Connection failed: {e}"})
+    finally:
+        if conn:
+            conn.close()
+
+
+async def http_list_vods(request: web.Request) -> web.Response:
+    """List MKV files on user's remote SFTP storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    storage = await db.get_vod_storage(token.user_id)
+    if not storage:
+        return web.json_response({"error": "No VOD storage configured"}, status=404)
+
+    conn, sftp, error = await _connect_vod_sftp(token.user_id)
+    if error:
+        return web.json_response({"error": error}, status=502)
+
+    try:
+        remote_path = storage["remote_path"]
+        entries = await sftp.listdir(remote_path)
+        files = []
+
+        for name in entries:
+            if not name.lower().endswith(".mkv"):
+                continue
+            try:
+                full_path = f"{remote_path.rstrip('/')}/{name}"
+                attrs = await sftp.stat(full_path)
+                files.append({
+                    "name": name,
+                    "size": attrs.size or 0,
+                    "modified": attrs.mtime or 0,
+                })
+            except (asyncssh.SFTPError, OSError):
+                continue
+
+        # Sort by modified time descending (newest first)
+        sort_by = request.query.get("sort", "date")
+        reverse = request.query.get("order", "desc") == "desc"
+        if sort_by == "name":
+            files.sort(key=lambda f: f["name"].lower(), reverse=reverse)
+        elif sort_by == "size":
+            files.sort(key=lambda f: f["size"], reverse=reverse)
+        else:
+            files.sort(key=lambda f: f["modified"], reverse=reverse)
+
+        return web.json_response({"files": files, "path": remote_path})
+    except asyncssh.SFTPError as e:
+        return web.json_response({"error": f"SFTP error: {e}"}, status=502)
+    except OSError as e:
+        return web.json_response({"error": f"Connection error: {e}"}, status=502)
+    finally:
+        conn.close()
+
+
+async def http_download_vod(request: web.Request) -> web.Response:
+    """Stream-download a VOD file from remote SFTP storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    filename = request.match_info["filename"]
+
+    # Security: prevent path traversal
+    if ".." in filename or filename.startswith("/"):
+        return web.json_response({"error": "Invalid filename"}, status=400)
+    if not filename.lower().endswith(".mkv"):
+        return web.json_response({"error": "Only MKV files can be downloaded"}, status=400)
+
+    storage = await db.get_vod_storage(token.user_id)
+    if not storage:
+        return web.json_response({"error": "No VOD storage configured"}, status=404)
+
+    conn, sftp, error = await _connect_vod_sftp(token.user_id)
+    if error:
+        return web.json_response({"error": error}, status=502)
+
+    try:
+        remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
+        attrs = await sftp.stat(remote_path)
+
+        response = web.StreamResponse()
+        response.content_type = "video/x-matroska"
+        response.content_length = attrs.size
+        safe_name = filename.split("/")[-1].replace('"', '\\"')
+        response.headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        await response.prepare(request)
+
+        CHUNK_SIZE = 262144  # 256 KB
+        async with sftp.open(remote_path, "rb") as f:
+            while True:
+                chunk = await f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                await response.write(chunk)
+
+        await response.write_eof()
+        return response
+    except asyncssh.SFTPError as e:
+        return web.json_response({"error": f"SFTP error: {e}"}, status=502)
+    except OSError as e:
+        return web.json_response({"error": f"Download error: {e}"}, status=502)
+    finally:
+        conn.close()
+
+
+async def http_delete_vod(request: web.Request) -> web.Response:
+    """Delete a VOD file from remote SFTP storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    filename = request.match_info["filename"]
+
+    # Security: prevent path traversal
+    if ".." in filename or filename.startswith("/"):
+        return web.json_response({"error": "Invalid filename"}, status=400)
+    if not filename.lower().endswith(".mkv"):
+        return web.json_response({"error": "Only MKV files can be deleted"}, status=400)
+
+    storage = await db.get_vod_storage(token.user_id)
+    if not storage:
+        return web.json_response({"error": "No VOD storage configured"}, status=404)
+
+    conn, sftp, error = await _connect_vod_sftp(token.user_id)
+    if error:
+        return web.json_response({"error": error}, status=502)
+
+    try:
+        remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
+        await sftp.remove(remote_path)
+        return web.json_response({"message": f"Deleted {filename}"})
+    except asyncssh.SFTPError as e:
+        return web.json_response({"error": f"SFTP error: {e}"}, status=502)
+    except OSError as e:
+        return web.json_response({"error": f"Delete error: {e}"}, status=502)
+    finally:
+        conn.close()
+
+
+# =============================================================================
 # Vulnerability Scanner API
 # =============================================================================
 
@@ -5753,6 +6111,15 @@ def create_app() -> web.Application:
     app.router.add_post("/api/shodan/api-key", http_shodan_set_api_key)
     app.router.add_get("/api/shodan/lookup/{ip}", http_shodan_lookup)
     app.router.add_get("/api/shodan/search", http_shodan_search)
+
+    # VOD Manager
+    app.router.add_get("/api/vods/storage", http_get_vod_storage)
+    app.router.add_post("/api/vods/storage", http_save_vod_storage)
+    app.router.add_delete("/api/vods/storage", http_delete_vod_storage)
+    app.router.add_post("/api/vods/storage/test", http_test_vod_storage)
+    app.router.add_get("/api/vods", http_list_vods)
+    app.router.add_get("/api/vods/download/{filename:.*}", http_download_vod)
+    app.router.add_delete("/api/vods/{filename:.*}", http_delete_vod)
 
     # Vulnerability Scanner (admin only)
     app.router.add_get("/api/vuln/scan/{host}", http_vuln_scan_host)

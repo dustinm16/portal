@@ -401,6 +401,8 @@ function switchTab(tabName) {
     // Load content for the tab if needed
     if (tabName === 'my-connections') {
         loadInlineConnections();
+    } else if (tabName === 'my-vods') {
+        loadVods();
     }
 }
 

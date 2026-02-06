@@ -539,6 +539,7 @@ List all public (community) streams. Requires authentication.
       "id": 1,
       "name": "Public Stream",
       "owner_username": "dustin",
+      "owner_nickname": "Dustin",
       "public_key": "pub_xyz789...",
       "is_live": true,
       "viewer_count": 10,
@@ -971,6 +972,124 @@ Binary noVNC protocol relay.
 
 ---
 
+### VOD Storage
+
+Users can configure remote SFTP storage for recorded VODs (MKV files). Each user has their own storage configuration.
+
+#### GET /api/vods/storage
+Get current user's VOD storage configuration.
+
+**Response:**
+```json
+{
+  "storage": {
+    "host": "storage.example.com",
+    "port": 22,
+    "username": "user",
+    "auth_method": "password",
+    "remote_path": "/home/user/vods",
+    "has_password": true,
+    "has_key": false
+  }
+}
+```
+
+Note: Passwords and private keys are never returned (only `has_password`/`has_key` flags).
+
+---
+
+#### POST /api/vods/storage
+Create or update VOD storage configuration.
+
+**Request:**
+```json
+{
+  "host": "storage.example.com",
+  "port": 22,
+  "username": "user",
+  "auth_method": "password",
+  "password": "secret",
+  "remote_path": "/home/user/vods"
+}
+```
+
+For SSH key authentication, use `"auth_method": "key"` and `"private_key": "..."` instead of password.
+
+---
+
+#### DELETE /api/vods/storage
+Remove VOD storage configuration. Does not delete remote files.
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+#### POST /api/vods/storage/test
+Test SFTP connection with provided credentials.
+
+**Request:** Same format as POST /api/vods/storage.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Connected successfully. Found 5 MKV files in /home/user/vods"
+}
+```
+
+---
+
+#### GET /api/vods
+List MKV files in user's remote storage.
+
+**Query Parameters:**
+- `sort` (optional): Sort by `name`, `size`, or `modified` (default: `modified`)
+- `order` (optional): `asc` or `desc` (default: `desc`)
+
+**Response:**
+```json
+{
+  "files": [
+    {
+      "name": "stream-2026-02-06.mkv",
+      "size": 1073741824,
+      "modified": 1738800000
+    }
+  ]
+}
+```
+
+Returns 404 if no storage is configured.
+
+---
+
+#### GET /api/vods/download/{filename}
+Stream-download a VOD file from remote storage. Only `.mkv` files allowed.
+
+**Response:** Binary file stream with `Content-Disposition: attachment` header.
+
+**Security:** Path traversal (`..`, absolute paths) is rejected.
+
+---
+
+#### DELETE /api/vods/{filename}
+Delete a VOD file from remote storage. Only `.mkv` files allowed.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Deleted stream-2026-02-06.mkv"
+}
+```
+
+---
+
 ### Health & Stats
 
 #### GET /health
@@ -1312,6 +1431,7 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/admin` | Admin panel (metrics, services, users) |
 | `/chat` | Community chat |
 | `/streams` | Community streams |
+| `/live` | Public live streams (unauthenticated) |
 | `/docs` | API documentation |
 | `/terminal/{id}` | Terminal UI |
 | `/vnc/{id}` | VNC viewer |
@@ -1334,6 +1454,7 @@ Dashboard | Chat | Streams | API Docs | [username] | Logout
 | Services | Admin only | Backend services (proxy routes and managed processes) |
 | My Connections | All users | Personal SSH, VNC, RDP, database connections |
 | My Streams | All users | Personal streaming configurations |
+| My VODs | All users | Remote VOD file management (SFTP) |
 | Quick Access | All users | Shortcuts to SSH Keys, API Keys, Profile |
 
 Regular users default to the "My Connections" tab. Admins default to "Services".
