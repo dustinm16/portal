@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portal Gateway - Secure WebSocket Authentication and Relay Server."""
+"""Open Relay Portal - Secure WebSocket Authentication and Relay Server."""
 
 import asyncio
 import json
@@ -4114,7 +4114,7 @@ async def handle_ping_ws(ws: web.WebSocketResponse, token: TokenPayload) -> None
         "type": "connected",
         "user_id": token.user_id,
         "scopes": token.scopes,
-        "message": "Portal Gateway connected"
+        "message": "Open Relay Portal connected"
     })
 
     async for msg in ws:
@@ -6172,7 +6172,7 @@ def create_app() -> web.Application:
 
 
 class PortalServer:
-    """Main Portal Gateway server."""
+    """Main Open Relay Portal server."""
 
     def __init__(self):
         self.runner = None
@@ -6262,7 +6262,7 @@ class PortalServer:
         invite_code = get_daily_invite_code()
         logger.info(f"Daily invite code active: {invite_code}")
 
-        logger.info(f"Portal Gateway started on https://{Config.HOSTNAME}:{Config.PORT}")
+        logger.info(f"Open Relay Portal started on https://{Config.HOSTNAME}:{Config.PORT}")
         logger.info("Endpoints:")
         logger.info(f"  - Health:     GET  /health")
         logger.info(f"  - Login:      GET  /login")
@@ -6559,7 +6559,7 @@ def main():
     """Main entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Portal Gateway Server")
+    parser = argparse.ArgumentParser(description="Open Relay Portal Server")
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Serve

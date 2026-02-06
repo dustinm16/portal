@@ -1,4 +1,4 @@
-"""Configuration management for Portal Gateway."""
+"""Configuration management for Open Relay Portal."""
 
 import os
 from pathlib import Path
@@ -56,7 +56,7 @@ class Config:
     METRICS_RETENTION_HOURS: int = int(os.getenv("METRICS_RETENTION_HOURS", "24"))
 
     # Two-Factor Authentication Settings
-    TOTP_ISSUER: str = os.getenv("TOTP_ISSUER", "Portal Gateway")
+    TOTP_ISSUER: str = os.getenv("TOTP_ISSUER", "Open Relay Portal")
 
     # Session Recording Settings
     RECORDINGS_DIR: str = os.getenv(

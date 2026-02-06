@@ -2,7 +2,7 @@
 
 Security Note:
     This plugin spawns PTY processes on the server. The shell runs with the
-    same permissions as the Portal Gateway server process. For security:
+    same permissions as the Open Relay Portal server process. For security:
     - Use proper authentication and authorization
     - Consider running the server as a non-root user
     - Use SSH plugin for connecting to remote systems

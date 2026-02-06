@@ -1,5 +1,5 @@
 #!/bin/bash
-# Let's Encrypt certificate setup for Portal Gateway
+# Let's Encrypt certificate setup for Open Relay Portal
 
 set -e
 
@@ -7,7 +7,7 @@ HOSTNAME="${PORTAL_HOSTNAME:-portal.example.com}"
 EMAIL="${CERT_EMAIL:-admin@example.com}"
 PORTAL_DIR="${PORTAL_DIR:-/opt/portal}"
 
-echo "=== Portal Gateway Certificate Setup ==="
+echo "=== Open Relay Portal Certificate Setup ==="
 echo "Hostname: $HOSTNAME"
 echo "Email: $EMAIL"
 echo ""
@@ -45,7 +45,7 @@ mkdir -p "$HOOK_DIR"
 
 cat > "$HOOK_DIR/portal-reload.sh" << 'EOF'
 #!/bin/bash
-# Reload Portal Gateway after certificate renewal
+# Reload Open Relay Portal after certificate renewal
 systemctl reload portal.service 2>/dev/null || systemctl restart portal.service 2>/dev/null || true
 EOF
 

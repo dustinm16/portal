@@ -1,4 +1,4 @@
-"""Traffic Metrics Tracking for Portal Gateway."""
+"""Traffic Metrics Tracking for Open Relay Portal."""
 
 import asyncio
 import logging
@@ -89,7 +89,7 @@ class TimeSeriesPoint:
 
 
 class TrafficMetrics:
-    """Traffic metrics tracker for Portal Gateway."""
+    """Traffic metrics tracker for Open Relay Portal."""
 
     def __init__(self):
         # Active connections by connection ID

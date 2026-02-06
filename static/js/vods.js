@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - VOD Manager
+ * Open Relay Portal - VOD Manager
  * Handles remote SFTP VOD file browsing, download, and deletion.
  */
 

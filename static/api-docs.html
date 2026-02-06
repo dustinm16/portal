@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Portal Gateway - API Documentation</title>
+    <title>Open Relay Portal - API Documentation</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=15">
     <style>
         .docs-container {
@@ -248,7 +248,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
                 </svg>
-                Portal Gateway
+                Open Relay Portal
             </a>
         </div>
         <div class="navbar-menu">
@@ -309,14 +309,14 @@
 
             <main class="docs-content">
                 <h1>API Documentation</h1>
-                <p>Complete reference for the Portal Gateway REST API and WebSocket interfaces.</p>
+                <p>Complete reference for the Open Relay Portal REST API and WebSocket interfaces.</p>
 
                 <!-- Introduction -->
                 <h2 id="introduction">Introduction</h2>
-                <p>Portal Gateway provides a unified API for managing remote access to your infrastructure. All API endpoints return JSON responses and require authentication unless otherwise noted.</p>
+                <p>Open Relay Portal provides a unified API for managing remote access to your infrastructure. All API endpoints return JSON responses and require authentication unless otherwise noted.</p>
 
                 <div class="alert alert-info">
-                    <strong>Base URL:</strong> All API endpoints are relative to your Portal Gateway installation (e.g., <code>https://portal.example.com</code>)
+                    <strong>Base URL:</strong> All API endpoints are relative to your Open Relay Portal installation (e.g., <code>https://portal.example.com</code>)
                 </div>
 
                 <h3>Response Format</h3>
@@ -330,7 +330,7 @@
 
                 <!-- Authentication -->
                 <h2 id="authentication">Authentication</h2>
-                <p>Portal Gateway supports two authentication methods:</p>
+                <p>Open Relay Portal supports two authentication methods:</p>
                 <ul>
                     <li><strong>JWT Tokens</strong> - Session-based authentication via cookies (used by the web UI)</li>
                     <li><strong>API Keys</strong> - Long-lived keys for programmatic access</li>
@@ -1387,7 +1387,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 
                 <!-- WebSocket Relay -->
                 <h2 id="ws-relay">WebSocket Service Relay</h2>
-                <p>Portal Gateway uses WebSocket connections to relay traffic to backend services. This enables real-time bidirectional communication for terminals, VNC, and other interactive protocols.</p>
+                <p>Open Relay Portal uses WebSocket connections to relay traffic to backend services. This enables real-time bidirectional communication for terminals, VNC, and other interactive protocols.</p>
 
                 <h3>Connection URL Format</h3>
                 <div class="code-block">

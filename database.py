@@ -1,4 +1,4 @@
-"""Database layer for Portal Gateway using SQLite."""
+"""Database layer for Open Relay Portal using SQLite."""
 
 import aiosqlite
 import base64
@@ -431,7 +431,7 @@ def get_manageable_roles(actor_role: str) -> list[str]:
 
 
 class Database:
-    """Async database operations for Portal Gateway."""
+    """Async database operations for Open Relay Portal."""
 
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DATABASE_PATH

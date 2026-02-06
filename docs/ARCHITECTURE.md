@@ -1,8 +1,8 @@
-# Portal Gateway - Architecture Documentation
+# Open Relay Portal - Architecture Documentation
 
 ## Overview
 
-Portal Gateway is a secure, authenticated gateway for home infrastructure that provides:
+Open Relay Portal is a secure, authenticated gateway for home infrastructure that provides:
 
 1. **Unified Services** - Both proxy routes to external backends AND managed server processes (MediaMTX, TURN, etc.)
 2. **User Connections** - Personal authenticated access to external resources (SSH, VNC, Proxmox, etc.)
@@ -24,7 +24,7 @@ Portal Gateway is a secure, authenticated gateway for home infrastructure that p
                                     │
                                     ▼
 ┌───────────────────────────────────────────────────────────────────────────────┐
-│                            Portal Gateway                                      │
+│                            Open Relay Portal                                      │
 │                                                                               │
 │  ┌─────────────────────────────────────────────────────────────────────────┐  │
 │  │                          Core Services                                   │  │
@@ -505,7 +505,7 @@ Client Request
 
 ### Security Features
 
-Portal Gateway is designed with privacy and security as core principles:
+Open Relay Portal is designed with privacy and security as core principles:
 
 1. **Password Security** - Argon2id hashing with secure defaults
 2. **JWT Tokens** - Short-lived, scoped access tokens
@@ -554,7 +554,7 @@ NVD_API_KEY=<key>
 
 ```ini
 [Unit]
-Description=Portal Gateway
+Description=Open Relay Portal
 After=network.target
 
 [Service]

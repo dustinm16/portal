@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - User Connections and API Keys Management
+ * Open Relay Portal - User Connections and API Keys Management
  */
 
 let apiKeys = [];

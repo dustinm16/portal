@@ -1,4 +1,4 @@
-"""Plugin system for Portal Gateway."""
+"""Plugin system for Open Relay Portal."""
 
 import importlib
 import logging

@@ -1,4 +1,4 @@
-# Portal Gateway - Managed Services Implementation Plan
+# Open Relay Portal - Managed Services Implementation Plan
 
 ## Current State
 

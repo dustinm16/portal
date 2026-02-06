@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - Dashboard
+ * Open Relay Portal - Dashboard
  */
 
 let services = [];

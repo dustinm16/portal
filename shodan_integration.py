@@ -1,4 +1,4 @@
-"""Shodan API Integration for Portal Gateway."""
+"""Shodan API Integration for Open Relay Portal."""
 
 import asyncio
 import logging

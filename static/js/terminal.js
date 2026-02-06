@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - Terminal Client
+ * Open Relay Portal - Terminal Client
  */
 
 let term = null;

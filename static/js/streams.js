@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - User Streams Management
+ * Open Relay Portal - User Streams Management
  * Handles OBS streaming, stream key management, and community streams.
  */
 

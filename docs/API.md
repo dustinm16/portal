@@ -1,4 +1,4 @@
-# Portal Gateway - API Reference
+# Open Relay Portal - API Reference
 
 ## Security
 
@@ -728,7 +728,7 @@ WebRTC WHIP endpoint for publishing.
 
 ### Streaming Configuration
 
-Portal Gateway provides a complete streaming solution with MediaMTX. Publishing uses a dedicated subdomain (`stream.example.com`) for direct RTMPS access, while playback is proxied through Portal on port 443.
+Open Relay Portal provides a complete streaming solution with MediaMTX. Publishing uses a dedicated subdomain (`stream.example.com`) for direct RTMPS access, while playback is proxied through Portal on port 443.
 
 **Key Types:**
 | Key | Format | Use Case |

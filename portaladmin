@@ -1,5 +1,5 @@
 #!/bin/bash
-# Portal Gateway Admin CLI
+# Open Relay Portal Admin CLI
 # Usage: portaladmin <command> [args]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,7 @@ if [ ! -f "$VENV_PYTHON" ]; then
 fi
 
 usage() {
-    echo "Portal Gateway Admin CLI"
+    echo "Open Relay Portal Admin CLI"
     echo ""
     echo "Usage: portaladmin <command> [args]"
     echo ""

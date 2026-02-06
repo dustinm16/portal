@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GitHub - Portal Gateway</title>
+    <title>GitHub - Open Relay Portal</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=6">
     <style>
         body {
@@ -483,7 +483,7 @@
                 </svg>
                 <h2>Connect to GitHub</h2>
                 <p id="auth-message" style="color: var(--text-muted);">
-                    Authorize Portal Gateway to access your GitHub repositories, manage workflows, and view pull requests.
+                    Authorize Open Relay Portal to access your GitHub repositories, manage workflows, and view pull requests.
                 </p>
                 <a id="auth-link" href="#" class="btn-github" target="_blank">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
@@ -678,7 +678,7 @@
         function showAuthRequired(data) {
             document.getElementById('auth-required').style.display = 'flex';
             document.getElementById('repo-view').style.display = 'none';
-            document.getElementById('auth-message').textContent = 'Click below to authorize Portal Gateway to access your GitHub repositories.';
+            document.getElementById('auth-message').textContent = 'Click below to authorize Open Relay Portal to access your GitHub repositories.';
             document.getElementById('auth-link').href = data.auth_url;
         }
 

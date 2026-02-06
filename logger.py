@@ -1,4 +1,4 @@
-"""Portal Gateway - Logging Configuration.
+"""Open Relay Portal - Logging Configuration.
 
 Features:
 - Structured JSON logging support

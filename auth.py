@@ -1,4 +1,4 @@
-"""Authentication module for Portal Gateway."""
+"""Authentication module for Open Relay Portal."""
 
 import secrets
 import hashlib
@@ -364,7 +364,7 @@ def get_totp_uri(secret: str, username: str, issuer: str = None) -> str:
         otpauth:// URI for QR code
     """
     if issuer is None:
-        issuer = getattr(Config, 'TOTP_ISSUER', 'Portal Gateway')
+        issuer = getattr(Config, 'TOTP_ISSUER', 'Open Relay Portal')
     totp = pyotp.TOTP(secret)
     return totp.provisioning_uri(name=username, issuer_name=issuer)
 

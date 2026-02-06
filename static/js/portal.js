@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - Shared JavaScript Utilities
+ * Open Relay Portal - Shared JavaScript Utilities
  */
 
 const Portal = {

@@ -1,4 +1,4 @@
-"""Portal Gateway - SSH Key Management.
+"""Open Relay Portal - SSH Key Management.
 
 Security Design:
     - Private keys are NEVER stored in the database

@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - Admin Functions
+ * Open Relay Portal - Admin Functions
  */
 
 console.log('admin.js loading...');

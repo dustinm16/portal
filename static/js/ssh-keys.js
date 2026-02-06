@@ -1,5 +1,5 @@
 /**
- * Portal Gateway - SSH Keys Management
+ * Open Relay Portal - SSH Keys Management
  */
 
 let sshKeys = [];

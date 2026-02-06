@@ -1,8 +1,8 @@
-# Portal Gateway - Architecture Documentation
+# Open Relay Portal - Architecture Documentation
 
 ## Overview
 
-Portal Gateway is a modular, secure gateway for accessing home infrastructure resources remotely. It provides authenticated access to various services through a unified interface with support for multiple protocols.
+Open Relay Portal is a modular, secure gateway for accessing home infrastructure resources remotely. It provides authenticated access to various services through a unified interface with support for multiple protocols.
 
 **Public Endpoint:** `https://portal.example.com`
 
@@ -18,7 +18,7 @@ Portal Gateway is a modular, secure gateway for accessing home infrastructure re
                                     │
                                     ▼
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                           Portal Gateway                                   │
+│                           Open Relay Portal                                   │
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────────────┐  │
 │  │                         Core Services                                │  │
@@ -216,7 +216,7 @@ Services are stored in the database with plugin-specific configuration:
 
 ## User Connections vs Admin Services
 
-Portal Gateway provides two complementary access models:
+Open Relay Portal provides two complementary access models:
 
 ### Admin Services (Shared Infrastructure)
 - Created by administrators through the Admin panel
@@ -1026,7 +1026,7 @@ The admin panel provides system monitoring and security scanning capabilities.
 | `NMAP_PATH` | Path to nmap binary | /usr/bin/nmap |
 | `CVE_CACHE_TTL` | CVE cache duration in seconds | 3600 |
 | `VULN_SCAN_TIMEOUT` | Vulnerability scan timeout | 300 |
-| `TOTP_ISSUER` | 2FA issuer name | Portal Gateway |
+| `TOTP_ISSUER` | 2FA issuer name | Open Relay Portal |
 | `RECORDINGS_DIR` | Session recordings directory | ./recordings |
 | `RECORDING_ENABLED` | Enable session recording | true |
 

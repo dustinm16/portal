@@ -1,4 +1,4 @@
-"""GitHub repository management plugin for Portal Gateway."""
+"""GitHub repository management plugin for Open Relay Portal."""
 
 import asyncio
 import json

@@ -1,5 +1,5 @@
 [Unit]
-Description=Portal Gateway - WebSocket Auth and Relay Server
+Description=Open Relay Portal - WebSocket Auth and Relay Server
 After=network.target
 Wants=network-online.target
 

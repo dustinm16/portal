@@ -1,4 +1,4 @@
-"""Base plugin class for Portal Gateway."""
+"""Base plugin class for Open Relay Portal."""
 
 import time
 from abc import ABC, abstractmethod
@@ -58,7 +58,7 @@ class ConnectionStats:
 
 
 class PluginBase(ABC):
-    """Base class for all Portal Gateway plugins."""
+    """Base class for all Open Relay Portal plugins."""
 
     # Plugin metadata - override in subclass
     info: PluginInfo = None
