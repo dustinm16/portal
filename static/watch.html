@@ -453,6 +453,9 @@
                     <div class="stat-row"><span>Buffer:</span><span id="stat-buffer">--</span></div>
                     <div class="stat-row"><span>Latency:</span><span id="stat-latency">--</span></div>
                     <div class="stat-row"><span>Dropped:</span><span id="stat-dropped">--</span></div>
+                    <div class="stat-row" id="stat-public-key-row" style="display: none; border-top: 1px solid #444; margin-top: 4px; padding-top: 4px;">
+                        <span>API Key:</span><span id="stat-public-key" style="font-size: 0.65rem; word-break: break-all;">--</span>
+                    </div>
                 </div>
                 <div class="player-controls">
                     <div class="player-control-group">
@@ -702,6 +705,13 @@
             stats.classList.toggle('visible');
 
             if (stats.classList.contains('visible')) {
+                // Show public key if available
+                if (streamData && streamData.public_key) {
+                    document.getElementById('stat-public-key').textContent = streamData.public_key;
+                    document.getElementById('stat-public-key-row').style.display = 'flex';
+                } else {
+                    document.getElementById('stat-public-key-row').style.display = 'none';
+                }
                 startStatsUpdates();
             } else {
                 stopStatsUpdates();
@@ -711,39 +721,75 @@
         function startStatsUpdates() {
             if (statsInterval) return;
 
-            statsInterval = setInterval(() => {
-                if (!hlsPlayer) return;
+            // Update stats immediately, then every second
+            updateStats();
+            statsInterval = setInterval(updateStats, 1000);
+        }
 
-                const video = document.getElementById('stream-video');
-                const levels = hlsPlayer.levels;
-                const currentLevel = hlsPlayer.currentLevel;
+        function updateStats() {
+            if (!hlsPlayer) return;
 
-                if (levels && levels[currentLevel]) {
-                    const level = levels[currentLevel];
-                    document.getElementById('stat-resolution').textContent = `${level.width}x${level.height}`;
-                    document.getElementById('stat-codec').textContent = level.videoCodec || '--';
-                    document.getElementById('stat-bitrate').textContent = `${Math.round(level.bitrate / 1000)} kbps`;
+            const video = document.getElementById('stream-video');
+            const levels = hlsPlayer.levels;
+            const currentLevel = hlsPlayer.currentLevel;
+
+            if (levels && currentLevel >= 0 && levels[currentLevel]) {
+                const level = levels[currentLevel];
+                document.getElementById('stat-resolution').textContent = `${level.width}x${level.height}`;
+                document.getElementById('stat-bitrate').textContent = `${Math.round(level.bitrate / 1000)} kbps`;
+
+                // Get codec from level or from hls player
+                let codec = '--';
+                if (level.videoCodec) {
+                    // Parse codec string (e.g., "avc1.64001f" -> "H.264")
+                    const videoCodec = level.videoCodec.toLowerCase();
+                    if (videoCodec.startsWith('avc1') || videoCodec.startsWith('h264')) {
+                        codec = 'H.264';
+                    } else if (videoCodec.startsWith('hvc1') || videoCodec.startsWith('hev1') || videoCodec.startsWith('hevc')) {
+                        codec = 'H.265/HEVC';
+                    } else if (videoCodec.startsWith('vp9')) {
+                        codec = 'VP9';
+                    } else if (videoCodec.startsWith('av01') || videoCodec.startsWith('av1')) {
+                        codec = 'AV1';
+                    } else {
+                        codec = level.videoCodec;
+                    }
                 }
-
-                // Buffer info
-                if (video.buffered.length > 0) {
-                    const buffered = video.buffered.end(video.buffered.length - 1) - video.currentTime;
-                    document.getElementById('stat-buffer').textContent = `${buffered.toFixed(2)}s`;
+                if (level.audioCodec) {
+                    const audioCodec = level.audioCodec.toLowerCase();
+                    let audioName = level.audioCodec;
+                    if (audioCodec.startsWith('mp4a.40.2') || audioCodec.includes('aac')) {
+                        audioName = 'AAC';
+                    } else if (audioCodec.startsWith('mp4a.40.5')) {
+                        audioName = 'HE-AAC';
+                    } else if (audioCodec.includes('opus')) {
+                        audioName = 'Opus';
+                    }
+                    codec += ` / ${audioName}`;
                 }
+                document.getElementById('stat-codec').textContent = codec;
+            }
 
-                // Latency (estimate based on buffer)
-                if (hlsPlayer.latency !== undefined) {
-                    document.getElementById('stat-latency').textContent = `${hlsPlayer.latency.toFixed(2)}s`;
-                }
+            // Buffer info
+            if (video.buffered.length > 0) {
+                const buffered = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+                document.getElementById('stat-buffer').textContent = `${buffered.toFixed(2)}s`;
+            }
 
-                // Dropped frames
-                if (video.getVideoPlaybackQuality) {
-                    const quality = video.getVideoPlaybackQuality();
-                    document.getElementById('stat-dropped').textContent = quality.droppedVideoFrames;
+            // Latency
+            if (hlsPlayer.latency !== undefined && hlsPlayer.latency !== null) {
+                document.getElementById('stat-latency').textContent = `${hlsPlayer.latency.toFixed(2)}s`;
+            }
+
+            // Dropped frames and framerate
+            if (video.getVideoPlaybackQuality) {
+                const quality = video.getVideoPlaybackQuality();
+                document.getElementById('stat-dropped').textContent = quality.droppedVideoFrames;
+                if (video.currentTime > 0) {
                     const fps = quality.totalVideoFrames / video.currentTime;
                     document.getElementById('stat-framerate').textContent = `${fps.toFixed(1)} fps`;
                 }
-            }, 1000);
+            }
         }
 
         function stopStatsUpdates() {
