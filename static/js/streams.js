@@ -619,8 +619,8 @@ function appendStreamChatMessage(msg) {
     messageEl.className = 'chat-message';
     const displayName = msg.nickname || msg.username;
     const avatar = msg.avatar || {};
-    const avatarColor = avatar.color || '#3b82f6';
-    const avatarContent = avatar.emoji || (displayName || '?')[0].toUpperCase();
+    const avatarColor = msg.anonymous ? '#6b7280' : (avatar.color || '#3b82f6');
+    const avatarContent = msg.anonymous ? '?' : (avatar.emoji || (displayName || '?')[0].toUpperCase());
     messageEl.innerHTML = `
         <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
             <div style="width: 24px; height: 24px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0;">${avatarContent}</div>

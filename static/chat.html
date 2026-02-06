@@ -1717,7 +1717,7 @@
             // Render color options
             colorsContainer.innerHTML = AVATAR_COLORS.map(color => `
                 <div class="avatar-color-option ${color === selectedAvatarColor ? 'selected' : ''}"
-                     style="background: ${color};"
+                     style="background: ${color};" data-color="${color}"
                      onclick="selectAvatarColor('${color}')"></div>
             `).join('');
 
@@ -1736,7 +1736,7 @@
         function selectAvatarColor(color) {
             selectedAvatarColor = color;
             document.querySelectorAll('.avatar-color-option').forEach(el => {
-                el.classList.toggle('selected', el.style.background === color);
+                el.classList.toggle('selected', el.dataset.color === color);
             });
             updateAvatarPreview();
         }

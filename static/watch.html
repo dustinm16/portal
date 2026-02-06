@@ -322,17 +322,114 @@
             background: rgba(0,0,0,0.2);
         }
 
+        .chat-message-header {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+            margin-bottom: 0.25rem;
+        }
+
         .chat-username {
             font-weight: 600;
             color: var(--accent-blue);
             font-size: 0.85rem;
-            margin-right: 0.5rem;
+            cursor: pointer;
+        }
+
+        .chat-username:hover {
+            text-decoration: underline;
+        }
+
+        .chat-time {
+            color: var(--text-muted);
+            font-size: 0.7rem;
         }
 
         .chat-text {
             color: var(--text-primary);
             font-size: 0.9rem;
             word-wrap: break-word;
+        }
+
+        .chat-mod-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        .chat-mod-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: var(--accent-red, #ef4444);
+        }
+
+        .chat-system-message {
+            color: var(--text-muted);
+            font-style: italic;
+            text-align: center;
+            padding: 0.5rem;
+            font-size: 0.8rem;
+        }
+
+        .chat-ban-notice {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin: 0.5rem 0;
+            font-size: 0.85rem;
+        }
+
+        .mod-menu {
+            position: absolute;
+            background: var(--surface-color, var(--bg-secondary));
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 1000;
+            min-width: 150px;
+        }
+
+        .mod-menu-item {
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .mod-menu-item:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .mod-menu-item.danger {
+            color: #ef4444;
+        }
+
+        .mod-badge {
+            background: var(--accent-blue);
+            color: white;
+            font-size: 0.65rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            margin-left: 0.25rem;
+        }
+
+        .mod-settings-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .mod-settings-btn:hover {
+            background: rgba(255,255,255,0.1);
         }
 
         .viewer-chat-input {
@@ -496,6 +593,7 @@
         <div class="viewer-chat" id="viewer-chat">
             <div class="viewer-chat-header">
                 <span>Stream Chat</span>
+                <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">Bans</button>
             </div>
             <div class="viewer-chat-messages" id="chat-messages"></div>
             <form class="viewer-chat-input" onsubmit="sendChatMessage(event)">
@@ -509,6 +607,7 @@
     <script>
         let streamId = null;
         let streamData = null;
+        let currentUser = null;
         let chatWs = null;
         let hlsPlayer = null;
         let statsInterval = null;
@@ -541,8 +640,19 @@
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
+            await loadUserInfo();
             await loadStream();
         });
+
+        async function loadUserInfo() {
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.status === 401) return;
+                currentUser = await response.json();
+            } catch (error) {
+                console.error('Failed to load user:', error);
+            }
+        }
 
         async function loadStream() {
             try {
@@ -864,12 +974,7 @@
 
             chatWs.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.type === 'message') {
-                    appendChatMessage(data);
-                } else if (data.type === 'history') {
-                    document.getElementById('chat-messages').innerHTML = '';
-                    data.messages.forEach(msg => appendChatMessage(msg));
-                }
+                handleChatMessage(data);
             };
 
             chatWs.onclose = () => {
@@ -888,25 +993,103 @@
             };
         }
 
-        function appendChatMessage(msg) {
-            const messagesEl = document.getElementById('chat-messages');
-            const messageEl = document.createElement('div');
-            messageEl.className = 'chat-message';
+        function handleChatMessage(data) {
+            const container = document.getElementById('chat-messages');
+            switch (data.type) {
+                case 'message':
+                    appendChatMessage(data);
+                    break;
+                case 'history':
+                    container.innerHTML = '';
+                    (data.messages || []).forEach(msg => appendChatMessage(msg, false));
+                    container.scrollTop = container.scrollHeight;
+                    break;
+                case 'user_banned':
+                    appendSystemMessage(`${data.username} has been banned by ${data.banned_by}${data.reason ? ': ' + data.reason : ''}`);
+                    break;
+                case 'ban_success':
+                    appendSystemMessage(`Successfully banned ${data.username}`);
+                    break;
+                case 'unban_success':
+                    appendSystemMessage(`Successfully unbanned ${data.username}`);
+                    break;
+                case 'bans_list':
+                    showBanListModal(data.bans);
+                    break;
+                case 'error':
+                    if (data.message) {
+                        appendSystemMessage(`Error: ${data.message}`, true);
+                    }
+                    break;
+                case 'channel_info':
+                    if (streamData && currentUser && (
+                        streamData.user_id === currentUser.id ||
+                        currentUser.role === 'admin' ||
+                        currentUser.role === 'superadmin'
+                    )) {
+                        document.getElementById('mod-settings-btn').style.display = 'block';
+                    }
+                    break;
+            }
+        }
+
+        function appendSystemMessage(text, isError = false) {
+            const container = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = isError ? 'chat-ban-notice' : 'chat-system-message';
+            div.textContent = text;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function appendChatMessage(msg, scroll = true) {
+            const container = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = 'chat-message';
+
+            const time = formatTime(msg.created_at);
             const displayName = msg.nickname || msg.username;
             const avatar = msg.avatar || {};
-            const avatarColor = avatar.color || '#3b82f6';
-            const avatarContent = avatar.emoji || (displayName || '?')[0].toUpperCase();
-            messageEl.innerHTML = `
+            const avatarColor = msg.anonymous ? '#6b7280' : (avatar.color || '#3b82f6');
+            const avatarContent = msg.anonymous ? '?' : (avatar.emoji || (displayName || '?')[0].toUpperCase());
+
+            const canModerate = streamData && currentUser && (
+                streamData.user_id === currentUser.id ||
+                currentUser.role === 'admin' ||
+                currentUser.role === 'superadmin'
+            );
+
+            const showBanBtn = canModerate && currentUser &&
+                               msg.user_id !== currentUser.id &&
+                               msg.user_id !== streamData.user_id;
+
+            const roleBadge = msg.role && msg.role !== 'user'
+                ? `<span class="mod-badge">${msg.role}</span>`
+                : '';
+
+            const banBtn = showBanBtn
+                ? `<button class="chat-mod-btn" onclick="banUser(${msg.user_id}, '${escapeHtml(displayName)}')" title="Ban user">Ban</button>`
+                : '';
+
+            div.innerHTML = `
                 <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
-                    <div style="width: 24px; height: 24px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0;">${avatarContent}</div>
-                    <div style="min-width: 0;">
-                        <span class="chat-username">${escapeHtml(displayName)}</span>
-                        <span class="chat-text">${escapeHtml(msg.message)}</span>
+                    <div style="width: 28px; height: 28px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; margin-top: 0.25rem;">${avatarContent}</div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div class="chat-message-header">
+                            <span class="chat-username" onclick="showUserMenu(event, ${msg.user_id}, '${escapeHtml(displayName)}')">${escapeHtml(displayName)}${roleBadge}</span>
+                            <span style="flex: 1;"></span>
+                            ${banBtn}
+                            <span class="chat-time">${time}</span>
+                        </div>
+                        <div class="chat-text">${escapeHtml(msg.message)}</div>
                     </div>
                 </div>
             `;
-            messagesEl.appendChild(messageEl);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+
+            container.appendChild(div);
+            if (scroll) {
+                container.scrollTop = container.scrollHeight;
+            }
         }
 
         function sendChatMessage(event) {
@@ -915,7 +1098,7 @@
             const input = document.getElementById('chat-input');
             const message = input.value.trim();
 
-            if (!message || !chatWs) return;
+            if (!message || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
 
             chatWs.send(JSON.stringify({
                 type: 'message',
@@ -925,13 +1108,137 @@
             input.value = '';
         }
 
+        // Moderation functions
+        function banUser(userId, username) {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+
+            const reason = prompt(`Ban ${username} from this stream's chat?\nEnter reason (optional):`);
+            if (reason === null) return;
+
+            chatWs.send(JSON.stringify({
+                type: 'ban',
+                user_id: userId,
+                reason: reason
+            }));
+        }
+
+        function unbanUser(userId) {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+
+            chatWs.send(JSON.stringify({
+                type: 'unban',
+                user_id: userId
+            }));
+        }
+
+        function showBanList() {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+
+            chatWs.send(JSON.stringify({
+                type: 'get_bans'
+            }));
+        }
+
+        function showBanListModal(bans) {
+            const existing = document.getElementById('ban-list-modal');
+            if (existing) existing.remove();
+
+            const modal = document.createElement('div');
+            modal.id = 'ban-list-modal';
+            modal.style.cssText = `
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.8); display: flex;
+                align-items: center; justify-content: center; z-index: 1001;
+            `;
+
+            let banListHtml = bans.length === 0
+                ? '<p style="color: var(--text-muted);">No banned users</p>'
+                : bans.map(ban => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                        <div>
+                            <strong>${escapeHtml(ban.banned_username)}</strong>
+                            ${ban.reason ? `<br><small style="color: var(--text-muted);">Reason: ${escapeHtml(ban.reason)}</small>` : ''}
+                        </div>
+                        <button onclick="unbanUser(${ban.user_id}); document.getElementById('ban-list-modal').remove();"
+                                style="background: var(--accent-blue); border: none; padding: 0.5rem 1rem; border-radius: 4px; color: white; cursor: pointer;">
+                            Unban
+                        </button>
+                    </div>
+                `).join('');
+
+            modal.innerHTML = `
+                <div style="background: var(--surface-color, var(--bg-secondary)); border-radius: 12px; width: 400px; max-width: 90vw; max-height: 80vh; overflow: hidden;">
+                    <div style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;">
+                        <h3 style="margin: 0;">Banned Users</h3>
+                        <button onclick="document.getElementById('ban-list-modal').remove()"
+                                style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">&times;</button>
+                    </div>
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        ${banListHtml}
+                    </div>
+                </div>
+            `;
+
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.remove();
+            });
+            document.body.appendChild(modal);
+        }
+
+        function showUserMenu(event, userId, username) {
+            event.stopPropagation();
+
+            if (currentUser && userId === currentUser.id) return;
+
+            const existing = document.querySelector('.mod-menu');
+            if (existing) existing.remove();
+
+            const canModerate = streamData && currentUser && (
+                streamData.user_id === currentUser.id ||
+                currentUser.role === 'admin' ||
+                currentUser.role === 'superadmin'
+            );
+
+            if (!canModerate || userId === streamData.user_id) return;
+
+            const menu = document.createElement('div');
+            menu.className = 'mod-menu';
+            menu.style.left = event.pageX + 'px';
+            menu.style.top = event.pageY + 'px';
+
+            menu.innerHTML = `
+                <div class="mod-menu-item danger" onclick="banUser(${userId}, '${escapeHtml(username)}'); this.parentElement.remove();">
+                    Ban from chat
+                </div>
+            `;
+
+            document.body.appendChild(menu);
+
+            setTimeout(() => {
+                document.addEventListener('click', function closeMenu() {
+                    menu.remove();
+                    document.removeEventListener('click', closeMenu);
+                }, { once: true });
+            }, 0);
+        }
+
+        function formatTime(isoString) {
+            if (!isoString) return '';
+            let dateStr = isoString;
+            if (!dateStr.includes('+') && !dateStr.endsWith('Z')) {
+                dateStr = dateStr + 'Z';
+            }
+            const date = new Date(dateStr);
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
         function toggleChat() {
             document.getElementById('viewer-chat').classList.toggle('open');
         }
 
         function escapeHtml(text) {
             const div = document.createElement('div');
-            div.textContent = text;
+            div.textContent = text || '';
             return div.innerHTML;
         }
 
