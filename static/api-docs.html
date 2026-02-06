@@ -276,6 +276,7 @@
                     <li><a href="#services">Services</a></li>
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#streams">User Streams</a></li>
+                    <li><a href="#encoder-settings">Encoder Settings</a></li>
                     <li><a href="#users">User Management</a></li>
                 </ul>
                 <h4>Security</h4>
@@ -754,6 +755,135 @@
                     <li>Stream Key: Your stream key (e.g., <code>live_abc123...</code>)</li>
                     <li>Click OK and Start Streaming</li>
                 </ol>
+
+                <h3 id="encoder-settings">Encoder Settings</h3>
+                <p>Configure your encoder in <strong>Settings → Output → Streaming</strong> (Output Mode: Advanced).</p>
+
+                <h4>NVIDIA NVENC (Recommended for NVIDIA GPUs)</h4>
+                <p>Hardware encoding with NVENC provides excellent quality at low CPU usage.</p>
+                <table class="param-table">
+                    <tr><th>Setting</th><th>Recommended Value</th><th>Notes</th></tr>
+                    <tr>
+                        <td><span class="param-name">Encoder</span></td>
+                        <td>NVIDIA NVENC H.264</td>
+                        <td>Or NVENC HEVC for better compression (requires viewer support)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Rate Control</span></td>
+                        <td>CBR</td>
+                        <td>Constant bitrate for stable streaming</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Bitrate</span></td>
+                        <td>4500-6000 kbps</td>
+                        <td>Adjust based on your upload speed</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Keyframe Interval</span></td>
+                        <td>2</td>
+                        <td>Required for HLS segmentation</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Preset</span></td>
+                        <td>Quality or Max Quality</td>
+                        <td>P5-P7 on newer drivers</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Profile</span></td>
+                        <td>high</td>
+                        <td>Best compatibility</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Look-ahead</span></td>
+                        <td>Enabled</td>
+                        <td>Improves quality at cost of slight latency</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Psycho Visual Tuning</span></td>
+                        <td>Enabled</td>
+                        <td>Better perceived quality</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">B-frames</span></td>
+                        <td>2</td>
+                        <td>Good balance of quality and latency</td>
+                    </tr>
+                </table>
+
+                <h4>AMD AMF (AMD GPUs)</h4>
+                <table class="param-table">
+                    <tr><th>Setting</th><th>Recommended Value</th></tr>
+                    <tr>
+                        <td><span class="param-name">Encoder</span></td>
+                        <td>AMD HW H.264 (AVC)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Rate Control</span></td>
+                        <td>CBR</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Bitrate</span></td>
+                        <td>4500-6000 kbps</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Keyframe Interval</span></td>
+                        <td>2</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Quality Preset</span></td>
+                        <td>Quality</td>
+                    </tr>
+                </table>
+
+                <h4>x264 (CPU Encoding)</h4>
+                <table class="param-table">
+                    <tr><th>Setting</th><th>Recommended Value</th></tr>
+                    <tr>
+                        <td><span class="param-name">Encoder</span></td>
+                        <td>x264</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Rate Control</span></td>
+                        <td>CBR</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Bitrate</span></td>
+                        <td>4500-6000 kbps</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Keyframe Interval</span></td>
+                        <td>2</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">CPU Usage Preset</span></td>
+                        <td>veryfast to medium</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Profile</span></td>
+                        <td>high</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">Tune</span></td>
+                        <td>zerolatency (optional)</td>
+                    </tr>
+                </table>
+
+                <h4>Video Settings (Settings → Video)</h4>
+                <table class="param-table">
+                    <tr><th>Setting</th><th>Recommended Value</th></tr>
+                    <tr>
+                        <td><span class="param-name">Output Resolution</span></td>
+                        <td>1920x1080 or 1280x720</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">FPS</span></td>
+                        <td>30 or 60</td>
+                    </tr>
+                </table>
+
+                <div class="alert alert-info">
+                    <strong>Tip:</strong> NVENC and AMF hardware encoders allow streaming at high quality while using minimal CPU. Use x264 only if you don't have a dedicated GPU or need maximum quality at the cost of CPU usage.
+                </div>
 
                 <h3>REST API</h3>
 
