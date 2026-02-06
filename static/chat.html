@@ -790,6 +790,220 @@
         .nickname-input::placeholder {
             color: var(--text-muted);
         }
+
+        /* Context Menu */
+        .context-menu {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            background: var(--bg-primary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            padding: 0.25rem;
+            min-width: 160px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .context-menu.show {
+            display: block;
+        }
+
+        .context-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .context-menu-item:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .context-menu-item.danger {
+            color: #ef4444;
+        }
+
+        .context-menu-item.danger:hover {
+            background: rgba(239, 68, 68, 0.15);
+        }
+
+        .context-menu-separator {
+            height: 1px;
+            background: rgba(255,255,255,0.1);
+            margin: 0.25rem 0;
+        }
+
+        /* Reply indicator above input */
+        .reply-indicator {
+            display: none;
+            padding: 0.5rem 1rem;
+            background: rgba(59, 130, 246, 0.1);
+            border-left: 3px solid var(--accent-blue);
+            margin: 0 1rem;
+            border-radius: 0 4px 4px 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .reply-indicator.show {
+            display: flex;
+        }
+
+        .reply-indicator-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .reply-indicator-text strong {
+            color: var(--text-primary);
+        }
+
+        .reply-cancel-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0 0.25rem;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        .reply-cancel-btn:hover {
+            color: var(--text-primary);
+        }
+
+        /* Reply preview in messages */
+        .message-reply-preview {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            margin-bottom: 0.25rem;
+            border-left: 2px solid rgba(255,255,255,0.2);
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 0 4px 4px 0;
+        }
+
+        .message-reply-preview:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .message-reply-author {
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        .message-reply-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Message highlight animation for scroll-to */
+        .message.highlight {
+            animation: messageHighlight 2s ease-out;
+        }
+
+        @keyframes messageHighlight {
+            0%, 30% { background: rgba(59, 130, 246, 0.2); }
+            100% { background: transparent; }
+        }
+
+        /* Chat image embed */
+        .message-image {
+            max-width: 400px;
+            max-height: 300px;
+            border-radius: 6px;
+            margin-top: 0.25rem;
+            cursor: pointer;
+            object-fit: contain;
+        }
+
+        .message-image:hover {
+            opacity: 0.9;
+        }
+
+        /* Image upload preview above input */
+        .image-upload-preview {
+            display: none;
+            padding: 0.5rem 1rem;
+            background: rgba(255,255,255,0.05);
+            border-left: 3px solid var(--accent-purple);
+            margin: 0 1rem;
+            border-radius: 0 4px 4px 0;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .image-upload-preview.show {
+            display: flex;
+        }
+
+        .image-upload-preview img {
+            max-width: 80px;
+            max-height: 60px;
+            border-radius: 4px;
+            object-fit: cover;
+        }
+
+        .image-upload-info {
+            flex: 1;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .image-upload-info small {
+            color: var(--text-muted);
+        }
+
+        .image-cancel-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0 0.25rem;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        .image-cancel-btn:hover {
+            color: var(--text-primary);
+        }
+
+        /* Image lightbox overlay */
+        .image-lightbox {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 2000;
+            background: rgba(0,0,0,0.85);
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .image-lightbox.show {
+            display: flex;
+        }
+
+        .image-lightbox img {
+            max-width: 90vw;
+            max-height: 90vh;
+            object-fit: contain;
+            border-radius: 8px;
+        }
     </style>
 </head>
 <body>
@@ -886,12 +1100,28 @@
                 <!-- Messages populated by JS -->
             </div>
             <div class="typing-indicator" id="typing-indicator"></div>
+            <div class="image-upload-preview" id="image-upload-preview">
+                <img id="image-preview-thumb" src="" alt="Preview">
+                <div class="image-upload-info">
+                    <div>Image ready to send</div>
+                    <small id="image-preview-size"></small>
+                </div>
+                <button class="image-cancel-btn" onclick="cancelImageUpload()">&times;</button>
+            </div>
+            <div class="reply-indicator" id="reply-indicator">
+                <div class="reply-indicator-text">
+                    Replying to <strong id="reply-indicator-name"></strong>: <span id="reply-indicator-text"></span>
+                </div>
+                <button class="reply-cancel-btn" onclick="cancelReply()">&times;</button>
+            </div>
             <div class="chat-input-container">
                 <div class="chat-input-wrapper">
                     <button class="emoji-btn" onclick="toggleEmojiPicker()" title="Insert emoji">😊</button>
                     <div class="emoji-picker" id="emoji-picker">
                         <div class="emoji-grid" id="emoji-grid"></div>
                     </div>
+                    <button class="emoji-btn" onclick="triggerImageUpload()" title="Upload image">📎</button>
+                    <input type="file" id="image-file-input" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none;" onchange="handleFileSelect(event)">
                     <input type="text" id="chat-input" placeholder="Type a message... (supports **bold**, *italic*, `code`, ~~strike~~)" autocomplete="off">
                     <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
@@ -966,6 +1196,48 @@
         </div>
     </div>
 
+    <!-- Image Lightbox -->
+    <div class="image-lightbox" id="image-lightbox" onclick="closeLightbox()">
+        <img id="lightbox-img" src="" alt="Full size image">
+    </div>
+
+    <!-- Message Context Menu -->
+    <div class="context-menu" id="message-context-menu">
+        <div class="context-menu-item" onclick="replyToMessage()">↩️ Reply</div>
+        <div class="context-menu-item" onclick="copyMessageText()">📋 Copy Text</div>
+        <div class="context-menu-separator" id="delete-separator" style="display:none;"></div>
+        <div class="context-menu-item danger" id="delete-menu-item" onclick="deleteMessage()" style="display:none;">🗑️ Delete</div>
+    </div>
+
+    <!-- Channel Context Menu -->
+    <div class="context-menu" id="channel-context-menu">
+        <div class="context-menu-item" onclick="renameChannel()">✏️ Rename</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item danger" onclick="deleteChannel()">🗑️ Delete Channel</div>
+    </div>
+
+    <!-- Rename Channel Modal -->
+    <div id="rename-channel-modal" class="modal">
+        <div class="modal-backdrop" onclick="closeModal('rename-channel-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Rename Channel</h3>
+                <button class="modal-close" onclick="closeModal('rename-channel-modal')">&times;</button>
+            </div>
+            <form onsubmit="submitRenameChannel(event)">
+                <div class="form-group">
+                    <label for="rename-channel-input">New Channel Name</label>
+                    <input type="text" id="rename-channel-input" required pattern="[a-z0-9-]+" placeholder="new-name">
+                    <small style="color: var(--text-muted);">Lowercase letters, numbers, and hyphens only</small>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('rename-channel-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Rename</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         let ws = null;
         let currentChannel = 'general';
@@ -973,6 +1245,16 @@
         let reconnectAttempts = 0;
         let typingTimeout = null;
         let onlineUsers = new Map(); // user_id -> user info
+        let replyToId = null;
+        let replyToUsername = null;
+        let contextMenuMessageId = null;
+        let contextMenuMessageUserId = null;
+        let contextMenuMessageText = null;
+        let contextMenuChannelId = null;
+        let contextMenuChannelName = null;
+        let channelsList = []; // cache for context menu checks
+        let knownChatNames = new Set(); // all names seen in messages + online users
+        let pendingImageUrl = null; // uploaded image URL waiting to be sent
 
         // Common emoji for quick picker
         const COMMON_EMOJI = [
@@ -1118,10 +1400,13 @@
         }
 
         function renderChannels(channels) {
+            channelsList = channels;
             const list = document.getElementById('channel-list');
             list.innerHTML = channels.map(ch => `
                 <div class="channel-item ${ch.name === currentChannel ? 'active' : ''}"
-                     onclick="switchChannel('${ch.name}')" data-channel="${ch.name}">
+                     onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
+                     data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
+                     data-is-stream="${ch.is_stream_channel || false}">
                     ${escapeHtml(ch.name)}
                 </div>
             `).join('');
@@ -1242,6 +1527,15 @@
                     document.getElementById('chat-messages').innerHTML = '';
                     appendSystemMessage(`Channel cleared by ${data.cleared_by} (${data.message_count} messages removed)`);
                     break;
+                case 'message_deleted':
+                    removeDeletedMessage(data.message_id);
+                    break;
+                case 'channel_renamed':
+                    handleChannelRenamed(data);
+                    break;
+                case 'channel_deleted':
+                    handleChannelDeleted(data);
+                    break;
                 case 'typing':
                     showTypingIndicator(data.username);
                     break;
@@ -1254,15 +1548,25 @@
         function renderHistory(messages) {
             const container = document.getElementById('chat-messages');
             container.innerHTML = '';
+            // Collect known names from history for @mention matching
+            messages.forEach(msg => {
+                if (msg.username) knownChatNames.add(msg.username);
+                if (msg.nickname) knownChatNames.add(msg.nickname);
+            });
             messages.forEach(msg => appendMessage(msg, false));
             container.scrollTop = container.scrollHeight;
         }
 
         function appendMessage(data, scroll = true) {
+            // Track names for @mention matching
+            if (data.username) knownChatNames.add(data.username);
+            if (data.nickname) knownChatNames.add(data.nickname);
+
             const container = document.getElementById('chat-messages');
             const div = document.createElement('div');
             div.className = 'message';
             div.dataset.messageId = data.id;
+            if (data.user_id) div.dataset.userId = data.user_id;
 
             // Look up user info for nickname display
             const userInfo = data.user_id ? onlineUsers.get(data.user_id) : null;
@@ -1280,16 +1584,29 @@
             let avatarStyle = isAnonymous ? 'background: var(--text-muted);' : getAvatarStyle(avatar);
             let avatarContent = isAnonymous ? '?' : getAvatarContent(avatar, displayName);
 
+            // Reply preview
+            let replyHtml = '';
+            if (data.reply_preview) {
+                const rp = data.reply_preview;
+                replyHtml = `
+                    <div class="message-reply-preview" onclick="scrollToMessage(${rp.id})">
+                        <span class="message-reply-author">${escapeHtml(rp.username)}</span>
+                        <span class="message-reply-text">${escapeHtml(rp.message)}</span>
+                    </div>
+                `;
+            }
+
             div.innerHTML = `
                 <div class="message-avatar" style="${avatarStyle}">${avatarContent}</div>
                 <div class="message-content">
+                    ${replyHtml}
                     <div class="message-header">
                         <span class="message-username">${escapeHtml(displayName)}</span>
                         ${getRoleBadge(role)}
                         ${showRealUsername ? `<span class="message-realname" style="color: var(--text-muted); font-size: 0.75rem;">@${escapeHtml(data.username)}</span>` : ''}
                         <span class="message-time">${time}</span>
                     </div>
-                    <div class="message-text">${formatMessage(data.message)}</div>
+                    <div class="message-text">${data.message ? formatMessage(data.message) : ''}${data.image_url ? `<br><img class="message-image" src="${escapeHtml(data.image_url)}" alt="image" onclick="openLightbox('${escapeHtml(data.image_url)}')" loading="lazy">` : ''}</div>
                 </div>
             `;
 
@@ -1388,15 +1705,27 @@
             const input = document.getElementById('chat-input');
             const message = input.value.trim();
 
-            if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if ((!message && !pendingImageUrl) || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-            ws.send(JSON.stringify({
+            const payload = {
                 type: 'message',
                 channel: currentChannel,
-                message: message
-            }));
+                message: message || ''
+            };
+
+            if (replyToId) {
+                payload.reply_to = replyToId;
+            }
+
+            if (pendingImageUrl) {
+                payload.image_url = pendingImageUrl;
+            }
+
+            ws.send(JSON.stringify(payload));
 
             input.value = '';
+            cancelReply();
+            cancelImageUpload();
         }
 
         function sendTyping() {
@@ -1589,15 +1918,39 @@
             // Blockquote (> text)
             text = text.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-            // @mentions - highlight usernames/nicknames
-            text = text.replace(/@([\w\s\-]+?)(?=\s|$|[.,!?])/g, (match, name) => {
-                const trimmedName = name.trim();
-                // Check if this mention matches current user
+            // @mentions - match known usernames/nicknames first, then fallback to single words
+            // Build list of known names from online users, current user, and all seen names in history
+            const knownNames = new Set(knownChatNames);
+            for (const u of onlineUsers.values()) {
+                if (u.nickname) knownNames.add(u.nickname);
+                if (u.username) knownNames.add(u.username);
+            }
+            if (currentUser?.nickname) knownNames.add(currentUser.nickname);
+            if (currentUser?.username) knownNames.add(currentUser.username);
+            // Sort longest first so multi-word nicknames match before partial
+            const uniqueNames = [...knownNames].sort((a, b) => b.length - a.length);
+
+            // Replace known names first
+            for (const name of uniqueNames) {
+                const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const nameRegex = new RegExp(`@${escaped}(?=\\s|$|[.,!?])`, 'gi');
+                text = text.replace(nameRegex, (match) => {
+                    const matchedName = match.substring(1); // Remove @
+                    const isMe = currentUser && (
+                        matchedName.toLowerCase() === currentUser.username?.toLowerCase() ||
+                        matchedName.toLowerCase() === currentUser.nickname?.toLowerCase()
+                    );
+                    return `<span class="mention${isMe ? ' me' : ''}" data-mention="${escapeHtml(matchedName)}">@${escapeHtml(matchedName)}</span>`;
+                });
+            }
+            // Fallback: highlight remaining @single-word mentions
+            text = text.replace(/@([\w\-]+)(?=\s|$|[.,!?])/g, (match, name) => {
+                if (match.includes('data-mention')) return match; // Already processed
                 const isMe = currentUser && (
-                    trimmedName.toLowerCase() === currentUser.username?.toLowerCase() ||
-                    trimmedName.toLowerCase() === currentUser.nickname?.toLowerCase()
+                    name.toLowerCase() === currentUser.username?.toLowerCase() ||
+                    name.toLowerCase() === currentUser.nickname?.toLowerCase()
                 );
-                return `<span class="mention${isMe ? ' me' : ''}" data-mention="${escapeHtml(trimmedName)}">@${escapeHtml(trimmedName)}</span>`;
+                return `<span class="mention${isMe ? ' me' : ''}" data-mention="${escapeHtml(name)}">@${escapeHtml(name)}</span>`;
             });
 
             // Convert URLs to links (after markdown so we don't break URLs)
@@ -1817,13 +2170,295 @@
             document.getElementById('emoji-picker').classList.remove('show');
         }
 
-        // Close dropdowns when clicking outside
+        // Close dropdowns and context menus when clicking outside
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.status-picker')) {
                 document.getElementById('status-dropdown').classList.remove('show');
             }
             if (!e.target.closest('.emoji-btn') && !e.target.closest('.emoji-picker')) {
                 document.getElementById('emoji-picker').classList.remove('show');
+            }
+            hideContextMenus();
+        });
+
+        function hideContextMenus() {
+            document.getElementById('message-context-menu').classList.remove('show');
+            document.getElementById('channel-context-menu').classList.remove('show');
+        }
+
+        // Message context menu
+        document.getElementById('chat-messages').addEventListener('contextmenu', (e) => {
+            const msgEl = e.target.closest('.message:not(.system)');
+            if (!msgEl) return;
+            e.preventDefault();
+
+            contextMenuMessageId = parseInt(msgEl.dataset.messageId);
+            contextMenuMessageUserId = parseInt(msgEl.dataset.userId) || null;
+            contextMenuMessageText = msgEl.querySelector('.message-text')?.textContent || '';
+
+            // Show/hide delete option
+            const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
+            const isOwner = contextMenuMessageUserId === currentUser?.id;
+            const canDelete = isMod || isOwner;
+            document.getElementById('delete-separator').style.display = canDelete ? '' : 'none';
+            document.getElementById('delete-menu-item').style.display = canDelete ? '' : 'none';
+
+            showContextMenu('message-context-menu', e.clientX, e.clientY);
+        });
+
+        // Channel context menu (admin only)
+        document.getElementById('channel-list').addEventListener('contextmenu', (e) => {
+            const channelEl = e.target.closest('.channel-item');
+            if (!channelEl) return;
+
+            const isAdmin = currentUser && ['admin', 'superadmin'].includes(currentUser.role);
+            if (!isAdmin) return;
+
+            const isDefault = channelEl.dataset.isDefault === 'true';
+            const isStream = channelEl.dataset.isStream === 'true';
+            if (isDefault || isStream) return; // Can't manage default or stream channels
+
+            e.preventDefault();
+            contextMenuChannelId = parseInt(channelEl.dataset.channelId);
+            contextMenuChannelName = channelEl.dataset.channel;
+            showContextMenu('channel-context-menu', e.clientX, e.clientY);
+        });
+
+        function showContextMenu(menuId, x, y) {
+            hideContextMenus();
+            const menu = document.getElementById(menuId);
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
+            menu.classList.add('show');
+
+            // Keep menu within viewport
+            const rect = menu.getBoundingClientRect();
+            if (rect.right > window.innerWidth) {
+                menu.style.left = (window.innerWidth - rect.width - 5) + 'px';
+            }
+            if (rect.bottom > window.innerHeight) {
+                menu.style.top = (window.innerHeight - rect.height - 5) + 'px';
+            }
+        }
+
+        // Reply functions
+        function replyToMessage() {
+            hideContextMenus();
+            if (!contextMenuMessageId) return;
+
+            replyToId = contextMenuMessageId;
+            // Find the message element to get display info
+            const msgEl = document.querySelector(`.message[data-message-id="${contextMenuMessageId}"]`);
+            if (msgEl) {
+                replyToUsername = msgEl.querySelector('.message-username')?.textContent || 'Unknown';
+                const previewText = msgEl.querySelector('.message-text')?.textContent || '';
+                document.getElementById('reply-indicator-name').textContent = replyToUsername;
+                document.getElementById('reply-indicator-text').textContent = previewText.length > 80 ? previewText.substring(0, 80) + '...' : previewText;
+            }
+
+            document.getElementById('reply-indicator').classList.add('show');
+            document.getElementById('chat-input').focus();
+        }
+
+        function cancelReply() {
+            replyToId = null;
+            replyToUsername = null;
+            document.getElementById('reply-indicator').classList.remove('show');
+        }
+
+        function copyMessageText() {
+            hideContextMenus();
+            if (contextMenuMessageText) {
+                navigator.clipboard.writeText(contextMenuMessageText).catch(err => {
+                    console.error('Failed to copy:', err);
+                });
+            }
+        }
+
+        function deleteMessage() {
+            hideContextMenus();
+            if (!contextMenuMessageId) return;
+            if (!confirm('Delete this message?')) return;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'delete',
+                    message_id: contextMenuMessageId
+                }));
+            }
+        }
+
+        function removeDeletedMessage(messageId) {
+            const el = document.querySelector(`.message[data-message-id="${messageId}"]`);
+            if (el) el.remove();
+        }
+
+        function scrollToMessage(messageId) {
+            const el = document.querySelector(`.message[data-message-id="${messageId}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.classList.add('highlight');
+                setTimeout(() => el.classList.remove('highlight'), 2000);
+            }
+        }
+
+        // Channel management functions
+        function renameChannel() {
+            hideContextMenus();
+            if (!contextMenuChannelId) return;
+            document.getElementById('rename-channel-input').value = contextMenuChannelName || '';
+            document.getElementById('rename-channel-modal').style.display = 'flex';
+            document.getElementById('rename-channel-input').focus();
+        }
+
+        async function submitRenameChannel(event) {
+            event.preventDefault();
+            const newName = document.getElementById('rename-channel-input').value.trim().toLowerCase();
+            if (!newName || !contextMenuChannelId) return;
+
+            try {
+                const response = await fetch(`/api/chat/channels/${contextMenuChannelId}`, {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to rename channel');
+                }
+
+                closeModal('rename-channel-modal');
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        async function deleteChannel() {
+            hideContextMenus();
+            if (!contextMenuChannelId || !contextMenuChannelName) return;
+            if (!confirm(`Delete channel #${contextMenuChannelName}? This will permanently remove all messages in this channel.`)) return;
+
+            try {
+                const response = await fetch(`/api/chat/channels/${contextMenuChannelId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to delete channel');
+                }
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        function handleChannelRenamed(data) {
+            if (currentChannel === data.old_name) {
+                currentChannel = data.new_name;
+                document.getElementById('channel-name').textContent = data.new_name;
+            }
+            loadChannels();
+            appendSystemMessage(`Channel #${data.old_name} was renamed to #${data.new_name}`);
+        }
+
+        function handleChannelDeleted(data) {
+            const name = data.channel_name || data.channel;
+            if (currentChannel === name) {
+                switchChannel('general');
+            }
+            loadChannels();
+            appendSystemMessage(`Channel #${name} was deleted`);
+        }
+
+        // Image upload functions
+        function triggerImageUpload() {
+            document.getElementById('image-file-input').click();
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) uploadImage(file);
+            event.target.value = ''; // Reset so same file can be re-selected
+        }
+
+        // Clipboard paste handler for images
+        document.addEventListener('paste', async (e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+
+            for (const item of items) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (file) await uploadImage(file);
+                    return;
+                }
+            }
+        });
+
+        async function uploadImage(file) {
+            if (!file.type.startsWith('image/')) {
+                alert('Only image files are supported');
+                return;
+            }
+            if (file.size > 5 * 1024 * 1024) {
+                alert('Image too large (max 5MB)');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', file);
+
+            try {
+                const response = await fetch('/api/chat/upload', {
+                    method: 'POST',
+                    credentials: 'include',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Upload failed');
+                }
+
+                const result = await response.json();
+                pendingImageUrl = result.url;
+
+                // Show preview
+                const preview = document.getElementById('image-upload-preview');
+                document.getElementById('image-preview-thumb').src = result.url;
+                const sizeKB = Math.round(file.size / 1024);
+                document.getElementById('image-preview-size').textContent = `${file.name || 'Pasted image'} (${sizeKB}KB)`;
+                preview.classList.add('show');
+
+                document.getElementById('chat-input').focus();
+            } catch (error) {
+                console.error('Image upload failed:', error);
+                alert(error.message || 'Failed to upload image');
+            }
+        }
+
+        function cancelImageUpload() {
+            pendingImageUrl = null;
+            document.getElementById('image-upload-preview').classList.remove('show');
+        }
+
+        function openLightbox(url) {
+            document.getElementById('lightbox-img').src = url;
+            document.getElementById('image-lightbox').classList.add('show');
+        }
+
+        function closeLightbox() {
+            document.getElementById('image-lightbox').classList.remove('show');
+        }
+
+        // Close lightbox with Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeLightbox();
             }
         });
     </script>

@@ -505,6 +505,73 @@
         .chat-toggle-btn:hover {
             background: rgba(255,255,255,0.2);
         }
+
+        /* Context menu */
+        .context-menu {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            background: var(--bg-primary, #1a1a2e);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            padding: 0.25rem;
+            min-width: 150px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .context-menu.show { display: block; }
+        .context-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        .context-menu-item:hover { background: rgba(255,255,255,0.1); }
+        .context-menu-item.danger { color: #ef4444; }
+        .context-menu-item.danger:hover { background: rgba(239,68,68,0.15); }
+        .context-menu-separator { height: 1px; background: rgba(255,255,255,0.1); margin: 0.25rem 0; }
+
+        /* Reply preview in messages */
+        .chat-reply-preview {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            border-left: 2px solid rgba(255,255,255,0.2);
+            padding-left: 0.5rem;
+            margin-bottom: 0.25rem;
+            cursor: pointer;
+        }
+        .chat-reply-preview:hover { background: rgba(255,255,255,0.05); }
+        .chat-reply-author { font-weight: 600; color: var(--text-secondary); }
+
+        /* Reply indicator above input */
+        .chat-reply-indicator {
+            display: none;
+            padding: 0.5rem 1rem;
+            background: rgba(59,130,246,0.1);
+            border-left: 3px solid var(--accent-blue);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            align-items: center;
+            justify-content: space-between;
+        }
+        .chat-reply-indicator.show { display: flex; }
+        .chat-reply-cancel { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.25rem; }
+
+        /* Chat images */
+        .chat-image { max-width: 200px; max-height: 150px; border-radius: 4px; margin-top: 0.25rem; cursor: pointer; }
+        .chat-image:hover { opacity: 0.9; }
+
+        /* Image lightbox */
+        .image-lightbox { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2000; background: rgba(0,0,0,0.85); align-items: center; justify-content: center; cursor: pointer; }
+        .image-lightbox.show { display: flex; }
+        .image-lightbox img { max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 8px; }
+
+        /* Message highlight */
+        .chat-message.highlight { animation: msgHighlight 2s ease-out; }
+        @keyframes msgHighlight { 0%, 30% { background: rgba(59,130,246,0.3); } 100% { background: rgba(0,0,0,0.2); } }
     </style>
 </head>
 <body>
@@ -596,11 +663,28 @@
                 <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">Bans</button>
             </div>
             <div class="viewer-chat-messages" id="chat-messages"></div>
+            <div class="chat-reply-indicator" id="chat-reply-indicator">
+                <span>Replying to <strong id="reply-to-name"></strong></span>
+                <button class="chat-reply-cancel" onclick="cancelReply()">&times;</button>
+            </div>
             <form class="viewer-chat-input" onsubmit="sendChatMessage(event)">
                 <input type="text" id="chat-input" placeholder="Send a message..." autocomplete="off">
                 <button type="submit">Send</button>
             </form>
         </div>
+    </div>
+
+    <!-- Context Menu -->
+    <div class="context-menu" id="msg-context-menu">
+        <div class="context-menu-item" onclick="replyToMessage()">↩️ Reply</div>
+        <div class="context-menu-item" onclick="copyMessageText()">📋 Copy Text</div>
+        <div class="context-menu-separator" id="ctx-delete-sep" style="display:none;"></div>
+        <div class="context-menu-item danger" id="ctx-delete-btn" onclick="deleteMessage()" style="display:none;">🗑️ Delete</div>
+    </div>
+
+    <!-- Image Lightbox -->
+    <div class="image-lightbox" id="image-lightbox" onclick="this.classList.remove('show')">
+        <img id="lightbox-img" src="" alt="Full size">
     </div>
 
     <script src="/static/js/portal.js?v=21"></script>
@@ -611,6 +695,10 @@
         let chatWs = null;
         let hlsPlayer = null;
         let statsInterval = null;
+        let replyToId = null;
+        let ctxMessageId = null;
+        let ctxMessageUserId = null;
+        let ctxMessageText = null;
 
         // HLS buffer presets
         const bufferPresets = {
@@ -1016,6 +1104,10 @@
                 case 'bans_list':
                     showBanListModal(data.bans);
                     break;
+                case 'message_deleted':
+                    const delEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
+                    if (delEl) delEl.remove();
+                    break;
                 case 'error':
                     if (data.message) {
                         appendSystemMessage(`Error: ${data.message}`, true);
@@ -1046,6 +1138,8 @@
             const container = document.getElementById('chat-messages');
             const div = document.createElement('div');
             div.className = 'chat-message';
+            if (msg.id) div.dataset.messageId = msg.id;
+            if (msg.user_id) div.dataset.userId = msg.user_id;
 
             const time = formatTime(msg.created_at);
             const displayName = msg.nickname || msg.username;
@@ -1071,17 +1165,30 @@
                 ? `<button class="chat-mod-btn" onclick="banUser(${msg.user_id}, '${escapeHtml(displayName)}')" title="Ban user">Ban</button>`
                 : '';
 
+            // Reply preview
+            let replyHtml = '';
+            if (msg.reply_preview) {
+                const rp = msg.reply_preview;
+                replyHtml = `<div class="chat-reply-preview" onclick="scrollToMsg(${rp.id})"><span class="chat-reply-author">${escapeHtml(rp.username)}</span>: ${escapeHtml(rp.message)}</div>`;
+            }
+
+            // Image
+            const imageHtml = msg.image_url
+                ? `<img class="chat-image" src="${escapeHtml(msg.image_url)}" alt="image" onclick="document.getElementById('lightbox-img').src='${escapeHtml(msg.image_url)}'; document.getElementById('image-lightbox').classList.add('show');" loading="lazy">`
+                : '';
+
             div.innerHTML = `
                 <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
                     <div style="width: 28px; height: 28px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; margin-top: 0.25rem;">${avatarContent}</div>
                     <div style="flex: 1; min-width: 0;">
+                        ${replyHtml}
                         <div class="chat-message-header">
                             <span class="chat-username" onclick="showUserMenu(event, ${msg.user_id}, '${escapeHtml(displayName)}')">${escapeHtml(displayName)}${roleBadge}</span>
                             <span style="flex: 1;"></span>
                             ${banBtn}
                             <span class="chat-time">${time}</span>
                         </div>
-                        <div class="chat-text">${escapeHtml(msg.message)}</div>
+                        <div class="chat-text">${escapeHtml(msg.message || '')}${imageHtml}</div>
                     </div>
                 </div>
             `;
@@ -1100,12 +1207,13 @@
 
             if (!message || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
 
-            chatWs.send(JSON.stringify({
-                type: 'message',
-                message: message
-            }));
+            const payload = { type: 'message', message: message };
+            if (replyToId) payload.reply_to = replyToId;
+
+            chatWs.send(JSON.stringify(payload));
 
             input.value = '';
+            cancelReply();
         }
 
         // Moderation functions
@@ -1241,6 +1349,78 @@
             div.textContent = text || '';
             return div.innerHTML;
         }
+
+        // Context menu on chat messages
+        document.getElementById('chat-messages').addEventListener('contextmenu', (e) => {
+            const msgEl = e.target.closest('.chat-message');
+            if (!msgEl || !msgEl.dataset.messageId) return;
+            e.preventDefault();
+
+            ctxMessageId = parseInt(msgEl.dataset.messageId);
+            ctxMessageUserId = parseInt(msgEl.dataset.userId) || null;
+            ctxMessageText = msgEl.querySelector('.chat-text')?.textContent || '';
+
+            const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
+            const isOwner = ctxMessageUserId === currentUser?.id;
+            const canDelete = isMod || isOwner;
+            document.getElementById('ctx-delete-sep').style.display = canDelete ? '' : 'none';
+            document.getElementById('ctx-delete-btn').style.display = canDelete ? '' : 'none';
+
+            const menu = document.getElementById('msg-context-menu');
+            menu.style.left = e.clientX + 'px';
+            menu.style.top = e.clientY + 'px';
+            menu.classList.add('show');
+
+            const rect = menu.getBoundingClientRect();
+            if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 5) + 'px';
+            if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 5) + 'px';
+        });
+
+        document.addEventListener('click', () => {
+            document.getElementById('msg-context-menu').classList.remove('show');
+        });
+
+        function replyToMessage() {
+            document.getElementById('msg-context-menu').classList.remove('show');
+            if (!ctxMessageId) return;
+            replyToId = ctxMessageId;
+            const msgEl = document.querySelector(`.chat-message[data-message-id="${ctxMessageId}"]`);
+            const name = msgEl?.querySelector('.chat-username')?.textContent || 'Unknown';
+            document.getElementById('reply-to-name').textContent = name;
+            document.getElementById('chat-reply-indicator').classList.add('show');
+            document.getElementById('chat-input').focus();
+        }
+
+        function cancelReply() {
+            replyToId = null;
+            document.getElementById('chat-reply-indicator').classList.remove('show');
+        }
+
+        function copyMessageText() {
+            document.getElementById('msg-context-menu').classList.remove('show');
+            if (ctxMessageText) navigator.clipboard.writeText(ctxMessageText).catch(() => {});
+        }
+
+        function deleteMessage() {
+            document.getElementById('msg-context-menu').classList.remove('show');
+            if (!ctxMessageId || !confirm('Delete this message?')) return;
+            if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                chatWs.send(JSON.stringify({ type: 'delete', message_id: ctxMessageId }));
+            }
+        }
+
+        function scrollToMsg(id) {
+            const el = document.querySelector(`.chat-message[data-message-id="${id}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.classList.add('highlight');
+                setTimeout(() => el.classList.remove('highlight'), 2000);
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') document.getElementById('image-lightbox').classList.remove('show');
+        });
 
         // Clean up on close
         window.addEventListener('beforeunload', () => {

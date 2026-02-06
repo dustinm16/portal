@@ -602,6 +602,9 @@ function connectStreamChat(streamKey) {
         } else if (data.type === 'history') {
             document.getElementById('stream-chat-messages').innerHTML = '';
             data.messages.forEach(msg => appendStreamChatMessage(msg));
+        } else if (data.type === 'message_deleted') {
+            const el = document.querySelector(`#stream-chat-messages .chat-message[data-message-id="${data.message_id}"]`);
+            if (el) el.remove();
         }
     };
 
@@ -617,16 +620,30 @@ function appendStreamChatMessage(msg) {
     const messagesEl = document.getElementById('stream-chat-messages');
     const messageEl = document.createElement('div');
     messageEl.className = 'chat-message';
+    if (msg.id) messageEl.dataset.messageId = msg.id;
     const displayName = msg.nickname || msg.username;
     const avatar = msg.avatar || {};
     const avatarColor = msg.anonymous ? '#6b7280' : (avatar.color || '#3b82f6');
     const avatarContent = msg.anonymous ? '?' : (avatar.emoji || (displayName || '?')[0].toUpperCase());
+
+    // Reply preview
+    let replyHtml = '';
+    if (msg.reply_preview) {
+        replyHtml = `<div style="font-size:0.7rem;color:var(--text-muted);border-left:2px solid rgba(255,255,255,0.2);padding-left:0.4rem;margin-bottom:0.15rem;"><strong>${escapeHtml(msg.reply_preview.username)}</strong>: ${escapeHtml(msg.reply_preview.message)}</div>`;
+    }
+
+    // Image
+    const imageHtml = msg.image_url
+        ? `<br><img src="${escapeHtml(msg.image_url)}" alt="image" style="max-width:180px;max-height:120px;border-radius:4px;margin-top:0.2rem;cursor:pointer;" onclick="window.open('${escapeHtml(msg.image_url)}','_blank')" loading="lazy">`
+        : '';
+
     messageEl.innerHTML = `
         <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
             <div style="width: 24px; height: 24px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0;">${avatarContent}</div>
             <div style="min-width: 0;">
+                ${replyHtml}
                 <span class="chat-username">${escapeHtml(displayName)}</span>
-                <span class="chat-text">${escapeHtml(msg.message)}</span>
+                <span class="chat-text">${escapeHtml(msg.message || '')}${imageHtml}</span>
             </div>
         </div>
     `;

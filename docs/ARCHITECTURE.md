@@ -332,6 +332,8 @@ CREATE TABLE chat_messages (
     message_type TEXT DEFAULT 'message',
     created_at TEXT,
     anonymous INTEGER DEFAULT 0,    -- Per-message anonymous flag (preserves anonymity in history)
+    reply_to INTEGER,              -- References chat_messages(id) for reply threading
+    image_url TEXT,                -- URL to uploaded chat image (/static/uploads/chat/...)
     FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
 );
 ```

@@ -369,6 +369,10 @@ MIGRATIONS = [
     # VOD storage - per-user SFTP configuration for remote VOD files
     # Store anonymous flag per chat message so history preserves anonymity
     "ALTER TABLE chat_messages ADD COLUMN anonymous INTEGER DEFAULT 0",
+    # Reply-to support for chat message threading
+    "ALTER TABLE chat_messages ADD COLUMN reply_to INTEGER",
+    # Image URL for chat message image embeds
+    "ALTER TABLE chat_messages ADD COLUMN image_url TEXT",
     """CREATE TABLE IF NOT EXISTS vod_storage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL UNIQUE,
@@ -1816,16 +1820,18 @@ class Database:
         username: str,
         message: str,
         message_type: str = "message",
-        anonymous: bool = False
+        anonymous: bool = False,
+        reply_to: int = None,
+        image_url: str = None
     ) -> int:
         """Create a new chat message (encrypted)."""
         encrypted_message = encrypt_message(message)
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous))
+            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -1859,6 +1865,18 @@ class Database:
             msg["message"] = decrypt_message(msg.get("message", ""))
             messages.append(msg)
         return messages
+
+    async def get_chat_message(self, message_id: int) -> Optional[dict]:
+        """Get a single chat message by ID (decrypted)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM chat_messages WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            msg = dict(row)
+            msg["message"] = decrypt_message(msg.get("message", ""))
+            return msg
+        return None
 
     async def delete_chat_message(self, message_id: int, user_id: int = None) -> bool:
         """Delete a chat message (optionally verify ownership)."""

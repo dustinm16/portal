@@ -1555,7 +1555,8 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
       <span class="string">"id"</span>: <span class="number">1</span>,
       <span class="string">"name"</span>: <span class="string">"general"</span>,
       <span class="string">"description"</span>: <span class="string">"General discussion"</span>,
-      <span class="string">"is_default"</span>: <span class="number">1</span>
+      <span class="string">"is_default"</span>: <span class="number">1</span>,
+      <span class="string">"is_stream_channel"</span>: <span class="keyword">false</span>
     }
   ]
 }</pre>
@@ -1587,6 +1588,70 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                     </div>
                 </div>
 
+                <div class="admin-only">
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/chat/channels/:id</span>
+                        <span class="endpoint-desc">Rename/update channel <span class="badge-admin">ADMIN</span></span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update a channel's name, description, or topic. Cannot rename default or stream-associated channels.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>New channel name (lowercase, hyphens allowed)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">description</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Updated description</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">topic</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Updated topic</td>
+                            </tr>
+                        </table>
+                        <p>Broadcasts <code>channel_renamed</code> to all connected clients if the name changes.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/chat/channels/:id</span>
+                        <span class="endpoint-desc">Delete channel <span class="badge-admin">ADMIN</span></span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a channel and all its messages. Cannot delete default or stream-associated channels.</p>
+                        <p>Broadcasts <code>channel_deleted</code> to all connected clients before deletion.</p>
+                    </div>
+                </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/chat/upload</span>
+                        <span class="endpoint-desc">Upload image for chat</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Upload an image to embed in a chat message. Returns a URL to include as <code>image_url</code> in the WS message payload.</p>
+                        <h4>Request</h4>
+                        <p>Multipart form data with field name <code>image</code>. Max size: 5MB. Accepted types: JPEG, PNG, GIF, WebP.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"url"</span>: <span class="string">"/static/uploads/chat/abc123.jpg"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
                 <h3>WebSocket API</h3>
                 <p>Connect to the chat WebSocket for real-time messaging:</p>
                 <div class="code-block">
@@ -1600,6 +1665,15 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Send a message</span>
 {<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
+
+<span class="comment">// Send a reply (reply_to is the parent message ID)</span>
+{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>, <span class="string">"message"</span>: <span class="string">"Nice!"</span>, <span class="string">"reply_to"</span>: <span class="number">42</span>}
+
+<span class="comment">// Send a message with an image (upload first via POST /api/chat/upload)</span>
+{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>, <span class="string">"message"</span>: <span class="string">""</span>, <span class="string">"image_url"</span>: <span class="string">"/static/uploads/chat/abc.jpg"</span>}
+
+<span class="comment">// Delete a message (admins/mods: any; users: own only)</span>
+{<span class="string">"type"</span>: <span class="string">"delete"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
 
 <span class="comment">// Typing indicator</span>
 {<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}</pre>
@@ -1616,12 +1690,24 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 <span class="comment">// New message (includes avatar, nickname, anonymous flag)</span>
 {<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#3b82f6"</span>, <span class="string">"emoji"</span>: <span class="string">"🚀"</span>}, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
 
+<span class="comment">// Reply message (includes reply_to and reply_preview)</span>
+{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"id"</span>: <span class="number">43</span>, <span class="string">"user_id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"message"</span>: <span class="string">"Nice!"</span>, <span class="string">"reply_to"</span>: <span class="number">42</span>, <span class="string">"reply_preview"</span>: {<span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}}
+
 <span class="comment">// User joined/left</span>
 {<span class="string">"type"</span>: <span class="string">"user_joined"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>}
 {<span class="string">"type"</span>: <span class="string">"user_left"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
 
 <span class="comment">// Online users list (with profile data)</span>
 {<span class="string">"type"</span>: <span class="string">"users"</span>, <span class="string">"users"</span>: [{<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {...}}]}
+
+<span class="comment">// Message deleted</span>
+{<span class="string">"type"</span>: <span class="string">"message_deleted"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"deleted_by"</span>: <span class="number">1</span>}
+
+<span class="comment">// Channel renamed (admin action via REST)</span>
+{<span class="string">"type"</span>: <span class="string">"channel_renamed"</span>, <span class="string">"old_name"</span>: <span class="string">"dev-talk"</span>, <span class="string">"new_name"</span>: <span class="string">"engineering"</span>}
+
+<span class="comment">// Channel deleted (admin action via REST)</span>
+{<span class="string">"type"</span>: <span class="string">"channel_deleted"</span>, <span class="string">"channel"</span>: <span class="string">"old-channel"</span>}
 
 <span class="comment">// Rate limit error (5 messages per 5 seconds)</span>
 {<span class="string">"type"</span>: <span class="string">"error"</span>, <span class="string">"message"</span>: <span class="string">"Slow down! You're sending messages too fast."</span>}</pre>

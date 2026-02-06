@@ -4768,6 +4768,10 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     channels = await db.get_chat_channels()
+    # Enrich with stream association flag
+    for ch in channels:
+        stream = await db.get_stream_by_chat_channel(ch["id"])
+        ch["is_stream_channel"] = bool(stream)
     return web.json_response({"channels": channels})
 
 
@@ -4813,27 +4817,58 @@ async def http_create_chat_channel(request: web.Request) -> web.Response:
 
 
 async def http_update_chat_channel(request: web.Request) -> web.Response:
-    """Update a chat channel (topic, description)."""
+    """Update a chat channel (admin only, cannot modify defaults or stream channels)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
+    # Require admin role
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role not in ("admin", "superadmin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
     channel_id = int(request.match_info["id"])
+
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    if channel.get("is_default"):
+        return web.json_response({"error": "Cannot modify default channels"}, status=400)
+
+    stream = await db.get_stream_by_chat_channel(channel_id)
+    if stream:
+        return web.json_response({"error": "Cannot modify stream-associated channels"}, status=400)
 
     try:
         data = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    old_name = channel["name"]
     success = await db.update_chat_channel(channel_id, **data)
     if not success:
-        return web.json_response({"error": "Channel not found or no updates"}, status=404)
+        return web.json_response({"error": "No updates applied"}, status=400)
+
+    # If name was changed, broadcast rename and move chat_rooms entry
+    new_name = data.get("name")
+    if new_name and new_name != old_name:
+        if old_name in chat_rooms:
+            await broadcast_to_channel(old_name, {
+                "type": "channel_renamed",
+                "old_name": old_name,
+                "new_name": new_name
+            })
+            chat_rooms[new_name] = chat_rooms.pop(old_name)
 
     return web.json_response({"success": True})
 
 
 async def http_delete_chat_channel(request: web.Request) -> web.Response:
-    """Delete a chat channel (admin only, cannot delete defaults)."""
+    """Delete a chat channel (admin only, cannot delete defaults or stream channels)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -4842,12 +4877,31 @@ async def http_delete_chat_channel(request: web.Request) -> web.Response:
         return web.json_response({"error": "Admin access required"}, status=403)
 
     channel_id = int(request.match_info["id"])
-    success = await db.delete_chat_channel(channel_id)
 
+    # Look up channel before deleting (need name for cleanup)
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    if channel.get("is_default"):
+        return web.json_response({"error": "Cannot delete default channels"}, status=400)
+
+    stream = await db.get_stream_by_chat_channel(channel_id)
+    if stream:
+        return web.json_response({"error": "Cannot delete stream-associated channels"}, status=400)
+
+    success = await db.delete_chat_channel(channel_id)
     if not success:
-        return web.json_response({
-            "error": "Channel not found or is a default channel"
-        }, status=400)
+        return web.json_response({"error": "Failed to delete channel"}, status=500)
+
+    # Notify connected users and clean up
+    channel_name = channel["name"]
+    if channel_name in chat_rooms:
+        await broadcast_to_channel(channel_name, {
+            "type": "channel_deleted",
+            "channel": channel_name
+        })
+        del chat_rooms[channel_name]
 
     return web.json_response({"success": True})
 
@@ -4891,6 +4945,61 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
         "success": True,
         "deleted_count": deleted_count
     })
+
+
+async def http_upload_chat_image(request: web.Request) -> web.Response:
+    """Upload an image for chat embedding."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+
+        if field is None or field.name != "image":
+            return web.json_response({"error": "No image file provided"}, status=400)
+
+        content_type = field.headers.get(aiohttp.hdrs.CONTENT_TYPE, "")
+        if not content_type.startswith("image/"):
+            return web.json_response({"error": "File must be an image"}, status=400)
+
+        ext_map = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+        }
+        ext = ext_map.get(content_type)
+        if not ext:
+            return web.json_response({"error": "Unsupported image format"}, status=400)
+
+        filename = f"{uuid.uuid4().hex}{ext}"
+        upload_dir = Path(__file__).parent / "static" / "uploads" / "chat"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filepath = upload_dir / filename
+
+        size = 0
+        max_size = 5 * 1024 * 1024  # 5MB
+
+        with open(filepath, "wb") as f:
+            while True:
+                chunk = await field.read_chunk()
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_size:
+                    f.close()
+                    filepath.unlink()
+                    return web.json_response({"error": "File too large (max 5MB)"}, status=400)
+                f.write(chunk)
+
+        image_url = f"/static/uploads/chat/{filename}"
+        return web.json_response({"url": image_url})
+
+    except Exception as e:
+        logger.error(f"Chat image upload error: {e}")
+        return web.json_response({"error": "Upload failed"}, status=500)
 
 
 async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
@@ -5063,6 +5172,29 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     m["username"] = "Anonymous"
                                 elif ui.get("nickname"):
                                     m["username"] = ui["nickname"]
+
+                            # Enrich reply previews
+                            reply_ids = [m["reply_to"] for m in messages if m.get("reply_to")]
+                            if reply_ids:
+                                reply_msgs = {}
+                                for rid in set(reply_ids):
+                                    rmsg = await db.get_chat_message(rid)
+                                    if rmsg:
+                                        r_ui = msg_users_map.get(rmsg.get("user_id"), {})
+                                        r_anon = bool(rmsg.get("anonymous"))
+                                        r_username = "Anonymous" if r_anon else (r_ui.get("nickname") or rmsg["username"])
+                                        r_text = rmsg["message"]
+                                        if len(r_text) > 100:
+                                            r_text = r_text[:100] + "..."
+                                        reply_msgs[rid] = {
+                                            "id": rid,
+                                            "username": r_username,
+                                            "message": r_text
+                                        }
+                                for m in messages:
+                                    if m.get("reply_to") and m["reply_to"] in reply_msgs:
+                                        m["reply_preview"] = reply_msgs[m["reply_to"]]
+
                         await ws.send_json({
                             "type": "history",
                             "messages": messages
@@ -5109,7 +5241,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
 
                         message_text = data.get("message", "").strip()
-                        if not message_text or len(message_text) > 4000:
+                        image_url = data.get("image_url", "").strip() or None
+
+                        # Validate image_url if provided
+                        if image_url and not image_url.startswith("/static/uploads/chat/"):
+                            image_url = None
+
+                        # Must have text or image
+                        if not message_text and not image_url:
+                            continue
+                        if len(message_text) > 4000:
                             continue
 
                         channel = await db.get_chat_channel_by_name(current_channel)
@@ -5136,15 +5277,38 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         chat_msg_times.append(now)
 
+                        # Handle reply_to
+                        reply_to_id = data.get("reply_to")
+                        reply_preview = None
+                        if reply_to_id:
+                            reply_to_id = int(reply_to_id)
+                            replied_msg = await db.get_chat_message(reply_to_id)
+                            if replied_msg and replied_msg["channel_id"] == channel["id"]:
+                                r_username = replied_msg["username"]
+                                r_text = replied_msg["message"]
+                                if replied_msg.get("anonymous"):
+                                    r_username = "Anonymous"
+                                if len(r_text) > 100:
+                                    r_text = r_text[:100] + "..."
+                                reply_preview = {
+                                    "id": replied_msg["id"],
+                                    "username": r_username,
+                                    "message": r_text
+                                }
+                            else:
+                                reply_to_id = None
+
                         # Save message (always save real username in DB)
                         msg_id = await db.create_chat_message(
-                            channel["id"], user_id, username, message_text,
-                            anonymous=my_state["anonymous"]
+                            channel["id"], user_id, username, message_text or "",
+                            anonymous=my_state["anonymous"],
+                            reply_to=reply_to_id,
+                            image_url=image_url
                         )
 
                         # Broadcast to channel (display: Anon > Nickname > Username)
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                        await broadcast_to_channel(current_channel, {
+                        broadcast_payload = {
                             "type": "message",
                             "id": msg_id,
                             "user_id": user_id,
@@ -5155,7 +5319,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "avatar": my_state["avatar"] if not my_state["anonymous"] else {},
                             "message": message_text,
                             "created_at": datetime.now(timezone.utc).isoformat()
-                        })
+                        }
+                        if reply_to_id and reply_preview:
+                            broadcast_payload["reply_to"] = reply_to_id
+                            broadcast_payload["reply_preview"] = reply_preview
+                        if image_url:
+                            broadcast_payload["image_url"] = image_url
+                        await broadcast_to_channel(current_channel, broadcast_payload)
 
                     elif msg_type == "typing":
                         if current_channel:
@@ -5164,6 +5334,26 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "type": "typing",
                                 "username": typing_name
                             }, exclude=ws)
+
+                    elif msg_type == "delete":
+                        if not current_channel:
+                            continue
+                        message_id = data.get("message_id")
+                        if not message_id:
+                            continue
+                        message_id = int(message_id)
+                        # Admins/mods can delete any; users delete own only
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if is_mod:
+                            success = await db.delete_chat_message(message_id)
+                        else:
+                            success = await db.delete_chat_message(message_id, user_id=user_id)
+                        if success:
+                            await broadcast_to_channel(current_channel, {
+                                "type": "message_deleted",
+                                "message_id": message_id,
+                                "deleted_by": user_id
+                            })
 
                     elif msg_type == "ban":
                         # Stream owner can ban a user from chat
@@ -6253,6 +6443,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/chat/channels/{id}", http_update_chat_channel)
     app.router.add_delete("/api/chat/channels/{id}", http_delete_chat_channel)
     app.router.add_post("/api/chat/channels/{id}/clear", http_clear_chat_channel)
+    app.router.add_post("/api/chat/upload", http_upload_chat_image)
 
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)

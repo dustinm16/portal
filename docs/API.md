@@ -893,7 +893,8 @@ List chat channels.
       "id": 1,
       "name": "general",
       "description": "General discussion",
-      "is_default": true
+      "is_default": 1,
+      "is_stream_channel": false
     }
   ]
 }
@@ -914,6 +915,29 @@ Create channel.
 
 ---
 
+#### PUT /api/chat/channels/:id
+Update channel (admin/superadmin only). Cannot rename default or stream-associated channels.
+
+**Request:**
+```json
+{
+  "name": "new-name",
+  "description": "Updated description",
+  "topic": "New topic"
+}
+```
+
+Broadcasts `channel_renamed` to all connected clients if name changes.
+
+---
+
+#### DELETE /api/chat/channels/:id
+Delete channel (admin/superadmin only). Cannot delete default or stream-associated channels.
+
+Broadcasts `channel_deleted` to all connected clients before deletion.
+
+---
+
 #### POST /api/chat/channels/:id/clear
 Clear channel history (superadmin only).
 
@@ -924,6 +948,22 @@ Clear channel history (superadmin only).
   "deleted_count": 150
 }
 ```
+
+---
+
+#### POST /api/chat/upload
+Upload an image for embedding in chat messages (max 5MB, JPEG/PNG/GIF/WebP).
+
+**Request:** Multipart form data with field name `image`.
+
+**Response:**
+```json
+{
+  "url": "/static/uploads/chat/abc123def.jpg"
+}
+```
+
+Include the returned URL as `image_url` in the WS message payload.
 
 ---
 
@@ -938,21 +978,35 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 ```json
 {"type": "join", "channel": "general"}
 {"type": "message", "channel": "general", "message": "Hello!"}
+{"type": "message", "channel": "general", "message": "Reply!", "reply_to": 42}
+{"type": "message", "channel": "general", "message": "", "image_url": "/static/uploads/chat/abc.jpg"}
 {"type": "typing", "channel": "general"}
+{"type": "delete", "message_id": 42}
 ```
+
+- `reply_to` (optional): Message ID to reply to. Must be in the same channel.
+- `delete`: Admins/moderators can delete any message; regular users can only delete their own.
 
 **Messages (Server → Client):**
 ```json
 {"type": "channel_info", "name": "general", "description": "..."}
 {"type": "history", "messages": [...]}
 {"type": "users", "users": [{"user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {...}}]}
-{"type": "message", "id": 1, "user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {"color": "#3b82f6", "emoji": "🚀"}, "message": "Hello!"}
+{"type": "message", "id": 43, "user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {"color": "#3b82f6", "emoji": "🚀"}, "message": "Reply!", "reply_to": 42, "reply_preview": {"id": 42, "username": "alice", "message": "Hello!"}}
 {"type": "user_joined", "username": "newuser", "role": "user", "anonymous": false}
 {"type": "user_left", "username": "newuser"}
 {"type": "typing", "username": "john"}
+{"type": "message_deleted", "message_id": 42, "deleted_by": 1}
+{"type": "channel_renamed", "old_name": "dev-talk", "new_name": "engineering"}
+{"type": "channel_deleted", "channel": "old-channel"}
 {"type": "channel_cleared", "cleared_by": "admin", "message_count": 150}
 {"type": "error", "message": "Slow down! You're sending messages too fast."}
 ```
+
+- `reply_to` / `reply_preview`: Present on messages that are replies. Preview includes parent message's username and text (truncated to 100 chars). Anonymous parent messages show "Anonymous" as username.
+- `message_deleted`: Broadcast when a message is deleted.
+- `channel_renamed`: Broadcast when an admin renames a channel via REST API.
+- `channel_deleted`: Broadcast when an admin deletes a channel via REST API.
 
 ---
 
