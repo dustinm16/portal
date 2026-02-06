@@ -1943,9 +1943,8 @@
                     return `<span class="mention${isMe ? ' me' : ''}" data-mention="${escapeHtml(matchedName)}">@${escapeHtml(matchedName)}</span>`;
                 });
             }
-            // Fallback: highlight remaining @single-word mentions
-            text = text.replace(/@([\w\-]+)(?=\s|$|[.,!?])/g, (match, name) => {
-                if (match.includes('data-mention')) return match; // Already processed
+            // Fallback: highlight remaining @single-word mentions (skip if inside an already-processed span)
+            text = text.replace(/(?<!>)@([\w\-]+)(?=\s|$|[.,!?])/g, (match, name) => {
                 const isMe = currentUser && (
                     name.toLowerCase() === currentUser.username?.toLowerCase() ||
                     name.toLowerCase() === currentUser.nickname?.toLowerCase()
