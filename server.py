@@ -2978,15 +2978,10 @@ async def http_get_vod_storage(request: web.Request) -> web.Response:
     if not storage:
         return web.json_response({"storage": None})
 
-    # Redact sensitive fields
+    # Redact sensitive fields - strip config entirely, expose only flags
     config = json.loads(storage.get("config", "{}"))
     redacted = dict(storage)
-    redacted_config = {}
-    if config.get("password"):
-        redacted_config["password"] = "***"
-    if config.get("private_key"):
-        redacted_config["private_key"] = "***"
-    redacted["config"] = json.dumps(redacted_config)
+    del redacted["config"]
     redacted["has_password"] = bool(config.get("password"))
     redacted["has_key"] = bool(config.get("private_key"))
 
@@ -3183,7 +3178,7 @@ async def http_list_vods(request: web.Request) -> web.Response:
                 continue
 
         # Sort by modified time descending (newest first)
-        sort_by = request.query.get("sort", "date")
+        sort_by = request.query.get("sort", "modified")
         reverse = request.query.get("order", "desc") == "desc"
         if sort_by == "name":
             files.sort(key=lambda f: f["name"].lower(), reverse=reverse)
@@ -3223,6 +3218,7 @@ async def http_download_vod(request: web.Request) -> web.Response:
     if error:
         return web.json_response({"error": error}, status=502)
 
+    response_started = False
     try:
         remote_path = f"{storage['remote_path'].rstrip('/')}/{filename}"
         attrs = await sftp.stat(remote_path)
@@ -3233,6 +3229,7 @@ async def http_download_vod(request: web.Request) -> web.Response:
         safe_name = filename.split("/")[-1].replace('"', '\\"')
         response.headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
         await response.prepare(request)
+        response_started = True
 
         CHUNK_SIZE = 262144  # 256 KB
         async with sftp.open(remote_path, "rb") as f:
@@ -3245,8 +3242,12 @@ async def http_download_vod(request: web.Request) -> web.Response:
         await response.write_eof()
         return response
     except asyncssh.SFTPError as e:
+        if response_started:
+            return response  # Headers already sent, can't send error JSON
         return web.json_response({"error": f"SFTP error: {e}"}, status=502)
     except OSError as e:
+        if response_started:
+            return response
         return web.json_response({"error": f"Download error: {e}"}, status=502)
     finally:
         conn.close()

@@ -68,7 +68,7 @@ async function loadVods() {
 function renderVodRow(file) {
     const size = Portal.formatBytes(file.size);
     const modified = file.modified ? formatVodDate(file.modified) : '--';
-    const safeName = escapeHtml(file.name);
+    const safeName = escapeHtml(file.name).replace(/'/g, '&#39;');
     const encodedName = encodeURIComponent(file.name);
 
     return `<tr>
