@@ -331,6 +331,7 @@ CREATE TABLE chat_messages (
     message TEXT NOT NULL,           -- Fernet encrypted
     message_type TEXT DEFAULT 'message',
     created_at TEXT,
+    anonymous INTEGER DEFAULT 0,    -- Per-message anonymous flag (preserves anonymity in history)
     FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
 );
 ```

@@ -277,7 +277,9 @@ Update avatar.
 ---
 
 #### PUT /api/me/anonymous
-Toggle anonymous mode in chat.
+Toggle anonymous mode in chat. Anonymous state is stored per-message, so messages sent while anonymous remain anonymous even after the mode is turned off.
+
+Display name priority: **Anonymous** (if enabled) > **Nickname** > **Username**
 
 **Request:**
 ```json
@@ -928,7 +930,9 @@ Clear channel history (superadmin only).
 ### WebSocket Endpoints
 
 #### WS /ws/chat
-Real-time chat.
+Real-time chat. Messages are rate limited to **5 per 5 seconds** per user.
+
+Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous state is stored per-message in the database, so historical messages preserve their anonymity regardless of the user's current setting.
 
 **Messages (Client → Server):**
 ```json
@@ -941,12 +945,13 @@ Real-time chat.
 ```json
 {"type": "channel_info", "name": "general", "description": "..."}
 {"type": "history", "messages": [...]}
-{"type": "users", "users": [...]}
-{"type": "message", "id": 1, "username": "john", "message": "Hello!", "role": "superadmin"}
-{"type": "user_joined", "username": "newuser"}
+{"type": "users", "users": [{"user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {...}}]}
+{"type": "message", "id": 1, "user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {"color": "#3b82f6", "emoji": "🚀"}, "message": "Hello!"}
+{"type": "user_joined", "username": "newuser", "role": "user", "anonymous": false}
 {"type": "user_left", "username": "newuser"}
 {"type": "typing", "username": "john"}
 {"type": "channel_cleared", "cleared_by": "admin", "message_count": 150}
+{"type": "error", "message": "Slow down! You're sending messages too fast."}
 ```
 
 ---
@@ -1475,6 +1480,7 @@ Regular users default to the "My Connections" tab. Admins default to "Services".
 - Default: 100 requests per minute per IP
 - WebSocket connections: 10 per minute per IP
 - Login attempts: 5 per minute per IP
+- Chat messages: 5 per 5 seconds per user
 
 When rate limited, response includes:
 ```json

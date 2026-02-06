@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - API Documentation</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=15">
+    <link rel="stylesheet" href="/static/css/portal.css?v=25">
     <style>
         .docs-container {
             max-width: 1200px;
@@ -1525,6 +1525,18 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                     <strong>Security:</strong> All messages are encrypted using AES-256 (Fernet) before storage. Messages older than 7 days are automatically purged.
                 </div>
 
+                <h3>Display Name Priority</h3>
+                <p>Chat display names follow this priority order:</p>
+                <ol>
+                    <li><strong>Anonymous</strong> &mdash; If anonymous mode is enabled, displayed as "Anonymous" with no avatar or nickname</li>
+                    <li><strong>Nickname</strong> &mdash; If set via <code>PUT /api/me/nickname</code></li>
+                    <li><strong>Username</strong> &mdash; The account username (fallback)</li>
+                </ol>
+                <p>Anonymous state is stored per-message, so messages sent while anonymous remain anonymous even after the user turns anonymous mode off.</p>
+
+                <h3>Message Rate Limiting</h3>
+                <p>Chat messages are rate limited to <strong>5 messages per 5 seconds</strong> per user. If exceeded, the server responds with an error and the message is not sent.</p>
+
                 <h3>REST API</h3>
 
                 <div class="endpoint">
@@ -1601,15 +1613,18 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 <span class="comment">// Message history</span>
 {<span class="string">"type"</span>: <span class="string">"history"</span>, <span class="string">"messages"</span>: [...]}
 
-<span class="comment">// New message</span>
-{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
+<span class="comment">// New message (includes avatar, nickname, anonymous flag)</span>
+{<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#3b82f6"</span>, <span class="string">"emoji"</span>: <span class="string">"🚀"</span>}, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
 
 <span class="comment">// User joined/left</span>
-{<span class="string">"type"</span>: <span class="string">"user_joined"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
+{<span class="string">"type"</span>: <span class="string">"user_joined"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>}
 {<span class="string">"type"</span>: <span class="string">"user_left"</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
 
-<span class="comment">// Online users list</span>
-{<span class="string">"type"</span>: <span class="string">"users"</span>, <span class="string">"users"</span>: [<span class="string">"alice"</span>, <span class="string">"bob"</span>]}</pre>
+<span class="comment">// Online users list (with profile data)</span>
+{<span class="string">"type"</span>: <span class="string">"users"</span>, <span class="string">"users"</span>: [{<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {...}}]}
+
+<span class="comment">// Rate limit error (5 messages per 5 seconds)</span>
+{<span class="string">"type"</span>: <span class="string">"error"</span>, <span class="string">"message"</span>: <span class="string">"Slow down! You're sending messages too fast."</span>}</pre>
                 </div>
 
                 <h4>JavaScript Example</h4>
@@ -1935,6 +1950,7 @@ ws.send(JSON.stringify({
                     <li><strong>Authentication endpoints:</strong> 10 requests per minute</li>
                     <li><strong>General API:</strong> 60 requests per minute</li>
                     <li><strong>WebSocket connections:</strong> 10 concurrent per user</li>
+                    <li><strong>Chat messages:</strong> 5 messages per 5 seconds per user</li>
                 </ul>
                 <p>Rate limit headers are included in responses:</p>
                 <div class="code-block">

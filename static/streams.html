@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Community Streams</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=24">
+    <link rel="stylesheet" href="/static/css/portal.css?v=25">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         /* Unified navbar section styling */
@@ -1531,6 +1531,10 @@
 
             const time = formatTime(msg.created_at);
             const displayName = msg.nickname || msg.username;
+            const avatar = msg.avatar || {};
+            const avatarColor = avatar.color || '#3b82f6';
+            const avatarContent = msg.anonymous ? '?' : (avatar.emoji || (displayName || '?')[0].toUpperCase());
+            const avatarBg = msg.anonymous ? 'var(--text-muted)' : escapeHtml(avatarColor);
 
             // Check if current user can moderate (stream owner or admin)
             const canModerate = currentStream && currentUser && (
@@ -1552,13 +1556,18 @@
                 : '';
 
             div.innerHTML = `
-                <div class="chat-message-header">
-                    <span class="chat-username" onclick="showUserMenu(event, ${msg.user_id}, '${escapeHtml(displayName)}')">${escapeHtml(displayName)}${roleBadge}</span>
-                    <span style="flex: 1;"></span>
-                    ${banBtn}
-                    <span class="chat-time">${time}</span>
+                <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
+                    <div style="width: 28px; height: 28px; border-radius: 50%; background: ${avatarBg}; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; margin-top: 0.25rem;">${avatarContent}</div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div class="chat-message-header">
+                            <span class="chat-username" onclick="showUserMenu(event, ${msg.user_id}, '${escapeHtml(displayName)}')">${escapeHtml(displayName)}${roleBadge}</span>
+                            <span style="flex: 1;"></span>
+                            ${banBtn}
+                            <span class="chat-time">${time}</span>
+                        </div>
+                        <div class="chat-text">${escapeHtml(msg.message)}</div>
+                    </div>
                 </div>
-                <div class="chat-text">${escapeHtml(msg.message)}</div>
             `;
 
             container.appendChild(div);

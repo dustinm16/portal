@@ -367,6 +367,8 @@ MIGRATIONS = [
     # Allow unauthenticated public access to stream video
     "ALTER TABLE user_streams ADD COLUMN allow_unauthenticated INTEGER DEFAULT 0",
     # VOD storage - per-user SFTP configuration for remote VOD files
+    # Store anonymous flag per chat message so history preserves anonymity
+    "ALTER TABLE chat_messages ADD COLUMN anonymous INTEGER DEFAULT 0",
     """CREATE TABLE IF NOT EXISTS vod_storage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL UNIQUE,
@@ -1813,16 +1815,17 @@ class Database:
         user_id: int,
         username: str,
         message: str,
-        message_type: str = "message"
+        message_type: str = "message",
+        anonymous: bool = False
     ) -> int:
         """Create a new chat message (encrypted)."""
         encrypted_message = encrypt_message(message)
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (channel_id, user_id, username, encrypted_message, message_type, created_at)
+            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous))
         )
         await self.conn.commit()
         return cursor.lastrowid

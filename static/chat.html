@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Chat</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=24">
+    <link rel="stylesheet" href="/static/css/portal.css?v=25">
     <style>
         /* Unified navbar section styling */
         .navbar-divider {
@@ -27,11 +27,17 @@
             opacity: 0.9;
         }
 
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
         .chat-container {
             display: grid;
             grid-template-columns: 200px 1fr 200px;
             height: calc(100vh - 60px);
             background: var(--bg-primary);
+            overflow: hidden;
         }
 
         /* Sidebar - Channels */
@@ -92,6 +98,7 @@
             display: flex;
             flex-direction: column;
             min-width: 0;
+            overflow: hidden;
         }
 
         .chat-header {
@@ -143,6 +150,7 @@
 
         .chat-messages {
             flex: 1;
+            min-height: 0;
             overflow-y: auto;
             padding: 1rem;
             display: flex;
@@ -1394,7 +1402,8 @@
         function sendTyping() {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-            if (typingTimeout) clearTimeout(typingTimeout);
+            // Only send typing event if we haven't sent one recently
+            if (typingTimeout) return;
 
             ws.send(JSON.stringify({
                 type: 'typing',
@@ -1403,18 +1412,41 @@
 
             typingTimeout = setTimeout(() => {
                 typingTimeout = null;
-            }, 3000);
+            }, 4000);
         }
+
+        let typingDisplayTimeouts = {}; // username -> timeout id
 
         function showTypingIndicator(username) {
             if (username === currentUser?.username) return;
 
-            const indicator = document.getElementById('typing-indicator');
-            indicator.textContent = `${username} is typing...`;
+            // Clear existing timeout for this user
+            if (typingDisplayTimeouts[username]) {
+                clearTimeout(typingDisplayTimeouts[username]);
+            }
 
-            setTimeout(() => {
+            // Add user to typing set and update display
+            typingDisplayTimeouts[username] = setTimeout(() => {
+                delete typingDisplayTimeouts[username];
+                updateTypingDisplay();
+            }, 6000);
+
+            updateTypingDisplay();
+        }
+
+        function updateTypingDisplay() {
+            const indicator = document.getElementById('typing-indicator');
+            const typingUsers = Object.keys(typingDisplayTimeouts);
+
+            if (typingUsers.length === 0) {
                 indicator.textContent = '';
-            }, 3000);
+            } else if (typingUsers.length === 1) {
+                indicator.textContent = `${typingUsers[0]} is typing...`;
+            } else if (typingUsers.length === 2) {
+                indicator.textContent = `${typingUsers[0]} and ${typingUsers[1]} are typing...`;
+            } else {
+                indicator.textContent = `${typingUsers.length} people are typing...`;
+            }
         }
 
         function updateConnectionStatus(connected) {

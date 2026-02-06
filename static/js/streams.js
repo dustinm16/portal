@@ -617,9 +617,18 @@ function appendStreamChatMessage(msg) {
     const messagesEl = document.getElementById('stream-chat-messages');
     const messageEl = document.createElement('div');
     messageEl.className = 'chat-message';
+    const displayName = msg.nickname || msg.username;
+    const avatar = msg.avatar || {};
+    const avatarColor = avatar.color || '#3b82f6';
+    const avatarContent = avatar.emoji || (displayName || '?')[0].toUpperCase();
     messageEl.innerHTML = `
-        <span class="chat-username">${escapeHtml(msg.username)}</span>
-        <span class="chat-text">${escapeHtml(msg.message)}</span>
+        <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
+            <div style="width: 24px; height: 24px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0;">${avatarContent}</div>
+            <div style="min-width: 0;">
+                <span class="chat-username">${escapeHtml(displayName)}</span>
+                <span class="chat-text">${escapeHtml(msg.message)}</span>
+            </div>
+        </div>
     `;
     messagesEl.appendChild(messageEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
