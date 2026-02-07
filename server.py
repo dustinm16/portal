@@ -1890,7 +1890,12 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
-    stream = await db.get_user_stream(int(stream_id))
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
+
+    stream = await db.get_user_stream(stream_id)
 
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
@@ -1915,6 +1920,10 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
     try:
         data = await request.json()
@@ -1922,7 +1931,7 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     # Get existing stream to check ownership
-    stream = await db.get_user_stream(int(stream_id))
+    stream = await db.get_user_stream(stream_id)
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
@@ -1940,9 +1949,9 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         )
         data["chat_channel_id"] = chat_channel_id
 
-    success = await db.update_user_stream(int(stream_id), user_id=token.user_id, **data)
+    success = await db.update_user_stream(stream_id, user_id=token.user_id, **data)
     if success:
-        updated_stream = await db.get_user_stream(int(stream_id))
+        updated_stream = await db.get_user_stream(stream_id)
         return web.json_response({"stream": updated_stream})
     return web.json_response({"error": "Failed to update stream"}, status=500)
 
@@ -1954,8 +1963,12 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
-    stream = await db.get_user_stream(int(stream_id))
+    stream = await db.get_user_stream(stream_id)
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
@@ -1963,7 +1976,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if stream.get("chat_channel_id"):
         await db.delete_chat_channel(stream["chat_channel_id"])
 
-    success = await db.delete_user_stream(int(stream_id), user_id=token.user_id)
+    success = await db.delete_user_stream(stream_id, user_id=token.user_id)
     if success:
         return web.json_response({"success": True})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
@@ -1976,9 +1989,14 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
+
     new_key = generate_stream_key()
 
-    success = await db.regenerate_stream_key(int(stream_id), new_key, user_id=token.user_id)
+    success = await db.regenerate_stream_key(stream_id, new_key, user_id=token.user_id)
     if success:
         return web.json_response({"stream_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
@@ -1991,9 +2009,13 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
     # Get existing stream to check ownership
-    stream = await db.get_user_stream(int(stream_id))
+    stream = await db.get_user_stream(stream_id)
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
@@ -2055,7 +2077,7 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
 
         # Update database with new thumbnail URL
         thumbnail_url = f"/static/uploads/thumbnails/{filename}"
-        await db.update_user_stream(int(stream_id), user_id=token.user_id, thumbnail_url=thumbnail_url)
+        await db.update_user_stream(stream_id, user_id=token.user_id, thumbnail_url=thumbnail_url)
 
         return web.json_response({
             "success": True,
@@ -2074,8 +2096,12 @@ async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
-    stream = await db.get_user_stream(int(stream_id))
+    stream = await db.get_user_stream(stream_id)
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
@@ -2092,7 +2118,7 @@ async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
                 pass
 
     # Clear thumbnail URL in database
-    await db.update_user_stream(int(stream_id), user_id=token.user_id, thumbnail_url=None)
+    await db.update_user_stream(stream_id, user_id=token.user_id, thumbnail_url=None)
 
     return web.json_response({"success": True})
 
@@ -2103,7 +2129,10 @@ async def http_get_stream_bans(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    stream_id = int(request.match_info.get("id"))
+    try:
+        stream_id = int(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
     # Verify ownership
     stream = await db.get_user_stream(stream_id)
@@ -2127,7 +2156,10 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    stream_id = int(request.match_info.get("id"))
+    try:
+        stream_id = int(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
     # Verify ownership
     stream = await db.get_user_stream(stream_id)
@@ -2184,8 +2216,11 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    stream_id = int(request.match_info.get("id"))
-    user_id = int(request.match_info.get("user_id"))
+    try:
+        stream_id = int(request.match_info.get("id"))
+        user_id = int(request.match_info.get("user_id"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
 
     # Verify ownership
     stream = await db.get_user_stream(stream_id)
@@ -2313,8 +2348,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                 if api_key and api_key["user_id"] == stream["user_id"]:
                     return web.json_response({"allowed": True})
 
-        # For public streams, always allow
-        return web.json_response({"allowed": True})
+        # Default deny for unrecognized streams or unauthorized access
+        return web.json_response({"error": "Access denied"}, status=403)
 
     return web.json_response({"error": "Unknown action"}, status=400)
 
@@ -5144,7 +5179,10 @@ async def http_update_chat_channel(request: web.Request) -> web.Response:
     if role not in ("admin", "superadmin"):
         return web.json_response({"error": "Admin access required"}, status=403)
 
-    channel_id = int(request.match_info["id"])
+    try:
+        channel_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid channel ID"}, status=400)
 
     channel = await db.get_chat_channel(channel_id)
     if not channel:
@@ -5190,7 +5228,10 @@ async def http_delete_chat_channel(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return web.json_response({"error": "Admin access required"}, status=403)
 
-    channel_id = int(request.match_info["id"])
+    try:
+        channel_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid channel ID"}, status=400)
 
     # Look up channel before deleting (need name for cleanup)
     channel = await db.get_chat_channel(channel_id)
@@ -6590,7 +6631,12 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
 @web.middleware
 async def security_headers_middleware(request: web.Request, handler):
     """Add security headers to all responses."""
-    response = await handler(request)
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        # HTTPException (redirects, 404s, etc.) are also Response objects.
+        # Catch them so we can add security headers before returning.
+        response = exc
 
     # HSTS - Enforce HTTPS for 1 year, include subdomains
     response.headers.setdefault('Strict-Transport-Security',
@@ -6629,6 +6675,9 @@ async def security_headers_middleware(request: web.Request, handler):
             "form-action 'self';"
         )
         response.headers.setdefault('Content-Security-Policy', csp)
+
+    # Suppress server version to prevent information leakage
+    response.headers['Server'] = 'Open Relay Portal'
 
     return response
 
