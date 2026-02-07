@@ -195,9 +195,11 @@ Permission Hierarchy:
 │       ├── portal.js      # Core utilities
 │       ├── dashboard.js   # Dashboard logic
 │       ├── admin.js       # Admin panel
+│       ├── user-connections.js # Connection CRUD, edit, type schemas
+│       ├── ssh-keys.js    # SSH key management
 │       ├── streams.js     # Stream management
 │       ├── vods.js        # VOD file manager
-│       └── ...
+│       └── terminal.js    # Terminal WebSocket client
 │
 ├── docs/                  # Documentation
 │   ├── ARCHITECTURE.md    # This file
@@ -478,6 +480,13 @@ POST /api/chat/upload                - Upload chat image
 WS   /ws/chat                        - Chat WebSocket
 ```
 
+### System Info
+
+```
+GET  /api/shells                     - Available shells (admin)
+GET  /api/plugins                    - Available plugins with schemas
+```
+
 ### Public Stats
 
 ```
@@ -533,8 +542,8 @@ POST /api/vuln/nvd-api-key           - Set NVD API key
 
 ```
 WS /ws/chat                     - Chat real-time
-WS /ws/terminal/local           - Local terminal (admin)
-WS /ws/terminal/:id             - Terminal session
+WS /ws/terminal/local           - Local terminal (admin, ?shell= for shell selection)
+WS /ws/terminal/:id             - Terminal session (falls back to user-connection if no service)
 WS /ws/vnc/:id                  - VNC connection
 WS /ws/spice/:id                - SPICE connection
 WS /ws/user-connection/:id      - User connection relay
@@ -593,8 +602,8 @@ class PluginBase:
 
 | Plugin | Description | Default Port |
 |--------|-------------|--------------|
-| terminal | Web PTY terminal | - |
-| ssh | SSH over WebSocket | 22 |
+| terminal | Web PTY terminal (DA1/DA2/DSR compat) | - |
+| ssh | SSH over WebSocket (DA1/DA2/DSR compat) | 22 |
 | vnc | VNC via noVNC | 5900 |
 | spice | SPICE console | 5930 |
 | proxmox | Proxmox VE API | 8006 |

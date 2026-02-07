@@ -662,7 +662,27 @@ Get connection details.
 ---
 
 #### PUT /api/connections/:id
-Update connection.
+Update connection. Config fields are merged with existing config — fields not included in the request are preserved (e.g., passwords and private keys that are not shown in the edit form).
+
+**Request:**
+```json
+{
+  "name": "Updated Name",
+  "host": "192.168.1.200",
+  "port": 2222,
+  "config": {
+    "username": "newuser",
+    "auth_method": "password"
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "status": "updated"
+}
+```
 
 ---
 
@@ -1298,8 +1318,18 @@ Binary WebSocket relay to the target service.
 
 ---
 
+#### WS /ws/terminal/local
+Admin-only local server terminal. Supports shell selection via query parameter.
+
+**Query Parameters:**
+- `shell` (optional): Shell path (e.g., `/usr/bin/fish`). Must be in the server's allowed shells list. Defaults to `/bin/bash`.
+
+Text-based terminal I/O with server-side terminal compatibility (DA1/DA2/DSR queries are intercepted and responded to immediately to prevent shell timeouts).
+
+---
+
 #### WS /ws/terminal/:id
-Terminal session.
+Terminal session for a service.
 
 Text-based terminal I/O.
 
@@ -1425,6 +1455,44 @@ Delete a VOD file from remote storage. Only `.mkv` files allowed.
 {
   "success": true,
   "message": "Deleted stream-2026-02-06.mkv"
+}
+```
+
+---
+
+### System Info
+
+#### GET /api/shells
+List available shells on the server (admin only). Used by the terminal shell selector.
+
+**Response:**
+```json
+{
+  "shells": [
+    {"path": "/usr/bin/bash", "name": "bash"},
+    {"path": "/usr/bin/fish", "name": "fish"},
+    {"path": "/usr/bin/zsh", "name": "zsh"}
+  ]
+}
+```
+
+---
+
+#### GET /api/plugins
+List available plugins with their configuration schemas.
+
+**Response:**
+```json
+{
+  "plugins": [
+    {
+      "name": "ssh",
+      "display_name": "SSH Terminal",
+      "description": "SSH connection over WebSocket",
+      "version": "1.0.0",
+      "config_schema": { ... }
+    }
+  ]
 }
 ```
 
@@ -1999,7 +2067,7 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/live` | Public live streams (unauthenticated) |
 | `/docs` | API documentation (interactive) |
 | `/api-docs` | API documentation (alias) |
-| `/terminal/{id}` | Terminal UI |
+| `/terminal/{id}` | Terminal UI (local terminal supports `?shell=` param for shell selection) |
 | `/vnc/{id}` | VNC viewer |
 | `/spice/{id}` | SPICE viewer |
 | `/proxmox/{id}` | Proxmox management |
