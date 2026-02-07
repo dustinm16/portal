@@ -1204,9 +1204,9 @@ class Database:
         if not updates:
             return False
 
-        # Handle JSON fields
+        # Handle JSON fields (encrypt config at rest)
         if 'config' in updates and isinstance(updates['config'], dict):
-            updates['config'] = json.dumps(updates['config'])
+            updates['config'] = encrypt_config(json.dumps(updates['config']))
         if 'ports' in updates and isinstance(updates['ports'], list):
             updates['ports'] = json.dumps(updates['ports'])
         if 'required_scopes' in updates and isinstance(updates['required_scopes'], list):
@@ -2212,9 +2212,9 @@ class Database:
         if not updates:
             return False
 
-        # Handle JSON fields
+        # Handle JSON fields (encrypt config at rest)
         if 'config' in updates and isinstance(updates['config'], dict):
-            updates['config'] = json.dumps(updates['config'])
+            updates['config'] = encrypt_config(json.dumps(updates['config']))
         if 'ports' in updates and isinstance(updates['ports'], list):
             updates['ports'] = json.dumps(updates['ports'])
 
