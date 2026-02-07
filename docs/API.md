@@ -85,6 +85,28 @@ End current session.
 
 ---
 
+#### POST /api/register
+Register a new account (requires invite code).
+
+**Request:**
+```json
+{
+  "username": "newuser",
+  "password": "securepass",
+  "invite_code": "ABC123"
+}
+```
+
+**Response:**
+```json
+{
+  "token": "eyJhbGc...",
+  "user": {"id": 5, "username": "newuser"}
+}
+```
+
+---
+
 #### POST /api/token
 Create a JWT token.
 
@@ -101,6 +123,59 @@ Create a JWT token.
 {
   "token": "eyJhbGc...",
   "expires_at": "2026-02-06T12:00:00Z"
+}
+```
+
+---
+
+#### GET /api/tokens
+List active tokens for the current user.
+
+**Response:**
+```json
+{
+  "tokens": [
+    {
+      "token_id": "XVzl9pJ...",
+      "name": "my-token",
+      "scopes": ["*"],
+      "created_at": "2026-02-05T00:00:00Z",
+      "last_used_at": "2026-02-06T10:00:00Z",
+      "expires_at": "2026-03-05T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/token/revoke
+Revoke a token.
+
+**Request:**
+```json
+{
+  "token_id": "XVzl9pJ..."
+}
+```
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+#### GET /api/invite-code
+Get the current daily invite code (admin only).
+
+**Response:**
+```json
+{
+  "invite_code": "ABC123",
+  "expires_at": "2026-02-07T00:00:00Z"
 }
 ```
 
@@ -290,6 +365,149 @@ Display name priority: **Anonymous** (if enabled) > **Nickname** > **Username**
 
 ---
 
+### SSH Keys
+
+Generate and manage SSH key pairs for authentication. Private keys are returned only once upon creation and are never stored.
+
+#### POST /api/ssh-keys
+Generate a new SSH key pair.
+
+**Request:**
+```json
+{
+  "name": "my-server-key",
+  "key_type": "ed25519"
+}
+```
+
+Key types: `ed25519` (default, recommended) or `rsa`.
+
+**Response:**
+```json
+{
+  "id": 1,
+  "name": "my-server-key",
+  "public_key": "ssh-ed25519 AAAA...",
+  "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
+  "fingerprint": "SHA256:..."
+}
+```
+
+> **Warning:** The private key is only returned once. Store it securely.
+
+---
+
+#### GET /api/ssh-keys
+List user's SSH keys (public keys only).
+
+**Response:**
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "name": "my-server-key",
+      "public_key": "ssh-ed25519 AAAA...",
+      "fingerprint": "SHA256:...",
+      "created_at": "2026-02-05T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### GET /api/ssh-keys/{id}
+Get details for a specific SSH key.
+
+---
+
+#### DELETE /api/ssh-keys/{id}
+Delete an SSH key.
+
+---
+
+#### GET /api/ssh-keys/authorized
+Get all public keys in `authorized_keys` format for adding to remote servers.
+
+**Response:** Plain text, one key per line.
+
+---
+
+#### GET /api/ssh-keys/all
+List all SSH keys across all users (admin only).
+
+---
+
+### Two-Factor Authentication (2FA)
+
+TOTP-based two-factor authentication using authenticator apps.
+
+#### GET /api/user/2fa/status
+Get current 2FA status.
+
+**Response:**
+```json
+{
+  "enabled": false,
+  "backup_codes_remaining": 0
+}
+```
+
+---
+
+#### POST /api/user/2fa/setup
+Start 2FA setup. Generates a TOTP secret and provisioning URI.
+
+**Response:**
+```json
+{
+  "secret": "JBSWY3DPEHPK3PXP",
+  "provisioning_uri": "otpauth://totp/Portal:user?secret=..."
+}
+```
+
+---
+
+#### POST /api/user/2fa/verify
+Verify a TOTP code to enable 2FA. Returns backup codes.
+
+**Request:**
+```json
+{
+  "code": "123456"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "backup_codes": ["AAAA-BBBB", "CCCC-DDDD", ...]
+}
+```
+
+---
+
+#### POST /api/user/2fa/disable
+Disable 2FA.
+
+**Request:**
+```json
+{
+  "code": "123456"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+---
+
 ### User Management (Admin)
 
 #### GET /api/users
@@ -440,6 +658,11 @@ Update connection.
 
 #### DELETE /api/connections/:id
 Delete connection.
+
+---
+
+#### GET /api/connections/{id}/connect
+Get connection details needed to establish a WebSocket relay (plugin info, WebSocket URL).
 
 ---
 
@@ -632,6 +855,54 @@ Regenerate stream key.
   }
 }
 ```
+
+---
+
+#### GET /api/streams/open
+List all currently live and public streams (for community streams page).
+
+**Response:**
+```json
+{
+  "streams": [
+    {
+      "id": 1,
+      "name": "Gaming Stream",
+      "owner_username": "alice",
+      "is_live": true,
+      "viewer_count": 10,
+      "public_key": "pub_xyz789..."
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/streams/{id}/thumbnail
+Upload a custom thumbnail image for a stream (owner only). Multipart form data with field `thumbnail`. Max 2MB, JPEG/PNG.
+
+**Response:**
+```json
+{
+  "success": true,
+  "thumbnail_url": "/static/uploads/thumbnails/stream_1.jpg"
+}
+```
+
+---
+
+#### DELETE /api/streams/{id}/thumbnail
+Remove custom thumbnail for a stream (owner only).
+
+---
+
+#### GET /api/stream/{key}/thumbnail
+Get a dynamic thumbnail for a live stream. Returns a JPEG image captured from the stream via ffmpeg. Thumbnails are cached for 15 seconds.
+
+**Key Types:** Accepts either `live_xxx` or `pub_xxx` key.
+
+**Response:** `image/jpeg` binary data, or 404 if stream is not live.
 
 ---
 
@@ -1165,8 +1436,21 @@ Health check endpoint.
 
 ---
 
+#### GET /api/stats/public
+Public statistics available to all authenticated users.
+
+**Response:**
+```json
+{
+  "live_streams": 3,
+  "online_users": 12
+}
+```
+
+---
+
 #### GET /api/stats
-System statistics.
+System statistics (admin only).
 
 **Response:**
 ```json
@@ -1447,6 +1731,181 @@ Get logs for a managed service. Only valid for `service_type: "managed"`.
 
 ---
 
+### Traffic Metrics (Admin)
+
+#### GET /api/metrics
+Get overall traffic metrics summary including active connections, bandwidth, and request counts.
+
+---
+
+#### GET /api/metrics/services
+Get traffic breakdown per service.
+
+---
+
+#### GET /api/metrics/active
+Get list of currently active connections with user and service info.
+
+---
+
+#### GET /api/metrics/timeseries
+Get time-series data for traffic metrics.
+
+**Query Parameters:**
+- `period` (optional): Time period - `1h`, `6h`, `24h`, `7d` (default: `24h`)
+
+---
+
+#### GET /api/metrics/top
+Get top users and services by traffic volume.
+
+---
+
+### Server Logs (Admin)
+
+#### GET /api/logs
+Get log file contents.
+
+**Query Parameters:**
+- `lines` (optional): Number of lines to return (default: 100)
+- `file` (optional): Log file name (default: current)
+
+---
+
+#### GET /api/logs/files
+List available log files.
+
+---
+
+#### GET /api/logs/settings
+Get current log configuration settings.
+
+---
+
+#### PUT /api/logs/settings
+Update log settings (admin only).
+
+**Request:**
+```json
+{
+  "level": "info",
+  "max_size": 10485760,
+  "backup_count": 5
+}
+```
+
+---
+
+### Shodan Integration (Admin)
+
+#### GET /api/shodan/info
+Get Shodan API key status and account info.
+
+---
+
+#### POST /api/shodan/api-key
+Set the Shodan API key (persists to database).
+
+**Request:**
+```json
+{
+  "api_key": "your-shodan-key"
+}
+```
+
+---
+
+#### GET /api/shodan/lookup/{ip}
+Look up an IP address in Shodan.
+
+---
+
+#### GET /api/shodan/search
+Search Shodan.
+
+**Query Parameters:**
+- `q` (required): Search query
+
+---
+
+### Vulnerability Scanner (Admin)
+
+Scan hosts and services for known vulnerabilities using nmap and CVE databases.
+
+#### GET /api/vuln/status
+Get vulnerability scanner status (nmap availability, NVD API configuration).
+
+**Response:**
+```json
+{
+  "nmap_available": true,
+  "nvd_api_configured": false,
+  "known_cves_count": 42
+}
+```
+
+---
+
+#### GET /api/vuln/scan/{host}
+Scan a host for open ports and vulnerabilities.
+
+**Query Parameters:**
+- `ports` (optional): Port range to scan (default: "1-1000")
+- `scan_type` (optional): `basic`, `version`, `vulnerability`, or `full` (default: `version`)
+
+---
+
+#### GET /api/vuln/scan-service/{service_id}
+Scan a Portal service's host and port for vulnerabilities.
+
+**Query Parameters:**
+- `scan_type` (optional): `basic`, `version`, `vuln`, `full` (default: `version`)
+
+---
+
+#### GET /api/vuln/cve/{cve_id}
+Look up detailed information about a specific CVE from NVD.
+
+---
+
+#### GET /api/vuln/mitigations/{cve_id}
+Get mitigation steps for a specific CVE.
+
+**Response:**
+```json
+{
+  "cve_id": "CVE-2024-6387",
+  "mitigations": [...]
+}
+```
+
+---
+
+#### GET /api/vuln/known-cves
+List all known CVEs in the local database, sorted by CVSS score.
+
+---
+
+#### GET /api/vuln/search
+Search CVEs by keyword.
+
+**Query Parameters:**
+- `q` (required): Search keyword (product, vendor, etc.)
+
+---
+
+#### POST /api/vuln/nvd-api-key
+Set the NVD API key for higher rate limits (persists to database).
+
+**Request:**
+```json
+{
+  "api_key": "your-nvd-key"
+}
+```
+
+---
+
 ### Deprecated Endpoints
 
 The following endpoints are deprecated and will be removed in a future version. Use the unified `/api/services` endpoints instead.
@@ -1490,8 +1949,10 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/admin` | Admin panel (metrics, services, users) |
 | `/chat` | Community chat |
 | `/streams` | Community streams |
+| `/watch/{id}` | Stream viewer with integrated chat |
 | `/live` | Public live streams (unauthenticated) |
-| `/docs` | API documentation |
+| `/docs` | API documentation (interactive) |
+| `/api-docs` | API documentation (alias) |
 | `/terminal/{id}` | Terminal UI |
 | `/vnc/{id}` | VNC viewer |
 | `/spice/{id}` | SPICE viewer |

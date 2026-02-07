@@ -464,6 +464,50 @@
                     </div>
                 </div>
 
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/api-keys/{id}</span>
+                        <span class="endpoint-desc">Delete an API key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete an API key from your account.</p>
+                    </div>
+                </div>
+
+                <!-- Token Management -->
+                <h3>Token Management</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/tokens</span>
+                        <span class="endpoint-desc">List active tokens</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all active JWT tokens for the authenticated user.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/token/revoke</span>
+                        <span class="endpoint-desc">Revoke a token</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">token_id</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Token ID to revoke <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- Public Stats -->
                 <h2 id="public-stats">Public Stats</h2>
                 <p>Public statistics available to all authenticated users.</p>
@@ -970,29 +1014,30 @@
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/streams/live</span>
-                        <span class="endpoint-desc">List public live streams</span>
+                        <span class="endpoint-path">/api/streams/public</span>
+                        <span class="endpoint-desc">List public streams</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns all public streams that are currently live. Used by the community streams page.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"streams"</span>: [
-    {
-      <span class="string">"id"</span>: <span class="number">1</span>,
-      <span class="string">"title"</span>: <span class="string">"Gaming Stream"</span>,
-      <span class="string">"username"</span>: <span class="string">"alice"</span>,
-      <span class="string">"viewer_count"</span>: <span class="number">42</span>,
-      <span class="string">"started_at"</span>: <span class="string">"2024-01-15T14:30:00Z"</span>,
-      <span class="string">"playback_url"</span>: <span class="string">"https://..."</span>
-    }
-  ]
-}</pre>
-                        </div>
+                        <p>Returns all public streams (live and offline). Used by the community streams page.</p>
                         <div class="try-it">
                             <h4>Try It</h4>
-                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/streams/live', this)">Send Request</button>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/streams/public', this)">Send Request</button>
+                            <div class="try-it-output" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/open</span>
+                        <span class="endpoint-desc">List currently live public streams</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all public streams that are currently live. Includes viewer counts and playback URLs.</p>
+                        <div class="try-it">
+                            <h4>Try It</h4>
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/streams/open', this)">Send Request</button>
                             <div class="try-it-output" style="display: none;"></div>
                         </div>
                     </div>
@@ -1058,6 +1103,77 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Permanently delete a stream and its associated chat channel.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/thumbnail</span>
+                        <span class="endpoint-desc">Upload stream thumbnail</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Upload a custom thumbnail image (owner only). Multipart form data with field <code>thumbnail</code>. Max 2MB, JPEG/PNG.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/stream/{key}/thumbnail</span>
+                        <span class="endpoint-desc">Get stream thumbnail</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns 404 if stream is offline. Accepts <code>live_xxx</code> or <code>pub_xxx</code> key.</p>
+                    </div>
+                </div>
+
+                <h3>Stream Moderation</h3>
+                <p>Stream owners can ban users from their stream's chat channel.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/{id}/bans</span>
+                        <span class="endpoint-desc">List banned users</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List users banned from this stream's chat (owner only).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/bans</span>
+                        <span class="endpoint-desc">Ban user from stream chat</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">user_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>User to ban <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">reason</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Ban reason</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/streams/{id}/bans/{user_id}</span>
+                        <span class="endpoint-desc">Unban user from stream chat</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Remove a ban, allowing the user to chat again (owner only).</p>
                     </div>
                 </div>
 
@@ -1261,6 +1377,197 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                             </tr>
                         </table>
                     </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/me/status</span>
+                        <span class="endpoint-desc">Update chat status</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">status</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>online, away, busy, dnd, or offline <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">status_message</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Custom status message (max 100 chars)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/me/nickname</span>
+                        <span class="endpoint-desc">Update display nickname</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">nickname</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Display name (2-32 chars, alphanumeric/spaces/dashes). Empty to clear.</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/me/avatar</span>
+                        <span class="endpoint-desc">Update avatar</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">color</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Hex color (#RRGGBB)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">emoji</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Emoji character (null to clear)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">initials</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>1-2 character initials</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/me/anonymous</span>
+                        <span class="endpoint-desc">Toggle anonymous mode</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Toggle anonymous mode in chat. Messages sent while anonymous remain anonymous in history.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">anonymous</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Enable or disable anonymous mode <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="admin-only">
+                <h3>User Administration</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/users</span>
+                        <span class="endpoint-desc">List all users</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all users with their roles and account info.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/users</span>
+                        <span class="endpoint-desc">Create user</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">username</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Username <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">password</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Password <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">role</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>user, moderator, admin (default: user)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/users/{id}/role</span>
+                        <span class="endpoint-desc">Change user role</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Superadmin can set: admin, moderator, user. Admin can set: moderator, user. Cannot change own role.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">role</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>New role <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/users/{id}/reset-password</span>
+                        <span class="endpoint-desc">Reset user password</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">new_password</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>New password <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/users/{id}</span>
+                        <span class="endpoint-desc">Delete user</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete a user account (superadmin only).</p>
+                    </div>
+                </div>
                 </div>
 
                 <!-- SSH Keys -->
@@ -1929,6 +2236,39 @@ ws.send(JSON.stringify({
                         <p>Returns list of currently active connections with user and service info.</p>
                     </div>
                 </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/timeseries</span>
+                        <span class="endpoint-desc">Time-series data</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns time-series data for traffic metrics.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">period</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Time period: 1h, 6h, 24h, 7d (default: 24h)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/top</span>
+                        <span class="endpoint-desc">Top users &amp; services</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns top users and services by traffic volume.</p>
+                    </div>
+                </div>
                 </div>
 
                 <!-- Logs (Admin) -->
@@ -1955,6 +2295,110 @@ ws.send(JSON.stringify({
                                 <td><span class="param-name">file</span></td>
                                 <td><span class="param-type">string</span></td>
                                 <td>Log file name (default: current)</td>
+                            </tr>
+                        </table>
+                    </div>
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/logs/files</span>
+                        <span class="endpoint-desc">List log files</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns available log files.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/logs/settings</span>
+                        <span class="endpoint-desc">Get log settings</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns current log configuration.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/logs/settings</span>
+                        <span class="endpoint-desc">Update log settings</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update log level, rotation, and other settings.</p>
+                    </div>
+                </div>
+                </div>
+
+                <!-- Shodan Integration (Admin) -->
+                <div class="admin-only">
+                <h2 id="shodan">Shodan Integration <span class="badge-admin">ADMIN</span></h2>
+                <p>Shodan API integration for network reconnaissance and security monitoring.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shodan/info</span>
+                        <span class="endpoint-desc">Get API key status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns Shodan API key status and account information.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/shodan/api-key</span>
+                        <span class="endpoint-desc">Set Shodan API key</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">api_key</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Shodan API key <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shodan/lookup/{ip}</span>
+                        <span class="endpoint-desc">Look up IP address</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Look up detailed information about an IP address from Shodan.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shodan/search</span>
+                        <span class="endpoint-desc">Search Shodan</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">q</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Shodan search query <span class="param-required">required</span></td>
                             </tr>
                         </table>
                     </div>
@@ -2010,6 +2454,51 @@ ws.send(JSON.stringify({
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/scan-service/{service_id}</span>
+                        <span class="endpoint-desc">Scan a Portal service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Scan a Portal service's host and port for vulnerabilities.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">scan_type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>basic, version, vuln, or full (default: version)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/mitigations/{cve_id}</span>
+                        <span class="endpoint-desc">Get CVE mitigations</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Get mitigation steps for a specific CVE.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/known-cves</span>
+                        <span class="endpoint-desc">List known CVEs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List all known CVEs in the local database, sorted by CVSS score (highest first).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/vuln/search</span>
                         <span class="endpoint-desc">Search CVEs</span>
                         <span class="badge-admin">ADMIN</span>
@@ -2022,6 +2511,47 @@ ws.send(JSON.stringify({
                                 <td><span class="param-name">q</span></td>
                                 <td><span class="param-type">string</span></td>
                                 <td>Search keyword (product, vendor, etc.)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/status</span>
+                        <span class="endpoint-desc">Scanner status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Get vulnerability scanner status (nmap availability, NVD API config, cache info).</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"nmap_available"</span>: <span class="keyword">true</span>,
+  <span class="string">"nvd_api_configured"</span>: <span class="keyword">false</span>,
+  <span class="string">"known_cves_count"</span>: <span class="number">42</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/vuln/nvd-api-key</span>
+                        <span class="endpoint-desc">Set NVD API key</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Configure NVD API key for higher rate limits (50 requests/30 seconds).</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">api_key</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>NVD API key <span class="param-required">required</span></td>
                             </tr>
                         </table>
                     </div>

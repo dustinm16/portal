@@ -3604,7 +3604,8 @@ async def http_public_stats(request: web.Request) -> web.Response:
     # Get unique online users across all chat channels
     online_users = set()
     for channel, connections in chat_rooms.items():
-        for ws, user_id, username in connections:
+        for entry in connections:
+            ws, user_id = entry[0], entry[1]
             if not ws.closed:
                 online_users.add(user_id)
 
@@ -5115,6 +5116,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "user_id": user_id,
                                 "username": display_name
                             }, exclude=ws)
+                            # Broadcast updated users list to remaining users
+                            await broadcast_users_list(current_channel)
 
                         # Check if user is banned from this stream's chat
                         if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
@@ -5235,6 +5238,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "role": user_role,
                             "anonymous": my_state["anonymous"]
                         }, exclude=ws)
+                        # Broadcast updated users list to all in channel
+                        await broadcast_users_list(current_channel)
 
                     elif msg_type == "message":
                         if not current_channel:
@@ -5512,6 +5517,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 "user_id": user_id,
                 "username": display_name
             })
+            # Broadcast updated users list to remaining users
+            await broadcast_users_list(current_channel)
             # Remove empty rooms
             if not chat_rooms[current_channel]:
                 del chat_rooms[current_channel]
@@ -5531,6 +5538,36 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         logger.info(f"[Chat] User {username} disconnected")
 
     return ws
+
+
+async def broadcast_users_list(channel: str):
+    """Broadcast the full users list to everyone in a channel."""
+    if channel not in chat_rooms or not chat_rooms[channel]:
+        return
+    user_ids = [entry[1] for entry in chat_rooms[channel]]
+    users_info = await db.get_users_status(list(set(user_ids)))
+    users_list = []
+    for u in users_info:
+        avatar = {}
+        if u.get("avatar"):
+            try:
+                avatar = json.loads(u["avatar"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        users_list.append({
+            "user_id": u["id"],
+            "username": "Anonymous" if u.get("chat_anonymous") else (u.get("nickname") or u["username"]),
+            "nickname": u.get("nickname"),
+            "status": u.get("status", "online"),
+            "status_message": u.get("status_message"),
+            "role": u.get("role", "user"),
+            "anonymous": bool(u.get("chat_anonymous")),
+            "avatar": avatar
+        })
+    await broadcast_to_channel(channel, {
+        "type": "users",
+        "users": users_list
+    })
 
 
 async def broadcast_to_channel(channel: str, message: dict, exclude=None):

@@ -580,6 +580,39 @@
             color: var(--text-muted);
             font-style: italic;
             min-height: 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .typing-indicator .typing-text {
+            flex: 1;
+        }
+
+        .channel-notifications {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            justify-content: flex-end;
+            flex-shrink: 0;
+        }
+
+        .channel-notification {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            font-style: normal;
+            padding: 0.15rem 0.5rem;
+            background: rgba(255,255,255,0.05);
+            border-radius: 3px;
+            animation: notifFade 4s ease-out forwards;
+            white-space: nowrap;
+        }
+
+        @keyframes notifFade {
+            0% { opacity: 0; transform: translateY(4px); }
+            10% { opacity: 1; transform: translateY(0); }
+            70% { opacity: 1; }
+            100% { opacity: 0; }
         }
 
         /* Modal styles */
@@ -1099,7 +1132,10 @@
             <div class="chat-messages" id="chat-messages">
                 <!-- Messages populated by JS -->
             </div>
-            <div class="typing-indicator" id="typing-indicator"></div>
+            <div class="typing-indicator">
+                <span class="typing-text" id="typing-indicator"></span>
+                <div class="channel-notifications" id="channel-notifications"></div>
+            </div>
             <div class="image-upload-preview" id="image-upload-preview">
                 <img id="image-preview-thumb" src="" alt="Preview">
                 <div class="image-upload-info">
@@ -1483,14 +1519,21 @@
                     updateUserList(data.users);
                     break;
                 case 'user_joined':
-                    appendSystemMessage(`${data.username} joined the channel`);
-                    // Refresh user list will happen via WebSocket
+                    onlineUsers.set(data.user_id, {
+                        user_id: data.user_id,
+                        username: data.username,
+                        nickname: null,
+                        role: data.role || 'user',
+                        status: 'online',
+                        anonymous: data.anonymous || false
+                    });
+                    renderUserList();
+                    showChannelNotification(`${data.username} joined`);
                     break;
                 case 'user_left':
                     onlineUsers.delete(data.user_id || data.username);
-                    appendSystemMessage(`${data.username} left the channel`);
-                    updateUserCount();
                     renderUserList();
+                    showChannelNotification(`${data.username} left`);
                     break;
                 case 'user_status_changed':
                     if (onlineUsers.has(data.user_id)) {
@@ -1568,17 +1611,17 @@
             div.dataset.messageId = data.id;
             if (data.user_id) div.dataset.userId = data.user_id;
 
-            // Look up user info for nickname display
-            const userInfo = data.user_id ? onlineUsers.get(data.user_id) : null;
-            // Priority: use nickname from userInfo if available, then from data, then username
-            const displayName = userInfo?.nickname || data.nickname || data.username;
+            // Per-message anonymous flag takes priority over current user state
+            const msgAnonymous = !!data.anonymous;
+            const userInfo = (!msgAnonymous && data.user_id) ? onlineUsers.get(data.user_id) : null;
+            const displayName = msgAnonymous ? 'Anonymous' : (userInfo?.nickname || data.nickname || data.username);
             const role = data.role || userInfo?.role || 'user';
-            const isAnonymous = data.anonymous || userInfo?.anonymous;
-            const avatar = userInfo?.avatar || data.avatar || {};
+            const isAnonymous = msgAnonymous;
+            const avatar = msgAnonymous ? {} : (userInfo?.avatar || data.avatar || {});
             const time = formatTime(data.created_at || new Date().toISOString());
 
             // Show @username only if there's a nickname and not anonymous
-            const showRealUsername = (userInfo?.nickname || data.nickname) && !isAnonymous;
+            const showRealUsername = !isAnonymous && (userInfo?.nickname || data.nickname);
 
             // Avatar styling
             let avatarStyle = isAnonymous ? 'background: var(--text-muted);' : getAvatarStyle(avatar);
@@ -1776,6 +1819,16 @@
             } else {
                 indicator.textContent = `${typingUsers.length} people are typing...`;
             }
+        }
+
+        function showChannelNotification(text) {
+            const container = document.getElementById('channel-notifications');
+            const notif = document.createElement('span');
+            notif.className = 'channel-notification';
+            notif.textContent = text;
+            container.appendChild(notif);
+            // Remove after animation completes (4s matches CSS)
+            setTimeout(() => notif.remove(), 4000);
         }
 
         function updateConnectionStatus(connected) {
