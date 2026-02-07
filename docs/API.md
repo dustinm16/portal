@@ -1343,7 +1343,7 @@ User connection relay. For SSH connections, supports shell override via query pa
 **Query Parameters:**
 - `shell` (optional): Remote shell path override (e.g., `/usr/bin/fish`). Overrides the connection's configured shell.
 
-Text-based terminal I/O with DA1/DA2/DSR interception (matching xterm.js responses).
+Terminal capability queries (DA1/DA2/DSR) pass through to xterm.js which responds natively. Unlike the local terminal, SSH connections do not intercept queries server-side — asyncssh's line-buffered `readline()` would delay escape sequences that lack newlines, so queries flow through the WebSocket to xterm.js for reliable sub-200ms round-trip responses. The client also sends a resize on connect to sync terminal dimensions after the auth phase.
 
 ---
 

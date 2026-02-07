@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import json
-import re
 from typing import Optional
 
 from aiohttp import web, WSMsgType
@@ -13,14 +12,15 @@ from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.ssh")
 
-# Terminal capability query patterns - same as terminal.py
-# Shells like fish send DA1 queries and time out after 2 seconds if the
-# WebSocket round-trip is too slow. Intercept and respond server-side.
-_TERM_QUERIES = [
-    (re.compile(r'\x1b\[0?c'), '\x1b[?1;2c'),          # DA1 (matches xterm.js)
-    (re.compile(r'\x1b\[>0?c'), '\x1b[>0;276;0c'),     # DA2 (matches xterm.js)
-    (re.compile(r'\x1b\[5n'), '\x1b[0n'),               # DSR
-]
+# NOTE: Unlike the local terminal plugin, we do NOT intercept DA1/DA2/DSR
+# queries server-side for SSH connections. Server-side interception fails
+# for SSH because:
+#   1. Escape sequences may be split across SSH channel data chunks
+#   2. process.stdin.write() goes through asyncssh buffer + network, adding
+#      unreliable latency vs the local PTY's synchronous os.write()
+#   3. Stripping queries prevents xterm.js from responding as a fallback
+# Instead, queries pass through to xterm.js which responds natively.
+# The WebSocket round-trip (~100-200ms) is well within fish's 2s timeout.
 
 # Optional asyncssh import
 try:
@@ -128,6 +128,9 @@ class SSHPlugin(PluginBase):
         elif auth_method == "agent":
             connect_opts["agent_forwarding"] = True
 
+        # Track terminal size from client resize messages
+        term_cols, term_rows = 80, 24
+
         # Wait for password if needed
         password = None
         if auth_method == "password":
@@ -150,7 +153,9 @@ class SSHPlugin(PluginBase):
                         if data.get("username"):
                             connect_opts["username"] = data["username"]
                         break
-                    # Ignore non-auth messages (resize, etc.)
+                    elif data.get("type") == "resize":
+                        term_cols = data.get("cols", 80)
+                        term_rows = data.get("rows", 24)
 
             if password:
                 connect_opts["password"] = password
@@ -163,7 +168,7 @@ class SSHPlugin(PluginBase):
                 # Build process options - only pass command when explicitly set
                 proc_opts = {
                     "term_type": "xterm-256color",
-                    "term_size": (80, 24),
+                    "term_size": (term_cols, term_rows),
                 }
                 shell_cmd = config.get("shell", "").strip()
                 if shell_cmd:
@@ -188,25 +193,23 @@ class SSHPlugin(PluginBase):
         """Handle SSH I/O."""
         async def read_stdout():
             try:
-                async for data in process.stdout:
+                # Use read(n) not async-for: the async iterator calls readline()
+                # which buffers until \n. Escape sequences like DA1 queries
+                # don't end with newlines and would be delayed, causing fish
+                # shell to time out waiting for terminal capability responses.
+                # read(n) with n>0 returns as soon as any data is available.
+                # read(-1) would block until EOF — don't use that.
+                while not process.stdout.at_eof():
+                    data = await process.stdout.read(65536)
                     if data:
-                        # Intercept terminal capability queries (DA1, DA2, DSR)
-                        # and respond immediately to avoid shell timeouts
-                        for pattern, response in _TERM_QUERIES:
-                            if pattern.search(data):
-                                try:
-                                    process.stdin.write(response)
-                                except Exception:
-                                    pass
-                                data = pattern.sub('', data)
-                        if data:
-                            await ws.send_str(data)
+                        await ws.send_str(data)
             except Exception as e:
                 logger.debug(f"SSH stdout ended: {e}")
 
         async def read_stderr():
             try:
-                async for data in process.stderr:
+                while not process.stderr.at_eof():
+                    data = await process.stderr.read(65536)
                     if data:
                         await ws.send_str(data)
             except Exception as e:

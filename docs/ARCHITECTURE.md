@@ -603,7 +603,7 @@ class PluginBase:
 | Plugin | Description | Default Port |
 |--------|-------------|--------------|
 | terminal | Web PTY terminal (DA1/DA2/DSR compat) | - |
-| ssh | SSH over WebSocket (DA1/DA2/DSR compat) | 22 |
+| ssh | SSH over WebSocket (xterm.js-native DA1/DA2/DSR) | 22 |
 | vnc | VNC via noVNC | 5900 |
 | spice | SPICE console | 5930 |
 | proxmox | Proxmox VE API | 8006 |

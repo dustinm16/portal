@@ -103,6 +103,7 @@ function connect() {
             switch (data.type) {
                 case 'connected':
                     term.writeln('\x1b[32m✓ Connected to terminal\x1b[0m\r\n');
+                    sendResize();
                     break;
                 case 'error':
                     term.writeln(`\x1b[31mError: ${data.message}\x1b[0m\r\n`);
