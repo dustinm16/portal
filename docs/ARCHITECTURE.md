@@ -110,7 +110,8 @@ Services are stored in a single `services` table with a `service_type` field:
 │  1. Session Cookie    - Web dashboard login                 │
 │  2. JWT Bearer Token  - API access                          │
 │  3. API Key           - Programmatic access (portal_xxx)    │
-│  4. WebSocket Auth    - Token in query/header               │
+│  4. Stream Key        - Publish (live_xxx) / View (pub_xxx) │
+│  5. WebSocket Auth    - Token in query/header               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -178,13 +179,18 @@ Permission Hierarchy:
 │   ├── login.html         # Login page
 │   ├── admin.html         # Admin panel
 │   ├── chat.html          # Community chat
+│   ├── streams.html       # Community streams
 │   ├── terminal.html      # Terminal UI
 │   ├── vnc.html           # VNC viewer
 │   ├── spice.html         # SPICE viewer
 │   ├── proxmox.html       # Proxmox dashboard
 │   ├── github.html        # GitHub browser
 │   ├── media.html         # Media player
+│   ├── watch.html         # Stream viewer (HLS playback)
+│   ├── api-docs.html      # Interactive API documentation
 │   ├── css/portal.css     # Shared styles
+│   ├── uploads/           # User-uploaded content (gitignored)
+│   │   └── chat/          # Chat image uploads
 │   └── js/
 │       ├── portal.js      # Core utilities
 │       ├── dashboard.js   # Dashboard logic
@@ -342,15 +348,19 @@ CREATE TABLE chat_messages (
 
 ## API Reference
 
-### Authentication
+### Authentication & Registration
 
 ```
 POST /login              - Session login (form)
 GET  /logout             - End session
+POST /api/register       - Register new account (requires invite code)
 POST /api/token          - Create JWT token
+GET  /api/tokens         - List active tokens
+POST /api/token/revoke   - Revoke a token
 POST /api/api-keys       - Create API key
 GET  /api/api-keys       - List API keys
 DELETE /api/api-keys/:id - Delete API key
+GET  /api/invite-code    - Get daily invite code (admin)
 ```
 
 ### User Management
@@ -363,8 +373,30 @@ PUT  /api/me/nickname           - Update nickname
 PUT  /api/me/avatar             - Update avatar
 PUT  /api/me/anonymous          - Toggle anonymous mode
 GET  /api/users                 - List users (admin)
+POST /api/users                 - Create user (admin)
 PUT  /api/users/:id/role        - Change user role (admin)
+POST /api/users/:id/reset-password - Reset password (admin)
 DELETE /api/users/:id           - Delete user (superadmin)
+```
+
+### Two-Factor Authentication
+
+```
+GET  /api/2fa/status     - Check 2FA status
+POST /api/2fa/setup      - Generate TOTP secret and URI
+POST /api/2fa/verify     - Verify code and enable 2FA
+POST /api/2fa/disable    - Disable 2FA (requires password)
+```
+
+### SSH Keys
+
+```
+POST /api/ssh-keys              - Generate key pair
+GET  /api/ssh-keys              - List keys
+GET  /api/ssh-keys/:id          - Get key details
+DELETE /api/ssh-keys/:id        - Delete key
+GET  /api/ssh-keys/authorized   - Get authorized_keys format
+GET  /api/ssh-keys/all          - All keys (admin)
 ```
 
 ### User Connections (Personal)
@@ -375,6 +407,7 @@ POST /api/connections           - Create connection
 GET  /api/connections/:id       - Get connection details
 PUT  /api/connections/:id       - Update connection
 DELETE /api/connections/:id     - Delete connection
+GET  /api/connections/:id/connect - Get connection info + WS URL
 GET  /api/connections/types     - Available connection types
 ```
 
@@ -393,6 +426,31 @@ POST /api/services/:id/start    - Start managed service
 POST /api/services/:id/stop     - Stop managed service
 POST /api/services/:id/restart  - Restart managed service
 GET  /api/services/:id/logs     - Get managed service logs
+```
+
+### Streaming
+
+```
+GET  /api/streams               - List user's streams
+POST /api/streams               - Create stream config
+GET  /api/streams/:id           - Get stream details
+PUT  /api/streams/:id           - Update stream
+DELETE /api/streams/:id         - Delete stream
+GET  /api/streams/public        - List public streams
+GET  /api/streams/open          - List currently live public streams
+POST /api/streams/:id/thumbnail - Upload custom thumbnail
+DELETE /api/streams/:id/thumbnail - Delete custom thumbnail
+GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
+GET  /api/stream/:key/hls/...   - HLS playback proxy
+POST /api/stream/event          - MediaMTX webhook (online/offline)
+```
+
+### Stream Moderation
+
+```
+GET  /api/streams/:id/bans      - List banned users
+POST /api/streams/:id/ban       - Ban user from stream chat
+DELETE /api/streams/:id/ban/:uid - Unban user
 ```
 
 ### VOD Storage (Personal)
@@ -415,17 +473,84 @@ POST /api/chat/channels              - Create channel
 PUT  /api/chat/channels/:id          - Update channel
 DELETE /api/chat/channels/:id        - Delete channel
 POST /api/chat/channels/:id/clear    - Clear history (superadmin)
+POST /api/chat/upload                - Upload chat image
 WS   /ws/chat                        - Chat WebSocket
+```
+
+### Public Stats
+
+```
+GET  /api/stats/public               - Live streams + online user count
+```
+
+### Traffic Metrics (Admin)
+
+```
+GET  /api/metrics                    - Summary metrics
+GET  /api/metrics/services           - Per-service metrics
+GET  /api/metrics/active             - Active connections
+GET  /api/metrics/timeseries         - Time-series data (?hours=1-24)
+GET  /api/metrics/top                - Top services and users (?limit=1-50)
+```
+
+### Server Logs (Admin)
+
+```
+GET  /api/logs                       - Recent log entries
+GET  /api/logs/files                 - List log files
+GET  /api/logs/settings              - Get log settings
+PUT  /api/logs/settings              - Update log settings
+```
+
+### Shodan Integration (Admin)
+
+```
+GET  /api/shodan/info                - API key info and credits
+POST /api/shodan/api-key             - Set Shodan API key
+GET  /api/shodan/lookup/:ip          - Lookup IP
+GET  /api/shodan/search              - Search query
+```
+
+### Vulnerability Scanner (Admin)
+
+```
+GET  /api/vuln/status                - Scanner status (nmap, NVD)
+GET  /api/vuln/scan/:host            - Scan host ports
+GET  /api/vuln/scan-service/:id      - Scan a service
+GET  /api/vuln/cve/:id               - CVE details
+GET  /api/vuln/mitigations/:cve      - Mitigation advice
+GET  /api/vuln/known-cves            - All known CVEs
+GET  /api/vuln/search                - Search CVEs
+POST /api/vuln/nvd-api-key           - Set NVD API key
 ```
 
 ### WebSocket Endpoints
 
 ```
 WS /ws/chat                     - Chat real-time
+WS /ws/terminal/local           - Local terminal (admin)
 WS /ws/terminal/:id             - Terminal session
 WS /ws/vnc/:id                  - VNC connection
 WS /ws/spice/:id                - SPICE connection
 WS /ws/user-connection/:id      - User connection relay
+WS /ws/{path}                   - Service relay (catch-all)
+```
+
+### Web Pages
+
+```
+GET /                    - Redirect to /dashboard
+GET /dashboard           - Main dashboard
+GET /login               - Login page
+GET /admin               - Admin panel
+GET /chat                - Community chat
+GET /streams             - Community streams
+GET /terminal            - Terminal UI
+GET /vnc                 - VNC viewer
+GET /spice               - SPICE viewer
+GET /proxmox             - Proxmox dashboard
+GET /watch/:id           - Stream viewer (HLS)
+GET /api-docs            - Interactive API documentation
 ```
 
 ---
