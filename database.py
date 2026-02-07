@@ -387,6 +387,18 @@ MIGRATIONS = [
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )""",
+    # Activity log for dashboard feed
+    """CREATE TABLE IF NOT EXISTS activity_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        action TEXT NOT NULL,
+        detail TEXT,
+        ip_address TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at DESC)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2131,6 +2143,33 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount
+
+    # Activity log operations
+    async def log_activity(self, user_id: int, username: str, action: str,
+                           detail: str = None, ip_address: str = None) -> None:
+        """Log a user activity event."""
+        await self.conn.execute(
+            """INSERT INTO activity_log (user_id, username, action, detail, ip_address)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, username, action, detail, ip_address)
+        )
+        await self.conn.commit()
+
+    async def get_recent_activity(self, limit: int = 20, user_id: int = None) -> list[dict]:
+        """Get recent activity entries. If user_id is specified, filter to that user only."""
+        if user_id:
+            cursor = await self.conn.execute(
+                """SELECT * FROM activity_log WHERE user_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (user_id, limit)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 # Global database instance

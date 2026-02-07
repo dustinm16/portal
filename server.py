@@ -104,6 +104,9 @@ def safe_error_message(e: Exception) -> str:
 # Active WebSocket connections for monitoring
 active_connections: weakref.WeakSet = weakref.WeakSet()
 
+# Server start time for uptime tracking
+_server_start_time: datetime = datetime.now(timezone.utc)
+
 # Static files cache
 STATIC_DIR = Path(__file__).parent / "static"
 _static_cache: dict[str, str] = {}
@@ -401,6 +404,7 @@ async def http_create_token(request: web.Request) -> web.Response:
     )
 
     logger.info(f"Token created for user '{username}' from {client_ip}")
+    await db.log_activity(user["id"], username, "login", "Signed in", client_ip)
 
     return web.json_response({
         "token": jwt_token,
@@ -800,6 +804,8 @@ async def http_start_service(request: web.Request) -> web.Response:
     if success:
         logger.info(f"Service {service_id} started by user {token.user_id}")
         updated = await db.get_service_by_id(service_id)
+        admin_user = await db.get_user_by_id(token.user_id)
+        await db.log_activity(token.user_id, admin_user["username"] if admin_user else "admin", "service_start", f"Started service '{service.get('name', service_id)}'")
         return web.json_response({
             "success": True,
             "service": {
@@ -842,6 +848,8 @@ async def http_stop_service(request: web.Request) -> web.Response:
     if success:
         logger.info(f"Service {service_id} stopped by user {token.user_id}")
         updated = await db.get_service_by_id(service_id)
+        admin_user = await db.get_user_by_id(token.user_id)
+        await db.log_activity(token.user_id, admin_user["username"] if admin_user else "admin", "service_stop", f"Stopped service '{service.get('name', service_id)}'")
         return web.json_response({
             "success": True,
             "service": {
@@ -1002,6 +1010,7 @@ async def http_register(request: web.Request) -> web.Response:
         user = await create_user(username, password, is_admin=False)
         log_invite_code_usage(username, True, client_ip)
         logger.info(f"User '{username}' registered with invite code from {client_ip}")
+        await db.log_activity(user["id"], username, "register", "Account created", client_ip)
         return web.json_response({
             "id": user["id"],
             "username": user["username"],
@@ -1530,6 +1539,8 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         )
 
         logger.info(f"Connection '{name}' ({conn_type}) created by user {token.user_id}")
+        user = await db.get_user_by_id(token.user_id)
+        await db.log_activity(token.user_id, user["username"] if user else "unknown", "connection_create", f"Created {conn_type} connection '{name}'")
 
         return web.json_response({
             "id": conn_id,
@@ -2194,6 +2205,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
         # Mark stream as live
         await db.set_stream_live(stream["id"], True)
         logger.info(f"Stream {stream['name']} started by user {stream['owner_username']} from {ip}")
+        await db.log_activity(stream.get("user_id"), stream.get("owner_username", "unknown"), "stream_live", f"Stream '{stream['name']}' went live", ip)
 
         return web.json_response({"allowed": True})
 
@@ -2250,6 +2262,7 @@ async def http_stream_event(request: web.Request) -> web.Response:
         if stream:
             await db.set_stream_live(stream["id"], False)
             logger.info(f"Stream {stream['name']} ended")
+            await db.log_activity(stream.get("user_id"), stream.get("owner_username", "unknown"), "stream_offline", f"Stream '{stream['name']}' went offline")
 
             # Clear chat history for the stream's channel
             if stream.get("chat_channel_id"):
@@ -3587,11 +3600,17 @@ async def http_stats(request: web.Request) -> web.Response:
 
 
 async def http_public_stats(request: web.Request) -> web.Response:
-    """Get public statistics (no auth required).
+    """Get public statistics.
 
     Returns metrics visible to all authenticated users:
     - live_streams: Count of currently live public streams
     - online_users: Count of unique users in chat
+    - total_services: Count of enabled services
+
+    Admin-only fields (included when requester is admin):
+    - total_users: Count of registered users
+    - active_connections: Count of active WebSocket connections
+    - uptime: Server uptime string
     """
     token = await authenticate_request(request)
     if not token:
@@ -3603,16 +3622,58 @@ async def http_public_stats(request: web.Request) -> web.Response:
 
     # Get unique online users across all chat channels
     online_users = set()
-    for channel, connections in chat_rooms.items():
-        for entry in connections:
+    for channel, connections in list(chat_rooms.items()):
+        for entry in list(connections):
             ws, user_id = entry[0], entry[1]
             if not ws.closed:
                 online_users.add(user_id)
 
-    return web.json_response({
+    # Get enabled services count
+    services = await db.get_all_services()
+
+    stats = {
         "live_streams": live_count,
         "online_users": len(online_users),
-    })
+        "total_services": len(services),
+    }
+
+    # Admin-only stats
+    is_admin = token.has_scope("admin") or token.has_scope("*")
+    if is_admin:
+        users = await db.get_all_users()
+        uptime_delta = datetime.now(timezone.utc) - _server_start_time
+        days = uptime_delta.days
+        hours, remainder = divmod(uptime_delta.seconds, 3600)
+        minutes = remainder // 60
+        if days > 0:
+            uptime_str = f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            uptime_str = f"{hours}h {minutes}m"
+        else:
+            uptime_str = f"{minutes}m"
+
+        stats["total_users"] = len(users)
+        stats["active_connections"] = len(active_connections)
+        stats["uptime"] = uptime_str
+
+    return web.json_response(stats)
+
+
+async def http_activity_feed(request: web.Request) -> web.Response:
+    """Get recent activity feed. Admins see all; regular users see their own."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    limit = min(int(request.query.get("limit", "20")), 50)
+    is_admin = token.has_scope("admin") or token.has_scope("*")
+
+    if is_admin:
+        activities = await db.get_recent_activity(limit=limit)
+    else:
+        activities = await db.get_recent_activity(limit=limit, user_id=token.user_id)
+
+    return web.json_response({"activities": activities})
 
 
 async def http_list_plugins(request: web.Request) -> web.Response:
@@ -6306,6 +6367,7 @@ def create_app() -> web.Application:
     app.router.add_get("/favicon.ico", http_favicon)
     app.router.add_get("/api/stats", http_stats)
     app.router.add_get("/api/stats/public", http_public_stats)
+    app.router.add_get("/api/activity", http_activity_feed)
     app.router.add_get("/api/plugins", http_list_plugins)
     app.router.add_get("/api/tunnels", http_get_tunnel_sessions)
 

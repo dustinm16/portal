@@ -55,6 +55,13 @@ const Portal = {
     },
 
     /**
+     * Generic API call (returns parsed JSON)
+     */
+    async api(url, options = {}) {
+        return this.fetchJSON(url, options);
+    },
+
+    /**
      * Get list of services
      */
     async getServices() {

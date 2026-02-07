@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadUserInfo();
     await loadServices();
     await loadDashboardStats();
+    await loadActivityFeed();
 });
 
 /**
@@ -240,14 +241,14 @@ function createServiceCard(service) {
  */
 async function startService(serviceId) {
     try {
-        const response = await Portal.fetch(`/api/services/${serviceId}/start`, {
+        const data = await Portal.api(`/api/services/${serviceId}/start`, {
             method: 'POST'
         });
-        if (response.success) {
+        if (data.success) {
             Portal.toast('Service started successfully');
             await loadServices();
         } else {
-            Portal.toast(response.error || 'Failed to start service', 'error');
+            Portal.toast(data.error || 'Failed to start service', 'error');
         }
     } catch (error) {
         console.error('Failed to start service:', error);
@@ -260,14 +261,14 @@ async function startService(serviceId) {
  */
 async function stopService(serviceId) {
     try {
-        const response = await Portal.fetch(`/api/services/${serviceId}/stop`, {
+        const data = await Portal.api(`/api/services/${serviceId}/stop`, {
             method: 'POST'
         });
-        if (response.success) {
+        if (data.success) {
             Portal.toast('Service stopped successfully');
             await loadServices();
         } else {
-            Portal.toast(response.error || 'Failed to stop service', 'error');
+            Portal.toast(data.error || 'Failed to stop service', 'error');
         }
     } catch (error) {
         console.error('Failed to stop service:', error);
@@ -323,7 +324,7 @@ document.addEventListener('click', (e) => {
  */
 async function loadDashboardStats() {
     try {
-        // Load public stats (live streams, online users)
+        // Load public stats (live streams, online users, total services)
         const publicStats = await Portal.api('/api/stats/public');
         const statLiveStreams = document.getElementById('stat-live-streams');
         const statOnlineUsers = document.getElementById('stat-online-users');
@@ -354,6 +355,28 @@ async function loadDashboardStats() {
             const adminPanelCard = document.getElementById('admin-panel-card');
             if (adminServiceActions) adminServiceActions.style.display = 'flex';
             if (adminPanelCard) adminPanelCard.style.display = 'block';
+
+            // Populate admin stats row
+            const adminStats = document.getElementById('admin-stats');
+            if (adminStats) {
+                adminStats.style.display = 'grid';
+                const statTotalUsers = document.getElementById('stat-total-users');
+                const statActiveConns = document.getElementById('stat-active-conns');
+                const statTotalServices = document.getElementById('stat-total-services');
+                const statUptime = document.getElementById('stat-uptime');
+                if (statTotalUsers && publicStats.total_users !== undefined) {
+                    statTotalUsers.textContent = publicStats.total_users;
+                }
+                if (statActiveConns && publicStats.active_connections !== undefined) {
+                    statActiveConns.textContent = publicStats.active_connections;
+                }
+                if (statTotalServices && publicStats.total_services !== undefined) {
+                    statTotalServices.textContent = publicStats.total_services;
+                }
+                if (statUptime && publicStats.uptime) {
+                    statUptime.textContent = publicStats.uptime;
+                }
+            }
         }
     } catch (error) {
         console.error('Failed to load dashboard stats:', error);
@@ -374,6 +397,19 @@ setInterval(async () => {
         if (statOnlineUsers && publicStats.online_users !== undefined) {
             statOnlineUsers.textContent = publicStats.online_users;
         }
+        // Update admin stats if visible
+        if (currentUser && currentUser.is_admin) {
+            const statTotalUsers = document.getElementById('stat-total-users');
+            const statActiveConns = document.getElementById('stat-active-conns');
+            const statTotalServices = document.getElementById('stat-total-services');
+            const statUptime = document.getElementById('stat-uptime');
+            if (statTotalUsers && publicStats.total_users !== undefined) statTotalUsers.textContent = publicStats.total_users;
+            if (statActiveConns && publicStats.active_connections !== undefined) statActiveConns.textContent = publicStats.active_connections;
+            if (statTotalServices && publicStats.total_services !== undefined) statTotalServices.textContent = publicStats.total_services;
+            if (statUptime && publicStats.uptime) statUptime.textContent = publicStats.uptime;
+        }
+        // Refresh activity feed
+        await loadActivityFeed();
     } catch (error) {
         // Silent failure for periodic updates
     }
@@ -401,6 +437,8 @@ function switchTab(tabName) {
     // Load content for the tab if needed
     if (tabName === 'my-connections') {
         loadInlineConnections();
+    } else if (tabName === 'my-streams') {
+        loadInlineStreams();
     } else if (tabName === 'my-vods') {
         loadVods();
     }
@@ -430,19 +468,24 @@ async function loadInlineConnections() {
             return;
         }
 
-        grid.innerHTML = connections.map(conn => `
-            <div class="connection-card">
+        grid.innerHTML = connections.map(conn => {
+            const typeBadge = `<span class="conn-type-badge conn-type-${escapeHtml(conn.type)}">${escapeHtml(conn.type.toUpperCase())}</span>`;
+            const created = conn.created_at ? Portal.formatRelativeTime(conn.created_at) : '';
+            const sshIndicator = conn.ssh_key_name
+                ? `<span class="conn-ssh-key" title="SSH Key: ${escapeHtml(conn.ssh_key_name)}"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg></span>`
+                : '';
+            return `<div class="connection-card">
                 <div class="connection-card-header">
                     <div class="connection-icon">
                         ${getConnectionIcon(conn.icon || conn.type)}
                     </div>
                     <div class="connection-info">
-                        <h4>${escapeHtml(conn.name)}</h4>
-                        <span class="connection-type">${escapeHtml(conn.type)}</span>
+                        <h4>${escapeHtml(conn.name)} ${typeBadge}</h4>
+                        <span class="connection-host">${escapeHtml(conn.host)}${conn.port ? ':' + conn.port : ''} ${sshIndicator}</span>
                     </div>
                 </div>
                 <div class="connection-details">
-                    <span class="connection-host">${escapeHtml(conn.host)}${conn.port ? ':' + conn.port : ''}</span>
+                    ${created ? `<span class="connection-time">${created}</span>` : ''}
                 </div>
                 <div class="connection-actions">
                     <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectToConnection(${conn.id})">
@@ -459,8 +502,8 @@ async function loadInlineConnections() {
                         </svg>
                     </button>
                 </div>
-            </div>
-        `).join('');
+            </div>`;
+        }).join('');
 
         loading.style.display = 'none';
         grid.style.display = 'grid';
@@ -489,4 +532,163 @@ function getConnectionIcon(iconName) {
         rdp: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>'
     };
     return icons[iconName] || icons.link;
+}
+
+/**
+ * Activity feed
+ */
+let activityFeedCollapsed = false;
+
+async function loadActivityFeed() {
+    try {
+        const data = await Portal.api('/api/activity?limit=10');
+        const activities = data.activities || [];
+        const feedEl = document.getElementById('activity-feed');
+        const listEl = document.getElementById('activity-list');
+        if (!feedEl || !listEl) return;
+
+        if (activities.length === 0) {
+            feedEl.style.display = 'none';
+            return;
+        }
+
+        feedEl.style.display = 'block';
+        listEl.innerHTML = activities.map(a => {
+            const icon = getActivityIcon(a.action);
+            const time = Portal.formatRelativeTime(a.created_at);
+            return `<div class="activity-item">
+                <span class="activity-icon">${icon}</span>
+                <span class="activity-text"><strong>${escapeHtml(a.username || 'System')}</strong> ${escapeHtml(a.detail || a.action)}</span>
+                <span class="activity-time">${time}</span>
+            </div>`;
+        }).join('');
+    } catch (error) {
+        // Silent failure
+    }
+}
+
+function toggleActivityFeed() {
+    const body = document.getElementById('activity-feed-body');
+    const chevron = document.getElementById('activity-chevron');
+    if (!body) return;
+    activityFeedCollapsed = !activityFeedCollapsed;
+    body.style.display = activityFeedCollapsed ? 'none' : 'block';
+    if (chevron) chevron.style.transform = activityFeedCollapsed ? 'rotate(-90deg)' : '';
+}
+
+function getActivityIcon(action) {
+    const icons = {
+        login: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" /></svg>',
+        register: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" /></svg>',
+        connection_create: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>',
+        service_start: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /></svg>',
+        service_stop: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" /></svg>',
+        stream_live: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>',
+        stream_offline: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>',
+    };
+    return icons[action] || '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>';
+}
+
+/**
+ * Load inline streams (My Streams tab)
+ */
+async function loadInlineStreams() {
+    const loading = document.getElementById('streams-loading');
+    const grid = document.getElementById('streams-grid');
+    const empty = document.getElementById('streams-empty');
+
+    if (!grid) return;
+
+    loading.style.display = 'flex';
+    grid.style.display = 'none';
+    empty.style.display = 'none';
+
+    try {
+        const data = await Portal.api('/api/streams');
+        const streams = data.streams || [];
+
+        if (streams.length === 0) {
+            loading.style.display = 'none';
+            empty.style.display = 'block';
+            return;
+        }
+
+        grid.innerHTML = streams.map(stream => {
+            const isLive = stream.is_live;
+            const statusClass = isLive ? 'online' : 'offline';
+            const statusText = isLive ? 'Live' : 'Offline';
+            const visibilityBadge = stream.is_public
+                ? '<span class="stream-badge stream-badge-public">Public</span>'
+                : '<span class="stream-badge stream-badge-private">Private</span>';
+            const viewerCount = isLive && stream.viewer_count
+                ? `<span class="stream-viewers">${stream.viewer_count} viewer${stream.viewer_count !== 1 ? 's' : ''}</span>`
+                : '';
+            const created = Portal.formatRelativeTime(stream.created_at);
+            const maskedKey = stream.stream_key
+                ? stream.stream_key.substring(0, 8) + '...'
+                : '***';
+
+            return `<div class="connection-card stream-card">
+                <div class="connection-card-header">
+                    <div class="connection-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                    </div>
+                    <div class="connection-info">
+                        <h4>${escapeHtml(stream.name)} ${visibilityBadge}</h4>
+                        <div class="stream-meta">
+                            <span class="service-status ${statusClass}">
+                                <span class="service-status-dot"></span>
+                                ${statusText}
+                            </span>
+                            ${viewerCount}
+                        </div>
+                    </div>
+                </div>
+                <div class="connection-details">
+                    <span class="stream-key-display" title="Click to copy stream key">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                        </svg>
+                        ${maskedKey}
+                    </span>
+                    <span class="connection-type">${created}</span>
+                </div>
+                <div class="connection-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="copyStreamKey('${escapeHtml(stream.stream_key || '')}')" title="Copy stream key">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        Key
+                    </button>
+                    ${stream.public_key ? `<button class="btn btn-secondary btn-sm" onclick="copyStreamKey('${escapeHtml(stream.public_key)}')" title="Copy public key">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                        </svg>
+                        Public
+                    </button>` : ''}
+                    ${isLive ? `<button class="btn btn-primary btn-sm" onclick="window.open('/watch?key=${escapeHtml(stream.public_key || '')}', '_blank')">
+                        Watch
+                    </button>` : ''}
+                </div>
+            </div>`;
+        }).join('');
+
+        loading.style.display = 'none';
+        grid.style.display = 'grid';
+    } catch (error) {
+        console.error('Failed to load streams:', error);
+        loading.style.display = 'none';
+        empty.style.display = 'block';
+    }
+}
+
+function copyStreamKey(key) {
+    if (!key) return;
+    navigator.clipboard.writeText(key).then(() => {
+        Portal.toast('Key copied to clipboard');
+    }).catch(() => {
+        Portal.toast('Failed to copy key', 'error');
+    });
 }
