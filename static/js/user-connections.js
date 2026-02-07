@@ -897,10 +897,14 @@ async function editConnection(connectionId) {
                 document.getElementById('connection-ssh-user').value = config.username || '';
                 document.getElementById('connection-ssh-auth').value = config.auth_method || 'password';
                 onSSHAuthChange();
-                if (config.private_key) {
-                    // Show placeholder to indicate key exists (don't show actual key for security)
+                if (config.has_private_key) {
+                    // Key exists but is redacted by server — show placeholder
                     document.getElementById('connection-ssh-private-key').value = '';
                     document.getElementById('connection-ssh-private-key').placeholder = '(Key stored - leave empty to keep existing, or paste new key to replace)';
+                }
+                if (config.has_password) {
+                    // Password exists but is redacted by server — show placeholder
+                    // (SSH passwords are entered at connect time, not stored in form)
                 }
                 document.getElementById('connection-ssh-shell').value = config.shell || '';
                 break;
@@ -912,7 +916,7 @@ async function editConnection(connectionId) {
                 document.getElementById('connection-db-type').value = config.db_type || 'mysql';
                 document.getElementById('connection-db-name').value = config.database || '';
                 document.getElementById('connection-db-user').value = config.username || '';
-                if (config.password) {
+                if (config.has_password) {
                     const dbPwField = document.getElementById('connection-db-password');
                     if (dbPwField) {
                         dbPwField.value = '';

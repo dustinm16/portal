@@ -658,6 +658,8 @@ Open Relay Portal is designed with privacy and security as core principles:
 5. **Rate Limiting** - Per-IP request throttling, 1 registration per IP per 24 hours
 6. **Localhost Blocking** - User connections cannot target localhost
 7. **Chat Encryption** - Messages encrypted at rest (Fernet)
+7b. **Config Encryption** - Connection configs (passwords, keys) encrypted at rest (Fernet, separate key from chat)
+7c. **API Credential Redaction** - GET endpoints never return passwords/keys; replaced with `has_<field>` flags
 8. **HTTPS/WSS Only** - All traffic encrypted via TLS
 9. **No Session Recording** - Privacy-first design, no session logging
 10. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)

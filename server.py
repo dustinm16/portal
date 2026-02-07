@@ -1473,6 +1473,33 @@ def is_blocked_host(host: str) -> bool:
 
 
 # Connection types mapped to plugins with full config support
+# Sensitive config fields that must never be returned in API responses
+_SENSITIVE_CONFIG_FIELDS = {"password", "private_key", "private_key_path", "auth_header", "psk"}
+
+
+def redact_connection_config(connection: dict) -> dict:
+    """Redact sensitive fields from a connection dict for API responses.
+
+    Replaces sensitive values with has_<field>: True flags so the frontend
+    knows a credential exists without exposing the actual value.
+    """
+    conn = dict(connection)
+    config = conn.get("config", {})
+    if isinstance(config, str):
+        config = json.loads(config) if config else {}
+
+    redacted_config = {}
+    for key, value in config.items():
+        if key in _SENSITIVE_CONFIG_FIELDS:
+            if value:
+                redacted_config[f"has_{key}"] = True
+        else:
+            redacted_config[key] = value
+
+    conn["config"] = redacted_config
+    return conn
+
+
 CONNECTION_TYPES = {
     # Remote Access
     "ssh": {"name": "SSH Terminal", "icon": "terminal", "default_port": 22, "plugin": "ssh"},
@@ -1622,7 +1649,9 @@ async def http_list_user_connections(request: web.Request) -> web.Response:
         else:
             connections = await db.get_user_connections(token.user_id)
 
-        return web.json_response({"connections": connections})
+        return web.json_response({
+            "connections": [redact_connection_config(c) for c in connections]
+        })
     except Exception as e:
         logger.error(f"Failed to list connections: {e}")
         return web.json_response({"error": "Failed to list connections"}, status=500)
@@ -1642,7 +1671,7 @@ async def http_get_user_connection(request: web.Request) -> web.Response:
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
 
-    return web.json_response(connection)
+    return web.json_response(redact_connection_config(connection))
 
 
 async def http_update_user_connection(request: web.Request) -> web.Response:

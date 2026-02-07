@@ -57,6 +57,51 @@ def decrypt_message(ciphertext: str) -> str:
         return ciphertext
 
 
+# --- Connection config encryption (separate key from chat) ---
+
+def get_config_encryption_key() -> bytes:
+    """Generate encryption key for connection configs (separate from chat key)."""
+    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    if CRYPTO_AVAILABLE:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"portal-config-salt",
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(secret))
+        return key
+    return base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+
+
+def encrypt_config(config_json: str) -> str:
+    """Encrypt a connection config JSON string.
+
+    Encrypted values are prefixed with 'enc:' to distinguish from legacy plaintext.
+    """
+    if not CRYPTO_AVAILABLE or not config_json or config_json == "{}":
+        return config_json
+    try:
+        f = Fernet(get_config_encryption_key())
+        return "enc:" + f.encrypt(config_json.encode()).decode()
+    except Exception:
+        return config_json
+
+
+def decrypt_config(data: str) -> str:
+    """Decrypt a connection config string.
+
+    Handles both encrypted ('enc:' prefixed) and legacy plaintext values.
+    """
+    if not data or not data.startswith("enc:"):
+        return data  # Not encrypted (legacy or empty)
+    try:
+        f = Fernet(get_config_encryption_key())
+        return f.decrypt(data[4:].encode()).decode()
+    except Exception:
+        return "{}"  # Decryption failed
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -480,6 +525,9 @@ class Database:
         # Generate public keys for any streams that don't have one
         await self._populate_stream_public_keys()
 
+        # Encrypt any plaintext configs (one-time migration)
+        await self._migrate_encrypt_configs()
+
     async def _populate_stream_public_keys(self) -> None:
         """Generate public keys for streams that don't have one."""
         import secrets
@@ -495,6 +543,41 @@ class Database:
             )
         if rows:
             await self._connection.commit()
+
+    async def _migrate_encrypt_configs(self) -> None:
+        """Encrypt any plaintext config fields (one-time migration).
+
+        Migrates user_connections, services, and vod_storage tables.
+        Encrypted values are prefixed with 'enc:' — already-encrypted rows are skipped.
+        """
+        if not CRYPTO_AVAILABLE:
+            return
+
+        tables = ["user_connections", "services", "vod_storage"]
+        total = 0
+        for table in tables:
+            try:
+                cursor = await self._connection.execute(
+                    f"SELECT id, config FROM {table} WHERE config IS NOT NULL AND config != '{{}}' AND config NOT LIKE 'enc:%'"
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    config_str = row["config"]
+                    if config_str:
+                        encrypted = encrypt_config(config_str)
+                        await self._connection.execute(
+                            f"UPDATE {table} SET config = ? WHERE id = ?",
+                            (encrypted, row["id"])
+                        )
+                        total += 1
+            except Exception:
+                pass  # Table might not exist yet
+        if total:
+            await self._connection.commit()
+            import logging
+            logging.getLogger("portal.database").info(
+                f"Encrypted {total} plaintext config(s) across {', '.join(tables)}"
+            )
 
     async def close(self) -> None:
         """Close database connection."""
@@ -818,7 +901,7 @@ class Database:
                 path,
                 host,
                 port,
-                json.dumps(config or {}),
+                encrypt_config(json.dumps(config or {})),
                 ",".join(required_scopes or []),
                 icon,
                 category_id,
@@ -844,11 +927,11 @@ class Database:
             if service.get("required_scopes")
             else []
         )
-        # Parse JSON config
+        # Parse JSON config (decrypt if encrypted)
         config_str = service.get("config", "{}")
         try:
-            service["config"] = json.loads(config_str) if config_str else {}
-        except json.JSONDecodeError:
+            service["config"] = json.loads(decrypt_config(config_str)) if config_str else {}
+        except (json.JSONDecodeError, Exception):
             service["config"] = {}
         # Parse JSON ports array (for managed services)
         ports_str = service.get("ports", "[]")
@@ -1339,11 +1422,12 @@ class Database:
         api_access: int = 0
     ) -> int:
         """Create a new user connection and return its ID."""
+        encrypted_config = encrypt_config(config) if config else "{}"
         cursor = await self.conn.execute(
             """INSERT INTO user_connections
                (user_id, name, type, host, port, config, ssh_key_id, icon, portal_access, api_access)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, name, conn_type, host, port, config, ssh_key_id, icon, portal_access, api_access)
+            (user_id, name, conn_type, host, port, encrypted_config, ssh_key_id, icon, portal_access, api_access)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -1362,8 +1446,9 @@ class Database:
             conn = dict(row)
             import json
             try:
-                conn["config"] = json.loads(conn.get("config", "{}"))
-            except json.JSONDecodeError:
+                raw_config = conn.get("config", "{}")
+                conn["config"] = json.loads(decrypt_config(raw_config))
+            except (json.JSONDecodeError, Exception):
                 conn["config"] = {}
             return conn
         return None
@@ -1384,8 +1469,9 @@ class Database:
         for row in rows:
             conn = dict(row)
             try:
-                conn["config"] = json.loads(conn.get("config", "{}"))
-            except json.JSONDecodeError:
+                raw_config = conn.get("config", "{}")
+                conn["config"] = json.loads(decrypt_config(raw_config))
+            except (json.JSONDecodeError, Exception):
                 conn["config"] = {}
             connections.append(conn)
         return connections
@@ -1402,10 +1488,13 @@ class Database:
         if not updates:
             return False
 
-        # Convert config dict to JSON if needed
-        if "config" in updates and isinstance(updates["config"], dict):
+        # Convert config dict to JSON and encrypt
+        if "config" in updates:
             import json
-            updates["config"] = json.dumps(updates["config"])
+            config_val = updates["config"]
+            if isinstance(config_val, dict):
+                config_val = json.dumps(config_val)
+            updates["config"] = encrypt_config(config_val)
 
         set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
         values = list(updates.values()) + [conn_id, user_id]
@@ -1444,8 +1533,9 @@ class Database:
         for row in rows:
             conn = dict(row)
             try:
-                conn["config"] = json.loads(conn.get("config", "{}"))
-            except json.JSONDecodeError:
+                raw_config = conn.get("config", "{}")
+                conn["config"] = json.loads(decrypt_config(raw_config))
+            except (json.JSONDecodeError, Exception):
                 conn["config"] = {}
             connections.append(conn)
         return connections
@@ -1716,10 +1806,23 @@ class Database:
             (user_id,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        if row:
+            storage = dict(row)
+            raw_config = storage.get("config", "{}")
+            storage["config"] = decrypt_config(raw_config)
+            return storage
+        return None
 
     async def save_vod_storage(self, user_id: int, **kwargs) -> int:
         """Create or update VOD storage config (upsert)."""
+        # Encrypt config if present
+        if "config" in kwargs:
+            config_val = kwargs["config"]
+            if isinstance(config_val, dict):
+                import json as _json
+                config_val = _json.dumps(config_val)
+            kwargs["config"] = encrypt_config(config_val)
+
         existing = await self.get_vod_storage(user_id)
         now = datetime.now(timezone.utc).isoformat()
 

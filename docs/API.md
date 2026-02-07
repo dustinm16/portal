@@ -592,7 +592,7 @@ Delete user (superadmin only).
 ### User Connections
 
 #### GET /api/connections
-List user's remote connections.
+List user's remote connections. Sensitive config fields (passwords, private keys) are **redacted** — replaced with boolean `has_<field>` flags.
 
 **Response:**
 ```json
@@ -604,13 +604,15 @@ List user's remote connections.
       "type": "ssh",
       "host": "192.168.1.100",
       "port": 22,
-      "config": {"username": "john"},
+      "config": {"username": "john", "auth_method": "password", "has_password": true},
       "icon": "terminal",
       "created_at": "2026-02-01T00:00:00Z"
     }
   ]
 }
 ```
+
+**Redacted fields:** `password`, `private_key`, `private_key_path`, `auth_header`, `psk` are never returned. If a field has a value, `has_<field>: true` is returned instead.
 
 ---
 
@@ -666,12 +668,12 @@ Create a new connection.
 ---
 
 #### GET /api/connections/:id
-Get connection details.
+Get connection details. Sensitive config fields are redacted (same as list endpoint).
 
 ---
 
 #### PUT /api/connections/:id
-Update connection. Config fields are merged with existing config — fields not included in the request are preserved (e.g., passwords and private keys that are not shown in the edit form).
+Update connection. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
 
 **Request:**
 ```json
