@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{SERVICE_NAME}} - Open Relay Portal</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=25">
+    <link rel="stylesheet" href="/static/css/portal.css?v=27">
     <style>
         html, body {
             height: 100%;
@@ -28,7 +28,7 @@
         .sidebar-header h3 {
             margin: 0;
             font-size: 0.875rem;
-            color: #a1a1aa;
+            color: var(--text-muted);
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
@@ -60,7 +60,7 @@
         }
         .stream-meta {
             font-size: 0.75rem;
-            color: #a1a1aa;
+            color: var(--text-muted);
             display: flex;
             gap: 0.75rem;
         }
@@ -70,10 +70,10 @@
             gap: 0.25rem;
         }
         .stream-badge.live {
-            color: #22c55e;
+            color: var(--accent-green);
         }
         .stream-badge.offline {
-            color: #ef4444;
+            color: var(--accent-red);
         }
         .video-container {
             flex: 1;
@@ -94,7 +94,7 @@
             background: #000;
         }
         .video-placeholder {
-            color: #a1a1aa;
+            color: var(--text-muted);
             text-align: center;
         }
         .video-placeholder svg {
@@ -135,38 +135,12 @@
         }
         .stream-info .status {
             font-size: 0.75rem;
-            color: #a1a1aa;
-        }
-        .connection-status {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-        }
-        .connection-status.connected {
-            background: rgba(34, 197, 94, 0.1);
-            color: #22c55e;
-        }
-        .connection-status.connecting {
-            background: rgba(234, 179, 8, 0.1);
-            color: #eab308;
-        }
-        .connection-status.disconnected {
-            background: rgba(239, 68, 68, 0.1);
-            color: #ef4444;
-        }
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: currentColor;
+            color: var(--text-muted);
         }
         .no-streams {
             padding: 2rem;
             text-align: center;
-            color: #a1a1aa;
+            color: var(--text-muted);
         }
         @media (max-width: 768px) {
             .stream-sidebar {
@@ -249,6 +223,7 @@
     <script src="/static/js/portal.js"></script>
     <script>
         const serviceId = '{{SERVICE_ID}}';
+        const wsPath = '{{WS_PATH}}';
         let ws = null;
         let pc = null;
         let currentStream = null;
@@ -263,7 +238,7 @@
         function connect() {
             updateStatus('connecting', 'Connecting...');
 
-            const wsUrl = Portal.getWebSocketUrl(`/ws/media/${serviceId}`);
+            const wsUrl = Portal.getWebSocketUrl(wsPath);
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {

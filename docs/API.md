@@ -88,6 +88,8 @@ End current session.
 #### POST /api/register
 Register a new account (requires invite code).
 
+**Rate limit:** 1 account per IP per 24 hours.
+
 **Request:**
 ```json
 {
@@ -97,11 +99,19 @@ Register a new account (requires invite code).
 }
 ```
 
-**Response:**
+**Response (201):**
 ```json
 {
-  "token": "eyJhbGc...",
-  "user": {"id": 5, "username": "newuser"}
+  "id": 5,
+  "username": "newuser",
+  "message": "Registration successful"
+}
+```
+
+**Error (429):**
+```json
+{
+  "error": "Registration limit reached. Only one account per IP per 24 hours."
 }
 ```
 
@@ -1959,12 +1969,13 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/proxmox/{id}` | Proxmox management |
 | `/github/{id}` | GitHub browser |
 | `/media/{id}` | Media player |
+| `/about` | About page (feature guide) |
 
 ### Navigation Structure
 
-All pages use a standardized navbar:
+All pages use a standardized navbar with a responsive hamburger menu on mobile:
 ```
-Dashboard | Chat | Streams | API Docs | [username] | Logout
+Dashboard | Chat | Streams | API Docs | About | [username] | Logout
 ```
 
 ### Dashboard Tabs
@@ -1995,6 +2006,7 @@ Regular users default to the "My Connections" tab. Admins default to "Services".
 - Default: 100 requests per minute per IP
 - WebSocket connections: 10 per minute per IP
 - Login attempts: 5 per minute per IP
+- Registration: 1 account per IP per 24 hours
 - Chat messages: 5 per 5 seconds per user
 
 When rate limited, response includes:

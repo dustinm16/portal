@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GitHub - Open Relay Portal</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=25">
+    <link rel="stylesheet" href="/static/css/portal.css?v=27">
     <style>
         body {
             display: flex;
@@ -366,9 +366,9 @@
             align-items: center;
             gap: 0.75rem;
             padding: 0.875rem 1.5rem;
-            background: #24292e;
+            background: var(--bg-secondary);
             color: #fff;
-            border: 1px solid #444;
+            border: 1px solid var(--card-border);
             border-radius: 8px;
             font-size: 1rem;
             font-weight: 500;
@@ -378,8 +378,8 @@
         }
 
         .btn-github:hover {
-            background: #2f363d;
-            border-color: #666;
+            background: var(--surface-color);
+            border-color: rgba(255, 255, 255, 0.2);
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
         }
@@ -422,10 +422,6 @@
             border-top-color: var(--accent-blue);
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
         }
 
         .actions-bar {

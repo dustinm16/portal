@@ -228,6 +228,7 @@ CREATE TABLE users (
     chat_anonymous INTEGER DEFAULT 0,
     totp_secret TEXT,
     totp_enabled INTEGER DEFAULT 0,
+    registration_ip TEXT,            -- IP at registration (rate limit: 1/IP/24h)
     created_at TEXT,
     updated_at TEXT
 );
@@ -551,6 +552,8 @@ GET /spice               - SPICE viewer
 GET /proxmox             - Proxmox dashboard
 GET /watch/:id           - Stream viewer (HLS)
 GET /api-docs            - Interactive API documentation
+GET /about               - About page (feature guide)
+GET /live                - Public live streams (unauthenticated)
 ```
 
 ---
@@ -639,7 +642,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 2. **JWT Tokens** - Short-lived, scoped access tokens
 3. **API Keys** - Prefix-based lookup, hashed storage
 4. **2FA Support** - TOTP with encrypted backup codes
-5. **Rate Limiting** - Per-IP request throttling
+5. **Rate Limiting** - Per-IP request throttling, 1 registration per IP per 24 hours
 6. **Localhost Blocking** - User connections cannot target localhost
 7. **Chat Encryption** - Messages encrypted at rest (Fernet)
 8. **HTTPS/WSS Only** - All traffic encrypted via TLS

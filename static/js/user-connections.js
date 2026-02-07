@@ -996,20 +996,52 @@ async function connectTo(connectionId) {
         }
 
         const data = await response.json();
+        const conn = data.connection;
+        const type = conn.type;
 
-        // Handle connection based on response
+        // If server provides a direct URL, use it
         if (data.url) {
             window.open(data.url, '_blank');
-        } else if (data.type === 'ssh' || data.type === 'terminal') {
-            // Open terminal in new window
-            const terminalUrl = `/terminal/connect?connection=${connectionId}`;
-            window.open(terminalUrl, '_blank', 'width=900,height=600');
-        } else if (data.type === 'rdp' || data.type === 'vnc') {
-            // Open VNC/RDP viewer
-            const viewerUrl = `/vnc?connection=${connectionId}`;
-            window.open(viewerUrl, '_blank');
-        } else {
-            Portal.toast(`Connection info: ${data.host}:${data.port}`, 'info');
+            return;
+        }
+
+        switch (type) {
+            case 'ssh':
+            case 'terminal':
+                window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600');
+                break;
+            case 'vnc':
+            case 'rdp':
+                window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                break;
+            case 'spice':
+                window.open(`/spice/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                break;
+            case 'proxmox':
+                window.open(`/proxmox/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                break;
+            case 'github':
+                window.open(`/github/connect?connection=${connectionId}`, '_blank', 'width=1400,height=900');
+                break;
+            case 'http_proxy':
+            case 'http':
+            case 'https':
+                window.open(`/proxy/${connectionId}`, '_blank');
+                break;
+            case 'mediamtx':
+            case 'stream':
+                window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                break;
+            case 'database':
+            case 'redis':
+            case 'tcp_tunnel':
+            case 'secure_tunnel':
+            case 'vpn_tunnel':
+            case 'custom':
+                Portal.toast(`${conn.name}: ${conn.host}:${conn.port}`, 'info');
+                break;
+            default:
+                Portal.toast(`${conn.name || 'Connection'}: ${conn.host}:${conn.port}`, 'info');
         }
     } catch (error) {
         console.error('[Connections] Error connecting:', error);

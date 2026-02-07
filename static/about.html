@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Relay Portal - About</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=27">
+    <style>
+        .docs-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .docs-nav {
+            position: sticky;
+            top: 80px;
+            max-height: calc(100vh - 100px);
+            overflow-y: auto;
+            padding-right: 1rem;
+        }
+        .docs-nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .docs-nav li {
+            margin: 0.25rem 0;
+        }
+        .docs-nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            display: block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+        }
+        .docs-nav a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.05);
+        }
+        .docs-nav a.active {
+            color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .docs-nav h4 {
+            color: var(--text-primary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin: 1rem 0 0.5rem 0;
+        }
+        .docs-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .docs-content h1 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+        .docs-content h2 {
+            color: var(--text-primary);
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .docs-content h3 {
+            color: var(--text-secondary);
+            margin-top: 2rem;
+        }
+        .docs-content p, .docs-content li {
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+        .docs-content ul {
+            padding-left: 1.5rem;
+        }
+        .docs-content ul li {
+            margin: 0.4rem 0;
+        }
+        .docs-grid {
+            display: grid;
+            grid-template-columns: 220px 1fr;
+            gap: 2rem;
+        }
+        @media (max-width: 900px) {
+            .docs-grid {
+                grid-template-columns: 1fr;
+            }
+            .docs-nav {
+                position: static;
+                max-height: none;
+                margin-bottom: 2rem;
+            }
+        }
+        .alert {
+            padding: 1rem;
+            border-radius: 6px;
+            margin: 1rem 0;
+        }
+        .alert-info {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: var(--text-secondary);
+        }
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: var(--text-secondary);
+        }
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+        .param-table th, .param-table td {
+            text-align: left;
+            padding: 0.75rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .param-table th {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+        .param-table td {
+            color: var(--text-secondary);
+        }
+        .param-table code {
+            background: rgba(255,255,255,0.1);
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.85rem;
+        }
+        .code-block {
+            background: #1a1a2e;
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+        .code-block pre {
+            margin: 0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.875rem;
+            color: #e2e8f0;
+        }
+        .code-block .comment { color: #6b7280; }
+        .code-block .string { color: #10b981; }
+        .code-block .keyword { color: #8b5cf6; }
+        .badge-admin {
+            background: var(--accent-red);
+            color: white;
+            font-size: 0.625rem;
+            padding: 0.125rem 0.375rem;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+        }
+        .feature-card {
+            background: var(--bg-secondary);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 1.25rem;
+            margin: 1rem 0;
+        }
+        .feature-card h4 {
+            color: var(--text-primary);
+            margin: 0 0 0.5rem 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .feature-card p {
+            margin: 0;
+            font-size: 0.9rem;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        .role-badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .role-superadmin { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+        .role-admin { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
+        .role-moderator { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+        .role-user { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+        /* Hide admin-only sections by default until we know user role */
+        .admin-only {
+            display: none;
+        }
+        .admin-only.visible {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <a href="/dashboard" style="display: flex; align-items: center; gap: 0.5rem; color: inherit; text-decoration: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                </svg>
+                Open Relay Portal
+            </a>
+        </div>
+        <button class="navbar-toggle" aria-label="Toggle menu" aria-expanded="false">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
+            <a href="/docs">API Docs</a>
+            <a href="/about" class="active">About</a>
+            <a href="#" onclick="window.open('/terminal/local','_blank','width=900,height=600'); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+            </a>
+            <a href="/dashboard" class="navbar-user" id="user-info" title="User Profile">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <span id="username-display"></span>
+                <span id="admin-badge" class="admin-badge" style="display: none;">Admin</span>
+            </a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="docs-container">
+        <div class="docs-grid">
+            <nav class="docs-nav">
+                <h4>Getting Started</h4>
+                <ul>
+                    <li><a href="#overview">Overview</a></li>
+                    <li><a href="#roles">Roles & Permissions</a></li>
+                </ul>
+                <h4>Features</h4>
+                <ul>
+                    <li><a href="#dashboard">Dashboard</a></li>
+                    <li><a href="#connections">User Connections</a></li>
+                    <li><a href="#streaming">Streaming</a></li>
+                    <li><a href="#chat">Community Chat</a></li>
+                    <li><a href="#ssh-keys">SSH Keys</a></li>
+                    <li><a href="#api-keys">API Keys & Auth</a></li>
+                </ul>
+                <div class="admin-only">
+                    <h4>Administration</h4>
+                    <ul>
+                        <li><a href="#admin-features">Admin Features</a></li>
+                    </ul>
+                </div>
+                <h4>Security</h4>
+                <ul>
+                    <li><a href="#security">Security Overview</a></li>
+                </ul>
+            </nav>
+
+            <main class="docs-content">
+                <h1>About Open Relay Portal</h1>
+                <p>A complete guide to using Open Relay Portal &mdash; your secure, self-hosted gateway for remote infrastructure access, live streaming, and community communication.</p>
+
+                <!-- Overview -->
+                <h2 id="overview">Overview</h2>
+                <p>Open Relay Portal is a secure, authenticated web gateway for managing home and cloud infrastructure remotely. It consolidates remote access, process management, live streaming, and team communication into a single web interface accessible from any browser.</p>
+
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                            Remote Access
+                        </h4>
+                        <p>Connect to SSH, VNC, RDP, SPICE, and Proxmox servers through your browser. No client software needed.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                            Live Streaming
+                        </h4>
+                        <p>Broadcast live via RTMPS from OBS or any encoder. Community members can watch streams with HLS playback.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                            Community Chat
+                        </h4>
+                        <p>Real-time encrypted messaging with channels, emoji, markdown, @mentions, replies, and image sharing.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                            Secure by Default
+                        </h4>
+                        <p>HTTPS-only with HSTS, encrypted chat, Argon2id passwords, TOTP 2FA, and role-based access control.</p>
+                    </div>
+                </div>
+
+                <!-- Roles -->
+                <h2 id="roles">Roles & Permissions</h2>
+                <p>Access is controlled by a role hierarchy. Higher roles inherit all permissions from lower roles.</p>
+
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Role</th>
+                            <th>Capabilities</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="role-badge role-user">User</span></td>
+                            <td>Create connections, stream, chat, manage SSH/API keys, view community streams</td>
+                        </tr>
+                        <tr>
+                            <td><span class="role-badge role-moderator">Moderator</span></td>
+                            <td>Delete chat messages, ban users from stream chat</td>
+                        </tr>
+                        <tr>
+                            <td><span class="role-badge role-admin">Admin</span></td>
+                            <td>Manage services, view all users, access server terminal, traffic metrics, logs, vulnerability scanner</td>
+                        </tr>
+                        <tr>
+                            <td><span class="role-badge role-superadmin">Superadmin</span></td>
+                            <td>Change user roles, manage system configuration, full system access</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="alert alert-info">
+                    <strong>Registration:</strong> New users register with a daily invite code. After registration, an admin can promote users to higher roles.
+                </div>
+
+                <!-- Dashboard -->
+                <h2 id="dashboard">Dashboard</h2>
+                <p>The Dashboard is your home screen after login. It shows live stats and provides quick access to all features.</p>
+
+                <h3>Stats Overview</h3>
+                <p>The top of the dashboard shows real-time statistics:</p>
+                <ul>
+                    <li><strong>Live Streams</strong> &mdash; Number of currently broadcasting streams</li>
+                    <li><strong>Online Users</strong> &mdash; Users currently connected to the portal</li>
+                    <li><strong>Total Services</strong> &mdash; Number of configured services (admin only)</li>
+                    <li><strong>Active Services</strong> &mdash; Running managed processes (admin only)</li>
+                </ul>
+                <p>Stats auto-refresh every 30 seconds.</p>
+
+                <h3>Dashboard Tabs</h3>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Tab</th>
+                            <th>Description</th>
+                            <th>Visibility</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Services</strong></td>
+                            <td>Proxy routes and managed processes. Start, stop, restart services. View health status.</td>
+                            <td><span class="badge-admin">ADMIN</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>My Connections</strong></td>
+                            <td>Your personal remote connections. Create, edit, connect, and delete connections.</td>
+                            <td>All users</td>
+                        </tr>
+                        <tr>
+                            <td><strong>My Streams</strong></td>
+                            <td>Manage your streaming configuration, stream keys, and broadcast settings.</td>
+                            <td>All users</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Quick Access</strong></td>
+                            <td>Bookmarked connections and services for fast one-click access.</td>
+                            <td>All users</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Activity Feed</h3>
+                <p>The sidebar shows recent portal activity (stream events, user logins, etc.) with live-updating timestamps and fade effects for older entries.</p>
+
+                <!-- User Connections -->
+                <h2 id="connections">User Connections</h2>
+                <p>Connections are personal remote access points to your servers, databases, and network services. Each user manages their own connections independently.</p>
+
+                <h3>Creating a Connection</h3>
+                <p>From the <strong>My Connections</strong> tab, click <strong>Add Connection</strong> and fill in:</p>
+                <ul>
+                    <li><strong>Name</strong> &mdash; A descriptive label (e.g., "Home Server SSH")</li>
+                    <li><strong>Type</strong> &mdash; The protocol to use (see table below)</li>
+                    <li><strong>Host</strong> &mdash; IP address or hostname of the target</li>
+                    <li><strong>Port</strong> &mdash; Service port (defaults vary by type)</li>
+                    <li><strong>Username</strong> &mdash; Login username (for SSH/VNC connections)</li>
+                    <li><strong>Auth Method</strong> &mdash; Password or SSH key (for SSH connections)</li>
+                </ul>
+
+                <h3>Connection Types</h3>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Description</th>
+                            <th>Default Port</th>
+                            <th>Viewer</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>ssh</code></td>
+                            <td>Secure Shell terminal</td>
+                            <td>22</td>
+                            <td>xterm.js terminal in browser</td>
+                        </tr>
+                        <tr>
+                            <td><code>vnc</code></td>
+                            <td>Virtual Network Computing</td>
+                            <td>5900</td>
+                            <td>noVNC viewer in browser</td>
+                        </tr>
+                        <tr>
+                            <td><code>rdp</code></td>
+                            <td>Remote Desktop Protocol</td>
+                            <td>3389</td>
+                            <td>noVNC viewer in browser</td>
+                        </tr>
+                        <tr>
+                            <td><code>spice</code></td>
+                            <td>SPICE remote display</td>
+                            <td>5930</td>
+                            <td>SPICE console in browser</td>
+                        </tr>
+                        <tr>
+                            <td><code>proxmox</code></td>
+                            <td>Proxmox VE management</td>
+                            <td>8006</td>
+                            <td>Proxmox VE panel</td>
+                        </tr>
+                        <tr>
+                            <td><code>http</code> / <code>https</code></td>
+                            <td>Web service reverse proxy</td>
+                            <td>80 / 443</td>
+                            <td>Opens in new tab via proxy</td>
+                        </tr>
+                        <tr>
+                            <td><code>database</code></td>
+                            <td>Database server (MySQL, PostgreSQL)</td>
+                            <td>3306 / 5432</td>
+                            <td>TCP tunnel (host:port info displayed)</td>
+                        </tr>
+                        <tr>
+                            <td><code>redis</code></td>
+                            <td>Redis data store</td>
+                            <td>6379</td>
+                            <td>TCP tunnel (host:port info displayed)</td>
+                        </tr>
+                        <tr>
+                            <td><code>tcp_tunnel</code></td>
+                            <td>Generic TCP forwarding</td>
+                            <td>&mdash;</td>
+                            <td>TCP tunnel (host:port info displayed)</td>
+                        </tr>
+                        <tr>
+                            <td><code>secure_tunnel</code></td>
+                            <td>TLS-encrypted tunnel</td>
+                            <td>&mdash;</td>
+                            <td>Encrypted TCP tunnel</td>
+                        </tr>
+                        <tr>
+                            <td><code>vpn_tunnel</code></td>
+                            <td>VPN tunnel connection</td>
+                            <td>&mdash;</td>
+                            <td>VPN tunnel</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Connecting</h3>
+                <p>Click the <strong>Connect</strong> button on any connection to open the appropriate viewer in a new window. For SSH connections, you will be prompted for credentials (password or key-based authentication).</p>
+                <p>For tunnel-type connections (database, redis, tcp_tunnel), the portal displays the host and port information for use with your local client software.</p>
+
+                <div class="alert alert-info">
+                    <strong>Security note:</strong> Connections to <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code> are blocked for security. Only connections to remote hosts are allowed.
+                </div>
+
+                <!-- Streaming -->
+                <h2 id="streaming">Streaming</h2>
+                <p>Open Relay Portal includes a full live streaming platform. Broadcast from OBS or any RTMP-capable encoder and viewers can watch via the community Streams page.</p>
+
+                <h3>Setting Up OBS</h3>
+                <p>In OBS Studio, go to <strong>Settings &rarr; Stream</strong> and configure:</p>
+                <div class="code-block">
+<pre><span class="comment"># OBS Stream Settings</span>
+<span class="keyword">Service:</span>  Custom
+<span class="keyword">Server:</span>   <span class="string">rtmps://stream.yourdomain.com:1936/live</span>
+<span class="keyword">Stream Key:</span> <span class="string">live_xxxxxxxxxxxx</span>  <span class="comment">(your private stream key)</span></pre>
+                </div>
+
+                <h3>Stream Keys</h3>
+                <p>Each user has two stream keys:</p>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Key Type</th>
+                            <th>Prefix</th>
+                            <th>Purpose</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Private Key</strong></td>
+                            <td><code>live_</code></td>
+                            <td>Used in OBS to publish your stream. Keep this secret.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Public Key</strong></td>
+                            <td><code>pub_</code></td>
+                            <td>Used for sharing stream links. Viewers use this to watch.</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>Manage your stream keys from the <strong>My Streams</strong> tab on the Dashboard.</p>
+
+                <h3>Streaming Features</h3>
+                <ul>
+                    <li><strong>Dynamic Thumbnails</strong> &mdash; Auto-generated preview images from your live stream, updated every 15 seconds</li>
+                    <li><strong>Viewer Count</strong> &mdash; Real-time viewer count displayed on the stream page, polled every 10 seconds</li>
+                    <li><strong>Quality Selector</strong> &mdash; Viewers can choose stream quality when available</li>
+                    <li><strong>Public/Private Toggle</strong> &mdash; Control whether your stream appears on the community Streams page</li>
+                    <li><strong>Popout Player</strong> &mdash; Watch streams in a floating overlay or separate window</li>
+                    <li><strong>Offline Detection</strong> &mdash; Automatic detection when streams go offline</li>
+                </ul>
+
+                <h3>Encoder Support</h3>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Encoder</th>
+                            <th>Type</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>NVENC</strong></td>
+                            <td>NVIDIA GPU</td>
+                            <td>Best performance. Requires NVIDIA GPU with encoding support.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>AMF</strong></td>
+                            <td>AMD GPU</td>
+                            <td>Hardware encoding for AMD GPUs.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>x264</strong></td>
+                            <td>CPU</td>
+                            <td>Software encoding. Works on any system but uses more CPU.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <!-- Community Chat -->
+                <h2 id="chat">Community Chat</h2>
+                <p>The Chat page provides real-time encrypted messaging for your team or community.</p>
+
+                <h3>Channels</h3>
+                <p>Chat is organized into channels. Default channels include <strong>#general</strong>, <strong>#random</strong>, and <strong>#help</strong>. Admins can create, rename, and delete custom channels.</p>
+
+                <h3>Message Features</h3>
+                <ul>
+                    <li><strong>Markdown</strong> &mdash; Use <code>**bold**</code>, <code>*italic*</code>, <code>`code`</code>, and <code>~~strikethrough~~</code></li>
+                    <li><strong>@Mentions</strong> &mdash; Type <code>@username</code> to notify someone. Mentioned users see highlighted messages.</li>
+                    <li><strong>Replies</strong> &mdash; Click the reply icon on any message to thread a response</li>
+                    <li><strong>Emoji</strong> &mdash; Click the emoji picker or type emoji directly</li>
+                    <li><strong>Image Sharing</strong> &mdash; Upload images via the attachment button or paste from clipboard</li>
+                    <li><strong>Anonymous Mode</strong> &mdash; Post messages without revealing your identity</li>
+                </ul>
+
+                <h3>Profiles</h3>
+                <p>Customize your chat presence with:</p>
+                <ul>
+                    <li><strong>Display Nickname</strong> &mdash; Set a custom name shown in chat and throughout the portal</li>
+                    <li><strong>Avatar</strong> &mdash; Choose from a collection of avatar icons</li>
+                </ul>
+
+                <h3>Online Users</h3>
+                <p>The right sidebar shows currently online users with their roles indicated by color. Click a username to insert an @mention.</p>
+
+                <!-- SSH Keys -->
+                <h2 id="ssh-keys">SSH Keys</h2>
+                <p>Manage SSH key pairs for key-based authentication to your remote servers.</p>
+
+                <h3>Key Management</h3>
+                <ul>
+                    <li><strong>Generate Keys</strong> &mdash; Create new Ed25519, RSA, or ECDSA key pairs directly in the portal</li>
+                    <li><strong>Import Keys</strong> &mdash; Upload existing public keys for use with connections</li>
+                    <li><strong>Associate with Connections</strong> &mdash; Link a key pair to an SSH connection for passwordless login</li>
+                </ul>
+
+                <div class="alert alert-warning">
+                    <strong>Important:</strong> Private keys are shown only once at creation time. Download or copy your private key immediately &mdash; it cannot be retrieved later.
+                </div>
+
+                <h3>Supported Key Types</h3>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Algorithm</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>ed25519</code></td>
+                            <td>Ed25519</td>
+                            <td>Recommended. Modern, fast, and secure.</td>
+                        </tr>
+                        <tr>
+                            <td><code>rsa</code></td>
+                            <td>RSA 4096-bit</td>
+                            <td>Widely compatible. Good for older systems.</td>
+                        </tr>
+                        <tr>
+                            <td><code>ecdsa</code></td>
+                            <td>ECDSA P-256</td>
+                            <td>Compact keys with strong security.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <!-- API Keys & Auth -->
+                <h2 id="api-keys">API Keys & Authentication</h2>
+                <p>Open Relay Portal supports multiple authentication methods for different use cases.</p>
+
+                <h3>Authentication Methods</h3>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Use Case</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Session Cookies</strong></td>
+                            <td>Web UI</td>
+                            <td>Automatic after login. HttpOnly, Secure, SameSite=Lax.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>JWT Tokens</strong></td>
+                            <td>API access</td>
+                            <td>Pass via <code>Authorization: Bearer &lt;token&gt;</code> header.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>API Keys</strong></td>
+                            <td>Programmatic access</td>
+                            <td>Long-lived keys with scoped permissions. Prefix: <code>portal_</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>API Key Scopes</h3>
+                <p>When creating an API key, select which features it can access:</p>
+                <ul>
+                    <li><code>chat</code> &mdash; Send and receive chat messages</li>
+                    <li><code>stream</code> &mdash; Manage streams and stream keys</li>
+                    <li><code>connections</code> &mdash; Manage user connections</li>
+                    <li><code>admin</code> &mdash; Admin-level operations (requires admin role)</li>
+                </ul>
+
+                <h3>Two-Factor Authentication (2FA)</h3>
+                <p>Enable TOTP-based two-factor authentication for your account:</p>
+                <ol>
+                    <li>Go to your profile settings (click your username in the navbar)</li>
+                    <li>Click <strong>Enable 2FA</strong></li>
+                    <li>Scan the QR code with an authenticator app (Google Authenticator, Authy, etc.)</li>
+                    <li>Enter the 6-digit code to verify and activate</li>
+                </ol>
+                <p>Once enabled, you'll need to enter a code from your authenticator app each time you log in.</p>
+
+                <!-- Admin Features -->
+                <div class="admin-only">
+                <h2 id="admin-features">Admin Features <span class="badge-admin">ADMIN</span></h2>
+                <p>Administrators have access to additional tools for managing the portal and monitoring infrastructure.</p>
+
+                <h3>Service Management</h3>
+                <p>The <strong>Services</strong> tab on the Dashboard shows two types of services:</p>
+                <ul>
+                    <li><strong>Proxy Services</strong> &mdash; Route traffic to external backends (e.g., web apps, APIs). Configure host, port, and path.</li>
+                    <li><strong>Managed Services</strong> &mdash; Processes that Portal runs directly (e.g., MediaMTX streaming server). Start, stop, restart, and view logs.</li>
+                </ul>
+                <p>Managed services auto-start on boot (if enabled), have health checks every 30 seconds, and auto-restart with exponential backoff on crash.</p>
+
+                <h3>User Management</h3>
+                <ul>
+                    <li>View all registered users and their roles</li>
+                    <li>Promote or demote user roles</li>
+                    <li>Reset user passwords</li>
+                    <li>Ban or disable accounts</li>
+                </ul>
+
+                <h3>Server Terminal</h3>
+                <p>Click the terminal icon in the navbar to open a local shell session directly in your browser. This provides full terminal access to the server running the portal.</p>
+
+                <h3>Monitoring Tools</h3>
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h4>Traffic Metrics</h4>
+                        <p>Real-time request rates, bandwidth usage, and response time statistics.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Log Viewer</h4>
+                        <p>Browse server logs with level and keyword filtering. Sensitive data is auto-redacted.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Vulnerability Scanner</h4>
+                        <p>Scan hosts for open ports and check against CVE databases for known vulnerabilities.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Shodan Integration</h4>
+                        <p>Query Shodan for network reconnaissance and exposure monitoring of your infrastructure.</p>
+                    </div>
+                </div>
+
+                <h3>VOD Storage</h3>
+                <p>Manage recorded stream archives stored on remote SFTP servers. Browse, download, and delete VOD files from the admin panel.</p>
+                </div>
+
+                <!-- Security -->
+                <h2 id="security">Security</h2>
+                <p>Open Relay Portal is designed with security as a core principle.</p>
+
+                <h3>Transport Security</h3>
+                <ul>
+                    <li><strong>HTTPS Only</strong> &mdash; All traffic is served over TLS on port 443. No HTTP fallback.</li>
+                    <li><strong>HSTS</strong> &mdash; HTTP Strict Transport Security with 1-year max-age, includeSubDomains, and preload.</li>
+                    <li><strong>WSS Only</strong> &mdash; All WebSocket connections use TLS encryption.</li>
+                    <li><strong>TLS 1.2+</strong> &mdash; Only strong cipher suites are permitted.</li>
+                </ul>
+
+                <h3>Data Protection</h3>
+                <ul>
+                    <li><strong>Chat Encryption</strong> &mdash; Messages are encrypted at rest using Fernet symmetric encryption.</li>
+                    <li><strong>Password Hashing</strong> &mdash; All passwords are hashed with Argon2id (memory-hard, timing-safe).</li>
+                    <li><strong>API Key Storage</strong> &mdash; API keys are stored as hashed values. Only the prefix is kept for lookup.</li>
+                    <li><strong>SSH Private Keys</strong> &mdash; Never stored server-side. Returned once at creation time only.</li>
+                    <li><strong>Log Redaction</strong> &mdash; Sensitive data (passwords, tokens, keys) is automatically stripped from logs.</li>
+                </ul>
+
+                <h3>Access Controls</h3>
+                <ul>
+                    <li><strong>Role-Based Access</strong> &mdash; Four-tier role system controlling feature access.</li>
+                    <li><strong>Rate Limiting</strong> &mdash; Per-IP rate limiting on all endpoints to prevent abuse.</li>
+                    <li><strong>Localhost Blocking</strong> &mdash; User connections cannot target local addresses (127.0.0.1, ::1).</li>
+                    <li><strong>CSRF Protection</strong> &mdash; Secure cookie attributes prevent cross-site request forgery.</li>
+                    <li><strong>Invite-Only Registration</strong> &mdash; New accounts require a daily invite code.</li>
+                </ul>
+
+            </main>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Load user info for navbar and admin visibility
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.ok) {
+                    const user = await response.json();
+                    document.getElementById('username-display').textContent = user.nickname || user.username;
+
+                    // Show admin-only sections if user is admin
+                    if (user.is_admin) {
+                        document.querySelectorAll('.admin-only').forEach(el => {
+                            el.classList.add('visible');
+                        });
+                        const termBtn = document.getElementById('terminal-btn');
+                        const badge = document.getElementById('admin-badge');
+                        if (termBtn) termBtn.style.display = '';
+                        if (badge) badge.style.display = '';
+                    }
+                }
+            } catch (e) {}
+
+            // Sidebar scroll tracking
+            const navLinks = document.querySelectorAll('.docs-nav a[href^="#"]');
+            const sections = [];
+            navLinks.forEach(link => {
+                const id = link.getAttribute('href').slice(1);
+                const el = document.getElementById(id);
+                if (el) sections.push({ link, el });
+            });
+
+            function updateActiveNav() {
+                let current = sections[0];
+                for (const s of sections) {
+                    if (s.el.getBoundingClientRect().top <= 120) {
+                        current = s;
+                    }
+                }
+                navLinks.forEach(l => l.classList.remove('active'));
+                if (current) current.link.classList.add('active');
+            }
+
+            window.addEventListener('scroll', updateActiveNav);
+            updateActiveNav();
+        });
+    </script>
+</body>
+</html>

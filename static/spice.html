@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{SERVICE_NAME}} - Open Relay Portal</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=25">
+    <link rel="stylesheet" href="/static/css/portal.css?v=27">
     <style>
         html, body {
             height: 100%;
@@ -30,32 +30,6 @@
             height: 64px;
             margin-bottom: 1rem;
             opacity: 0.5;
-        }
-        .connection-status {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-        }
-        .connection-status.connected {
-            background: rgba(34, 197, 94, 0.1);
-            color: #22c55e;
-        }
-        .connection-status.connecting {
-            background: rgba(234, 179, 8, 0.1);
-            color: #eab308;
-        }
-        .connection-status.disconnected {
-            background: rgba(239, 68, 68, 0.1);
-            color: #ef4444;
-        }
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: currentColor;
         }
         .toolbar {
             position: absolute;
@@ -144,6 +118,7 @@
     <script src="/static/js/portal.js"></script>
     <script>
         const serviceId = '{{SERVICE_ID}}';
+        const wsPath = '{{WS_PATH}}';
         let ws = null;
         let spicePassword = null;
         let spiceConn = null;
@@ -157,7 +132,7 @@
             updateStatus('connecting', 'Connecting...');
             showMessage('Connecting to VM console...');
 
-            const wsUrl = Portal.getWebSocketUrl(`/ws/spice/${serviceId}`);
+            const wsUrl = Portal.getWebSocketUrl(wsPath);
             ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 

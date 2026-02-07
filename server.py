@@ -170,6 +170,11 @@ def get_client_ip(request: web.Request) -> str:
     return "unknown"
 
 
+def get_display_name(user: dict) -> str:
+    """Get display name for a user dict: nickname > username."""
+    return user.get("nickname") or user.get("owner_nickname") or user.get("username") or user.get("owner_username") or "unknown"
+
+
 def check_rate_limit(client_ip: str) -> bool:
     """Check if client has exceeded rate limit. Returns True if allowed."""
     now = time()
@@ -404,7 +409,7 @@ async def http_create_token(request: web.Request) -> web.Response:
     )
 
     logger.info(f"Token created for user '{username}' from {client_ip}")
-    await db.log_activity(user["id"], username, "login", "Signed in", client_ip)
+    await db.log_activity(user["id"], get_display_name(user), "login", "Signed in", client_ip)
 
     return web.json_response({
         "token": jwt_token,
@@ -805,7 +810,7 @@ async def http_start_service(request: web.Request) -> web.Response:
         logger.info(f"Service {service_id} started by user {token.user_id}")
         updated = await db.get_service_by_id(service_id)
         admin_user = await db.get_user_by_id(token.user_id)
-        await db.log_activity(token.user_id, admin_user["username"] if admin_user else "admin", "service_start", f"Started service '{service.get('name', service_id)}'")
+        await db.log_activity(token.user_id, get_display_name(admin_user) if admin_user else "admin", "service_start", f"Started service '{service.get('name', service_id)}'")
         return web.json_response({
             "success": True,
             "service": {
@@ -849,7 +854,7 @@ async def http_stop_service(request: web.Request) -> web.Response:
         logger.info(f"Service {service_id} stopped by user {token.user_id}")
         updated = await db.get_service_by_id(service_id)
         admin_user = await db.get_user_by_id(token.user_id)
-        await db.log_activity(token.user_id, admin_user["username"] if admin_user else "admin", "service_stop", f"Stopped service '{service.get('name', service_id)}'")
+        await db.log_activity(token.user_id, get_display_name(admin_user) if admin_user else "admin", "service_stop", f"Stopped service '{service.get('name', service_id)}'")
         return web.json_response({
             "success": True,
             "service": {
@@ -1006,8 +1011,23 @@ async def http_register(request: web.Request) -> web.Response:
             status=403
         )
 
+    # Check registration limit: 1 account per IP per 24 hours
+    cursor = await db.conn.execute(
+        """SELECT COUNT(*) FROM users
+           WHERE registration_ip = ?
+           AND created_at > datetime('now', '-24 hours')""",
+        (client_ip,)
+    )
+    row = await cursor.fetchone()
+    if row and row[0] > 0:
+        logger.warning(f"Registration rate limit: {username} from {client_ip} (already registered in last 24h)")
+        return web.json_response(
+            {"error": "Registration limit reached. Only one account per IP per 24 hours."},
+            status=429
+        )
+
     try:
-        user = await create_user(username, password, is_admin=False)
+        user = await create_user(username, password, is_admin=False, registration_ip=client_ip)
         log_invite_code_usage(username, True, client_ip)
         logger.info(f"User '{username}' registered with invite code from {client_ip}")
         await db.log_activity(user["id"], username, "register", "Account created", client_ip)
@@ -1540,7 +1560,7 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
 
         logger.info(f"Connection '{name}' ({conn_type}) created by user {token.user_id}")
         user = await db.get_user_by_id(token.user_id)
-        await db.log_activity(token.user_id, user["username"] if user else "unknown", "connection_create", f"Created {conn_type} connection '{name}'")
+        await db.log_activity(token.user_id, get_display_name(user) if user else "unknown", "connection_create", f"Created {conn_type} connection '{name}'")
 
         return web.json_response({
             "id": conn_id,
@@ -2202,10 +2222,12 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             logger.warning(f"Unknown stream key from {ip}")
             return web.json_response({"error": "Invalid stream key"}, status=401)
 
-        # Mark stream as live
+        # Mark stream as live (only log activity on state change)
+        was_live = stream.get("is_live")
         await db.set_stream_live(stream["id"], True)
-        logger.info(f"Stream {stream['name']} started by user {stream['owner_username']} from {ip}")
-        await db.log_activity(stream.get("user_id"), stream.get("owner_username", "unknown"), "stream_live", f"Stream '{stream['name']}' went live", ip)
+        if not was_live:
+            logger.info(f"Stream {stream['name']} started by user {stream['owner_username']} from {ip}")
+            await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_live", f"Stream '{stream['name']}' went live", ip)
 
         return web.json_response({"allowed": True})
 
@@ -2262,7 +2284,7 @@ async def http_stream_event(request: web.Request) -> web.Response:
         if stream:
             await db.set_stream_live(stream["id"], False)
             logger.info(f"Stream {stream['name']} ended")
-            await db.log_activity(stream.get("user_id"), stream.get("owner_username", "unknown"), "stream_offline", f"Stream '{stream['name']}' went offline")
+            await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream['name']}' went offline")
 
             # Clear chat history for the stream's channel
             if stream.get("chat_channel_id"):
@@ -4623,6 +4645,19 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         html = load_static_file("terminal.html")
         html = html.replace("{{SERVICE_ID}}", "local")
         html = html.replace("{{SERVICE_NAME}}", "Server Terminal")
+        html = html.replace("{{WS_PATH}}", "/ws/terminal/local")
+        return web.Response(text=html, content_type="text/html")
+
+    # Check for user connection mode: /terminal/connect?connection={id}
+    conn_id = request.query.get("connection") if service_id == "connect" else None
+    if conn_id and conn_id.isdigit():
+        connection = await db.get_user_connection(int(conn_id), token.user_id)
+        if not connection:
+            return web.Response(status=404, text="Connection not found")
+        html = load_static_file("terminal.html")
+        html = html.replace("{{SERVICE_ID}}", conn_id)
+        html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Terminal"))
+        html = html.replace("{{WS_PATH}}", f"/ws/user-connection/{conn_id}")
         return web.Response(text=html, content_type="text/html")
 
     # Verify service exists and user has access
@@ -4634,9 +4669,9 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         return web.Response(status=403, text="Access denied")
 
     html = load_static_file("terminal.html")
-    # Inject service info
     html = html.replace("{{SERVICE_ID}}", service_id)
     html = html.replace("{{SERVICE_NAME}}", service.get("name", "Terminal"))
+    html = html.replace("{{WS_PATH}}", f"/ws/terminal/{service_id}")
 
     return web.Response(text=html, content_type="text/html")
 
@@ -4649,6 +4684,18 @@ async def http_vnc_page(request: web.Request) -> web.Response:
 
     service_id = request.match_info.get("service_id", "")
 
+    # Check for user connection mode: /vnc/connect?connection={id}
+    conn_id = request.query.get("connection") if service_id == "connect" else None
+    if conn_id and conn_id.isdigit():
+        connection = await db.get_user_connection(int(conn_id), token.user_id)
+        if not connection:
+            return web.Response(status=404, text="Connection not found")
+        html = load_static_file("vnc.html")
+        html = html.replace("{{SERVICE_ID}}", conn_id)
+        html = html.replace("{{SERVICE_NAME}}", connection.get("name", "VNC"))
+        html = html.replace("{{WS_PATH}}", f"/ws/user-connection/{conn_id}")
+        return web.Response(text=html, content_type="text/html")
+
     # Verify service exists and user has access
     service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
     if not service:
@@ -4658,9 +4705,9 @@ async def http_vnc_page(request: web.Request) -> web.Response:
         return web.Response(status=403, text="Access denied")
 
     html = load_static_file("vnc.html")
-    # Inject service info
     html = html.replace("{{SERVICE_ID}}", service_id)
     html = html.replace("{{SERVICE_NAME}}", service.get("name", "VNC"))
+    html = html.replace("{{WS_PATH}}", f"/ws/vnc/{service_id}")
 
     return web.Response(text=html, content_type="text/html")
 
@@ -4673,6 +4720,18 @@ async def http_media_page(request: web.Request) -> web.Response:
 
     service_id = request.match_info.get("service_id", "")
 
+    # Check for user connection mode
+    conn_id = request.query.get("connection") if service_id == "connect" else None
+    if conn_id and conn_id.isdigit():
+        connection = await db.get_user_connection(int(conn_id), token.user_id)
+        if not connection:
+            return web.Response(status=404, text="Connection not found")
+        html = load_static_file("mediamtx.html")
+        html = html.replace("{{SERVICE_ID}}", conn_id)
+        html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Media"))
+        html = html.replace("{{WS_PATH}}", f"/ws/user-connection/{conn_id}")
+        return web.Response(text=html, content_type="text/html")
+
     # Verify service exists and user has access
     service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
     if not service:
@@ -4682,9 +4741,9 @@ async def http_media_page(request: web.Request) -> web.Response:
         return web.Response(status=403, text="Access denied")
 
     html = load_static_file("mediamtx.html")
-    # Inject service info
     html = html.replace("{{SERVICE_ID}}", service_id)
     html = html.replace("{{SERVICE_NAME}}", service.get("name", "Media"))
+    html = html.replace("{{WS_PATH}}", f"/ws/media/{service_id}")
 
     return web.Response(text=html, content_type="text/html")
 
@@ -4697,6 +4756,18 @@ async def http_spice_page(request: web.Request) -> web.Response:
 
     service_id = request.match_info.get("service_id", "")
 
+    # Check for user connection mode: /spice/connect?connection={id}
+    conn_id = request.query.get("connection") if service_id == "connect" else None
+    if conn_id and conn_id.isdigit():
+        connection = await db.get_user_connection(int(conn_id), token.user_id)
+        if not connection:
+            return web.Response(status=404, text="Connection not found")
+        html = load_static_file("spice.html")
+        html = html.replace("{{SERVICE_ID}}", conn_id)
+        html = html.replace("{{SERVICE_NAME}}", connection.get("name", "SPICE Console"))
+        html = html.replace("{{WS_PATH}}", f"/ws/user-connection/{conn_id}")
+        return web.Response(text=html, content_type="text/html")
+
     # Verify service exists and user has access
     service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
     if not service:
@@ -4706,9 +4777,9 @@ async def http_spice_page(request: web.Request) -> web.Response:
         return web.Response(status=403, text="Access denied")
 
     html = load_static_file("spice.html")
-    # Inject service info
     html = html.replace("{{SERVICE_ID}}", service_id)
     html = html.replace("{{SERVICE_NAME}}", service.get("name", "SPICE Console"))
+    html = html.replace("{{WS_PATH}}", f"/ws/spice/{service_id}")
 
     return web.Response(text=html, content_type="text/html")
 
@@ -4721,6 +4792,18 @@ async def http_proxmox_page(request: web.Request) -> web.Response:
 
     service_id = request.match_info.get("service_id", "")
 
+    # Check for user connection mode
+    conn_id = request.query.get("connection") if service_id == "connect" else None
+    if conn_id and conn_id.isdigit():
+        connection = await db.get_user_connection(int(conn_id), token.user_id)
+        if not connection:
+            return web.Response(status=404, text="Connection not found")
+        html = load_static_file("proxmox.html")
+        html = html.replace("{{SERVICE_ID}}", conn_id)
+        html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Proxmox VE"))
+        html = html.replace("{{WS_PATH}}", f"/ws/user-connection/{conn_id}")
+        return web.Response(text=html, content_type="text/html")
+
     # Verify service exists and user has access
     service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
     if not service:
@@ -4730,9 +4813,9 @@ async def http_proxmox_page(request: web.Request) -> web.Response:
         return web.Response(status=403, text="Access denied")
 
     html = load_static_file("proxmox.html")
-    # Inject service info
     html = html.replace("{{SERVICE_ID}}", service_id)
     html = html.replace("{{SERVICE_NAME}}", service.get("name", "Proxmox VE"))
+    html = html.replace("{{WS_PATH}}", f"/ws/proxmox/{service_id}")
 
     return web.Response(text=html, content_type="text/html")
 
@@ -4744,6 +4827,15 @@ async def http_github_page(request: web.Request) -> web.Response:
         raise web.HTTPFound("/login")
 
     service_id = request.match_info.get("service_id", "")
+
+    # Check for user connection mode
+    conn_id = request.query.get("connection") if service_id == "connect" else None
+    if conn_id and conn_id.isdigit():
+        connection = await db.get_user_connection(int(conn_id), token.user_id)
+        if not connection:
+            return web.Response(status=404, text="Connection not found")
+        html = load_static_file("github.html")
+        return web.Response(text=html, content_type="text/html")
 
     # Verify service exists and user has access
     service = await db.get_service_by_id(int(service_id)) if service_id.isdigit() else None
@@ -4778,6 +4870,16 @@ async def http_api_docs_page(request: web.Request) -> web.Response:
         raise web.HTTPFound("/login")
 
     html = load_static_file("api-docs.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_about_page(request: web.Request) -> web.Response:
+    """Serve About page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    html = load_static_file("about.html")
     return web.Response(text=html, content_type="text/html")
 
 
@@ -5256,8 +5358,17 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                             "message": r_text
                                         }
                                 for m in messages:
-                                    if m.get("reply_to") and m["reply_to"] in reply_msgs:
-                                        m["reply_preview"] = reply_msgs[m["reply_to"]]
+                                    if m.get("reply_to"):
+                                        if m["reply_to"] in reply_msgs:
+                                            m["reply_preview"] = reply_msgs[m["reply_to"]]
+                                        elif m.get("reply_preview_username"):
+                                            # Original message was deleted — use stored preview
+                                            m["reply_preview"] = {
+                                                "id": m["reply_to"],
+                                                "username": m["reply_preview_username"],
+                                                "message": m.get("reply_preview_text") or "",
+                                                "deleted": True
+                                            }
 
                         await ws.send_json({
                             "type": "history",
@@ -5369,7 +5480,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             channel["id"], user_id, username, message_text or "",
                             anonymous=my_state["anonymous"],
                             reply_to=reply_to_id,
-                            image_url=image_url
+                            image_url=image_url,
+                            reply_preview_username=reply_preview["username"] if reply_preview else None,
+                            reply_preview_text=reply_preview["message"] if reply_preview else None
                         )
 
                         # Broadcast to channel (display: Anon > Nickname > Username)
@@ -6532,6 +6645,7 @@ def create_app() -> web.Application:
     app.router.add_get("/admin/", http_admin_page)  # Handle trailing slash
     app.router.add_get("/docs", http_api_docs_page)
     app.router.add_get("/api-docs", http_api_docs_page)  # Alias
+    app.router.add_get("/about", http_about_page)
     app.router.add_get("/chat", http_chat_page)
     app.router.add_get("/streams", http_streams_page)
     app.router.add_get("/watch/{id}", http_watch_stream_page)

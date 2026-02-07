@@ -252,6 +252,7 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN chat_anonymous INTEGER DEFAULT 0",
     # Avatar customization (JSON: {"color": "#hex", "emoji": "🙂", "initials": "AB"})
     "ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT '{}'",
+    "ALTER TABLE users ADD COLUMN registration_ip TEXT",
     # Managed services - actual server processes Portal runs
     """CREATE TABLE IF NOT EXISTS managed_services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -399,6 +400,9 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at DESC)",
+    # Store reply preview inline so it persists when the original message is deleted
+    "ALTER TABLE chat_messages ADD COLUMN reply_preview_username TEXT",
+    "ALTER TABLE chat_messages ADD COLUMN reply_preview_text TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -505,11 +509,12 @@ class Database:
         return self._connection
 
     # User operations
-    async def create_user(self, username: str, password_hash: str, is_admin: bool = False) -> int:
+    async def create_user(self, username: str, password_hash: str, is_admin: bool = False,
+                          registration_ip: str = None) -> int:
         """Create a new user and return their ID."""
         cursor = await self.conn.execute(
-            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-            (username, password_hash, int(is_admin))
+            "INSERT INTO users (username, password_hash, is_admin, registration_ip) VALUES (?, ?, ?, ?)",
+            (username, password_hash, int(is_admin), registration_ip)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -1834,16 +1839,18 @@ class Database:
         message_type: str = "message",
         anonymous: bool = False,
         reply_to: int = None,
-        image_url: str = None
+        image_url: str = None,
+        reply_preview_username: str = None,
+        reply_preview_text: str = None
     ) -> int:
         """Create a new chat message (encrypted)."""
         encrypted_message = encrypt_message(message)
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url)
+            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url, reply_preview_username, reply_preview_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url, reply_preview_username, reply_preview_text)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -2147,11 +2154,27 @@ class Database:
     # Activity log operations
     async def log_activity(self, user_id: int, username: str, action: str,
                            detail: str = None, ip_address: str = None) -> None:
-        """Log a user activity event."""
+        """Log a user activity event. Deduplicates within 5 minutes and auto-prunes to 50 entries."""
+        # Skip if identical event (same user + action + detail) happened within 5 minutes
+        cursor = await self.conn.execute(
+            """SELECT id FROM activity_log
+               WHERE user_id = ? AND action = ? AND detail = ?
+               AND created_at > datetime('now', '-5 minutes')
+               LIMIT 1""",
+            (user_id, action, detail)
+        )
+        if await cursor.fetchone():
+            return
         await self.conn.execute(
             """INSERT INTO activity_log (user_id, username, action, detail, ip_address)
                VALUES (?, ?, ?, ?, ?)""",
             (user_id, username, action, detail, ip_address)
+        )
+        # Prune old entries beyond 50
+        await self.conn.execute(
+            """DELETE FROM activity_log WHERE id NOT IN (
+                SELECT id FROM activity_log ORDER BY created_at DESC LIMIT 50
+            )"""
         )
         await self.conn.commit()
 

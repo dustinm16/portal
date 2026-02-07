@@ -6,12 +6,14 @@ let term = null;
 let ws = null;
 let fitAddon = null;
 let currentServiceId = null;
+let currentWsPath = null;
 
 /**
  * Initialize terminal for a service
  */
-function initTerminal(serviceId) {
+function initTerminal(serviceId, wsPath) {
     currentServiceId = serviceId;
+    currentWsPath = wsPath || `/ws/terminal/${serviceId}`;
 
     // Create terminal instance
     term = new Terminal({
@@ -84,7 +86,7 @@ function initTerminal(serviceId) {
 function connect() {
     updateStatus('connecting', 'Connecting...');
 
-    const wsUrl = Portal.getWebSocketUrl(`/ws/terminal/${currentServiceId}`);
+    const wsUrl = Portal.getWebSocketUrl(currentWsPath);
     ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -150,29 +152,53 @@ function connect() {
  */
 function handleAuthRequired(data) {
     if (data.method === 'password') {
-        term.writeln('Password authentication required.');
-        term.write('Password: ');
-
-        let password = '';
-        const disposable = term.onData(char => {
-            if (char === '\r' || char === '\n') {
-                disposable.dispose();
-                term.writeln('');
-
+        if (data.needs_username) {
+            term.writeln('Authentication required.');
+            term.write('Username: ');
+            promptInput(false, (username) => {
+                term.write('Password: ');
+                promptInput(true, (password) => {
+                    ws.send(JSON.stringify({
+                        type: 'auth',
+                        username: username,
+                        password: password
+                    }));
+                });
+            });
+        } else {
+            term.writeln('Password authentication required.');
+            term.write('Password: ');
+            promptInput(true, (password) => {
                 ws.send(JSON.stringify({
                     type: 'auth',
                     password: password
                 }));
-            } else if (char === '\x7f') {
-                // Backspace
-                if (password.length > 0) {
-                    password = password.slice(0, -1);
-                }
-            } else if (char >= ' ') {
-                password += char;
-            }
-        });
+            });
+        }
     }
+}
+
+function promptInput(hidden, callback) {
+    let input = '';
+    const disposable = term.onData(char => {
+        if (char === '\r' || char === '\n') {
+            disposable.dispose();
+            term.writeln('');
+            callback(input);
+        } else if (char === '\x7f') {
+            if (input.length > 0) {
+                input = input.slice(0, -1);
+                if (!hidden) {
+                    term.write('\b \b');
+                }
+            }
+        } else if (char >= ' ') {
+            input += char;
+            if (!hidden) {
+                term.write(char);
+            }
+        }
+    });
 }
 
 /**

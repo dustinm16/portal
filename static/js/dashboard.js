@@ -488,7 +488,7 @@ async function loadInlineConnections() {
                     ${created ? `<span class="connection-time">${created}</span>` : ''}
                 </div>
                 <div class="connection-actions">
-                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectToConnection(${conn.id})">
+                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo(${conn.id})">
                         Connect
                     </button>
                     <button class="btn btn-secondary btn-sm" onclick="editConnection(${conn.id})" title="Edit">
@@ -539,32 +539,66 @@ function getConnectionIcon(iconName) {
  */
 let activityFeedCollapsed = false;
 
+const ACTIVITY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours to fully fade
+
+let cachedActivities = [];
+
 async function loadActivityFeed() {
     try {
-        const data = await Portal.api('/api/activity?limit=10');
-        const activities = data.activities || [];
-        const feedEl = document.getElementById('activity-feed');
-        const listEl = document.getElementById('activity-list');
-        if (!feedEl || !listEl) return;
-
-        if (activities.length === 0) {
-            feedEl.style.display = 'none';
-            return;
-        }
-
-        feedEl.style.display = 'block';
-        listEl.innerHTML = activities.map(a => {
-            const icon = getActivityIcon(a.action);
-            const time = Portal.formatRelativeTime(a.created_at);
-            return `<div class="activity-item">
-                <span class="activity-icon">${icon}</span>
-                <span class="activity-text"><strong>${escapeHtml(a.username || 'System')}</strong> ${escapeHtml(a.detail || a.action)}</span>
-                <span class="activity-time">${time}</span>
-            </div>`;
-        }).join('');
+        const data = await Portal.api('/api/activity?limit=3');
+        cachedActivities = (data.activities || []).map(a => ({
+            ...a,
+            _ts: new Date(a.created_at + 'Z').getTime()
+        }));
+        renderActivityFeed();
     } catch (error) {
         // Silent failure
     }
+}
+
+function renderActivityFeed() {
+    const feedEl = document.getElementById('activity-feed');
+    const listEl = document.getElementById('activity-list');
+    if (!feedEl || !listEl) return;
+
+    const now = Date.now();
+    const visible = cachedActivities.filter(a => (now - a._ts) < ACTIVITY_MAX_AGE_MS);
+
+    if (visible.length === 0) {
+        feedEl.style.display = 'none';
+        return;
+    }
+
+    feedEl.style.display = 'block';
+    listEl.innerHTML = visible.map(a => {
+        const icon = getActivityIcon(a.action);
+        const age = now - a._ts;
+        const time = formatActivityAge(age);
+        const opacity = Math.max(0.15, 1 - (age / ACTIVITY_MAX_AGE_MS));
+        return `<div class="activity-item" style="opacity: ${opacity.toFixed(2)}">
+            <span class="activity-icon">${icon}</span>
+            <span class="activity-text"><strong>${escapeHtml(a.username || 'System')}</strong> ${escapeHtml(a.detail || a.action)}</span>
+            <span class="activity-time">${time}</span>
+        </div>`;
+    }).join('');
+}
+
+// Update activity timestamps and opacity every 5 seconds
+setInterval(renderActivityFeed, 5000);
+
+function formatActivityAge(ageMs) {
+    const seconds = Math.floor(ageMs / 1000);
+    if (seconds < 5) return 'just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+        const rem = minutes % 60;
+        return rem > 0 ? `${hours}h ${rem}m ago` : `${hours}h ago`;
+    }
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
 }
 
 function toggleActivityFeed() {

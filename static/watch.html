@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stream - Open Relay Portal</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=25">
+    <link rel="stylesheet" href="/static/css/portal.css?v=27">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         body {
@@ -187,7 +187,7 @@
             border-radius: 6px;
             font-family: monospace;
             font-size: 0.75rem;
-            color: #0f0;
+            color: var(--accent-green);
             z-index: 10;
             min-width: 180px;
             display: none;
@@ -205,7 +205,7 @@
         }
 
         .player-stats .stat-row span:first-child {
-            color: #888;
+            color: var(--text-muted);
         }
 
         /* Player controls bar */
@@ -363,7 +363,7 @@
 
         .chat-mod-btn:hover {
             background: rgba(255,255,255,0.1);
-            color: var(--accent-red, #ef4444);
+            color: var(--accent-red);
         }
 
         .chat-system-message {
@@ -376,7 +376,7 @@
 
         .chat-ban-notice {
             background: rgba(239, 68, 68, 0.1);
-            color: #ef4444;
+            color: var(--accent-red);
             padding: 0.5rem;
             border-radius: 4px;
             margin: 0.5rem 0;
@@ -465,7 +465,7 @@
         }
 
         .viewer-chat-input button:hover {
-            background: #2563eb;
+            background: #3b82f6;
         }
 
         /* Mobile responsive */
@@ -530,7 +530,7 @@
             color: var(--text-secondary);
         }
         .context-menu-item:hover { background: rgba(255,255,255,0.1); }
-        .context-menu-item.danger { color: #ef4444; }
+        .context-menu-item.danger { color: var(--accent-red); }
         .context-menu-item.danger:hover { background: rgba(239,68,68,0.15); }
         .context-menu-separator { height: 1px; background: rgba(255,255,255,0.1); margin: 0.25rem 0; }
 

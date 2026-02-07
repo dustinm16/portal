@@ -116,15 +116,26 @@ class SSHPlugin(PluginBase):
         # Wait for password if needed
         password = None
         if auth_method == "password":
-            await ws.send_json({"type": "auth_required", "method": "password"})
+            needs_username = not username
+            await ws.send_json({
+                "type": "auth_required",
+                "method": "password",
+                "needs_username": needs_username
+            })
 
-            msg = await ws.receive()
-            if msg.type == WSMsgType.TEXT:
-                data = json.loads(msg.data)
-                if data.get("type") == "auth":
-                    password = data.get("password")
-                    if data.get("username"):
-                        connect_opts["username"] = data["username"]
+            # Loop to skip non-auth messages (e.g. resize sent on WS open)
+            while True:
+                msg = await ws.receive()
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                    return
+                if msg.type == WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    if data.get("type") == "auth":
+                        password = data.get("password")
+                        if data.get("username"):
+                            connect_opts["username"] = data["username"]
+                        break
+                    # Ignore non-auth messages (resize, etc.)
 
             if password:
                 connect_opts["password"] = password

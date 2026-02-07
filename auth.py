@@ -144,11 +144,12 @@ async def authenticate_user(username: str, password: str) -> Optional[dict]:
 async def create_user(
     username: str,
     password: str,
-    is_admin: bool = False
+    is_admin: bool = False,
+    registration_ip: str = None
 ) -> dict:
     """Create a new user."""
     password_hash = hash_password(password)
-    user_id = await db.create_user(username, password_hash, is_admin)
+    user_id = await db.create_user(username, password_hash, is_admin, registration_ip=registration_ip)
     return await db.get_user_by_id(user_id)
 
 

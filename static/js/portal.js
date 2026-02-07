@@ -303,6 +303,25 @@ const Portal = {
     }
 };
 
+// Navbar hamburger toggle
+document.addEventListener('DOMContentLoaded', () => {
+    const toggle = document.querySelector('.navbar-toggle');
+    const menu = document.querySelector('.navbar-menu');
+    if (toggle && menu) {
+        toggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            menu.classList.toggle('open');
+            toggle.setAttribute('aria-expanded', menu.classList.contains('open'));
+        });
+        document.addEventListener('click', (e) => {
+            if (!menu.contains(e.target) && !toggle.contains(e.target)) {
+                menu.classList.remove('open');
+                toggle.setAttribute('aria-expanded', 'false');
+            }
+        });
+    }
+});
+
 // Add CSS animations for toast
 const style = document.createElement('style');
 style.textContent = `
