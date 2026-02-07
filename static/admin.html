@@ -6,6 +6,7 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=27">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     <style>
         .admin-grid {
             display: grid;
@@ -196,16 +197,32 @@
             width: 16px;
             height: 16px;
         }
-        .chart-placeholder {
-            background: var(--code-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 8px;
-            height: 200px;
+        .chart-container {
+            position: relative;
+            height: 280px;
+        }
+        .chart-range-btns {
             display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-muted);
-            font-size: 0.875rem;
+            gap: 0.25rem;
+        }
+        .range-btn {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-secondary);
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.2s;
+        }
+        .range-btn:hover {
+            color: var(--text-primary);
+            border-color: var(--accent-blue);
+        }
+        .range-btn.active {
+            background: rgba(96, 165, 250, 0.15);
+            color: var(--accent-blue);
+            border-color: var(--accent-blue);
         }
         /* Modal styles */
         .modal {
@@ -474,17 +491,49 @@
             <div id="tab-metrics" class="tab-content">
                 <div class="section-header">
                     <h2>Traffic Metrics</h2>
-                    <button class="btn btn-secondary refresh-btn" onclick="loadMetrics()">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                        Refresh
-                    </button>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <div class="chart-range-btns">
+                            <button class="btn btn-sm range-btn active" data-hours="1">1H</button>
+                            <button class="btn btn-sm range-btn" data-hours="6">6H</button>
+                            <button class="btn btn-sm range-btn" data-hours="12">12H</button>
+                            <button class="btn btn-sm range-btn" data-hours="24">24H</button>
+                        </div>
+                        <button class="btn btn-secondary refresh-btn" onclick="loadMetrics()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
                 </div>
                 <div class="metrics-grid" id="metrics-grid">
                     <div class="loading"><div class="spinner"></div> Loading metrics...</div>
                 </div>
-                <div class="admin-card">
+                <div class="admin-grid" style="grid-template-columns: 1fr 1fr;">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                            </svg>
+                            Connections & Users
+                        </h3>
+                        <div class="chart-container">
+                            <canvas id="chart-connections"></canvas>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                            </svg>
+                            Bandwidth
+                        </h3>
+                        <div class="chart-container">
+                            <canvas id="chart-bandwidth"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin-card" style="margin-top: 1.5rem;">
                     <h3>Per-Service Metrics</h3>
                     <div id="service-metrics">
                         <div class="loading"><div class="spinner"></div> Loading...</div>
@@ -839,9 +888,169 @@
                     document.getElementById('service-metrics').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
                 }
 
+                // Load charts after metric cards
+                loadCharts();
+
             } catch (error) {
                 console.error('Failed to load metrics:', error);
                 document.getElementById('metrics-grid').innerHTML = '<p style="color: var(--accent-red);">Failed to load metrics.</p>';
+            }
+        }
+
+        // =================================================================
+        // Chart.js Graphs
+        // =================================================================
+
+        let connectionsChart = null;
+        let bandwidthChart = null;
+        let currentHours = 1;
+
+        // Chart.js dark theme defaults
+        if (typeof Chart !== 'undefined') {
+            Chart.defaults.color = '#a1a1aa';
+            Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+        }
+
+        // Time range button handler
+        document.querySelectorAll('.range-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentHours = parseInt(btn.dataset.hours);
+                loadCharts();
+            });
+        });
+
+        async function loadCharts() {
+            if (typeof Chart === 'undefined') return;
+
+            try {
+                const data = await Portal.fetchJSON(`/api/metrics/timeseries?hours=${currentHours}`);
+                const points = data.data || [];
+
+                const connCanvas = document.getElementById('chart-connections');
+                const bwCanvas = document.getElementById('chart-bandwidth');
+                if (!connCanvas || !bwCanvas) return;
+
+                if (points.length === 0) {
+                    // Show empty state
+                    if (connectionsChart) { connectionsChart.destroy(); connectionsChart = null; }
+                    if (bandwidthChart) { bandwidthChart.destroy(); bandwidthChart = null; }
+                    connCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No time series data yet. Data records every 60 seconds.</div>';
+                    bwCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No bandwidth data yet.</div>';
+                    return;
+                }
+
+                const labels = points.map(p => {
+                    const d = new Date(p.timestamp);
+                    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                });
+
+                // Connections & Users line chart
+                const connCtx = connCanvas.getContext('2d');
+                if (connectionsChart) connectionsChart.destroy();
+                connectionsChart = new Chart(connCtx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [
+                            {
+                                label: 'Connections',
+                                data: points.map(p => p.connections),
+                                borderColor: '#60a5fa',
+                                backgroundColor: 'rgba(96,165,250,0.1)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: currentHours <= 1 ? 3 : 1,
+                                yAxisID: 'y'
+                            },
+                            {
+                                label: 'Active Users',
+                                data: points.map(p => p.active_users),
+                                borderColor: '#22c55e',
+                                backgroundColor: 'rgba(34,197,94,0.1)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: currentHours <= 1 ? 3 : 1,
+                                yAxisID: 'y1'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                position: 'left',
+                                title: { display: true, text: 'Connections' },
+                                ticks: { stepSize: 1 }
+                            },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                grid: { drawOnChartArea: false },
+                                title: { display: true, text: 'Users' },
+                                ticks: { stepSize: 1 }
+                            },
+                            x: { ticks: { maxTicksLimit: 12 } }
+                        },
+                        plugins: { legend: { position: 'top' } }
+                    }
+                });
+
+                // Bandwidth stacked bar chart
+                const bwCtx = bwCanvas.getContext('2d');
+                if (bandwidthChart) bandwidthChart.destroy();
+                bandwidthChart = new Chart(bwCtx, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [
+                            {
+                                label: 'Sent',
+                                data: points.map(p => p.bytes_sent),
+                                backgroundColor: 'rgba(96,165,250,0.6)',
+                                borderRadius: 2
+                            },
+                            {
+                                label: 'Received',
+                                data: points.map(p => p.bytes_received),
+                                backgroundColor: 'rgba(34,197,94,0.6)',
+                                borderRadius: 2
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                stacked: true,
+                                ticks: {
+                                    callback: function(val) { return formatBytes(val); }
+                                },
+                                title: { display: true, text: 'Bandwidth / min' }
+                            },
+                            x: { stacked: true, ticks: { maxTicksLimit: 12 } }
+                        },
+                        plugins: {
+                            legend: { position: 'top' },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(ctx) {
+                                        return ctx.dataset.label + ': ' + formatBytes(ctx.raw);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error('Failed to load charts:', error);
             }
         }
 
@@ -1040,8 +1249,8 @@
                 document.getElementById('active-connections').innerHTML = connections.map(c => `
                     <div class="conn-item">
                         <div class="conn-info">
-                            <span class="conn-service">Service #${c.service_id} (${c.plugin})</span>
-                            <span class="conn-details">User #${c.user_id} | ${c.client_ip || 'Unknown IP'} | ${formatDuration(c.duration_seconds)}</span>
+                            <span class="conn-service">${c.service_id ? 'Service #' + c.service_id + ' (' + c.plugin + ')' : c.plugin}</span>
+                            <span class="conn-details">User #${c.user_id} | ${formatDuration(c.duration_seconds)}</span>
                         </div>
                         <div class="conn-stats">
                             <div style="color: var(--accent-green);">${formatBytes(c.bytes_sent)} sent</div>

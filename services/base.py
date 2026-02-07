@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -10,6 +11,25 @@ from datetime import datetime, timezone
 from typing import Optional, Any
 
 import aiofiles
+
+# PII redaction patterns for service logs
+_LOG_REDACT_PATTERNS = [
+    # IPv4 addresses (preserve port if present)
+    (re.compile(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?\b'), r'[IP]\2'),
+    # Stream keys (live_xxx, pub_xxx)
+    (re.compile(r'(live_|pub_)[A-Za-z0-9_-]{10,}'), r'\1[REDACTED]'),
+    # Generic tokens/secrets
+    (re.compile(r'(password["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'(token["\s:=]+)[A-Za-z0-9_-]{20,}', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'(secret["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
+]
+
+
+def _redact_log_message(message: str) -> str:
+    """Redact PII from a service log message."""
+    for pattern, replacement in _LOG_REDACT_PATTERNS:
+        message = pattern.sub(replacement, message)
+    return message
 
 
 @dataclass
@@ -306,9 +326,9 @@ class ManagedService(ABC):
                     await self._db.update_service_process_status(self.id, 'stopped')
 
     async def _log(self, level: str, message: str):
-        """Log a message for this service."""
+        """Log a message for this service (PII redacted)."""
         if self._db:
-            await self._db.add_service_log(self.id, message, level)
+            await self._db.add_service_log(self.id, _redact_log_message(message), level)
 
     def get_status(self) -> dict:
         """Get current service status.

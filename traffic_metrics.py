@@ -312,17 +312,28 @@ class TrafficMetrics:
             self._time_series = [p for p in self._time_series if p.timestamp > cutoff]
 
     def get_time_series(self, hours: int = 1) -> list[dict]:
-        """Get time series data for the last N hours."""
+        """Get time series data for the last N hours.
+
+        Returns per-interval bandwidth deltas (not cumulative totals).
+        """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        return [
-            {
+        points = [p for p in self._time_series if p.timestamp > cutoff]
+        result = []
+        prev_sent = 0
+        prev_recv = 0
+        for p in points:
+            delta_sent = max(0, p.bytes_sent - prev_sent) if prev_sent else 0
+            delta_recv = max(0, p.bytes_received - prev_recv) if prev_recv else 0
+            prev_sent = p.bytes_sent
+            prev_recv = p.bytes_received
+            result.append({
                 "timestamp": p.timestamp.isoformat(),
                 "connections": p.connections,
-                "active_users": p.active_users
-            }
-            for p in self._time_series
-            if p.timestamp > cutoff
-        ]
+                "active_users": p.active_users,
+                "bytes_sent": delta_sent,
+                "bytes_received": delta_recv,
+            })
+        return result
 
 
 # Global traffic metrics instance

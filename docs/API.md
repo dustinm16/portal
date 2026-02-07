@@ -1746,6 +1746,25 @@ Get logs for a managed service. Only valid for `service_type: "managed"`.
 #### GET /api/metrics
 Get overall traffic metrics summary including active connections, bandwidth, and request counts.
 
+**Response:**
+```json
+{
+  "uptime_seconds": 3600,
+  "total_connections": 42,
+  "active_connections": 3,
+  "total_bytes_sent": 1048576,
+  "total_bytes_received": 2097152,
+  "total_bytes": 3145728,
+  "total_errors": 0,
+  "unique_users_today": 5,
+  "active_users": 2,
+  "connections_per_hour": 42.0,
+  "bandwidth_per_hour": 3145728,
+  "services_active": 1,
+  "started_at": "2026-02-07T00:00:00+00:00"
+}
+```
+
 ---
 
 #### GET /api/metrics/services
@@ -1754,15 +1773,32 @@ Get traffic breakdown per service.
 ---
 
 #### GET /api/metrics/active
-Get list of currently active connections with user and service info.
+Get list of currently active connections with user and service info. Tracks both WebSocket service connections and chat connections.
 
 ---
 
 #### GET /api/metrics/timeseries
-Get time-series data for traffic metrics.
+Get time-series data for traffic metrics. Data is recorded every 60 seconds and retained for 24 hours. Used by admin panel charts (Connections & Users line chart, Bandwidth bar chart).
 
 **Query Parameters:**
-- `period` (optional): Time period - `1h`, `6h`, `24h`, `7d` (default: `24h`)
+- `hours` (optional): Number of hours to look back, 1-24 (default: `1`)
+
+**Response:**
+```json
+{
+  "data": [
+    {
+      "timestamp": "2026-02-07T01:00:00+00:00",
+      "connections": 3,
+      "active_users": 2,
+      "bytes_sent": 1024,
+      "bytes_received": 2048
+    }
+  ]
+}
+```
+
+> **Note:** `bytes_sent` and `bytes_received` are per-interval deltas (bandwidth per minute), not cumulative totals.
 
 ---
 

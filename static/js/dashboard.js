@@ -413,7 +413,7 @@ setInterval(async () => {
     } catch (error) {
         // Silent failure for periodic updates
     }
-}, 30000);
+}, 10000);
 
 /**
  * Switch between tabs

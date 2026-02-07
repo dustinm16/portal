@@ -4,6 +4,7 @@
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import signal
 import ssl
@@ -103,6 +104,9 @@ def safe_error_message(e: Exception) -> str:
 
 # Active WebSocket connections for monitoring
 active_connections: weakref.WeakSet = weakref.WeakSet()
+
+# Track online users globally (user_id -> active connection count)
+_online_users: dict[int, int] = {}
 
 # Server start time for uptime tracking
 _server_start_time: datetime = datetime.now(timezone.utc)
@@ -368,6 +372,29 @@ async def http_health(request: web.Request) -> web.Response:
 async def http_favicon(request: web.Request) -> web.Response:
     """Return empty response for favicon requests to avoid 404 logs."""
     return web.Response(status=204)
+
+
+async def http_authenticated_upload(request: web.Request) -> web.Response:
+    """Serve uploaded files (chat images, thumbnails) only to authenticated users."""
+    token = await authenticate_request(request)
+    if not token:
+        return web.Response(status=401, text="Unauthorized")
+
+    rel_path = request.match_info["path"]
+    # Prevent directory traversal
+    if ".." in rel_path or rel_path.startswith("/"):
+        return web.Response(status=400, text="Bad request")
+
+    filepath = STATIC_DIR / "uploads" / rel_path
+    if not filepath.is_file():
+        return web.Response(status=404, text="Not found")
+
+    # Determine content type
+    content_type, _ = mimetypes.guess_type(str(filepath))
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    return web.FileResponse(filepath, headers={"Content-Type": content_type})
 
 
 async def http_create_token(request: web.Request) -> web.Response:
@@ -3642,20 +3669,12 @@ async def http_public_stats(request: web.Request) -> web.Response:
     live_streams = await db.get_public_streams(live_only=True)
     live_count = len(live_streams)
 
-    # Get unique online users across all chat channels
-    online_users = set()
-    for channel, connections in list(chat_rooms.items()):
-        for entry in list(connections):
-            ws, user_id = entry[0], entry[1]
-            if not ws.closed:
-                online_users.add(user_id)
-
     # Get enabled services count
     services = await db.get_all_services()
 
     stats = {
         "live_streams": live_count,
-        "online_users": len(online_users),
+        "online_users": len(_online_users),
         "total_services": len(services),
     }
 
@@ -4175,6 +4194,28 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         return web.Response(status=500, text="WebSocket preparation failed")
 
     active_connections.add(ws)
+    _online_users[token.user_id] = _online_users.get(token.user_id, 0) + 1
+
+    # Determine connection type for metrics
+    if path == "/ws/terminal/local":
+        _plugin = "terminal"
+    elif "/terminal/" in path:
+        _plugin = "terminal"
+    elif "/vnc/" in path:
+        _plugin = "vnc"
+    elif "/spice/" in path:
+        _plugin = "spice"
+    elif "/proxmox/" in path:
+        _plugin = "proxmox"
+    elif "/media/" in path:
+        _plugin = "mediamtx"
+    elif "/user-connection/" in path:
+        _plugin = "user_connection"
+    else:
+        _plugin = "websocket"
+
+    conn_id = str(uuid.uuid4())
+    traffic_metrics.start_connection(conn_id, 0, token.user_id, _plugin, client_ip)
 
     try:
         if path == "/" or path == "/ws":
@@ -4187,6 +4228,12 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             await handle_relay_ws(ws, path, token, client_ip)
     finally:
         active_connections.discard(ws)
+        traffic_metrics.end_connection(conn_id)
+        count = _online_users.get(token.user_id, 1) - 1
+        if count <= 0:
+            _online_users.pop(token.user_id, None)
+        else:
+            _online_users[token.user_id] = count
         logger.info(f"WebSocket closed for user {token.user_id} from {client_ip}")
 
     return ws
@@ -5215,6 +5262,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
     logger.info(f"[Chat] User {username} connected")
 
+    active_connections.add(ws)
+    _online_users[user_id] = _online_users.get(user_id, 0) + 1
+    chat_conn_id = str(uuid.uuid4())
+    client_ip = get_client_ip(request)
+    traffic_metrics.start_connection(chat_conn_id, 0, user_id, "chat", client_ip)
+
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -5682,7 +5735,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         logger.error(f"[Chat] Error: {e}")
 
     finally:
-        # Clean up
+        # Clean up global connection tracking
+        active_connections.discard(ws)
+        traffic_metrics.end_connection(chat_conn_id)
+        count = _online_users.get(user_id, 1) - 1
+        if count <= 0:
+            _online_users.pop(user_id, None)
+        else:
+            _online_users[user_id] = count
+
+        # Clean up chat room
         if current_channel and current_channel in chat_rooms:
             chat_rooms[current_channel].discard(user_entry)
             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
@@ -6472,7 +6534,10 @@ def create_app() -> web.Application:
     """Create the aiohttp application."""
     app = web.Application(middlewares=[security_headers_middleware])
 
-    # Static files
+    # Authenticated uploads (must be registered before the static catch-all)
+    app.router.add_get("/static/uploads/{path:.*}", http_authenticated_upload)
+
+    # Static files (CSS, JS, HTML - public for login page)
     app.router.add_static("/static", STATIC_DIR)
 
     # HTTP API routes

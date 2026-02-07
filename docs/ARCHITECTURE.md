@@ -151,7 +151,7 @@ Permission Hierarchy:
 ├── logger.py              # Logging with rotation
 ├── ssh_keys.py            # SSH key generation/management
 ├── shodan_integration.py  # Shodan API for recon
-├── traffic_metrics.py     # Connection metrics
+├── traffic_metrics.py     # Connection metrics, time series, Chart.js data
 ├── vulnerability_scanner.py # CVE/port scanning
 │
 ├── plugins/               # Connection plugins
@@ -484,15 +484,19 @@ WS   /ws/chat                        - Chat WebSocket
 GET  /api/stats/public               - Live streams + online user count
 ```
 
+Online user count is tracked globally via a ref-counted dict (`_online_users`) that increments on WebSocket connect (both service and chat handlers) and decrements on disconnect. Dashboard polls every 10 seconds.
+
 ### Traffic Metrics (Admin)
 
 ```
-GET  /api/metrics                    - Summary metrics
+GET  /api/metrics                    - Summary metrics (uptime, connections, bandwidth, users)
 GET  /api/metrics/services           - Per-service metrics
-GET  /api/metrics/active             - Active connections
-GET  /api/metrics/timeseries         - Time-series data (?hours=1-24)
+GET  /api/metrics/active             - Active connections (WebSocket + chat)
+GET  /api/metrics/timeseries         - Time-series data (?hours=1-24, per-minute bandwidth deltas)
 GET  /api/metrics/top                - Top services and users (?limit=1-50)
 ```
+
+The admin panel visualizes time-series data with Chart.js: a dual-axis line chart (connections + active users) and a stacked bar chart (bandwidth sent/received per minute). Time range selectors allow 1H/6H/12H/24H views. Data is recorded every 60 seconds by a background task and retained for 24 hours.
 
 ### Server Logs (Admin)
 
@@ -543,7 +547,7 @@ WS /ws/{path}                   - Service relay (catch-all)
 GET /                    - Redirect to /dashboard
 GET /dashboard           - Main dashboard
 GET /login               - Login page
-GET /admin               - Admin panel
+GET /admin               - Admin panel (metrics charts, managed services, security)
 GET /chat                - Community chat
 GET /streams             - Community streams
 GET /terminal            - Terminal UI
@@ -648,6 +652,8 @@ Open Relay Portal is designed with privacy and security as core principles:
 8. **HTTPS/WSS Only** - All traffic encrypted via TLS
 9. **No Session Recording** - Privacy-first design, no session logging
 10. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
+11. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving)
+12. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
 
 ---
 
