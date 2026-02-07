@@ -546,7 +546,7 @@ WS /ws/terminal/local           - Local terminal (admin, ?shell= for shell selec
 WS /ws/terminal/:id             - Terminal session (falls back to user-connection if no service)
 WS /ws/vnc/:id                  - VNC connection
 WS /ws/spice/:id                - SPICE connection
-WS /ws/user-connection/:id      - User connection relay
+WS /ws/user-connection/:id      - User connection relay (?shell= override for SSH)
 WS /ws/{path}                   - Service relay (catch-all)
 ```
 

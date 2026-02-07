@@ -1326,6 +1326,17 @@
                             <small style="color: var(--text-muted);">Paste your private key here.</small>
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label for="connection-ssh-shell">Remote Shell</label>
+                        <select id="connection-ssh-shell">
+                            <option value="">Default (login shell)</option>
+                            <option value="/bin/bash">Bash</option>
+                            <option value="/usr/bin/fish">Fish</option>
+                            <option value="/usr/bin/zsh">Zsh</option>
+                            <option value="/bin/sh">sh</option>
+                        </select>
+                        <small style="color: var(--text-muted);">Shell to launch on the remote host. Leave default to use the remote user's login shell.</small>
+                    </div>
                 </div>
 
                 <!-- RDP-specific fields -->

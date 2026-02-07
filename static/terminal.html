@@ -69,17 +69,19 @@
     <script>
         // Initialize terminal with service ID and WS path from server
         const serviceId = '{{SERVICE_ID}}';
-        const wsPath = '{{WS_PATH}}';
+        const connType = '{{CONN_TYPE}}';
+        let wsPath = '{{WS_PATH}}';
         initTerminal(serviceId, wsPath);
 
-        // Load available shells for local terminal
+        // Shell selector setup
+        const sel = document.getElementById('shell-selector');
+
         if (serviceId === 'local') {
+            // Admin local terminal: fetch available shells from server
             Portal.fetchJSON('/api/shells').then(data => {
                 const shells = data.shells || [];
                 if (shells.length > 1) {
-                    const sel = document.getElementById('shell-selector');
                     sel.style.display = '';
-                    // Get current shell from wsPath query string
                     const params = new URLSearchParams(wsPath.split('?')[1] || '');
                     const current = params.get('shell') || '';
                     shells.forEach(s => {
@@ -94,6 +96,32 @@
                     });
                 }
             }).catch(() => {});
+        } else if (connType === 'ssh') {
+            // SSH user connection: show shell selector with common shells
+            const shells = [
+                { value: '', label: 'Default Shell' },
+                { value: '/bin/bash', label: 'Bash' },
+                { value: '/usr/bin/fish', label: 'Fish' },
+                { value: '/usr/bin/zsh', label: 'Zsh' },
+                { value: '/bin/sh', label: 'sh' },
+            ];
+            const params = new URLSearchParams(wsPath.split('?')[1] || '');
+            const current = params.get('shell') || '';
+            shells.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.value;
+                opt.textContent = s.label;
+                if (s.value === current) opt.selected = true;
+                sel.appendChild(opt);
+            });
+            sel.style.display = '';
+            sel.addEventListener('change', () => {
+                const basePath = wsPath.split('?')[0];
+                const newShell = sel.value;
+                currentWsPath = newShell ? basePath + '?shell=' + encodeURIComponent(newShell) : basePath;
+                wsPath = currentWsPath;
+                reconnect();
+            });
         }
     </script>
 </body>

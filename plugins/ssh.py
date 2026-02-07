@@ -17,8 +17,8 @@ logger = logging.getLogger("portal.plugins.ssh")
 # Shells like fish send DA1 queries and time out after 2 seconds if the
 # WebSocket round-trip is too slow. Intercept and respond server-side.
 _TERM_QUERIES = [
-    (re.compile(r'\x1b\[0?c'), '\x1b[?62;22c'),       # DA1
-    (re.compile(r'\x1b\[>0?c'), '\x1b[>1;10;0c'),      # DA2
+    (re.compile(r'\x1b\[0?c'), '\x1b[?1;2c'),          # DA1 (matches xterm.js)
+    (re.compile(r'\x1b\[>0?c'), '\x1b[>0;276;0c'),     # DA2 (matches xterm.js)
     (re.compile(r'\x1b\[5n'), '\x1b[0n'),               # DSR
 ]
 
@@ -78,6 +78,11 @@ class SSHPlugin(PluginBase):
                     "enum": ["strict", "trust_first", "ignore"],
                     "description": "Host key verification",
                     "default": "trust_first"
+                },
+                "shell": {
+                    "type": "string",
+                    "description": "Remote shell to use (e.g. /bin/bash, /usr/bin/fish)",
+                    "default": ""
                 }
             }
         }
@@ -155,10 +160,15 @@ class SSHPlugin(PluginBase):
 
         try:
             async with asyncssh.connect(**connect_opts) as conn:
-                async with conn.create_process(
-                    term_type="xterm-256color",
-                    term_size=(80, 24)
-                ) as process:
+                # Build process options - only pass command when explicitly set
+                proc_opts = {
+                    "term_type": "xterm-256color",
+                    "term_size": (80, 24),
+                }
+                shell_cmd = config.get("shell", "").strip()
+                if shell_cmd:
+                    proc_opts["command"] = shell_cmd
+                async with conn.create_process(**proc_opts) as process:
                     await ws.send_json({
                         "type": "connected",
                         "host": host,
@@ -208,14 +218,20 @@ class SSHPlugin(PluginBase):
                     try:
                         data = json.loads(msg.data)
                         if data.get("type") == "input":
-                            process.stdin.write(data.get("data", ""))
+                            try:
+                                process.stdin.write(data.get("data", ""))
+                            except Exception:
+                                break
                         elif data.get("type") == "resize":
                             process.change_terminal_size(
                                 data.get("cols", 80),
                                 data.get("rows", 24)
                             )
                     except json.JSONDecodeError:
-                        process.stdin.write(msg.data)
+                        try:
+                            process.stdin.write(msg.data)
+                        except Exception:
+                            break
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     break
 

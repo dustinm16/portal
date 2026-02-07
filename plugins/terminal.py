@@ -43,9 +43,9 @@ logger = logging.getLogger("portal.plugins.terminal")
 # duplicate responses.
 _TERM_QUERIES = [
     # DA1 - Primary Device Attributes: ESC [ c  or  ESC [ 0 c
-    (re.compile(r'\x1b\[0?c'), '\x1b[?62;22c'),
+    (re.compile(r'\x1b\[0?c'), '\x1b[?1;2c'),
     # DA2 - Secondary Device Attributes: ESC [ > c  or  ESC [ > 0 c
-    (re.compile(r'\x1b\[>0?c'), '\x1b[>1;10;0c'),
+    (re.compile(r'\x1b\[>0?c'), '\x1b[>0;276;0c'),
     # DSR - Device Status Report: ESC [ 5 n
     (re.compile(r'\x1b\[5n'), '\x1b[0n'),
 ]

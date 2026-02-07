@@ -4404,6 +4404,10 @@ async def handle_user_connection_ws(
             logger.info(f"Using SSH key auth for connection {conn_id}")
         elif not config.get("auth_method"):
             config["auth_method"] = "password"
+        # Allow shell override from query parameter
+        shell_override = ws._req.query.get("shell", "") if hasattr(ws, "_req") else ""
+        if shell_override:
+            config["shell"] = shell_override
     elif plugin_name == "http_proxy":
         # HTTP proxy: build target_url if not set
         if not config.get("target_url"):
@@ -4753,6 +4757,7 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         html = load_static_file("terminal.html")
         html = html.replace("{{SERVICE_ID}}", "local")
         html = html.replace("{{SERVICE_NAME}}", f"Server Terminal ({shell_name})")
+        html = html.replace("{{CONN_TYPE}}", "local")
         html = html.replace("{{WS_PATH}}", ws_path)
         return web.Response(text=html, content_type="text/html")
 
@@ -4762,10 +4767,17 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         connection = await db.get_user_connection(int(conn_id), token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
+        conn_type = connection.get("type", "")
+        # Build WS path with shell override if specified
+        ws_path = f"/ws/user-connection/{conn_id}"
+        shell_param = request.query.get("shell", "")
+        if shell_param:
+            ws_path += f"?shell={shell_param}"
         html = load_static_file("terminal.html")
         html = html.replace("{{SERVICE_ID}}", conn_id)
         html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Terminal"))
-        html = html.replace("{{WS_PATH}}", f"/ws/user-connection/{conn_id}")
+        html = html.replace("{{CONN_TYPE}}", conn_type)
+        html = html.replace("{{WS_PATH}}", ws_path)
         return web.Response(text=html, content_type="text/html")
 
     # Verify service exists and user has access
@@ -4779,6 +4791,7 @@ async def http_terminal_page(request: web.Request) -> web.Response:
     html = load_static_file("terminal.html")
     html = html.replace("{{SERVICE_ID}}", service_id)
     html = html.replace("{{SERVICE_NAME}}", service.get("name", "Terminal"))
+    html = html.replace("{{CONN_TYPE}}", service.get("plugin", ""))
     html = html.replace("{{WS_PATH}}", f"/ws/terminal/{service_id}")
 
     return web.Response(text=html, content_type="text/html")

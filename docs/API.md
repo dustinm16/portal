@@ -626,7 +626,8 @@ Create a new connection.
   "port": 22,
   "config": {
     "username": "john",
-    "auth_method": "key"
+    "auth_method": "key",
+    "shell": "/usr/bin/fish"
   },
   "ssh_key_id": 1,
   "portal_access": 1,
@@ -639,6 +640,14 @@ Create a new connection.
 |-------|------|---------|-------------|
 | `portal_access` | int | 1 | Show connection in user's Portal dashboard |
 | `api_access` | int | 0 | Allow other authorized users to connect via API relay |
+
+**SSH Config Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `username` | string | SSH username |
+| `auth_method` | string | `password` or `key` |
+| `private_key` | string | PEM private key (for key auth) |
+| `shell` | string | Remote shell path (e.g. `/bin/bash`, `/usr/bin/fish`). Empty = default login shell |
 
 **Connection Types:**
 - `ssh` - SSH terminal
@@ -1324,7 +1333,17 @@ Admin-only local server terminal. Supports shell selection via query parameter.
 **Query Parameters:**
 - `shell` (optional): Shell path (e.g., `/usr/bin/fish`). Must be in the server's allowed shells list. Defaults to `/bin/bash`.
 
-Text-based terminal I/O with server-side terminal compatibility (DA1/DA2/DSR queries are intercepted and responded to immediately to prevent shell timeouts).
+Text-based terminal I/O with server-side terminal compatibility (DA1/DA2/DSR queries are intercepted and responded to immediately with xterm.js-matching responses to prevent shell timeouts).
+
+---
+
+#### WS /ws/user-connection/:id
+User connection relay. For SSH connections, supports shell override via query parameter.
+
+**Query Parameters:**
+- `shell` (optional): Remote shell path override (e.g., `/usr/bin/fish`). Overrides the connection's configured shell.
+
+Text-based terminal I/O with DA1/DA2/DSR interception (matching xterm.js responses).
 
 ---
 
@@ -2067,7 +2086,7 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/live` | Public live streams (unauthenticated) |
 | `/docs` | API documentation (interactive) |
 | `/api-docs` | API documentation (alias) |
-| `/terminal/{id}` | Terminal UI (local terminal supports `?shell=` param for shell selection) |
+| `/terminal/{id}` | Terminal UI (shell selector for local terminal and SSH user connections) |
 | `/vnc/{id}` | VNC viewer |
 | `/spice/{id}` | SPICE viewer |
 | `/proxmox/{id}` | Proxmox management |

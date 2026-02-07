@@ -514,6 +514,10 @@ async function showAddConnectionModal() {
         dbPwField.placeholder = '';
     }
 
+    // Reset SSH shell selector
+    const sshShellField = document.getElementById('connection-ssh-shell');
+    if (sshShellField) sshShellField.value = '';
+
     // Clear dynamic config fields
     const configFields = document.getElementById('connection-config-fields');
     if (configFields) configFields.innerHTML = '';
@@ -791,6 +795,8 @@ async function submitConnection(event) {
                 }
                 // For edits: if key is empty, server will preserve existing key
             }
+            const sshShell = document.getElementById('connection-ssh-shell').value;
+            if (sshShell) config.shell = sshShell;
             break;
         case 'rdp':
             config.username = document.getElementById('connection-rdp-user').value.trim();
@@ -896,6 +902,7 @@ async function editConnection(connectionId) {
                     document.getElementById('connection-ssh-private-key').value = '';
                     document.getElementById('connection-ssh-private-key').placeholder = '(Key stored - leave empty to keep existing, or paste new key to replace)';
                 }
+                document.getElementById('connection-ssh-shell').value = config.shell || '';
                 break;
             case 'rdp':
                 document.getElementById('connection-rdp-user').value = config.username || '';
