@@ -102,6 +102,11 @@ def decrypt_config(data: str) -> str:
         return "{}"  # Decryption failed
 
 
+def hash_stream_key(key: str) -> str:
+    """SHA-256 hex digest of a stream key for indexed lookups."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -448,6 +453,11 @@ MIGRATIONS = [
     # Store reply preview inline so it persists when the original message is deleted
     "ALTER TABLE chat_messages ADD COLUMN reply_preview_username TEXT",
     "ALTER TABLE chat_messages ADD COLUMN reply_preview_text TEXT",
+    # Stream key encryption - hash columns for lookups
+    "ALTER TABLE user_streams ADD COLUMN stream_key_hash TEXT",
+    "ALTER TABLE user_streams ADD COLUMN public_key_hash TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_streams_stream_key_hash ON user_streams(stream_key_hash)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_streams_public_key_hash ON user_streams(public_key_hash)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -528,6 +538,9 @@ class Database:
         # Encrypt any plaintext configs (one-time migration)
         await self._migrate_encrypt_configs()
 
+        # Encrypt any plaintext stream keys (one-time migration)
+        await self._migrate_encrypt_stream_keys()
+
     async def _populate_stream_public_keys(self) -> None:
         """Generate public keys for streams that don't have one."""
         import secrets
@@ -537,9 +550,11 @@ class Database:
         rows = await cursor.fetchall()
         for row in rows:
             public_key = f"pub_{secrets.token_urlsafe(16)}"
+            pk_hash = hash_stream_key(public_key)
+            pk_encrypted = encrypt_config(public_key) if CRYPTO_AVAILABLE else public_key
             await self._connection.execute(
-                "UPDATE user_streams SET public_key = ? WHERE id = ?",
-                (public_key, row["id"])
+                "UPDATE user_streams SET public_key = ?, public_key_hash = ? WHERE id = ?",
+                (pk_encrypted, pk_hash, row["id"])
             )
         if rows:
             await self._connection.commit()
@@ -578,6 +593,60 @@ class Database:
             logging.getLogger("portal.database").info(
                 f"Encrypted {total} plaintext config(s) across {', '.join(tables)}"
             )
+
+    async def _migrate_encrypt_stream_keys(self) -> None:
+        """Encrypt plaintext stream keys and populate hash columns (one-time migration).
+
+        For each row where stream_key does NOT start with 'enc:':
+        1. Compute SHA-256 hash of the plaintext key -> store in stream_key_hash
+        2. Fernet-encrypt the plaintext key -> overwrite stream_key with 'enc:...'
+        Same process for public_key / public_key_hash.
+        """
+        if not CRYPTO_AVAILABLE:
+            return
+
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, stream_key, public_key FROM user_streams "
+                "WHERE stream_key IS NOT NULL AND stream_key != '' AND stream_key NOT LIKE 'enc:%'"
+            )
+            rows = await cursor.fetchall()
+        except Exception:
+            return  # Table might not exist yet
+
+        total = 0
+        for row in rows:
+            stream_key = row["stream_key"]
+            public_key = row["public_key"]
+
+            sk_hash = hash_stream_key(stream_key)
+            sk_encrypted = encrypt_config(stream_key)
+
+            pk_hash = hash_stream_key(public_key) if public_key else None
+            pk_encrypted = encrypt_config(public_key) if public_key else None
+
+            await self._connection.execute(
+                "UPDATE user_streams SET stream_key = ?, stream_key_hash = ?, "
+                "public_key = ?, public_key_hash = ? WHERE id = ?",
+                (sk_encrypted, sk_hash, pk_encrypted, pk_hash, row["id"])
+            )
+            total += 1
+
+        if total:
+            await self._connection.commit()
+            import logging
+            logging.getLogger("portal.database").info(
+                f"Encrypted {total} plaintext stream key(s)"
+            )
+
+    @staticmethod
+    def _decrypt_stream_keys(stream: dict) -> dict:
+        """Decrypt stream_key and public_key fields in a stream dict, if encrypted."""
+        if stream.get("stream_key") and stream["stream_key"].startswith("enc:"):
+            stream["stream_key"] = decrypt_config(stream["stream_key"])
+        if stream.get("public_key") and stream["public_key"].startswith("enc:"):
+            stream["public_key"] = decrypt_config(stream["public_key"])
+        return stream
 
     async def close(self) -> None:
         """Close database connection."""
@@ -1560,10 +1629,17 @@ class Database:
             description: Stream description
             is_public: Whether stream is publicly visible
         """
+        sk_hash = hash_stream_key(stream_key)
+        sk_encrypted = encrypt_config(stream_key) if CRYPTO_AVAILABLE else stream_key
+        pk_hash = hash_stream_key(public_key) if public_key else None
+        pk_encrypted = encrypt_config(public_key) if (public_key and CRYPTO_AVAILABLE) else public_key
+
         cursor = await self.conn.execute(
-            """INSERT INTO user_streams (user_id, name, stream_key, public_key, description, is_public, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, name, stream_key, public_key, description, 1 if is_public else 0,
+            """INSERT INTO user_streams (user_id, name, stream_key, stream_key_hash,
+               public_key, public_key_hash, description, is_public, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, sk_encrypted, sk_hash, pk_encrypted, pk_hash,
+             description, 1 if is_public else 0,
              datetime.now(timezone.utc).isoformat())
         )
         await self.conn.commit()
@@ -1581,7 +1657,7 @@ class Database:
             (user_id,)
         )
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return [self._decrypt_stream_keys(dict(row)) for row in rows]
 
     async def get_user_stream(self, stream_id: int) -> Optional[dict]:
         """Get a specific stream by ID."""
@@ -1594,31 +1670,53 @@ class Database:
             (stream_id,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        return self._decrypt_stream_keys(dict(row)) if row else None
 
     async def get_stream_by_key(self, stream_key: str) -> Optional[dict]:
         """Get a stream by its private stream key (for publishing authentication)."""
+        sk_hash = hash_stream_key(stream_key)
         cursor = await self.conn.execute(
             """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
-               WHERE us.stream_key = ?""",
-            (stream_key,)
+               WHERE us.stream_key_hash = ?""",
+            (sk_hash,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            # Fallback for un-migrated rows (stream_key_hash is NULL)
+            cursor = await self.conn.execute(
+                """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
+                   FROM user_streams us
+                   LEFT JOIN users u ON us.user_id = u.id
+                   WHERE us.stream_key = ? AND us.stream_key_hash IS NULL""",
+                (stream_key,)
+            )
+            row = await cursor.fetchone()
+        return self._decrypt_stream_keys(dict(row)) if row else None
 
     async def get_stream_by_public_key(self, public_key: str) -> Optional[dict]:
         """Get a stream by its public key (for viewing access)."""
+        pk_hash = hash_stream_key(public_key)
         cursor = await self.conn.execute(
             """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                FROM user_streams us
                LEFT JOIN users u ON us.user_id = u.id
-               WHERE us.public_key = ?""",
-            (public_key,)
+               WHERE us.public_key_hash = ?""",
+            (pk_hash,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            # Fallback for un-migrated rows (public_key_hash is NULL)
+            cursor = await self.conn.execute(
+                """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
+                   FROM user_streams us
+                   LEFT JOIN users u ON us.user_id = u.id
+                   WHERE us.public_key = ? AND us.public_key_hash IS NULL""",
+                (public_key,)
+            )
+            row = await cursor.fetchone()
+        return self._decrypt_stream_keys(dict(row)) if row else None
 
     async def get_public_streams(self, live_only: bool = False) -> list[dict]:
         """Get all public streams, optionally only live ones."""
@@ -1633,7 +1731,7 @@ class Database:
 
         cursor = await self.conn.execute(query)
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return [self._decrypt_stream_keys(dict(row)) for row in rows]
 
     async def get_open_streams(self) -> list[dict]:
         """Get streams that allow unauthenticated public access."""
@@ -1644,7 +1742,7 @@ class Database:
                    ORDER BY us.is_live DESC, us.viewer_count DESC, us.created_at DESC"""
         cursor = await self.conn.execute(query)
         rows = await cursor.fetchall()
-        streams = [dict(row) for row in rows]
+        streams = [self._decrypt_stream_keys(dict(row)) for row in rows]
         for s in streams:
             s.pop("stream_key", None)
         return streams
@@ -1724,8 +1822,11 @@ class Database:
 
     async def regenerate_stream_key(self, stream_id: int, new_key: str, user_id: int = None) -> bool:
         """Regenerate a stream key."""
-        query = "UPDATE user_streams SET stream_key = ?, updated_at = ? WHERE id = ?"
-        params = [new_key, datetime.now(timezone.utc).isoformat(), stream_id]
+        sk_hash = hash_stream_key(new_key)
+        sk_encrypted = encrypt_config(new_key) if CRYPTO_AVAILABLE else new_key
+
+        query = "UPDATE user_streams SET stream_key = ?, stream_key_hash = ?, updated_at = ? WHERE id = ?"
+        params = [sk_encrypted, sk_hash, datetime.now(timezone.utc).isoformat(), stream_id]
 
         if user_id:
             query += " AND user_id = ?"
@@ -1796,7 +1897,7 @@ class Database:
             (channel_id,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        return self._decrypt_stream_keys(dict(row)) if row else None
 
     # VOD Storage operations
     async def get_vod_storage(self, user_id: int) -> Optional[dict]:
