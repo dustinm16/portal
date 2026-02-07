@@ -648,8 +648,8 @@ async def http_delete_service(request: web.Request) -> web.Response:
         return forbidden_response(request)
 
     service_id = request.match_info.get("id")
-    if not service_id:
-        return web.json_response({"error": "Service ID required"}, status=400)
+    if not service_id or not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
 
     if await db.delete_service(int(service_id)):
         logger.info(f"Service {service_id} deleted by user {token.user_id}")
@@ -5276,7 +5276,10 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
     if role != "superadmin":
         return web.json_response({"error": "Super admin access required"}, status=403)
 
-    channel_id = int(request.match_info["id"])
+    try:
+        channel_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid channel ID"}, status=400)
 
     # Get channel info for broadcasting
     channel = await db.get_chat_channel(channel_id)
