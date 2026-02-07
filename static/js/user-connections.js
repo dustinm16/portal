@@ -508,6 +508,12 @@ async function showAddConnectionModal() {
         sshKeyField.placeholder = '-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----';
     }
 
+    // Reset database password field placeholder
+    const dbPwField = document.getElementById('connection-db-password');
+    if (dbPwField) {
+        dbPwField.placeholder = '';
+    }
+
     // Clear dynamic config fields
     const configFields = document.getElementById('connection-config-fields');
     if (configFields) configFields.innerHTML = '';
@@ -899,6 +905,13 @@ async function editConnection(connectionId) {
                 document.getElementById('connection-db-type').value = config.db_type || 'mysql';
                 document.getElementById('connection-db-name').value = config.database || '';
                 document.getElementById('connection-db-user').value = config.username || '';
+                if (config.password) {
+                    const dbPwField = document.getElementById('connection-db-password');
+                    if (dbPwField) {
+                        dbPwField.value = '';
+                        dbPwField.placeholder = '(Password stored - leave empty to keep existing)';
+                    }
+                }
                 break;
             case 'stream':
                 document.getElementById('connection-stream-protocol').value = config.protocol || 'rtsp';

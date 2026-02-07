@@ -1676,18 +1676,19 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
             "error": "Local server access not allowed for user connections"
         }, status=403)
 
-    # Preserve existing private_key if not provided but auth_method is 'key'
+    # Merge incoming config with existing config to preserve fields not in the form
+    # (e.g., passwords, private keys, and other sensitive fields that are not shown during edit)
     config = data.get("config", {})
-    if isinstance(config, dict) and config.get("auth_method") == "key" and not config.get("private_key"):
-        # Fetch existing connection to preserve the key
+    if isinstance(config, dict):
         existing = await db.get_user_connection(int(conn_id), token.user_id)
         if existing:
             existing_config = existing.get("config", {})
             if isinstance(existing_config, str):
                 existing_config = json.loads(existing_config) if existing_config else {}
-            if existing_config.get("private_key"):
-                config["private_key"] = existing_config["private_key"]
-                data["config"] = config
+            if isinstance(existing_config, dict):
+                # Existing config provides defaults; incoming config overrides
+                merged = {**existing_config, **config}
+                data["config"] = merged
 
     try:
         if await db.update_user_connection(int(conn_id), token.user_id, **data):
@@ -3717,6 +3718,38 @@ async def http_activity_feed(request: web.Request) -> web.Response:
     return web.json_response({"activities": activities})
 
 
+async def http_list_shells(request: web.Request) -> web.Response:
+    """List available shells on the server (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    shells = []
+    try:
+        with open("/etc/shells") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and os.path.isfile(line) and os.access(line, os.X_OK):
+                    shells.append({
+                        "path": line,
+                        "name": os.path.basename(line),
+                    })
+    except FileNotFoundError:
+        pass
+
+    # Deduplicate by name, preferring /usr/bin paths
+    seen = {}
+    for s in shells:
+        name = s["name"]
+        if name not in seen or s["path"].startswith("/usr/bin"):
+            seen[name] = s
+    shells = sorted(seen.values(), key=lambda s: s["name"])
+
+    return web.json_response({"shells": shells})
+
+
 async def http_list_plugins(request: web.Request) -> web.Response:
     """List available plugins with their configuration schemas."""
     token = await authenticate_request(request)
@@ -4293,6 +4326,15 @@ async def handle_local_terminal_ws(
         await ws.close(code=4005, message=b"Plugin not found")
         return
 
+    # Support shell selection via query parameter
+    ALLOWED_SHELLS = {"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
+                      "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh"}
+    requested_shell = ws._req.query.get("shell", "") if hasattr(ws, '_req') else ""
+    if requested_shell and requested_shell in ALLOWED_SHELLS and os.path.isfile(requested_shell):
+        shell = requested_shell
+    else:
+        shell = "/bin/bash"
+
     # Create a virtual target for local terminal
     target = ServiceTarget(
         id="local",
@@ -4300,7 +4342,7 @@ async def handle_local_terminal_ws(
         plugin="terminal",
         host="localhost",
         port=0,
-        config={"shell": "/bin/bash"}
+        config={"shell": shell}
     )
 
     logger.info(f"Local terminal session started for user {token.user_id} from {client_ip}")
@@ -4429,6 +4471,18 @@ async def handle_relay_ws(
         service = await get_service_for_path(path)
 
     if not service:
+        # No service found — check if this ID matches a user connection instead.
+        # This handles cases where the browser connects to /ws/terminal/{id} but
+        # the ID is actually a user connection (not a service).
+        match = terminal_match or vnc_match or media_match or spice_match or proxmox_match
+        if match:
+            conn_id = int(match.group(1))
+            user_conn = await db.get_user_connection(conn_id, token.user_id)
+            if user_conn:
+                logger.info(f"Redirecting /ws path to user connection {conn_id} for user {token.user_id}")
+                await handle_user_connection_ws(ws, f"/ws/user-connection/{conn_id}", token, client_ip)
+                return
+
         logger.warning(f"No service found for path: {path}")
         await ws.send_json({"type": "error", "message": "Service not found"})
         await ws.close(code=4004, message=b"Service not found")
@@ -4689,10 +4743,17 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         if not token.has_scope("admin") and not token.has_scope("*"):
             return web.Response(status=403, text="Admin access required for local terminal")
 
+        # Support shell selection via query parameter
+        shell = request.query.get("shell", "")
+        ws_path = "/ws/terminal/local"
+        if shell:
+            ws_path += f"?shell={shell}"
+        shell_name = os.path.basename(shell) if shell else "bash"
+
         html = load_static_file("terminal.html")
         html = html.replace("{{SERVICE_ID}}", "local")
-        html = html.replace("{{SERVICE_NAME}}", "Server Terminal")
-        html = html.replace("{{WS_PATH}}", "/ws/terminal/local")
+        html = html.replace("{{SERVICE_NAME}}", f"Server Terminal ({shell_name})")
+        html = html.replace("{{WS_PATH}}", ws_path)
         return web.Response(text=html, content_type="text/html")
 
     # Check for user connection mode: /terminal/connect?connection={id}
@@ -6547,6 +6608,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/stats/public", http_public_stats)
     app.router.add_get("/api/activity", http_activity_feed)
     app.router.add_get("/api/plugins", http_list_plugins)
+    app.router.add_get("/api/shells", http_list_shells)
     app.router.add_get("/api/tunnels", http_get_tunnel_sessions)
 
     # Token management

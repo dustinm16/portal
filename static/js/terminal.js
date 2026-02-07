@@ -13,7 +13,7 @@ let currentWsPath = null;
  */
 function initTerminal(serviceId, wsPath) {
     currentServiceId = serviceId;
-    currentWsPath = wsPath || `/ws/terminal/${serviceId}`;
+    currentWsPath = wsPath;
 
     // Create terminal instance
     term = new Terminal({

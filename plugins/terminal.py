@@ -13,6 +13,7 @@ import fcntl
 import os
 import pty
 import pwd
+import re
 import select
 import signal
 import struct
@@ -33,6 +34,37 @@ from config import Config
 from database import db
 
 logger = logging.getLogger("portal.plugins.terminal")
+
+# Terminal capability query patterns and their immediate responses.
+# Shells like fish send these queries and wait for a response from the terminal.
+# In a WebSocket-proxied terminal, the round-trip through the browser is too slow
+# (fish times out after 2 seconds). We intercept these server-side and respond
+# immediately, stripping the queries from the data sent to xterm.js to prevent
+# duplicate responses.
+_TERM_QUERIES = [
+    # DA1 - Primary Device Attributes: ESC [ c  or  ESC [ 0 c
+    (re.compile(r'\x1b\[0?c'), '\x1b[?62;22c'),
+    # DA2 - Secondary Device Attributes: ESC [ > c  or  ESC [ > 0 c
+    (re.compile(r'\x1b\[>0?c'), '\x1b[>1;10;0c'),
+    # DSR - Device Status Report: ESC [ 5 n
+    (re.compile(r'\x1b\[5n'), '\x1b[0n'),
+]
+
+
+def _intercept_terminal_queries(data: str, write_fd: int) -> str:
+    """Intercept terminal capability queries and respond immediately.
+
+    Returns the data with query sequences stripped out.
+    Writes responses directly to the PTY/stdin fd.
+    """
+    for pattern, response in _TERM_QUERIES:
+        if pattern.search(data):
+            try:
+                os.write(write_fd, response.encode())
+            except OSError:
+                pass
+            data = pattern.sub('', data)
+    return data
 
 
 class AsciicastRecorder:
@@ -393,10 +425,13 @@ class TerminalPlugin(PluginBase):
                     data = os.read(master_fd, 16384)  # Larger buffer for better throughput
                     if data:
                         decoded = data.decode("utf-8", errors="replace")
-                        if not ws.closed:
+                        # Intercept terminal queries (DA1, DA2, DSR) and respond
+                        # immediately to avoid shell timeouts (e.g. fish 2s DA1 wait)
+                        decoded = _intercept_terminal_queries(decoded, master_fd)
+                        if decoded and not ws.closed:
                             await ws.send_str(decoded)
                         # Record output if recording is enabled
-                        if recorder:
+                        if recorder and decoded:
                             recorder.record_output(decoded)
                     else:
                         # EOF - PTY closed

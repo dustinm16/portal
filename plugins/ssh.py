@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import json
+import re
 from typing import Optional
 
 from aiohttp import web, WSMsgType
@@ -11,6 +12,15 @@ from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.ssh")
+
+# Terminal capability query patterns - same as terminal.py
+# Shells like fish send DA1 queries and time out after 2 seconds if the
+# WebSocket round-trip is too slow. Intercept and respond server-side.
+_TERM_QUERIES = [
+    (re.compile(r'\x1b\[0?c'), '\x1b[?62;22c'),       # DA1
+    (re.compile(r'\x1b\[>0?c'), '\x1b[>1;10;0c'),      # DA2
+    (re.compile(r'\x1b\[5n'), '\x1b[0n'),               # DSR
+]
 
 # Optional asyncssh import
 try:
@@ -170,7 +180,17 @@ class SSHPlugin(PluginBase):
             try:
                 async for data in process.stdout:
                     if data:
-                        await ws.send_str(data)
+                        # Intercept terminal capability queries (DA1, DA2, DSR)
+                        # and respond immediately to avoid shell timeouts
+                        for pattern, response in _TERM_QUERIES:
+                            if pattern.search(data):
+                                try:
+                                    process.stdin.write(response)
+                                except Exception:
+                                    pass
+                                data = pattern.sub('', data)
+                        if data:
+                            await ws.send_str(data)
             except Exception as e:
                 logger.debug(f"SSH stdout ended: {e}")
 

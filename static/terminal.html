@@ -18,6 +18,18 @@
             height: 100%;
             padding: 8px;
         }
+        .shell-selector {
+            background: var(--card-bg, #161b22);
+            color: var(--text-primary, #c9d1d9);
+            border: 1px solid var(--card-border, #30363d);
+            border-radius: 6px;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .shell-selector:hover {
+            border-color: var(--accent-blue, #58a6ff);
+        }
     </style>
 </head>
 <body class="terminal-page">
@@ -29,6 +41,8 @@
             <span id="service-name">{{SERVICE_NAME}}</span>
         </div>
         <div class="terminal-controls">
+            <select class="shell-selector" id="shell-selector" title="Switch shell" style="display:none;">
+            </select>
             <div class="connection-status connecting" id="connection-status">
                 <span class="status-dot"></span>
                 <span id="status-text">Connecting...</span>
@@ -57,6 +71,30 @@
         const serviceId = '{{SERVICE_ID}}';
         const wsPath = '{{WS_PATH}}';
         initTerminal(serviceId, wsPath);
+
+        // Load available shells for local terminal
+        if (serviceId === 'local') {
+            Portal.fetchJSON('/api/shells').then(data => {
+                const shells = data.shells || [];
+                if (shells.length > 1) {
+                    const sel = document.getElementById('shell-selector');
+                    sel.style.display = '';
+                    // Get current shell from wsPath query string
+                    const params = new URLSearchParams(wsPath.split('?')[1] || '');
+                    const current = params.get('shell') || '';
+                    shells.forEach(s => {
+                        const opt = document.createElement('option');
+                        opt.value = s.path;
+                        opt.textContent = s.name;
+                        if (s.path === current || (!current && s.name === 'bash')) opt.selected = true;
+                        sel.appendChild(opt);
+                    });
+                    sel.addEventListener('change', () => {
+                        window.location.href = '/terminal/local?shell=' + encodeURIComponent(sel.value);
+                    });
+                }
+            }).catch(() => {});
+        }
     </script>
 </body>
 </html>
