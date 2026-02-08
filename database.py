@@ -2443,18 +2443,19 @@ class Database:
         )
         await self.conn.commit()
 
-    async def get_recent_activity(self, limit: int = 20, user_id: int = None) -> list[dict]:
+    async def get_recent_activity(self, limit: int = 20, offset: int = 0,
+                                   user_id: int = None) -> list[dict]:
         """Get recent activity entries. If user_id is specified, filter to that user only."""
         if user_id:
             cursor = await self.conn.execute(
                 """SELECT * FROM activity_log WHERE user_id = ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (user_id, limit)
+                   ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+                (user_id, limit, offset)
             )
         else:
             cursor = await self.conn.execute(
-                "SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?",
-                (limit,)
+                "SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset)
             )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -2473,14 +2474,14 @@ class Database:
         return cursor.lastrowid
 
     async def get_notifications(self, user_id: int, unread_only: bool = False,
-                                 limit: int = 50) -> list[dict]:
+                                 limit: int = 50, offset: int = 0) -> list[dict]:
         """Get notifications for a user."""
         query = "SELECT * FROM notifications WHERE user_id = ?"
         params = [user_id]
         if unread_only:
             query += " AND is_read = 0"
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         cursor = await self.conn.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]

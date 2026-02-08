@@ -652,18 +652,18 @@ Create a new connection.
 | `shell` | string | Remote shell path (e.g. `/bin/bash`, `/usr/bin/fish`). Empty = default login shell |
 
 **Connection Types:**
-- `ssh` - SSH terminal
-- `vnc` - VNC desktop
-- `rdp` - Remote Desktop
-- `spice` - SPICE console
-- `proxmox` - Proxmox VE
-- `http` / `https` - Web proxy
-- `tcp_tunnel` - Generic TCP
-- `secure_tunnel` - Encrypted tunnel
-- `vpn_tunnel` - VPN bridge
-- `database` - Database connection
-- `redis` - Redis connection
-- `custom` - Custom protocol
+
+| Category | Types |
+|----------|-------|
+| Remote Access | `ssh`, `vnc`, `rdp`, `spice`, `telnet` |
+| Virtualization | `proxmox` |
+| Web Panels | `home_assistant`, `portainer`, `truenas`, `pfsense`, `http`, `https`, `http_proxy` |
+| Databases | `database`, `redis`, `mongodb`, `elasticsearch` |
+| Dev Tools | `jupyter`, `grafana`, `prometheus`, `github` |
+| Media | `mediamtx`, `stream` |
+| Game Servers | `minecraft_rcon` |
+| Network | `tcp_tunnel`, `secure_tunnel`, `vpn_tunnel` |
+| Generic | `custom` |
 
 ---
 
@@ -699,6 +699,18 @@ Update connection. Config fields are merged server-side with existing config —
 
 #### DELETE /api/connections/:id
 Delete connection.
+
+---
+
+#### POST /api/connections/{id}/pin
+Toggle the pinned status of a connection. Pinned connections sort to the top of the connections list.
+
+**Response:**
+```json
+{
+  "is_pinned": true
+}
+```
 
 ---
 
@@ -1532,6 +1544,60 @@ Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdi
 
 ---
 
+### Notifications
+
+#### GET /api/notifications
+Get notifications for the current user. Supports filtering to unread-only.
+
+**Query Parameters:**
+- `unread` (optional): Set to `1` to return only unread notifications
+
+**Response:**
+```json
+{
+  "notifications": [
+    {
+      "id": 1,
+      "user_id": 10,
+      "type": "stream_live",
+      "title": "Stream Live",
+      "message": "alice started streaming 'Gaming Session'",
+      "data": {"stream_id": 5},
+      "is_read": false,
+      "created_at": "2026-02-08T12:00:00"
+    }
+  ],
+  "unread_count": 3
+}
+```
+
+---
+
+#### POST /api/notifications/{id}/read
+Mark a single notification as read. Only affects notifications owned by the authenticated user.
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+#### POST /api/notifications/read-all
+Mark all notifications as read for the authenticated user.
+
+**Response:**
+```json
+{
+  "success": true,
+  "count": 5
+}
+```
+
+---
+
 ### System Info
 
 #### GET /api/shells
@@ -1609,6 +1675,65 @@ System statistics (admin only).
   "active_connections": 5,
   "total_services": 3,
   "uptime_check": "2026-02-05T12:00:00Z"
+}
+```
+
+---
+
+#### GET /api/system/health
+Detailed system resource metrics (admin only). Returns CPU, memory, disk usage, load averages, and Portal process stats via psutil.
+
+**Response:**
+```json
+{
+  "cpu": {
+    "percent": 12.5,
+    "count": 4,
+    "load_avg": [0.5, 0.3, 0.2]
+  },
+  "memory": {
+    "total": 8589934592,
+    "used": 4294967296,
+    "available": 4294967296,
+    "percent": 50.0
+  },
+  "disk": {
+    "total": 107374182400,
+    "used": 53687091200,
+    "free": 53687091200,
+    "percent": 50.0
+  },
+  "process": {
+    "rss": 67108864,
+    "vms": 134217728,
+    "threads": 8,
+    "pid": 12345
+  },
+  "uptime_seconds": 86400
+}
+```
+
+---
+
+#### GET /api/activity
+Recent activity feed. Admins see all activity; regular users see only their own.
+
+**Query Parameters:**
+- `limit` (optional): Max entries to return, 1-50 (default: `20`)
+
+**Response:**
+```json
+{
+  "activities": [
+    {
+      "id": 1,
+      "user_id": 10,
+      "username": "john",
+      "action": "stream_started",
+      "details": "Started streaming 'Gaming Session'",
+      "created_at": "2026-02-08T12:00:00"
+    }
+  ]
 }
 ```
 
@@ -1847,6 +1972,27 @@ Restart a managed service (admin only). Only valid for `service_type: "managed"`
     "status": "running",
     "pid": 12346
   }
+}
+```
+
+---
+
+#### GET /api/services/:id/health
+Check health of a specific service. Runs a live health check via the service's plugin (TCP connect, HTTP probe, etc.).
+
+**Response:**
+```json
+{
+  "healthy": true,
+  "message": "Service is responding on port 8554"
+}
+```
+
+**Error (plugin not found):**
+```json
+{
+  "healthy": false,
+  "message": "Plugin not found: unknown_plugin"
 }
 ```
 

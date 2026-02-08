@@ -248,6 +248,7 @@
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#streaming">Streaming</a></li>
                     <li><a href="#chat">Community Chat</a></li>
+                    <li><a href="#notifications">Notifications</a></li>
                     <li><a href="#ssh-keys">SSH Keys</a></li>
                     <li><a href="#api-keys">API Keys & Auth</a></li>
                 </ul>
@@ -377,6 +378,11 @@
                             <td>All users</td>
                         </tr>
                         <tr>
+                            <td><strong>My VODs</strong></td>
+                            <td>Browse, search, download, and manage recorded stream archives on remote SFTP storage.</td>
+                            <td>All users</td>
+                        </tr>
+                        <tr>
                             <td><strong>Quick Access</strong></td>
                             <td>Bookmarked connections and services for fast one-click access.</td>
                             <td>All users</td>
@@ -403,88 +409,98 @@
                 </ul>
 
                 <h3>Connection Types</h3>
+
+                <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Remote Access</h4>
                 <table class="param-table">
                     <thead>
-                        <tr>
-                            <th>Type</th>
-                            <th>Description</th>
-                            <th>Default Port</th>
-                            <th>Viewer</th>
-                        </tr>
+                        <tr><th>Type</th><th>Description</th><th>Port</th><th>Viewer</th></tr>
                     </thead>
                     <tbody>
-                        <tr>
-                            <td><code>ssh</code></td>
-                            <td>Secure Shell terminal</td>
-                            <td>22</td>
-                            <td>xterm.js terminal in browser</td>
-                        </tr>
-                        <tr>
-                            <td><code>vnc</code></td>
-                            <td>Virtual Network Computing</td>
-                            <td>5900</td>
-                            <td>noVNC viewer in browser</td>
-                        </tr>
-                        <tr>
-                            <td><code>rdp</code></td>
-                            <td>Remote Desktop Protocol</td>
-                            <td>3389</td>
-                            <td>noVNC viewer in browser</td>
-                        </tr>
-                        <tr>
-                            <td><code>spice</code></td>
-                            <td>SPICE remote display</td>
-                            <td>5930</td>
-                            <td>SPICE console in browser</td>
-                        </tr>
-                        <tr>
-                            <td><code>proxmox</code></td>
-                            <td>Proxmox VE management</td>
-                            <td>8006</td>
-                            <td>Proxmox VE panel</td>
-                        </tr>
-                        <tr>
-                            <td><code>http</code> / <code>https</code></td>
-                            <td>Web service reverse proxy</td>
-                            <td>80 / 443</td>
-                            <td>Opens in new tab via proxy</td>
-                        </tr>
-                        <tr>
-                            <td><code>database</code></td>
-                            <td>Database server (MySQL, PostgreSQL)</td>
-                            <td>3306 / 5432</td>
-                            <td>TCP tunnel (host:port info displayed)</td>
-                        </tr>
-                        <tr>
-                            <td><code>redis</code></td>
-                            <td>Redis data store</td>
-                            <td>6379</td>
-                            <td>TCP tunnel (host:port info displayed)</td>
-                        </tr>
-                        <tr>
-                            <td><code>tcp_tunnel</code></td>
-                            <td>Generic TCP forwarding</td>
-                            <td>&mdash;</td>
-                            <td>TCP tunnel (host:port info displayed)</td>
-                        </tr>
-                        <tr>
-                            <td><code>secure_tunnel</code></td>
-                            <td>TLS-encrypted tunnel</td>
-                            <td>&mdash;</td>
-                            <td>Encrypted TCP tunnel</td>
-                        </tr>
-                        <tr>
-                            <td><code>vpn_tunnel</code></td>
-                            <td>VPN tunnel connection</td>
-                            <td>&mdash;</td>
-                            <td>VPN tunnel</td>
-                        </tr>
+                        <tr><td><code>ssh</code></td><td>Secure Shell terminal</td><td>22</td><td>xterm.js terminal</td></tr>
+                        <tr><td><code>vnc</code></td><td>Virtual Network Computing</td><td>5900</td><td>noVNC viewer</td></tr>
+                        <tr><td><code>rdp</code></td><td>Remote Desktop Protocol</td><td>3389</td><td>noVNC viewer</td></tr>
+                        <tr><td><code>spice</code></td><td>SPICE remote display</td><td>5930</td><td>SPICE console</td></tr>
+                        <tr><td><code>telnet</code></td><td>Telnet (legacy devices)</td><td>23</td><td>TCP tunnel</td></tr>
+                    </tbody>
+                </table>
+
+                <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Web Panels</h4>
+                <table class="param-table">
+                    <thead>
+                        <tr><th>Type</th><th>Description</th><th>Port</th><th>Viewer</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>proxmox</code></td><td>Proxmox VE management</td><td>8006</td><td>Proxmox panel</td></tr>
+                        <tr><td><code>home_assistant</code></td><td>Home Assistant</td><td>8123</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>portainer</code></td><td>Portainer (Docker management)</td><td>9443</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>truenas</code></td><td>TrueNAS storage management</td><td>443</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>pfsense</code></td><td>pfSense firewall</td><td>443</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>http</code> / <code>https</code></td><td>Generic web service</td><td>80 / 443</td><td>HTTP proxy</td></tr>
+                    </tbody>
+                </table>
+
+                <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Databases</h4>
+                <table class="param-table">
+                    <thead>
+                        <tr><th>Type</th><th>Description</th><th>Port</th><th>Viewer</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>database</code></td><td>MySQL / PostgreSQL</td><td>3306 / 5432</td><td>TCP tunnel</td></tr>
+                        <tr><td><code>redis</code></td><td>Redis data store</td><td>6379</td><td>TCP tunnel</td></tr>
+                        <tr><td><code>mongodb</code></td><td>MongoDB</td><td>27017</td><td>TCP tunnel</td></tr>
+                        <tr><td><code>elasticsearch</code></td><td>Elasticsearch</td><td>9200</td><td>TCP tunnel</td></tr>
+                    </tbody>
+                </table>
+
+                <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Dev Tools & Monitoring</h4>
+                <table class="param-table">
+                    <thead>
+                        <tr><th>Type</th><th>Description</th><th>Port</th><th>Viewer</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>jupyter</code></td><td>Jupyter Notebook</td><td>8888</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>grafana</code></td><td>Grafana dashboards</td><td>3000</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>prometheus</code></td><td>Prometheus metrics</td><td>9090</td><td>HTTP proxy</td></tr>
+                        <tr><td><code>github</code></td><td>GitHub integration</td><td>443</td><td>GitHub browser</td></tr>
+                    </tbody>
+                </table>
+
+                <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Media & Game Servers</h4>
+                <table class="param-table">
+                    <thead>
+                        <tr><th>Type</th><th>Description</th><th>Port</th><th>Viewer</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>mediamtx</code></td><td>MediaMTX streaming server</td><td>8554</td><td>Media player</td></tr>
+                        <tr><td><code>stream</code></td><td>Generic media stream (RTSP)</td><td>&mdash;</td><td>Media player</td></tr>
+                        <tr><td><code>minecraft_rcon</code></td><td>Minecraft RCON</td><td>25575</td><td>TCP tunnel</td></tr>
+                    </tbody>
+                </table>
+
+                <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Network & Tunneling</h4>
+                <table class="param-table">
+                    <thead>
+                        <tr><th>Type</th><th>Description</th><th>Port</th><th>Viewer</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>tcp_tunnel</code></td><td>Generic TCP forwarding</td><td>&mdash;</td><td>TCP tunnel</td></tr>
+                        <tr><td><code>secure_tunnel</code></td><td>TLS-encrypted tunnel</td><td>&mdash;</td><td>Encrypted tunnel</td></tr>
+                        <tr><td><code>vpn_tunnel</code></td><td>VPN bridge</td><td>&mdash;</td><td>VPN tunnel</td></tr>
+                        <tr><td><code>custom</code></td><td>Custom protocol</td><td>&mdash;</td><td>TCP tunnel</td></tr>
                     </tbody>
                 </table>
 
                 <h3>Connecting</h3>
                 <p>Click the <strong>Connect</strong> button on any connection to open the appropriate viewer in a new window. For SSH connections, you will be prompted for credentials (password or key-based authentication).</p>
                 <p>For tunnel-type connections (database, redis, tcp_tunnel), the portal displays the host and port information for use with your local client software.</p>
+
+                <h3>Pinning & Usage Tracking</h3>
+                <p>Connections track usage automatically:</p>
+                <ul>
+                    <li><strong>Pin Connections</strong> &mdash; Click the pin icon to keep frequently used connections at the top of your list</li>
+                    <li><strong>Usage Stats</strong> &mdash; Each connection shows when it was last used and total connection count</li>
+                    <li><strong>Smart Sorting</strong> &mdash; Pinned connections appear first, then sorted by most recently used</li>
+                </ul>
 
                 <div class="alert alert-info">
                     <strong>Security note:</strong> Connections to <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code> are blocked for security. Only connections to remote hosts are allowed.
@@ -592,6 +608,16 @@
 
                 <h3>Online Users</h3>
                 <p>The right sidebar shows currently online users with their roles indicated by color. Click a username to insert an @mention.</p>
+
+                <!-- Notifications -->
+                <h3 id="notifications">Notifications</h3>
+                <p>The notification bell in the navbar keeps you informed of important events:</p>
+                <ul>
+                    <li><strong>Stream Events</strong> &mdash; Get notified when someone goes live</li>
+                    <li><strong>Service Alerts</strong> &mdash; Alerts when managed services crash or restart</li>
+                    <li><strong>Security Events</strong> &mdash; Warnings about repeated authentication failures</li>
+                </ul>
+                <p>Click the bell icon to view notifications, and mark them as read individually or all at once.</p>
 
                 <!-- SSH Keys -->
                 <h2 id="ssh-keys">SSH Keys</h2>
@@ -732,7 +758,17 @@
                 </div>
 
                 <h3>VOD Storage</h3>
-                <p>Manage recorded stream archives stored on remote SFTP servers. Browse, download, and delete VOD files from the admin panel.</p>
+                <p>All users can manage their recorded stream archives stored on remote SFTP servers. Configure your SFTP storage from the <strong>My VODs</strong> tab, then browse, search, download (individual or batch zip), and delete VOD files.</p>
+
+                <h3>System Health Dashboard</h3>
+                <p>The Admin Panel includes a real-time system health dashboard showing:</p>
+                <ul>
+                    <li><strong>CPU Usage</strong> &mdash; Current utilization and load averages</li>
+                    <li><strong>Memory</strong> &mdash; Total, used, and available RAM</li>
+                    <li><strong>Disk</strong> &mdash; Storage usage for the root partition</li>
+                    <li><strong>Portal Process</strong> &mdash; RSS memory, virtual memory, thread count, and PID</li>
+                    <li><strong>System Uptime</strong> &mdash; Time since last system boot</li>
+                </ul>
                 </div>
 
                 <!-- Security -->

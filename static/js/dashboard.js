@@ -561,7 +561,7 @@ function getConnectionIcon(iconName) {
  */
 let activityFeedCollapsed = false;
 
-const ACTIVITY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours to fully fade
+const ACTIVITY_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour to fully fade and disappear
 
 let cachedActivities = [];
 

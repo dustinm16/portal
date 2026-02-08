@@ -1546,6 +1546,23 @@ CONNECTION_TYPES = {
     # Databases (via TCP tunnel)
     "database": {"name": "Database", "icon": "database", "default_port": 3306, "plugin": "tcp_tunnel"},
     "redis": {"name": "Redis", "icon": "database", "default_port": 6379, "plugin": "tcp_tunnel"},
+    "mongodb": {"name": "MongoDB", "icon": "database", "default_port": 27017, "plugin": "tcp_tunnel"},
+    "elasticsearch": {"name": "Elasticsearch", "icon": "database", "default_port": 9200, "plugin": "tcp_tunnel"},
+
+    # Web Panels (via HTTP proxy)
+    "home_assistant": {"name": "Home Assistant", "icon": "home", "default_port": 8123, "plugin": "http_proxy"},
+    "portainer": {"name": "Portainer", "icon": "server", "default_port": 9443, "plugin": "http_proxy"},
+    "truenas": {"name": "TrueNAS", "icon": "server", "default_port": 443, "plugin": "http_proxy"},
+    "pfsense": {"name": "pfSense", "icon": "lock", "default_port": 443, "plugin": "http_proxy"},
+
+    # Dev Tools (via HTTP proxy)
+    "jupyter": {"name": "Jupyter Notebook", "icon": "globe", "default_port": 8888, "plugin": "http_proxy"},
+    "grafana": {"name": "Grafana", "icon": "globe", "default_port": 3000, "plugin": "http_proxy"},
+    "prometheus": {"name": "Prometheus", "icon": "globe", "default_port": 9090, "plugin": "http_proxy"},
+
+    # Legacy / Game Servers (via TCP tunnel)
+    "telnet": {"name": "Telnet", "icon": "terminal", "default_port": 23, "plugin": "tcp_tunnel"},
+    "minecraft_rcon": {"name": "Minecraft RCON", "icon": "link", "default_port": 25575, "plugin": "tcp_tunnel"},
 
     # Generic
     "custom": {"name": "Custom", "icon": "link", "default_port": None, "plugin": "tcp_tunnel"},
@@ -3358,7 +3375,7 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
 
     try:
         data = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     api_key = data.get("api_key", "").strip()
@@ -4123,7 +4140,7 @@ async def http_vuln_set_nvd_api_key(request: web.Request) -> web.Response:
 
     try:
         data = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     api_key = data.get("api_key", "").strip()
@@ -4359,14 +4376,15 @@ async def http_activity_feed(request: web.Request) -> web.Response:
 
     try:
         limit = min(int(request.query.get("limit", "20")), 50)
+        offset = max(int(request.query.get("offset", "0")), 0)
     except (ValueError, TypeError):
-        return web.json_response({"error": "Invalid limit parameter"}, status=400)
+        return web.json_response({"error": "Invalid limit or offset parameter"}, status=400)
     is_admin = token.has_scope("admin") or token.has_scope("*")
 
     if is_admin:
-        activities = await db.get_recent_activity(limit=limit)
+        activities = await db.get_recent_activity(limit=limit, offset=offset)
     else:
-        activities = await db.get_recent_activity(limit=limit, user_id=token.user_id)
+        activities = await db.get_recent_activity(limit=limit, offset=offset, user_id=token.user_id)
 
     return web.json_response({"activities": activities})
 
@@ -6645,7 +6663,13 @@ async def http_get_notifications(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     unread_only = request.query.get("unread") == "1"
-    notifications = await db.get_notifications(token.user_id, unread_only=unread_only)
+    try:
+        limit = min(int(request.query.get("limit", "50")), 100)
+        offset = max(int(request.query.get("offset", "0")), 0)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit or offset parameter"}, status=400)
+    notifications = await db.get_notifications(token.user_id, unread_only=unread_only,
+                                                limit=limit, offset=offset)
     unread_count = await db.get_unread_notification_count(token.user_id)
     return web.json_response({"notifications": notifications, "unread_count": unread_count})
 

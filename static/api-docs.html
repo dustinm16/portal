@@ -310,11 +310,14 @@
                 <h4>Community</h4>
                 <ul>
                     <li><a href="#chat">Chat/Forum</a></li>
+                    <li><a href="#notifications">Notifications</a></li>
                 </ul>
                 <div class="admin-only">
                     <h4>Admin Only</h4>
                     <ul>
                         <li><a href="#managed-services">Managed Services</a></li>
+                        <li><a href="#system-health">System Health</a></li>
+                        <li><a href="#activity">Activity Feed</a></li>
                         <li><a href="#metrics">Metrics</a></li>
                         <li><a href="#logs">Logs</a></li>
                         <li><a href="#vulnerability">Vulnerability Scanner</a></li>
@@ -758,6 +761,23 @@
       "auth_method": "password"
     }
   }'</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/connections/{id}/pin</span>
+                        <span class="endpoint-desc">Toggle connection pinned status</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Toggle whether a connection is pinned. Pinned connections sort to the top of the connections list for quick access.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"is_pinned"</span>: <span class="keyword">true</span>
+}</pre>
                         </div>
                     </div>
                 </div>
@@ -2621,6 +2641,165 @@ ws.send(JSON.stringify({
                 </div>
                 </div>
 
+                <!-- Notifications -->
+                <h2 id="notifications">Notifications</h2>
+                <p>Real-time notification system for stream events, service alerts, and security events. Notifications are delivered via polling and displayed in the navbar bell icon.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/notifications</span>
+                        <span class="endpoint-desc">Get user notifications</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns notifications for the authenticated user with an unread count.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">unread</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Set to <code>1</code> to return only unread notifications</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"notifications"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"type"</span>: <span class="string">"stream_live"</span>,
+      <span class="string">"title"</span>: <span class="string">"Stream Live"</span>,
+      <span class="string">"message"</span>: <span class="string">"alice started streaming"</span>,
+      <span class="string">"is_read"</span>: <span class="keyword">false</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-08T12:00:00"</span>
+    }
+  ],
+  <span class="string">"unread_count"</span>: <span class="number">3</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/notifications/{id}/read</span>
+                        <span class="endpoint-desc">Mark notification as read</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Mark a single notification as read. Only affects notifications owned by the authenticated user.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/notifications/read-all</span>
+                        <span class="endpoint-desc">Mark all notifications read</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Mark all notifications as read for the authenticated user.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"count"</span>: <span class="number">5</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Health -->
+                <h2 id="system-health">System Health <span class="badge-admin">ADMIN</span></h2>
+                <p>Detailed system resource monitoring including CPU, memory, disk, and Portal process metrics.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/system/health</span>
+                        <span class="endpoint-desc">Get system resource metrics</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns CPU usage, memory, disk, load averages, Portal process stats, and system uptime via psutil.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"cpu"</span>: {
+    <span class="string">"percent"</span>: <span class="number">12.5</span>,
+    <span class="string">"count"</span>: <span class="number">4</span>,
+    <span class="string">"load_avg"</span>: [<span class="number">0.5</span>, <span class="number">0.3</span>, <span class="number">0.2</span>]
+  },
+  <span class="string">"memory"</span>: {
+    <span class="string">"total"</span>: <span class="number">8589934592</span>,
+    <span class="string">"used"</span>: <span class="number">4294967296</span>,
+    <span class="string">"available"</span>: <span class="number">4294967296</span>,
+    <span class="string">"percent"</span>: <span class="number">50.0</span>
+  },
+  <span class="string">"disk"</span>: {
+    <span class="string">"total"</span>: <span class="number">107374182400</span>,
+    <span class="string">"used"</span>: <span class="number">53687091200</span>,
+    <span class="string">"free"</span>: <span class="number">53687091200</span>,
+    <span class="string">"percent"</span>: <span class="number">50.0</span>
+  },
+  <span class="string">"process"</span>: {
+    <span class="string">"rss"</span>: <span class="number">67108864</span>,
+    <span class="string">"vms"</span>: <span class="number">134217728</span>,
+    <span class="string">"threads"</span>: <span class="number">8</span>,
+    <span class="string">"pid"</span>: <span class="number">12345</span>
+  },
+  <span class="string">"uptime_seconds"</span>: <span class="number">86400</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Feed -->
+                <h2 id="activity">Activity Feed <span class="badge-admin">ADMIN</span></h2>
+                <p>Recent activity log. Admins see all activity; regular users see only their own actions.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/activity</span>
+                        <span class="endpoint-desc">Get recent activity</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns recent activity entries. Admins see all activity; regular users see only their own.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">limit</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Max entries to return, 1-50 (default: 20)</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"activities"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"user_id"</span>: <span class="number">10</span>,
+      <span class="string">"username"</span>: <span class="string">"john"</span>,
+      <span class="string">"action"</span>: <span class="string">"stream_started"</span>,
+      <span class="string">"details"</span>: <span class="string">"Started streaming"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-08T12:00:00"</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2>Rate Limits</h2>
@@ -2653,6 +2832,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
+    <script src="/static/js/portal.js?v=21"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

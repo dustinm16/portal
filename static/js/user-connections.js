@@ -10,20 +10,46 @@ let userSSHKeys = [];
 
 // Connection presets for quick setup
 const CONNECTION_PRESETS = {
+    // Remote Access
     'ssh-server': { name: 'SSH Server', type: 'ssh', port: 22, icon: 'terminal', config: { auth_method: 'password' } },
     'vnc-server': { name: 'VNC Desktop', type: 'vnc', port: 5900, icon: 'desktop', config: {} },
     'rdp-server': { name: 'RDP Desktop', type: 'rdp', port: 3389, icon: 'desktop', config: {} },
     'spice-console': { name: 'SPICE Console', type: 'spice', port: 5930, icon: 'desktop', config: {} },
+    'telnet': { name: 'Telnet', type: 'telnet', port: 23, icon: 'terminal', config: {} },
+
+    // Media & Streaming
     'mediamtx-rtsp': { name: 'MediaMTX Stream', type: 'mediamtx', port: 8554, icon: 'play', config: {} },
     'ip-camera': { name: 'IP Camera', type: 'stream', port: 554, icon: 'play', config: { protocol: 'rtsp' } },
+
+    // Virtualization & Infrastructure
     'proxmox-ve': { name: 'Proxmox VE', type: 'proxmox', port: 8006, icon: 'server', config: { verify_ssl: false } },
+
+    // Web Panels
+    'home-assistant': { name: 'Home Assistant', type: 'home_assistant', port: 8123, icon: 'home', config: {} },
+    'portainer': { name: 'Portainer', type: 'portainer', port: 9443, icon: 'server', config: {} },
+    'truenas': { name: 'TrueNAS', type: 'truenas', port: 443, icon: 'server', config: {} },
+    'pfsense': { name: 'pfSense', type: 'pfsense', port: 443, icon: 'lock', config: {} },
+
+    // Databases
+    'mysql-db': { name: 'MySQL Database', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' } },
+    'postgres-db': { name: 'PostgreSQL Database', type: 'database', port: 5432, icon: 'database', config: { db_type: 'postgresql' } },
+    'redis-db': { name: 'Redis', type: 'redis', port: 6379, icon: 'database', config: {} },
+    'mongodb': { name: 'MongoDB', type: 'mongodb', port: 27017, icon: 'database', config: {} },
+    'elasticsearch': { name: 'Elasticsearch', type: 'elasticsearch', port: 9200, icon: 'database', config: {} },
+
+    // Dev Tools & Monitoring
+    'jupyter': { name: 'Jupyter Notebook', type: 'jupyter', port: 8888, icon: 'globe', config: {} },
+    'grafana': { name: 'Grafana', type: 'grafana', port: 3000, icon: 'globe', config: {} },
+    'prometheus': { name: 'Prometheus', type: 'prometheus', port: 9090, icon: 'globe', config: {} },
+
+    // Game Servers
+    'minecraft-rcon': { name: 'Minecraft RCON', type: 'minecraft_rcon', port: 25575, icon: 'link', config: {} },
+
+    // Network & Tunneling
     'tcp-tunnel': { name: 'TCP Tunnel', type: 'tcp_tunnel', icon: 'link', config: {} },
     'secure-tunnel': { name: 'Secure Tunnel', type: 'secure_tunnel', icon: 'lock', config: {} },
     'vpn-bridge': { name: 'VPN Bridge', type: 'vpn_tunnel', icon: 'lock', config: {} },
     'http-proxy': { name: 'HTTP Proxy', type: 'http_proxy', port: 80, icon: 'globe', config: {} },
-    'mysql-db': { name: 'MySQL Database', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' } },
-    'postgres-db': { name: 'PostgreSQL Database', type: 'database', port: 5432, icon: 'database', config: { db_type: 'postgresql' } },
-    'redis-db': { name: 'Redis', type: 'redis', port: 6379, icon: 'database', config: {} },
 };
 
 /**
@@ -479,7 +505,8 @@ function getConnectionIcon(iconName) {
         globe: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /></svg>',
         play: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>',
         lock: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>',
-        link: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>'
+        link: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>',
+        home: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>'
     };
     return icons[iconName] || icons.link;
 }
@@ -1056,8 +1083,21 @@ async function connectTo(connectionId) {
             case 'stream':
                 window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
                 break;
+            case 'home_assistant':
+            case 'portainer':
+            case 'truenas':
+            case 'pfsense':
+            case 'jupyter':
+            case 'grafana':
+            case 'prometheus':
+                window.open(`/proxy/${connectionId}`, '_blank');
+                break;
             case 'database':
             case 'redis':
+            case 'mongodb':
+            case 'elasticsearch':
+            case 'telnet':
+            case 'minecraft_rcon':
             case 'tcp_tunnel':
             case 'secure_tunnel':
             case 'vpn_tunnel':
