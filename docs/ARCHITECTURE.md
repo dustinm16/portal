@@ -624,6 +624,12 @@ class PluginBase:
 Client Request
      │
      ▼
+┌──────────────────┐
+│ Security Headers │ ─── HSTS, X-Frame-Options, Server suppression
+│   (middleware)    │     Applied to ALL responses (incl. redirects/errors)
+└───────┬──────────┘
+        │
+        ▼
 ┌────────────────┐
 │ Rate Limiting  │ ─── Too many requests? → 429 Too Many Requests
 └───────┬────────┘
@@ -636,6 +642,11 @@ Client Request
         ▼
 ┌────────────────┐
 │ Authorization  │ ─── Insufficient role? → 403 Forbidden
+└───────┬────────┘
+        │
+        ▼
+┌────────────────┐
+│Input Validation│ ─── Invalid params? → 400 Bad Request
 └───────┬────────┘
         │
         ▼
@@ -658,14 +669,18 @@ Open Relay Portal is designed with privacy and security as core principles:
 5. **Rate Limiting** - Per-IP request throttling, 1 registration per IP per 24 hours
 6. **Localhost Blocking** - User connections cannot target localhost
 7. **Chat Encryption** - Messages encrypted at rest (Fernet)
-7b. **Config Encryption** - Connection configs (passwords, keys) encrypted at rest (Fernet, separate key from chat)
-7c. **Stream Key Encryption** - Stream keys encrypted at rest (Fernet); SHA-256 hashes stored for indexed lookups
-7d. **API Credential Redaction** - GET endpoints never return passwords/keys; replaced with `has_<field>` flags
-8. **HTTPS/WSS Only** - All traffic encrypted via TLS
-9. **No Session Recording** - Privacy-first design, no session logging
-10. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
-11. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving)
-12. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
+8. **Config Encryption** - Connection, service, and VOD configs encrypted at rest (Fernet, `enc:` prefix, separate PBKDF2 key from chat)
+9. **Stream Key Encryption** - Stream keys encrypted at rest (Fernet); SHA-256 hashes stored for indexed lookups
+10. **API Credential Redaction** - GET endpoints never return passwords/keys; replaced with `has_<field>` flags
+11. **HTTPS/WSS Only** - All traffic encrypted via TLS, HSTS with preload
+12. **Security Headers** - Applied to all response types (including redirects and errors) via middleware; server version suppressed
+13. **Input Validation** - All user-supplied `int()` and `json.loads()` conversions protected with try/except; path params, query params, WebSocket fields, and database configs all guarded
+14. **Shell Whitelist** - SSH and terminal shell overrides validated against `ALLOWED_SHELLS` constant
+15. **Stream Auth** - Default-deny for unmatched actions; read/playback auth handled by Portal's HLS proxy
+16. **No Session Recording** - Privacy-first design, no session logging
+17. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
+18. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving)
+19. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
 
 ---
 
