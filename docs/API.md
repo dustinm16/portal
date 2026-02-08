@@ -1195,7 +1195,7 @@ Additional WebSocket message types for stream chat moderation:
 ### Chat
 
 #### GET /api/chat/channels
-List chat channels.
+List chat channels. Stream-associated channels include live status and stream metadata for UI grouping (Live / Offline sections).
 
 **Response:**
 ```json
@@ -1207,6 +1207,17 @@ List chat channels.
       "description": "General discussion",
       "is_default": 1,
       "is_stream_channel": false
+    },
+    {
+      "id": 5,
+      "name": "My Stream",
+      "description": "Stream chat",
+      "is_default": 0,
+      "is_stream_channel": true,
+      "stream_id": 3,
+      "stream_is_live": true,
+      "stream_public_key": "pub_xyz789...",
+      "stream_owner": "dustin"
     }
   ]
 }
@@ -1436,7 +1447,20 @@ Test SFTP connection with provided credentials.
 ---
 
 #### GET /api/vods
-List MKV files in user's remote storage.
+List MKV files in user's remote storage. Recursively scans all subdirectories.
+
+VOD files are organized in a directory structure created by the automatic recording pipeline:
+```
+{remote_path}/
+├── StreamName/
+│   ├── 2026-02-08_04-24-49/
+│   │   ├── chunk_000.mkv
+│   │   ├── chunk_001.mkv
+│   │   └── chunk_002.mkv
+│   └── 2026-02-08_12-30-00/
+│       └── chunk_000.mkv
+└── standalone-recording.mkv
+```
 
 **Query Parameters:**
 - `sort` (optional): Sort by `name`, `size`, or `modified` (default: `modified`)
@@ -1447,11 +1471,17 @@ List MKV files in user's remote storage.
 {
   "files": [
     {
-      "name": "stream-2026-02-06.mkv",
-      "size": 1073741824,
-      "modified": 1738800000
+      "name": "StreamName/2026-02-08_04-24-49/chunk_000.mkv",
+      "size": 233436982,
+      "modified": 1770525031
+    },
+    {
+      "name": "StreamName/2026-02-08_04-24-49/chunk_001.mkv",
+      "size": 6102991,
+      "modified": 1770525033
     }
-  ]
+  ],
+  "path": "/home/user/vods"
 }
 ```
 
@@ -1460,7 +1490,7 @@ Returns 404 if no storage is configured.
 ---
 
 #### GET /api/vods/download/{filename}
-Stream-download a VOD file from remote storage. Only `.mkv` files allowed.
+Stream-download a VOD file from remote storage. Only `.mkv` files allowed. Supports subdirectory paths (e.g., `StreamName/session/chunk_000.mkv`).
 
 **Response:** Binary file stream with `Content-Disposition: attachment` header.
 
@@ -1468,14 +1498,35 @@ Stream-download a VOD file from remote storage. Only `.mkv` files allowed.
 
 ---
 
+#### POST /api/vods/download-archive
+Download multiple VOD files as a single zip archive streamed from SFTP. The zip is constructed on-the-fly with proper central directory entries — no server-side buffering of the full archive.
+
+**Request:**
+```json
+{
+  "files": [
+    "StreamName/2026-02-08_04-24-49/chunk_000.mkv",
+    "StreamName/2026-02-08_04-24-49/chunk_001.mkv"
+  ]
+}
+```
+
+**Limits:** Maximum 500 files per archive. All paths must end in `.mkv`.
+
+**Response:** Binary zip stream with `Content-Disposition: attachment; filename="archive_name.zip"` header. Archive name is derived from the common directory prefix of the selected files.
+
+**Security:** Path traversal (`..`, absolute paths) is rejected.
+
+---
+
 #### DELETE /api/vods/{filename}
-Delete a VOD file from remote storage. Only `.mkv` files allowed.
+Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdirectory paths.
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Deleted stream-2026-02-06.mkv"
+  "message": "Deleted StreamName/session/chunk_000.mkv"
 }
 ```
 

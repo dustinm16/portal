@@ -2626,8 +2626,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                 exclude_user_id=stream.get("user_id")
             )
 
-            # Start VOD recording in background (waits for HLS to be ready)
-            asyncio.create_task(start_vod_recording(stream, stream_key))
+        # Start VOD recording on every publish (guards against duplicates internally)
+        asyncio.create_task(start_vod_recording(stream, stream_key))
 
         return web.json_response({"allowed": True})
 
@@ -3746,6 +3746,168 @@ async def http_download_vod(request: web.Request) -> web.Response:
         return web.json_response({"error": f"Download error: {e}"}, status=502)
     finally:
         conn.close()
+
+
+async def http_download_vod_archive(request: web.Request) -> web.Response:
+    """Download multiple VOD files as a zip archive streamed from SFTP.
+
+    POST body: {"files": ["StreamName/session/chunk_000.mkv", ...]}
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    files = data.get("files", [])
+    if not files or not isinstance(files, list):
+        return web.json_response({"error": "No files specified"}, status=400)
+    if len(files) > 500:
+        return web.json_response({"error": "Too many files (max 500)"}, status=400)
+
+    # Validate all paths
+    for f in files:
+        if ".." in f or f.startswith("/"):
+            return web.json_response({"error": f"Invalid path: {f}"}, status=400)
+        if not f.lower().endswith(".mkv"):
+            return web.json_response({"error": f"Not an MKV file: {f}"}, status=400)
+
+    storage = await db.get_vod_storage(token.user_id)
+    if not storage:
+        return web.json_response({"error": "No VOD storage configured"}, status=404)
+
+    conn, sftp, error = await _connect_vod_sftp(token.user_id)
+    if error:
+        return web.json_response({"error": error}, status=502)
+
+    # Derive archive name from common prefix
+    parts_list = [f.split("/") for f in files]
+    if len(parts_list) > 1 and len(parts_list[0]) > 1 and all(p[0] == parts_list[0][0] for p in parts_list):
+        archive_name = parts_list[0][0]
+        if len(parts_list[0]) > 2 and all(len(p) > 1 and p[1] == parts_list[0][1] for p in parts_list):
+            archive_name += f"_{parts_list[0][1]}"
+    elif len(files) == 1:
+        archive_name = files[0].rsplit("/", 1)[-1].replace(".mkv", "")
+    else:
+        archive_name = "vods"
+    archive_name = re.sub(r'[^\w\s-]', '_', archive_name)
+
+    response = web.StreamResponse()
+    response.content_type = "application/zip"
+    response.headers["Content-Disposition"] = f'attachment; filename="{archive_name}.zip"'
+    await response.prepare(request)
+
+    remote_root = storage["remote_path"].rstrip("/")
+
+    import struct
+    import binascii
+
+    # Track entries for central directory (written after all file data)
+    entries = []  # list of (fname_bytes, crc32, size, local_header_offset)
+    offset = 0    # running byte offset in the stream
+
+    for filepath in files:
+        remote_path = f"{remote_root}/{filepath}"
+        try:
+            fname_bytes = filepath.encode("utf-8")
+            local_header_offset = offset
+
+            # Local file header (no compression, data descriptor flag set)
+            header = struct.pack(
+                '<4sHHHHHIIIHH',
+                b'PK\x03\x04',     # signature
+                20,                 # version needed (2.0)
+                0x08,               # flags: bit 3 = data descriptor follows
+                0,                  # compression: stored
+                0,                  # mod time
+                0,                  # mod date
+                0,                  # crc32 (deferred to data descriptor)
+                0,                  # compressed size (deferred)
+                0,                  # uncompressed size (deferred)
+                len(fname_bytes),   # filename length
+                0,                  # extra field length
+            ) + fname_bytes
+            await response.write(header)
+            offset += len(header)
+
+            # Stream file data from SFTP, computing CRC as we go
+            crc = 0
+            total_size = 0
+            CHUNK_SIZE = 262144
+            async with sftp.open(remote_path, "rb") as f:
+                while True:
+                    chunk = await f.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    crc = binascii.crc32(chunk, crc) & 0xFFFFFFFF
+                    total_size += len(chunk)
+                    await response.write(chunk)
+            offset += total_size
+
+            # Data descriptor (with signature)
+            desc = struct.pack('<4sIII',
+                b'PK\x07\x08',   # signature
+                crc,              # crc32
+                total_size,       # compressed size (same as uncompressed for stored)
+                total_size,       # uncompressed size
+            )
+            await response.write(desc)
+            offset += len(desc)
+
+            entries.append((fname_bytes, crc, total_size, local_header_offset))
+
+        except (asyncssh.SFTPError, OSError) as e:
+            logger.warning(f"Skipping VOD file in archive {filepath}: {e}")
+            continue
+
+    # Central directory
+    cd_offset = offset
+    cd_size = 0
+    for fname_bytes, crc, size, local_offset in entries:
+        cd_entry = struct.pack(
+            '<4sHHHHHHIIIHHHHHII',
+            b'PK\x01\x02',     # central directory signature
+            20,                 # version made by (2.0)
+            20,                 # version needed (2.0)
+            0x08,               # flags: data descriptor
+            0,                  # compression: stored
+            0,                  # mod time
+            0,                  # mod date
+            crc,                # crc32
+            size,               # compressed size
+            size,               # uncompressed size
+            len(fname_bytes),   # filename length
+            0,                  # extra field length
+            0,                  # file comment length
+            0,                  # disk number start
+            0,                  # internal file attributes
+            0,                  # external file attributes
+            local_offset,       # relative offset of local header
+        ) + fname_bytes
+        await response.write(cd_entry)
+        cd_size += len(cd_entry)
+
+    # End of central directory record
+    entry_count = len(entries)
+    eocd = struct.pack(
+        '<4sHHHHIIH',
+        b'PK\x05\x06',     # EOCD signature
+        0,                  # disk number
+        0,                  # disk with central dir
+        entry_count,        # entries on this disk
+        entry_count,        # total entries
+        cd_size,            # size of central directory
+        cd_offset,          # offset of central directory
+        0,                  # comment length
+    )
+    await response.write(eocd)
+
+    await response.write_eof()
+    conn.close()
+    return response
 
 
 async def http_delete_vod(request: web.Request) -> web.Response:
@@ -7380,6 +7542,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/vods/storage/test", http_test_vod_storage)
     app.router.add_get("/api/vods", http_list_vods)
     app.router.add_get("/api/vods/download/{filename:.*}", http_download_vod)
+    app.router.add_post("/api/vods/download-archive", http_download_vod_archive)
     app.router.add_delete("/api/vods/{filename:.*}", http_delete_vod)
 
     # Vulnerability Scanner (admin only)

@@ -1,5 +1,7 @@
 """Database layer for Open Relay Portal using SQLite."""
 
+import json
+
 import aiosqlite
 import base64
 import hashlib

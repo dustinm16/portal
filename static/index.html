@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=29">
+    <link rel="stylesheet" href="/static/css/portal.css?v=30">
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
@@ -401,19 +401,18 @@
                     <span>Connecting to SFTP server...</span>
                 </div>
 
-                <div id="vods-table-container" style="display: none;">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>Filename</th>
-                                <th>Size</th>
-                                <th>Modified</th>
-                                <th style="width: 160px;">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="vods-tbody"></tbody>
-                    </table>
+                <div id="vods-toolbar" style="display: none; margin-bottom: 1rem;">
+                    <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="vods-search" placeholder="Search VODs..." oninput="filterVods()" style="flex: 1; min-width: 200px; padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid var(--card-border, rgba(255,255,255,0.1)); background: var(--card-bg, rgba(255,255,255,0.05)); color: var(--text-primary); font-size: 0.875rem;">
+                        <span id="vods-selection-count" style="font-size: 0.8rem; color: var(--text-muted); display: none;">0 selected</span>
+                        <button class="btn btn-primary btn-sm" id="vods-download-selected" onclick="downloadSelectedVods()" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                            Download .zip
+                        </button>
+                        <button class="btn btn-danger btn-sm" id="vods-delete-selected" onclick="deleteSelectedVods()" style="display: none;">Delete Selected</button>
+                    </div>
                 </div>
+                <div id="vods-table-container" style="display: none;"></div>
 
                 <div id="vods-empty" class="empty-state" style="display: none;">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1601,7 +1600,7 @@
     </div>
 
     <script src="/static/js/streams.js?v=25"></script>
-    <script src="/static/js/vods.js?v=2"></script>
+    <script src="/static/js/vods.js?v=3"></script>
     <script>
         function openLocalTerminal() {
             window.open('/terminal/local', '_blank', 'width=900,height=600');

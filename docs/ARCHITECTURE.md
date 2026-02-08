@@ -458,13 +458,16 @@ DELETE /api/streams/:id/ban/:uid - Unban user
 
 ### VOD Storage (Personal)
 
+VODs are automatically recorded during live broadcasts as 5-minute MKV chunks (lossless remux via ffmpeg segment muxer). Chunks are continuously uploaded to the user's SFTP storage in an organized directory structure: `{StreamName}/{YYYY-MM-DD_HH-MM-SS}/chunk_NNN.mkv`.
+
 ```
 GET  /api/vods/storage               - Get storage config
 POST /api/vods/storage               - Save storage config
 DELETE /api/vods/storage              - Remove storage config
 POST /api/vods/storage/test          - Test SFTP connection
-GET  /api/vods                       - List MKV files
-GET  /api/vods/download/{filename}   - Download VOD file
+GET  /api/vods                       - List MKV files (recursive)
+GET  /api/vods/download/{filename}   - Download single VOD file
+POST /api/vods/download-archive      - Download multiple files as zip
 DELETE /api/vods/{filename}          - Delete VOD file
 ```
 

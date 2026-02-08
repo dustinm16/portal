@@ -2910,3 +2910,121 @@ select option {
 .navbar-section svg {
     opacity: 0.9;
 }
+
+/* VOD Session-Grouped Manager */
+.vod-session {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+}
+
+.vod-session-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    gap: 0.75rem;
+    transition: background 0.15s;
+}
+
+.vod-session-header:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.vod-session-arrow {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.vod-session.collapsed .vod-session-arrow {
+    transform: rotate(-90deg);
+}
+
+.vod-session.collapsed .vod-session-files {
+    display: none;
+}
+
+.vod-session-title {
+    font-weight: 600;
+    font-size: 0.925rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vod-session-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+}
+
+.vod-session-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+
+.vod-session-files {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.vod-file-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 1rem 0.45rem 2.25rem;
+    font-size: 0.825rem;
+    transition: background 0.1s;
+}
+
+.vod-file-row:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.vod-file-row.selected {
+    background: rgba(96, 165, 250, 0.08);
+}
+
+.vod-file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.vod-file-size,
+.vod-file-date {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    width: 80px;
+    text-align: right;
+}
+
+.vod-file-actions {
+    display: flex;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.vod-file-row:hover .vod-file-actions {
+    opacity: 1;
+}
+
+.vod-session-checkbox,
+.vod-file-checkbox {
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+    flex-shrink: 0;
+}

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - API Documentation</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=29">
+    <link rel="stylesheet" href="/static/css/portal.css?v=30">
     <style>
         .docs-container {
             max-width: 1200px;
@@ -1321,7 +1321,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">List VOD files</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Lists MKV files in the user's remote storage directory. Returns 404 if no storage is configured.</p>
+                        <p>Recursively lists MKV files in the user's remote storage directory. Files are organized by recording session: <code>StreamName/YYYY-MM-DD_HH-MM-SS/chunk_NNN.mkv</code>. Returns 404 if no storage is configured.</p>
                         <h4>Query Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -1333,11 +1333,12 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 <pre>{
   "files": [
     {
-      "name": "stream-2026-02-06.mkv",
-      "size": 1073741824,
-      "modified": 1738800000
+      "name": "StreamName/2026-02-08_04-24-49/chunk_000.mkv",
+      "size": 233436982,
+      "modified": 1770525031
     }
-  ]
+  ],
+  "path": "/home/user/vods"
 }</pre>
                         </div>
                     </div>
@@ -1350,7 +1351,29 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Download a VOD file</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Streams the specified MKV file from remote storage. Only <code>.mkv</code> files are allowed. Path traversal is blocked.</p>
+                        <p>Streams the specified MKV file from remote storage. Only <code>.mkv</code> files are allowed. Supports subdirectory paths. Path traversal is blocked.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/vods/download-archive</span>
+                        <span class="endpoint-desc">Download multiple VODs as zip</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Downloads multiple VOD files as a single zip archive streamed from SFTP. Maximum 500 files per request. All paths must end in <code>.mkv</code>.</p>
+                        <h4>Request Body</h4>
+                        <div class="code-block">
+<pre>{
+  "files": [
+    "StreamName/2026-02-08_04-24-49/chunk_000.mkv",
+    "StreamName/2026-02-08_04-24-49/chunk_001.mkv"
+  ]
+}</pre>
+                        </div>
+                        <h4>Response</h4>
+                        <p>Binary zip stream with <code>Content-Disposition: attachment</code> header.</p>
                     </div>
                 </div>
 
@@ -1361,7 +1384,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Delete a VOD file</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Deletes the specified MKV file from remote storage. Only <code>.mkv</code> files can be deleted.</p>
+                        <p>Deletes the specified MKV file from remote storage. Only <code>.mkv</code> files can be deleted. Supports subdirectory paths.</p>
                     </div>
                 </div>
 
