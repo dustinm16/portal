@@ -7613,6 +7613,11 @@ class PortalServer:
         await db.connect()
         logger.info(f"Database connected: {Config.DATABASE_PATH}")
 
+        # Reset all streams to offline on startup (no stream can be live before MediaMTX starts)
+        stale = await db.reset_all_streams_offline()
+        if stale:
+            logger.info(f"Reset {stale} stale stream(s) to offline")
+
         # Load persisted settings from database
         log_settings_json = await db.get_setting("log_settings")
         if log_settings_json:

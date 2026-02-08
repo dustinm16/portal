@@ -83,7 +83,7 @@ async function loadCommunityStreams() {
  * Render a stream card
  */
 function renderStreamCard(stream, isOwner = false) {
-    const statusClass = stream.is_live ? 'status-live' : 'status-offline';
+    const statusClass = stream.is_live ? 'live' : 'offline';
     const statusText = stream.is_live ? 'LIVE' : 'Offline';
     const viewerCount = stream.is_live ? `${stream.viewer_count || 0} viewers` : '';
     const publicBadge = stream.is_public ? '<span class="badge badge-public">Public</span>' : '<span class="badge badge-private">Private</span>';
@@ -254,7 +254,7 @@ async function showStreamDetails(streamId) {
             <div class="stream-details">
                 <div class="info-section">
                     <h4>Stream Status</h4>
-                    <p class="stream-status ${stream.is_live ? 'status-live' : 'status-offline'}">
+                    <p class="stream-status ${stream.is_live ? 'live' : 'offline'}">
                         ${stream.is_live ? 'LIVE' : 'Offline'}
                         ${stream.is_live ? `(${stream.viewer_count || 0} viewers)` : ''}
                     </p>

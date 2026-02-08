@@ -285,7 +285,7 @@ srt: no
 paths:
   all_others:
     runOnNotReady: |-
-      curl -s -X POST {portal_url}/api/stream/event -H "Content-Type: application/json" -d '{{"event":"disconnect","path":"$MTX_PATH"}}'
+      curl -sk -X POST https://127.0.0.1:443/api/stream/event -H "Content-Type: application/json" -d '{{"event":"disconnect","path":"$MTX_PATH"}}'
 '''
         return yaml_content
 

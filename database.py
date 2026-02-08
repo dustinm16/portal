@@ -1822,6 +1822,16 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def reset_all_streams_offline(self) -> int:
+        """Reset all streams to offline. Called on server startup."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "UPDATE user_streams SET is_live = 0, viewer_count = 0, updated_at = ? WHERE is_live = 1",
+            (now,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
     async def set_stream_live(self, stream_id: int, is_live: bool) -> bool:
         """Set stream live status and update timestamps."""
         now = datetime.now(timezone.utc).isoformat()
