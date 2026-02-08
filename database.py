@@ -1101,7 +1101,11 @@ class Database:
         return cursor.rowcount > 0
 
     async def delete_service(self, service_id: int) -> bool:
-        """Delete a service by ID."""
+        """Delete a service by ID (also cleans up associated logs)."""
+        # Clean up service_logs (FK references managed_services, not services)
+        await self.conn.execute(
+            "DELETE FROM service_logs WHERE service_id = ?", (service_id,)
+        )
         cursor = await self.conn.execute(
             "DELETE FROM services WHERE id = ?", (service_id,)
         )

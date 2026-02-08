@@ -12,11 +12,11 @@ import sys
 import uuid
 import weakref
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import time
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
+import re
 
 import aiohttp
 import asyncssh
@@ -276,7 +276,6 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
         TokenPayload if valid, None otherwise
     """
     from auth import parse_api_key, verify_api_key
-    from datetime import datetime, timezone
 
     # Parse key to get prefix
     prefix = parse_api_key(api_key)
@@ -697,16 +696,14 @@ async def http_update_service(request: web.Request) -> web.Response:
             scopes = [s.strip() for s in scopes.split(",") if s.strip()]
         updates["required_scopes"] = ",".join(scopes)
     if "config" in data:
-        import json as json_module
-        updates["config"] = json_module.dumps(data["config"])
+        updates["config"] = json.dumps(data["config"])
 
     # Managed service fields
     for field in ["display_name", "description", "binary_path", "working_dir"]:
         if field in data:
             updates[field] = data[field]
     if "ports" in data:
-        import json as json_module
-        updates["ports"] = json_module.dumps(data["ports"])
+        updates["ports"] = json.dumps(data["ports"])
 
     if not updates:
         return web.json_response({"error": "No fields to update"}, status=400)
@@ -957,7 +954,10 @@ async def http_get_service_logs(request: web.Request) -> web.Response:
         return web.json_response({"error": "Only managed services have logs"}, status=400)
 
     # Get query params
-    limit = min(int(request.query.get("limit", 100)), 1000)
+    try:
+        limit = min(int(request.query.get("limit", 100)), 1000)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit parameter"}, status=400)
     level = request.query.get("level")
 
     logs = await db.get_service_logs(service_id, limit=limit, level=level)
@@ -1096,8 +1096,11 @@ async def http_get_logs(request: web.Request) -> web.Response:
 
     # Get query params
     filename = request.query.get("file", "portal.log")
-    lines = int(request.query.get("lines", 200))
-    offset = int(request.query.get("offset", 0))
+    try:
+        lines = int(request.query.get("lines", 200))
+        offset = int(request.query.get("offset", 0))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid lines/offset parameter"}, status=400)
 
     lines = min(lines, 1000)  # Limit to 1000 lines
 
@@ -1286,7 +1289,10 @@ async def http_get_authorized_keys(request: web.Request) -> web.Response:
     if user_id:
         if not token.has_scope("admin") and not token.has_scope("*"):
             return forbidden_response(request)
-        user_id = int(user_id)
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid user_id parameter"}, status=400)
     else:
         user_id = token.user_id
 
@@ -1360,7 +1366,6 @@ async def http_create_api_key(request: web.Request) -> web.Response:
         try:
             expires_days = int(expires_days)
             if expires_days > 0:
-                from datetime import datetime, timezone, timedelta
                 expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
         except ValueError:
             pass
@@ -1533,6 +1538,12 @@ CONNECTION_TYPES = {
 
     # Generic
     "custom": {"name": "Custom", "icon": "link", "default_port": None, "plugin": "tcp_tunnel"},
+}
+
+# Allowed shells for terminal and SSH connections
+ALLOWED_SHELLS = {
+    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
+    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
 }
 
 
@@ -2905,7 +2916,10 @@ async def http_get_metrics_time_series(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    hours = int(request.query.get("hours", "1"))
+    try:
+        hours = int(request.query.get("hours", "1"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid hours parameter"}, status=400)
     hours = min(max(hours, 1), 24)  # Clamp between 1 and 24
 
     return web.json_response({
@@ -2922,7 +2936,10 @@ async def http_get_metrics_top(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    limit = int(request.query.get("limit", "10"))
+    try:
+        limit = int(request.query.get("limit", "10"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit parameter"}, status=400)
     limit = min(max(limit, 1), 50)  # Clamp between 1 and 50
 
     return web.json_response({
@@ -2950,7 +2967,6 @@ async def http_shodan_lookup(request: web.Request) -> web.Response:
         return web.json_response({"error": "IP address required"}, status=400)
 
     # Validate IP format
-    import re
     if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip):
         return web.json_response({"error": "Invalid IP address format"}, status=400)
 
@@ -2980,7 +2996,10 @@ async def http_shodan_search(request: web.Request) -> web.Response:
     if not query:
         return web.json_response({"error": "Query parameter required"}, status=400)
 
-    limit = int(request.query.get("limit", "10"))
+    try:
+        limit = int(request.query.get("limit", "10"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit parameter"}, status=400)
     limit = min(max(limit, 1), 100)
 
     results = await shodan_client.search(query, limit)
@@ -3210,7 +3229,10 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
     username = data.get("username", "").strip()
     remote_path = data.get("remote_path", "").strip()
     auth_method = data.get("auth_method", "password")
-    port = int(data.get("port", 22))
+    try:
+        port = int(data.get("port", 22))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid port"}, status=400)
 
     if not host or not username:
         return web.json_response({"error": "Host and username are required"}, status=400)
@@ -3439,7 +3461,6 @@ async def http_vuln_scan_host(request: web.Request) -> web.Response:
         return web.json_response({"error": "Host required"}, status=400)
 
     # Validate host format (IP or hostname)
-    import re
     ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
     hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
 
@@ -3546,7 +3567,10 @@ async def http_vuln_search_cves(request: web.Request) -> web.Response:
     if not keyword or len(keyword) < 2:
         return web.json_response({"error": "Search query must be at least 2 characters"}, status=400)
 
-    limit = min(int(request.query.get("limit", "20")), 50)
+    try:
+        limit = min(int(request.query.get("limit", "20")), 50)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit parameter"}, status=400)
 
     try:
         results = await vulnerability_scanner.search_cves(keyword, limit)
@@ -3630,7 +3654,6 @@ async def http_vuln_lookup_cve(request: web.Request) -> web.Response:
         return web.json_response({"error": "CVE ID required"}, status=400)
 
     # Validate CVE format
-    import re
     if not re.match(r'^CVE-\d{4}-\d+$', cve_id) and not cve_id.startswith("CVE-GENERIC-"):
         # Also allow INFO- prefixed IDs for informational findings
         if not cve_id.startswith("INFO-") and not cve_id.startswith("CVE-WEAK-"):
@@ -3771,7 +3794,10 @@ async def http_activity_feed(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    limit = min(int(request.query.get("limit", "20")), 50)
+    try:
+        limit = min(int(request.query.get("limit", "20")), 50)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit parameter"}, status=400)
     is_admin = token.has_scope("admin") or token.has_scope("*")
 
     if is_admin:
@@ -4208,7 +4234,10 @@ async def http_managed_service_logs(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     # Parse query params
-    limit = int(request.query.get("limit", 100))
+    try:
+        limit = int(request.query.get("limit", 100))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit parameter"}, status=400)
     level = request.query.get("level")
 
     logs = await _service_manager.get_service_logs(int(service_id), limit, level)
@@ -4391,8 +4420,6 @@ async def handle_local_terminal_ws(
         return
 
     # Support shell selection via query parameter
-    ALLOWED_SHELLS = {"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
-                      "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh"}
     requested_shell = ws._req.query.get("shell", "") if hasattr(ws, '_req') else ""
     if requested_shell and requested_shell in ALLOWED_SHELLS and os.path.isfile(requested_shell):
         shell = requested_shell
@@ -4427,8 +4454,6 @@ async def handle_user_connection_ws(
     client_ip: str
 ) -> None:
     """Handle WebSocket for user-defined connections using plugin system."""
-    import re
-
     # Extract connection ID from path
     match = re.match(r"^/ws/user-connection/(\d+)$", path)
     if not match:
@@ -4449,8 +4474,7 @@ async def handle_user_connection_ws(
     conn_type = connection.get("type", "custom")
     config = connection.get("config", {})
     if isinstance(config, str):
-        import json as json_module
-        config = json_module.loads(config) if config else {}
+        config = json.loads(config) if config else {}
 
     # Get plugin from CONNECTION_TYPES mapping
     type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
@@ -4468,9 +4492,9 @@ async def handle_user_connection_ws(
             logger.info(f"Using SSH key auth for connection {conn_id}")
         elif not config.get("auth_method"):
             config["auth_method"] = "password"
-        # Allow shell override from query parameter
+        # Allow shell override from query parameter (validated against whitelist)
         shell_override = ws._req.query.get("shell", "") if hasattr(ws, "_req") else ""
-        if shell_override:
+        if shell_override and shell_override in ALLOWED_SHELLS:
             config["shell"] = shell_override
     elif plugin_name == "http_proxy":
         # HTTP proxy: build target_url if not set
@@ -4515,8 +4539,6 @@ async def handle_relay_ws(
     client_ip: str
 ) -> None:
     """Handle WebSocket relay to internal services via plugins."""
-    import re
-
     logger.debug(f"handle_relay_ws called with path: {path}")
 
     # Check for /ws/terminal/{id}, /ws/vnc/{id}, /ws/media/{id}, /ws/spice/{id}, /ws/proxmox/{id} patterns
@@ -5142,7 +5164,6 @@ async def http_create_chat_channel(request: web.Request) -> web.Response:
         return web.json_response({"error": "Channel name is required"}, status=400)
 
     # Validate channel name
-    import re
     if not re.match(r'^[a-z0-9-]+$', name):
         return web.json_response({
             "error": "Channel name must be lowercase letters, numbers, and hyphens only"
@@ -5456,7 +5477,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             channel = await db.get_chat_channel(stream["chat_channel_id"])
                         elif channel_id:
                             # Direct channel ID lookup
-                            channel = await db.get_chat_channel(int(channel_id))
+                            try:
+                                channel = await db.get_chat_channel(int(channel_id))
+                            except (ValueError, TypeError):
+                                await ws.send_json({"type": "error", "message": "Invalid channel ID"})
+                                continue
                             if channel:
                                 stream = await db.get_stream_by_chat_channel(channel["id"])
                         else:
@@ -5658,7 +5683,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         reply_to_id = data.get("reply_to")
                         reply_preview = None
                         if reply_to_id:
-                            reply_to_id = int(reply_to_id)
+                            try:
+                                reply_to_id = int(reply_to_id)
+                            except (ValueError, TypeError):
+                                reply_to_id = None
+                        if reply_to_id:
                             replied_msg = await db.get_chat_message(reply_to_id)
                             if replied_msg and replied_msg["channel_id"] == channel["id"]:
                                 r_username = replied_msg["username"]
@@ -5720,7 +5749,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         message_id = data.get("message_id")
                         if not message_id:
                             continue
-                        message_id = int(message_id)
+                        try:
+                            message_id = int(message_id)
+                        except (ValueError, TypeError):
+                            continue
                         # Admins/mods can delete any; users delete own only
                         is_mod = user_role in ("admin", "superadmin", "moderator")
                         if is_mod:
@@ -6130,7 +6162,6 @@ async def http_update_user_nickname(request: web.Request) -> web.Response:
         if len(nickname) < 2 or len(nickname) > 32:
             return web.json_response({"error": "Nickname must be 2-32 characters"}, status=400)
         # Only allow alphanumeric, spaces, underscores, dashes
-        import re
         if not re.match(r'^[\w\s\-]+$', nickname):
             return web.json_response({"error": "Nickname can only contain letters, numbers, spaces, underscores and dashes"}, status=400)
 
@@ -7182,8 +7213,6 @@ async def list_services_cli() -> None:
 
 def show_invite_code() -> None:
     """Show current daily invite code."""
-    from datetime import datetime, timezone
-
     code = get_daily_invite_code()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
