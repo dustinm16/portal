@@ -1491,7 +1491,10 @@ def redact_connection_config(connection: dict) -> dict:
     conn = dict(connection)
     config = conn.get("config", {})
     if isinstance(config, str):
-        config = json.loads(config) if config else {}
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
 
     redacted_config = {}
     for key, value in config.items():
@@ -3085,7 +3088,10 @@ async def _connect_vod_sftp(user_id: int):
     if not storage:
         return None, None, "No VOD storage configured"
 
-    config = json.loads(storage.get("config", "{}"))
+    try:
+        config = json.loads(storage.get("config", "{}"))
+    except json.JSONDecodeError:
+        config = {}
     connect_opts = {
         "host": storage["host"],
         "port": storage["port"] or 22,
@@ -3125,7 +3131,10 @@ async def http_get_vod_storage(request: web.Request) -> web.Response:
         return web.json_response({"storage": None})
 
     # Redact sensitive fields - strip config entirely, expose only flags
-    config = json.loads(storage.get("config", "{}"))
+    try:
+        config = json.loads(storage.get("config", "{}"))
+    except json.JSONDecodeError:
+        config = {}
     redacted = dict(storage)
     del redacted["config"]
     redacted["has_password"] = bool(config.get("password"))
@@ -3175,7 +3184,10 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
         if password == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                existing_config = json.loads(existing.get("config", "{}"))
+                try:
+                    existing_config = json.loads(existing.get("config", "{}"))
+                except json.JSONDecodeError:
+                    existing_config = {}
                 password = existing_config.get("password", "")
         config["password"] = password
     elif auth_method == "key":
@@ -3184,7 +3196,10 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
         if private_key == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                existing_config = json.loads(existing.get("config", "{}"))
+                try:
+                    existing_config = json.loads(existing.get("config", "{}"))
+                except json.JSONDecodeError:
+                    existing_config = {}
                 private_key = existing_config.get("private_key", "")
         config["private_key"] = private_key
 
@@ -3250,7 +3265,10 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
         if private_key == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                existing_config = json.loads(existing.get("config", "{}"))
+                try:
+                    existing_config = json.loads(existing.get("config", "{}"))
+                except json.JSONDecodeError:
+                    existing_config = {}
                 private_key = existing_config.get("private_key", "")
         if private_key:
             try:
@@ -3262,7 +3280,10 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
         if password == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                existing_config = json.loads(existing.get("config", "{}"))
+                try:
+                    existing_config = json.loads(existing.get("config", "{}"))
+                except json.JSONDecodeError:
+                    existing_config = {}
                 password = existing_config.get("password", "")
         connect_opts["password"] = password
 
@@ -4474,7 +4495,10 @@ async def handle_user_connection_ws(
     conn_type = connection.get("type", "custom")
     config = connection.get("config", {})
     if isinstance(config, str):
-        config = json.loads(config) if config else {}
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
 
     # Get plugin from CONNECTION_TYPES mapping
     type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
@@ -7289,7 +7313,6 @@ async def list_users_cli() -> None:
 def shell_cli(shell: str = None) -> None:
     """Start a local interactive shell."""
     import pty
-    import os
 
     shell = shell or os.environ.get("SHELL", "/bin/bash")
 
