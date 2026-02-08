@@ -144,9 +144,9 @@ Permission Hierarchy:
 
 ```
 /opt/portal/
-├── server.py              # Main aiohttp server (routes, handlers)
-├── database.py            # SQLite async database layer
-├── auth.py                # JWT/API key authentication
+├── server.py              # Main aiohttp server (~8100 lines)
+├── database.py            # SQLite async database layer (~2500 lines)
+├── auth.py                # JWT/API key authentication (~450 lines)
 ├── config.py              # Environment configuration
 ├── logger.py              # Logging with rotation
 ├── ssh_keys.py            # SSH key generation/management
@@ -174,21 +174,24 @@ Permission Hierarchy:
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   └── mediamtx.py        # MediaMTX process manager
 │
-├── static/
+├── static/                # 16 HTML pages, 8 JS modules, 1 CSS file
 │   ├── index.html         # Dashboard
 │   ├── login.html         # Login page
 │   ├── admin.html         # Admin panel
-│   ├── chat.html          # Community chat
+│   ├── chat.html          # Community chat (mobile sidebar toggle)
 │   ├── streams.html       # Community streams
+│   ├── live.html          # Public live streams (unauthenticated)
+│   ├── watch.html         # Stream viewer (HLS playback)
 │   ├── terminal.html      # Terminal UI
 │   ├── vnc.html           # VNC viewer
 │   ├── spice.html         # SPICE viewer
 │   ├── proxmox.html       # Proxmox dashboard
+│   ├── mediamtx.html      # MediaMTX management
 │   ├── github.html        # GitHub browser
-│   ├── media.html         # Media player
-│   ├── watch.html         # Stream viewer (HLS playback)
 │   ├── api-docs.html      # Interactive API documentation
-│   ├── css/portal.css     # Shared styles
+│   ├── about.html         # Feature guide & docs
+│   ├── unauthorized.html  # Auth error page
+│   ├── css/portal.css     # Shared styles (~3100 lines, 6 responsive breakpoints)
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
