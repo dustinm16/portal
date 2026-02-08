@@ -528,8 +528,8 @@ notifStyle.textContent = `
     }
     .notification-dropdown {
         position: fixed;
-        z-index: 10000;
-        width: 320px;
+        z-index: 10002;
+        width: min(320px, calc(100vw - 1rem));
         max-height: 400px;
         background: var(--bg-secondary, #1e1e2e);
         border: 1px solid var(--card-border, rgba(255,255,255,0.1));

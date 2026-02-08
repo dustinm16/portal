@@ -687,6 +687,27 @@ Open Relay Portal is designed with privacy and security as core principles:
 
 ---
 
+## Frontend Responsiveness
+
+The portal uses a mobile-first enhancement strategy with progressive breakpoints:
+
+| Breakpoint | Target | Key Changes |
+|-----------|--------|-------------|
+| `pointer: coarse` | Touch devices | 44px min touch targets, 16px form font (prevents iOS zoom), tap highlight |
+| `900px` | Tablets | Stream viewer stacks, chat sidebars become overlay panels |
+| `768px` | Small tablets | Dashboard stacks, hamburger nav, sidebar below content, modals resize |
+| `600px` | Large phones | Form rows stack, grids single-column, VOD metadata hidden |
+| `480px` | Phones | Compact cards/modals/navbar, log pre-wrap |
+| `360px` | Small phones | Stats single-column, tabs wrap, brand text hidden (icon only) |
+
+Additional mobile features:
+- **Chat mobile sidebar**: Channels/Users toggle buttons appear at <900px with overlay dismiss
+- **Notification dropdown**: Responsive width `min(320px, calc(100vw - 1rem))`
+- **Table scroll**: `.table-responsive` wrapper and `overflow-x: auto` on docs content
+- **Z-index stacking**: Modals (10001) > Notification dropdown (10002) > Session banner (10000)
+
+---
+
 ## Configuration
 
 ### Environment Variables

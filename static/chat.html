@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Chat</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=30">
+    <link rel="stylesheet" href="/static/css/portal.css?v=33">
     <style>
         html, body {
             height: 100%;
@@ -664,7 +664,49 @@
             }
             .chat-sidebar, .users-sidebar {
                 display: none;
+                position: fixed;
+                top: 70px;
+                bottom: 0;
+                z-index: 100;
+                width: 240px;
+                box-shadow: 4px 0 20px rgba(0,0,0,0.4);
             }
+            .chat-sidebar.mobile-open {
+                display: flex;
+                left: 0;
+            }
+            .users-sidebar.mobile-open {
+                display: flex;
+                right: 0;
+            }
+            .mobile-sidebar-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.5);
+                z-index: 99;
+            }
+            .mobile-toggle-bar {
+                display: flex !important;
+            }
+        }
+        .mobile-toggle-bar {
+            display: none;
+            gap: 0.5rem;
+            padding: 0.35rem 0.75rem;
+            background: rgba(0,0,0,0.15);
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .mobile-toggle-bar button {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: var(--text-secondary);
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .mobile-toggle-bar button:hover {
+            background: rgba(255,255,255,0.15);
         }
 
         /* Typing indicator */
@@ -1239,6 +1281,10 @@
 
         <!-- Main Chat Area -->
         <main class="chat-main">
+            <div class="mobile-toggle-bar">
+                <button onclick="toggleMobileSidebar('channels')">Channels</button>
+                <button onclick="toggleMobileSidebar('users')">Users</button>
+            </div>
             <div class="chat-header">
                 <div class="chat-header-top">
                     <h2 id="channel-name">general</h2>
@@ -1398,8 +1444,28 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=21"></script>
+    <script src="/static/js/portal.js?v=22"></script>
     <script>
+        // Mobile sidebar toggle
+        function toggleMobileSidebar(which) {
+            const channels = document.querySelector('.chat-sidebar');
+            const users = document.querySelector('.users-sidebar');
+            const isOpen = which === 'channels' ? channels.classList.contains('mobile-open') : users.classList.contains('mobile-open');
+            closeMobileSidebars();
+            if (!isOpen) {
+                const target = which === 'channels' ? channels : users;
+                target.classList.add('mobile-open');
+                const overlay = document.createElement('div');
+                overlay.className = 'mobile-sidebar-overlay';
+                overlay.onclick = closeMobileSidebars;
+                document.body.appendChild(overlay);
+            }
+        }
+        function closeMobileSidebars() {
+            document.querySelectorAll('.chat-sidebar, .users-sidebar').forEach(el => el.classList.remove('mobile-open'));
+            document.querySelectorAll('.mobile-sidebar-overlay').forEach(el => el.remove());
+        }
+
         let ws = null;
         let currentChannel = 'general';
         let currentUser = null;

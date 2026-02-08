@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - About</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=30">
+    <link rel="stylesheet" href="/static/css/portal.css?v=33">
     <style>
         .docs-container {
             max-width: 1200px;
@@ -52,6 +52,8 @@
         .docs-content {
             flex: 1;
             min-width: 0;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
         .docs-content h1 {
             color: var(--text-primary);
@@ -109,8 +111,10 @@
         }
         .param-table {
             width: 100%;
+            min-width: 400px;
             border-collapse: collapse;
             margin: 1rem 0;
+            display: table;
         }
         .param-table th, .param-table td {
             text-align: left;
@@ -261,6 +265,7 @@
                 <h4>Security</h4>
                 <ul>
                     <li><a href="#security">Security Overview</a></li>
+                    <li><a href="#mobile">Mobile &amp; Accessibility</a></li>
                 </ul>
             </nav>
 
@@ -801,11 +806,36 @@
                     <li><strong>Invite-Only Registration</strong> &mdash; New accounts require a daily invite code.</li>
                 </ul>
 
+                <!-- Mobile Compatibility -->
+                <h2 id="mobile">Mobile &amp; Accessibility</h2>
+                <p>The portal is fully responsive and optimized for mobile devices, tablets, and desktop browsers.</p>
+
+                <h3>Responsive Breakpoints</h3>
+                <table class="param-table">
+                    <thead><tr><th>Breakpoint</th><th>Target</th><th>Key Changes</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>900px</code></td><td>Tablets</td><td>Stream viewer stacks, chat sidebars become overlays</td></tr>
+                        <tr><td><code>768px</code></td><td>Small tablets</td><td>Hamburger nav, dashboard stacks, modals resize</td></tr>
+                        <tr><td><code>600px</code></td><td>Large phones</td><td>Forms stack, grids single-column</td></tr>
+                        <tr><td><code>480px</code></td><td>Phones</td><td>Compact cards, modals, and navbar</td></tr>
+                        <tr><td><code>360px</code></td><td>Small phones</td><td>Stats single-column, tabs wrap</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Touch &amp; Accessibility</h3>
+                <ul>
+                    <li><strong>44px Touch Targets</strong> &mdash; All buttons and interactive elements meet WCAG minimum size on touch devices.</li>
+                    <li><strong>iOS Zoom Prevention</strong> &mdash; Form inputs use 16px font to prevent unwanted auto-zoom.</li>
+                    <li><strong>Reduced Motion</strong> &mdash; Animations are disabled when the user prefers reduced motion.</li>
+                    <li><strong>High Contrast</strong> &mdash; Enhanced borders and contrast in high-contrast mode.</li>
+                    <li><strong>Focus Indicators</strong> &mdash; Visible focus rings on all interactive elements for keyboard navigation.</li>
+                </ul>
+
             </main>
         </div>
     </div>
 
-    <script src="/static/js/portal.js"></script>
+    <script src="/static/js/portal.js?v=22"></script>
     <script>
         document.addEventListener('DOMContentLoaded', async () => {
             // Load user info for navbar and admin visibility
