@@ -458,6 +458,23 @@ MIGRATIONS = [
     "ALTER TABLE user_streams ADD COLUMN public_key_hash TEXT",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_streams_stream_key_hash ON user_streams(stream_key_hash)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_streams_public_key_hash ON user_streams(public_key_hash)",
+    # Connection usage tracking and pinning
+    "ALTER TABLE user_connections ADD COLUMN last_used_at TEXT",
+    "ALTER TABLE user_connections ADD COLUMN use_count INTEGER DEFAULT 0",
+    "ALTER TABLE user_connections ADD COLUMN is_pinned INTEGER DEFAULT 0",
+    # Notifications system
+    """CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT,
+        data TEXT DEFAULT '{}',
+        is_read INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at DESC)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1527,13 +1544,13 @@ class Database:
         return None
 
     async def get_user_connections(self, user_id: int) -> list[dict]:
-        """Get all connections for a user."""
+        """Get all connections for a user (pinned first, then by last used)."""
         cursor = await self.conn.execute(
             """SELECT uc.*, sk.name as ssh_key_name, sk.fingerprint as ssh_key_fingerprint
                FROM user_connections uc
                LEFT JOIN ssh_keys sk ON uc.ssh_key_id = sk.id
                WHERE uc.user_id = ?
-               ORDER BY uc.name""",
+               ORDER BY uc.is_pinned DESC, uc.last_used_at DESC NULLS LAST, uc.name""",
             (user_id,)
         )
         rows = await cursor.fetchall()
@@ -1589,6 +1606,34 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def record_connection_usage(self, conn_id: int, user_id: int) -> bool:
+        """Record that a connection was used (increment count and set timestamp)."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """UPDATE user_connections SET use_count = use_count + 1, last_used_at = ?
+               WHERE id = ? AND user_id = ?""",
+            (now, conn_id, user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def toggle_connection_pin(self, conn_id: int, user_id: int) -> Optional[bool]:
+        """Toggle pin status for a connection. Returns new pin state or None if not found."""
+        cursor = await self.conn.execute(
+            "SELECT is_pinned FROM user_connections WHERE id = ? AND user_id = ?",
+            (conn_id, user_id)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        new_state = 0 if row["is_pinned"] else 1
+        await self.conn.execute(
+            "UPDATE user_connections SET is_pinned = ? WHERE id = ? AND user_id = ?",
+            (new_state, conn_id, user_id)
+        )
+        await self.conn.commit()
+        return bool(new_state)
 
     async def get_user_connections_by_type(self, user_id: int, conn_type: str) -> list[dict]:
         """Get all connections of a specific type for a user."""
@@ -2401,6 +2446,59 @@ class Database:
             )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # Notification operations
+
+    async def create_notification(self, user_id: int, type: str, title: str,
+                                   message: str = "", data: dict = None) -> int:
+        """Create a notification for a user. Returns notification ID."""
+        cursor = await self.conn.execute(
+            """INSERT INTO notifications (user_id, type, title, message, data)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, type, title, message, json.dumps(data or {}))
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_notifications(self, user_id: int, unread_only: bool = False,
+                                 limit: int = 50) -> list[dict]:
+        """Get notifications for a user."""
+        query = "SELECT * FROM notifications WHERE user_id = ?"
+        params = [user_id]
+        if unread_only:
+            query += " AND is_read = 0"
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = await self.conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_unread_notification_count(self, user_id: int) -> int:
+        """Get count of unread notifications."""
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row["count"] if row else 0
+
+    async def mark_notification_read(self, notification_id: int, user_id: int) -> bool:
+        """Mark a single notification as read."""
+        cursor = await self.conn.execute(
+            "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+            (notification_id, user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def mark_all_notifications_read(self, user_id: int) -> int:
+        """Mark all notifications as read for a user. Returns count updated."""
+        cursor = await self.conn.execute(
+            "UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0",
+            (user_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
 
 
 # Global database instance

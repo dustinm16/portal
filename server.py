@@ -20,6 +20,7 @@ import re
 
 import aiohttp
 import asyncssh
+import psutil
 from aiohttp import web, WSMsgType
 
 from config import Config
@@ -110,6 +111,13 @@ _online_users: dict[int, int] = {}
 
 # Server start time for uptime tracking
 _server_start_time: datetime = datetime.now(timezone.utc)
+
+# Notification subscribers: user_id -> set of WebSocket connections
+notification_subscribers: dict[int, set] = {}
+
+# Active VOD recordings: stream_id -> {process, local_path, filename, user_id, stream_name, started_at}
+active_recordings: dict[int, dict] = {}
+VOD_TEMP_DIR = "/tmp/portal_vods"
 
 # Static files cache
 STATIC_DIR = Path(__file__).parent / "static"
@@ -1763,6 +1771,22 @@ async def http_delete_user_connection(request: web.Request) -> web.Response:
         return web.json_response({"error": "Connection not found"}, status=404)
 
 
+async def http_toggle_connection_pin(request: web.Request) -> web.Response:
+    """Toggle pin status for a connection."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    conn_id = request.match_info.get("id")
+    if not conn_id or not conn_id.isdigit():
+        return web.json_response({"error": "Invalid connection ID"}, status=400)
+
+    result = await db.toggle_connection_pin(int(conn_id), token.user_id)
+    if result is None:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    return web.json_response({"is_pinned": result})
+
+
 async def http_get_connection_types(request: web.Request) -> web.Response:
     """Get available connection types with plugin config schemas."""
     token = await authenticate_request(request)
@@ -1892,7 +1916,7 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
 
 
 async def http_get_user_stream(request: web.Request) -> web.Response:
-    """Get a specific stream by ID.
+    """Get a specific stream by numeric ID or public key (pub_xxx).
 
     Key visibility rules:
     - Owner: sees both stream_key (for OBS) and public_key (for sharing)
@@ -1904,12 +1928,16 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     stream_id = request.match_info.get("id")
-    try:
-        stream_id = int(stream_id)
-    except (ValueError, TypeError):
-        return web.json_response({"error": "Invalid stream ID"}, status=400)
 
-    stream = await db.get_user_stream(stream_id)
+    # Accept either numeric ID or public key (pub_xxx)
+    stream = None
+    if stream_id and stream_id.startswith("pub_"):
+        stream = await db.get_stream_by_public_key(stream_id)
+    else:
+        try:
+            stream = await db.get_user_stream(int(stream_id))
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid stream ID"}, status=400)
 
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
@@ -2293,6 +2321,252 @@ async def http_live_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+# =============================================================================
+# VOD Recording Pipeline — Chunked recording with live SFTP offload
+#
+# Architecture:
+#   1. On stream publish, ffmpeg segments the HLS input into 5-minute MKV
+#      chunks in a local staging directory.
+#   2. A background uploader task polls for completed chunks and uploads
+#      each to the user's remote SFTP storage, deleting the local copy
+#      once confirmed.
+#   3. On stream disconnect, ffmpeg is stopped, the final chunk is
+#      uploaded, and the local staging directory is cleaned up.
+#
+# Remote folder structure:
+#   {remote_path}/{StreamName}/{YYYY-MM-DD_HH-MM-SS}/
+#     chunk_000.mkv
+#     chunk_001.mkv
+#     ...
+# =============================================================================
+
+VOD_SEGMENT_DURATION = 300  # seconds per chunk (5 minutes)
+
+
+async def start_vod_recording(stream: dict, stream_key: str) -> None:
+    """Start chunked VOD recording with live SFTP offload."""
+    stream_id = stream["id"]
+    user_id = stream["user_id"]
+
+    if stream_id in active_recordings:
+        return
+
+    # Only record if user has VOD storage configured
+    storage = await db.get_vod_storage(user_id)
+    if not storage:
+        logger.debug(f"No VOD storage for user {user_id}, skipping recording")
+        return
+
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        logger.warning("MediaMTX not configured, cannot start VOD recording")
+        return
+
+    hls_port = mtx_config.get("hls_port", 8888)
+    hls_url = f"https://127.0.0.1:{hls_port}/live/{stream_key}/index.m3u8"
+
+    # Build paths
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    safe_name = re.sub(r'[^\w\s-]', '', stream.get("name", "stream")).strip().replace(' ', '_')[:50] or "stream"
+    session_dir = os.path.join(VOD_TEMP_DIR, f"{stream_id}_{timestamp}")
+    os.makedirs(session_dir, exist_ok=True)
+
+    remote_base = storage["remote_path"].rstrip("/")
+    remote_session_dir = f"{remote_base}/{safe_name}/{timestamp}"
+
+    # Wait for MediaMTX HLS endpoint to be ready
+    await asyncio.sleep(3)
+
+    # ffmpeg segment muxer: lossless remux into 5-minute MKV chunks
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", hls_url,
+        "-c", "copy",
+        "-f", "segment",
+        "-segment_time", str(VOD_SEGMENT_DURATION),
+        "-segment_format", "matroska",
+        "-reset_timestamps", "1",
+        os.path.join(session_dir, "chunk_%03d.mkv"),
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        logger.error("ffmpeg not found, cannot start VOD recording")
+        os.rmdir(session_dir)
+        return
+    except Exception as e:
+        logger.error(f"Failed to start VOD recording: {e}")
+        os.rmdir(session_dir)
+        return
+
+    stop_event = asyncio.Event()
+    recording = {
+        "process": process,
+        "session_dir": session_dir,
+        "remote_session_dir": remote_session_dir,
+        "user_id": user_id,
+        "stream_name": stream.get("name", ""),
+        "started_at": datetime.now(timezone.utc),
+        "stop_event": stop_event,
+        "upload_task": None,
+        "uploaded": set(),  # local paths already uploaded
+    }
+
+    # Start background chunk uploader
+    recording["upload_task"] = asyncio.create_task(
+        _vod_chunk_uploader(recording)
+    )
+
+    active_recordings[stream_id] = recording
+    logger.info(f"VOD recording started: {safe_name}/{timestamp}/ (chunks every {VOD_SEGMENT_DURATION}s)")
+
+
+async def _vod_chunk_uploader(recording: dict) -> None:
+    """Background loop that uploads completed chunks to SFTP during broadcast."""
+    stop_event: asyncio.Event = recording["stop_event"]
+    session_dir = recording["session_dir"]
+    uploaded: set = recording["uploaded"]
+
+    while not stop_event.is_set():
+        await _do_vod_chunk_upload(recording, final=False)
+        # Wait up to 30 seconds or until stop signal
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            pass
+
+    # Final pass — ffmpeg has exited, all chunks are complete
+    await _do_vod_chunk_upload(recording, final=True)
+
+
+async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
+    """Upload pending completed chunks to SFTP."""
+    session_dir = recording["session_dir"]
+    remote_dir = recording["remote_session_dir"]
+    user_id = recording["user_id"]
+    uploaded: set = recording["uploaded"]
+
+    # Discover chunk files
+    try:
+        chunk_files = sorted(
+            p for p in Path(session_dir).glob("chunk_*.mkv")
+        )
+    except OSError:
+        return
+
+    if not chunk_files:
+        return
+
+    # While recording, the last file is still being written by ffmpeg
+    pending = chunk_files if final else chunk_files[:-1]
+    pending = [p for p in pending if str(p) not in uploaded and p.stat().st_size > 0]
+
+    if not pending:
+        return
+
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if error:
+        logger.error(f"VOD chunk upload SFTP connect failed: {error}")
+        return
+
+    try:
+        # Ensure remote directory tree exists
+        await _sftp_makedirs(sftp, remote_dir)
+
+        for local_path in pending:
+            remote_path = f"{remote_dir}/{local_path.name}"
+            try:
+                await sftp.put(str(local_path), remote_path)
+                uploaded.add(str(local_path))
+                local_path.unlink()
+                logger.info(f"VOD chunk uploaded: {remote_path}")
+            except Exception as e:
+                logger.error(f"VOD chunk upload failed ({local_path.name}): {e}")
+    finally:
+        conn.close()
+
+
+async def _sftp_makedirs(sftp, path: str) -> None:
+    """Recursively create remote directories (like os.makedirs)."""
+    parts = path.strip("/").split("/")
+    current = ""
+    for part in parts:
+        current += f"/{part}"
+        try:
+            await sftp.stat(current)
+        except asyncssh.SFTPNoSuchFile:
+            try:
+                await sftp.mkdir(current)
+            except asyncssh.SFTPError:
+                pass  # May already exist from race condition
+
+
+async def stop_vod_recording(stream_id: int) -> None:
+    """Stop recording, finalize last chunk, upload remaining, clean up."""
+    recording = active_recordings.pop(stream_id, None)
+    if not recording:
+        return
+
+    process = recording["process"]
+
+    # Gracefully stop ffmpeg (SIGINT finalizes MKV chunk headers)
+    try:
+        process.send_signal(signal.SIGINT)
+        await asyncio.wait_for(process.wait(), timeout=15)
+    except asyncio.TimeoutError:
+        logger.warning("ffmpeg did not exit cleanly, terminating")
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+    except ProcessLookupError:
+        pass
+
+    # Signal uploader to do final pass then exit
+    recording["stop_event"].set()
+
+    # Wait for uploader to finish final upload
+    upload_task = recording.get("upload_task")
+    if upload_task:
+        try:
+            await asyncio.wait_for(upload_task, timeout=120)
+        except asyncio.TimeoutError:
+            logger.warning("VOD final upload timed out")
+            upload_task.cancel()
+        except asyncio.CancelledError:
+            pass
+
+    # Clean up local staging directory
+    session_dir = recording["session_dir"]
+    try:
+        remaining = list(Path(session_dir).iterdir())
+        if remaining:
+            logger.warning(f"VOD staging dir has {len(remaining)} leftover file(s): {session_dir}")
+        else:
+            Path(session_dir).rmdir()
+    except OSError:
+        pass
+
+    logger.info(f"VOD recording stopped for '{recording['stream_name']}'")
+
+
+async def stop_all_recordings() -> None:
+    """Stop all active VOD recordings (called on server shutdown)."""
+    if not active_recordings:
+        return
+    logger.info(f"Stopping {len(active_recordings)} active VOD recording(s)...")
+    stream_ids = list(active_recordings.keys())
+    for stream_id in stream_ids:
+        await stop_vod_recording(stream_id)
+
+
 async def http_stream_auth(request: web.Request) -> web.Response:
     """MediaMTX stream authentication hook.
 
@@ -2334,6 +2608,26 @@ async def http_stream_auth(request: web.Request) -> web.Response:
         if not was_live:
             logger.info(f"Stream {stream['name']} started by user {stream['owner_username']} from {ip}")
             await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_live", f"Stream '{stream['name']}' went live", ip)
+            # Notify chat channel that stream went live
+            if stream.get("chat_channel_id"):
+                channel = await db.get_chat_channel(stream["chat_channel_id"])
+                if channel:
+                    await broadcast_to_channel(channel["name"], {
+                        "type": "stream_status",
+                        "stream_id": stream["id"],
+                        "is_live": True
+                    })
+            # Send notification to all users
+            streamer_name = stream.get("owner_nickname") or stream.get("owner_username", "Someone")
+            await broadcast_notification(
+                "stream_live", f"{streamer_name} is live!",
+                f"{stream['name']} just went live",
+                data={"stream_id": stream["id"], "public_key": stream.get("public_key", "")},
+                exclude_user_id=stream.get("user_id")
+            )
+
+            # Start VOD recording in background (waits for HLS to be ready)
+            asyncio.create_task(start_vod_recording(stream, stream_key))
 
         return web.json_response({"allowed": True})
 
@@ -2388,9 +2682,22 @@ async def http_stream_event(request: web.Request) -> web.Response:
         stream_key = path.split("/")[-1] if "/" in path else path
         stream = await db.get_stream_by_key(stream_key)
         if stream:
+            # Stop VOD recording and upload to SFTP
+            await stop_vod_recording(stream["id"])
+
             await db.set_stream_live(stream["id"], False)
             logger.info(f"Stream {stream['name']} ended")
             await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream['name']}' went offline")
+
+            # Notify chat channel that stream went offline
+            if stream.get("chat_channel_id"):
+                channel = await db.get_chat_channel(stream["chat_channel_id"])
+                if channel:
+                    await broadcast_to_channel(channel["name"], {
+                        "type": "stream_status",
+                        "stream_id": stream["id"],
+                        "is_live": False
+                    })
 
             # Clear chat history for the stream's channel
             if stream.get("chat_channel_id"):
@@ -3315,7 +3622,11 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
 
 
 async def http_list_vods(request: web.Request) -> web.Response:
-    """List MKV files on user's remote SFTP storage."""
+    """List MKV files on user's remote SFTP storage (recursive).
+
+    Returns files with paths relative to the VOD root, e.g.
+    "StreamName/2026-02-08_12-00-00/chunk_000.mkv" or "old_recording.mkv".
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -3329,25 +3640,36 @@ async def http_list_vods(request: web.Request) -> web.Response:
         return web.json_response({"error": error}, status=502)
 
     try:
-        remote_path = storage["remote_path"]
-        entries = await sftp.listdir(remote_path)
+        remote_root = storage["remote_path"].rstrip("/")
         files = []
 
-        for name in entries:
-            if not name.lower().endswith(".mkv"):
-                continue
+        async def scan_dir(dir_path: str, rel_prefix: str):
             try:
-                full_path = f"{remote_path.rstrip('/')}/{name}"
-                attrs = await sftp.stat(full_path)
-                files.append({
-                    "name": name,
-                    "size": attrs.size or 0,
-                    "modified": attrs.mtime or 0,
-                })
+                entries = await sftp.listdir(dir_path)
             except (asyncssh.SFTPError, OSError):
-                continue
+                return
+            for name in entries:
+                if name.startswith("."):
+                    continue
+                full_path = f"{dir_path}/{name}"
+                rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
+                try:
+                    attrs = await sftp.stat(full_path)
+                except (asyncssh.SFTPError, OSError):
+                    continue
+                if attrs.permissions is not None and (attrs.permissions & 0o40000):
+                    # Directory — recurse
+                    await scan_dir(full_path, rel_path)
+                elif name.lower().endswith(".mkv"):
+                    files.append({
+                        "name": rel_path,
+                        "size": attrs.size or 0,
+                        "modified": attrs.mtime or 0,
+                    })
 
-        # Sort by modified time descending (newest first)
+        await scan_dir(remote_root, "")
+
+        # Sort
         sort_by = request.query.get("sort", "modified")
         reverse = request.query.get("order", "desc") == "desc"
         if sort_by == "name":
@@ -3357,7 +3679,7 @@ async def http_list_vods(request: web.Request) -> web.Response:
         else:
             files.sort(key=lambda f: f["modified"], reverse=reverse)
 
-        return web.json_response({"files": files, "path": remote_path})
+        return web.json_response({"files": files, "path": remote_root})
     except asyncssh.SFTPError as e:
         return web.json_response({"error": f"SFTP error: {e}"}, status=502)
     except OSError as e:
@@ -3367,7 +3689,10 @@ async def http_list_vods(request: web.Request) -> web.Response:
 
 
 async def http_download_vod(request: web.Request) -> web.Response:
-    """Stream-download a VOD file from remote SFTP storage."""
+    """Stream-download a VOD file from remote SFTP storage.
+
+    Supports subdirectory paths like "StreamName/session/chunk_000.mkv".
+    """
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -3807,6 +4132,61 @@ async def http_public_stats(request: web.Request) -> web.Response:
         stats["uptime"] = uptime_str
 
     return web.json_response(stats)
+
+
+async def http_system_health(request: web.Request) -> web.Response:
+    """Get system resource metrics (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    # CPU
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    load_avg = os.getloadavg()
+
+    # Memory
+    mem = psutil.virtual_memory()
+
+    # Disk (root partition)
+    disk = psutil.disk_usage('/')
+
+    # Portal process stats
+    proc = psutil.Process(os.getpid())
+    proc_mem = proc.memory_info()
+
+    # Uptime
+    boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc)
+    uptime_delta = datetime.now(timezone.utc) - boot_time
+
+    return web.json_response({
+        "cpu": {
+            "percent": cpu_percent,
+            "count": psutil.cpu_count(),
+            "load_avg": list(load_avg)
+        },
+        "memory": {
+            "total": mem.total,
+            "used": mem.used,
+            "available": mem.available,
+            "percent": mem.percent
+        },
+        "disk": {
+            "total": disk.total,
+            "used": disk.used,
+            "free": disk.free,
+            "percent": disk.percent
+        },
+        "process": {
+            "rss": proc_mem.rss,
+            "vms": proc_mem.vms,
+            "threads": proc.num_threads(),
+            "pid": os.getpid()
+        },
+        "uptime_seconds": int(uptime_delta.total_seconds())
+    })
 
 
 async def http_activity_feed(request: web.Request) -> web.Response:
@@ -4492,6 +4872,9 @@ async def handle_user_connection_ws(
         await ws.close(code=4004, message=b"Connection not found")
         return
 
+    # Record connection usage
+    await db.record_connection_usage(conn_id, token.user_id)
+
     conn_type = connection.get("type", "custom")
     config = connection.get("config", {})
     if isinstance(config, str):
@@ -5163,10 +5546,15 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     channels = await db.get_chat_channels()
-    # Enrich with stream association flag
+    # Enrich with stream association data
     for ch in channels:
         stream = await db.get_stream_by_chat_channel(ch["id"])
         ch["is_stream_channel"] = bool(stream)
+        if stream:
+            ch["stream_id"] = stream["id"]
+            ch["stream_is_live"] = bool(stream.get("is_live", 0))
+            ch["stream_public_key"] = stream.get("public_key", "")
+            ch["stream_owner"] = stream.get("owner_nickname") or stream.get("owner_username", "")
     return web.json_response({"channels": channels})
 
 
@@ -5460,6 +5848,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     client_ip = get_client_ip(request)
     traffic_metrics.start_connection(chat_conn_id, 0, user_id, "chat", client_ip)
 
+    # Subscribe to notifications
+    if user_id not in notification_subscribers:
+        notification_subscribers[user_id] = set()
+    notification_subscribers[user_id].add(ws)
+
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -5545,14 +5938,20 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             chat_rooms[current_channel] = set()
                         chat_rooms[current_channel].add(user_entry)
 
-                        # Send channel info
-                        await ws.send_json({
+                        # Send channel info (include stream data if this is a stream channel)
+                        channel_info = {
                             "type": "channel_info",
                             "id": channel["id"],
                             "name": channel["name"],
                             "description": channel.get("description"),
                             "topic": channel.get("topic")
-                        })
+                        }
+                        if stream:
+                            channel_info["stream_id"] = stream["id"]
+                            channel_info["stream_name"] = stream.get("name", "")
+                            channel_info["stream_is_live"] = bool(stream.get("is_live", 0))
+                            channel_info["stream_public_key"] = stream.get("public_key", "")
+                        await ws.send_json(channel_info)
 
                         # Send message history enriched with user data
                         messages = await db.get_chat_messages(channel["id"], limit=50)
@@ -5974,6 +6373,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         if not has_other_ws:
             chat_user_state.pop(user_id, None)
 
+        # Unsubscribe from notifications
+        if user_id in notification_subscribers:
+            notification_subscribers[user_id].discard(ws)
+            if not notification_subscribers[user_id]:
+                del notification_subscribers[user_id]
+
         logger.info(f"[Chat] User {username} disconnected")
 
     return ws
@@ -6030,6 +6435,81 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None):
 
     # Clean up dead connections
     chat_rooms[channel] -= dead_connections
+
+
+async def send_notification(user_id: int, type: str, title: str,
+                            message: str = "", data: dict = None):
+    """Create a notification and push it to connected WebSockets."""
+    notif_id = await db.create_notification(user_id, type, title, message, data)
+    # Push to connected subscribers
+    if user_id in notification_subscribers:
+        dead = set()
+        payload = {
+            "type": "notification",
+            "notification": {
+                "id": notif_id,
+                "type": type,
+                "title": title,
+                "message": message,
+                "data": data or {},
+                "is_read": False,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+        }
+        for ws in notification_subscribers[user_id]:
+            try:
+                if not ws.closed:
+                    await ws.send_json(payload)
+                else:
+                    dead.add(ws)
+            except Exception:
+                dead.add(ws)
+        notification_subscribers[user_id] -= dead
+
+
+async def broadcast_notification(type: str, title: str, message: str = "",
+                                  data: dict = None, exclude_user_id: int = None):
+    """Send a notification to all users (e.g., stream went live)."""
+    users = await db.get_all_users()
+    for user in users:
+        if user["id"] != exclude_user_id:
+            await send_notification(user["id"], type, title, message, data)
+
+
+async def http_get_notifications(request: web.Request) -> web.Response:
+    """Get notifications for the current user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    unread_only = request.query.get("unread") == "1"
+    notifications = await db.get_notifications(token.user_id, unread_only=unread_only)
+    unread_count = await db.get_unread_notification_count(token.user_id)
+    return web.json_response({"notifications": notifications, "unread_count": unread_count})
+
+
+async def http_mark_notification_read(request: web.Request) -> web.Response:
+    """Mark a notification as read."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    notif_id = request.match_info.get("id")
+    if not notif_id or not notif_id.isdigit():
+        return web.json_response({"error": "Invalid notification ID"}, status=400)
+
+    await db.mark_notification_read(int(notif_id), token.user_id)
+    return web.json_response({"success": True})
+
+
+async def http_mark_all_notifications_read(request: web.Request) -> web.Response:
+    """Mark all notifications as read."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    count = await db.mark_all_notifications_read(token.user_id)
+    return web.json_response({"success": True, "count": count})
 
 
 async def http_get_current_user(request: web.Request) -> web.Response:
@@ -6755,6 +7235,7 @@ def create_app() -> web.Application:
     app.router.add_get("/favicon.ico", http_favicon)
     app.router.add_get("/api/stats", http_stats)
     app.router.add_get("/api/stats/public", http_public_stats)
+    app.router.add_get("/api/system/health", http_system_health)
     app.router.add_get("/api/activity", http_activity_feed)
     app.router.add_get("/api/plugins", http_list_plugins)
     app.router.add_get("/api/shells", http_list_shells)
@@ -6805,6 +7286,11 @@ def create_app() -> web.Application:
     app.router.add_put("/api/me/anonymous", http_update_chat_anonymous)
     app.router.add_put("/api/me/avatar", http_update_avatar)
 
+    # Notifications
+    app.router.add_get("/api/notifications", http_get_notifications)
+    app.router.add_post("/api/notifications/read-all", http_mark_all_notifications_read)
+    app.router.add_post("/api/notifications/{id}/read", http_mark_notification_read)
+
     # Two-Factor Authentication
     app.router.add_get("/api/user/2fa/status", http_2fa_status)
     app.router.add_post("/api/user/2fa/setup", http_2fa_setup)
@@ -6842,6 +7328,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/connections/{id}", http_get_user_connection)
     app.router.add_put("/api/connections/{id}", http_update_user_connection)
     app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
+    app.router.add_post("/api/connections/{id}/pin", http_toggle_connection_pin)
     app.router.add_get("/api/connections/{id}/connect", http_connect_user_connection)
 
     # User Streams (OBS/RTMP streaming)
@@ -7115,6 +7602,9 @@ class PortalServer:
     async def stop(self) -> None:
         """Stop the server gracefully."""
         logger.info("Shutting down...")
+
+        # Stop any active VOD recordings and upload to SFTP
+        await stop_all_recordings()
 
         # Stop metrics recorder
         await stop_metrics_recorder()

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=27">
+    <link rel="stylesheet" href="/static/css/portal.css?v=29">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     <style>
         .admin-grid {
@@ -50,6 +50,26 @@
             color: var(--text-primary);
             font-weight: 600;
             font-family: monospace;
+        }
+        .health-bar-group {
+            margin-bottom: 0.75rem;
+        }
+        .health-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8125rem;
+            margin-bottom: 0.25rem;
+        }
+        .health-bar {
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .health-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
         }
         .section-header {
             display: flex;
@@ -383,6 +403,17 @@
                             Shodan Status
                         </h3>
                         <div id="shodan-status">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                            </svg>
+                            System Resources
+                        </h3>
+                        <div id="system-health">
                             <div class="loading"><div class="spinner"></div> Loading...</div>
                         </div>
                     </div>
@@ -735,11 +766,12 @@
         // Load overview data
         async function loadOverview() {
             try {
-                const [stats, metrics, shodanInfo, top] = await Promise.all([
+                const [stats, metrics, shodanInfo, top, health] = await Promise.all([
                     Portal.fetchJSON('/api/stats'),
                     Portal.fetchJSON('/api/metrics'),
                     Portal.fetchJSON('/api/shodan/info'),
-                    Portal.fetchJSON('/api/metrics/top')
+                    Portal.fetchJSON('/api/metrics/top'),
+                    Portal.fetchJSON('/api/system/health').catch(() => null)
                 ]);
 
                 // Server stats
@@ -800,6 +832,46 @@
                     `;
                 } else {
                     document.getElementById('top-services').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
+                }
+
+                // System health
+                if (health) {
+                    const cpuColor = health.cpu.percent > 80 ? 'var(--accent-red)' : health.cpu.percent > 50 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                    const memColor = health.memory.percent > 80 ? 'var(--accent-red)' : health.memory.percent > 50 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                    const diskColor = health.disk.percent > 90 ? 'var(--accent-red)' : health.disk.percent > 70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                    const uptimeH = Math.floor(health.uptime_seconds / 3600);
+                    const uptimeD = Math.floor(uptimeH / 24);
+                    const uptimeStr = uptimeD > 0 ? `${uptimeD}d ${uptimeH % 24}h` : `${uptimeH}h`;
+
+                    document.getElementById('system-health').innerHTML = `
+                        <div class="health-bar-group">
+                            <div class="health-bar-label">
+                                <span>CPU</span>
+                                <span style="color: ${cpuColor}">${health.cpu.percent}%</span>
+                            </div>
+                            <div class="health-bar"><div class="health-bar-fill" style="width: ${health.cpu.percent}%; background: ${cpuColor};"></div></div>
+                        </div>
+                        <div class="health-bar-group">
+                            <div class="health-bar-label">
+                                <span>Memory</span>
+                                <span style="color: ${memColor}">${health.memory.percent}% (${formatBytes(health.memory.used)} / ${formatBytes(health.memory.total)})</span>
+                            </div>
+                            <div class="health-bar"><div class="health-bar-fill" style="width: ${health.memory.percent}%; background: ${memColor};"></div></div>
+                        </div>
+                        <div class="health-bar-group">
+                            <div class="health-bar-label">
+                                <span>Disk</span>
+                                <span style="color: ${diskColor}">${health.disk.percent}% (${formatBytes(health.disk.used)} / ${formatBytes(health.disk.total)})</span>
+                            </div>
+                            <div class="health-bar"><div class="health-bar-fill" style="width: ${health.disk.percent}%; background: ${diskColor};"></div></div>
+                        </div>
+                        <div class="stat-row"><span class="stat-label">Load Avg</span><span class="stat-value">${health.cpu.load_avg.map(v => v.toFixed(2)).join(' / ')}</span></div>
+                        <div class="stat-row"><span class="stat-label">Portal RSS</span><span class="stat-value">${formatBytes(health.process.rss)}</span></div>
+                        <div class="stat-row"><span class="stat-label">Threads</span><span class="stat-value">${health.process.threads}</span></div>
+                        <div class="stat-row"><span class="stat-label">System Uptime</span><span class="stat-value">${uptimeStr}</span></div>
+                    `;
+                } else {
+                    document.getElementById('system-health').innerHTML = '<p style="color: var(--text-muted);">Health data unavailable</p>';
                 }
 
             } catch (error) {

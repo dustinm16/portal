@@ -336,6 +336,260 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
+// Notification bell system
+const NotificationBell = {
+    _unreadCount: 0,
+    _dropdown: null,
+    _pollInterval: null,
+
+    init() {
+        // Find the navbar user link to inject bell before it
+        const userLink = document.querySelector('.navbar-user');
+        if (!userLink) return;
+
+        // Create bell button
+        const bell = document.createElement('a');
+        bell.href = '#';
+        bell.className = 'navbar-bell';
+        bell.title = 'Notifications';
+        bell.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            <span class="bell-badge" id="bell-badge" style="display: none;">0</span>
+        `;
+        bell.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.toggleDropdown();
+        });
+        userLink.parentNode.insertBefore(bell, userLink);
+
+        // Create dropdown
+        this._dropdown = document.createElement('div');
+        this._dropdown.className = 'notification-dropdown';
+        this._dropdown.style.display = 'none';
+        this._dropdown.innerHTML = `
+            <div class="notif-header">
+                <span>Notifications</span>
+                <a href="#" onclick="NotificationBell.markAllRead(); return false;">Mark all read</a>
+            </div>
+            <div class="notif-list" id="notif-list">
+                <div class="notif-empty">No notifications</div>
+            </div>
+        `;
+        document.body.appendChild(this._dropdown);
+
+        // Close dropdown on outside click
+        document.addEventListener('click', (e) => {
+            if (!bell.contains(e.target) && !this._dropdown.contains(e.target)) {
+                this._dropdown.style.display = 'none';
+            }
+        });
+
+        // Load initial count
+        this.loadCount();
+        // Poll every 30s
+        this._pollInterval = setInterval(() => this.loadCount(), 30000);
+    },
+
+    async loadCount() {
+        try {
+            const data = await Portal.api('/api/notifications?unread=1');
+            this._unreadCount = data.unread_count || 0;
+            this.updateBadge();
+        } catch (e) { /* ignore */ }
+    },
+
+    updateBadge() {
+        const badge = document.getElementById('bell-badge');
+        if (!badge) return;
+        if (this._unreadCount > 0) {
+            badge.textContent = this._unreadCount > 99 ? '99+' : this._unreadCount;
+            badge.style.display = 'flex';
+        } else {
+            badge.style.display = 'none';
+        }
+    },
+
+    async toggleDropdown() {
+        if (this._dropdown.style.display === 'none') {
+            await this.loadNotifications();
+            const bell = document.querySelector('.navbar-bell');
+            const rect = bell.getBoundingClientRect();
+            this._dropdown.style.top = rect.bottom + 4 + 'px';
+            this._dropdown.style.right = (window.innerWidth - rect.right) + 'px';
+            this._dropdown.style.display = 'block';
+        } else {
+            this._dropdown.style.display = 'none';
+        }
+    },
+
+    async loadNotifications() {
+        try {
+            const data = await Portal.api('/api/notifications');
+            const list = document.getElementById('notif-list');
+            const notifications = data.notifications || [];
+            if (notifications.length === 0) {
+                list.innerHTML = '<div class="notif-empty">No notifications</div>';
+                return;
+            }
+            list.innerHTML = notifications.slice(0, 20).map(n => {
+                const timeAgo = Portal.formatRelativeTime ? Portal.formatRelativeTime(n.created_at) : '';
+                const unreadClass = n.is_read ? '' : ' notif-unread';
+                const dataStr = typeof n.data === 'string' ? n.data : JSON.stringify(n.data || {});
+                const safeData = dataStr.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                return `<div class="notif-item${unreadClass}" onclick="NotificationBell.clickNotification(${n.id}, '${safeData}')">
+                    <div class="notif-title">${this.escapeHtml(n.title)}</div>
+                    <div class="notif-message">${this.escapeHtml(n.message || '')}</div>
+                    <div class="notif-time">${timeAgo}</div>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            console.error('Failed to load notifications:', e);
+        }
+    },
+
+    async clickNotification(id, dataStr) {
+        await this.markRead(id);
+        try {
+            const data = JSON.parse(dataStr);
+            if (data.public_key) {
+                window.open('/watch/' + data.public_key, '_blank');
+            }
+        } catch (e) { /* ignore */ }
+    },
+
+    async markRead(id) {
+        try {
+            await Portal.api(`/api/notifications/${id}/read`, { method: 'POST' });
+            this._unreadCount = Math.max(0, this._unreadCount - 1);
+            this.updateBadge();
+            const item = this._dropdown.querySelector(`[onclick*="clickNotification(${id}"]`);
+            if (item) item.classList.remove('notif-unread');
+        } catch (e) { /* ignore */ }
+    },
+
+    async markAllRead() {
+        try {
+            await Portal.api('/api/notifications/read-all', { method: 'POST' });
+            this._unreadCount = 0;
+            this.updateBadge();
+            this._dropdown.querySelectorAll('.notif-unread').forEach(el => el.classList.remove('notif-unread'));
+        } catch (e) { /* ignore */ }
+    },
+
+    // Handle real-time notification push from WebSocket
+    handlePush(notification) {
+        this._unreadCount++;
+        this.updateBadge();
+        // Show toast
+        Portal.toast(notification.title, 'info');
+    },
+
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+};
+
+// Auto-init notification bell on pages with navbar (skip login page)
+document.addEventListener('DOMContentLoaded', () => {
+    if (document.querySelector('.navbar-user')) {
+        NotificationBell.init();
+    }
+});
+
+// Add notification bell CSS
+const notifStyle = document.createElement('style');
+notifStyle.textContent = `
+    .navbar-bell {
+        position: relative;
+        display: flex;
+        align-items: center;
+        padding: 0.25rem;
+    }
+    .bell-badge {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        background: var(--accent-red, #ef4444);
+        color: white;
+        font-size: 0.625rem;
+        font-weight: 700;
+        min-width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 3px;
+    }
+    .notification-dropdown {
+        position: fixed;
+        z-index: 10000;
+        width: 320px;
+        max-height: 400px;
+        background: var(--bg-secondary, #1e1e2e);
+        border: 1px solid var(--card-border, rgba(255,255,255,0.1));
+        border-radius: 8px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        overflow: hidden;
+    }
+    .notif-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--card-border, rgba(255,255,255,0.1));
+        font-weight: 600;
+        font-size: 0.875rem;
+    }
+    .notif-header a {
+        font-size: 0.75rem;
+        font-weight: 400;
+        color: var(--accent-blue, #60a5fa);
+    }
+    .notif-list {
+        max-height: 340px;
+        overflow-y: auto;
+    }
+    .notif-item {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--card-border, rgba(255,255,255,0.05));
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .notif-item:hover {
+        background: var(--card-hover, rgba(255,255,255,0.05));
+    }
+    .notif-unread {
+        border-left: 3px solid var(--accent-blue, #60a5fa);
+    }
+    .notif-title {
+        font-weight: 600;
+        font-size: 0.8125rem;
+        margin-bottom: 2px;
+    }
+    .notif-message {
+        font-size: 0.75rem;
+        color: var(--text-muted, #888);
+    }
+    .notif-time {
+        font-size: 0.6875rem;
+        color: var(--text-muted, #666);
+        margin-top: 4px;
+    }
+    .notif-empty {
+        padding: 2rem;
+        text-align: center;
+        color: var(--text-muted, #888);
+        font-size: 0.875rem;
+    }
+`;
+document.head.appendChild(notifStyle);
+
 // Export for module use
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = Portal;

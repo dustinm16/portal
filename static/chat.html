@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Chat</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=27">
+    <link rel="stylesheet" href="/static/css/portal.css?v=29">
     <style>
         html, body {
             height: 100%;
@@ -68,6 +68,79 @@
             color: var(--text-muted);
         }
 
+        .channel-item.is-live::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+            flex-shrink: 0;
+            animation: live-dot-pulse 2s ease-in-out infinite;
+        }
+
+        .channel-item.is-offline::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            flex-shrink: 0;
+            opacity: 0.5;
+        }
+
+        @keyframes live-dot-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .channel-group-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.6rem 0.75rem 0.3rem;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            cursor: default;
+            user-select: none;
+        }
+
+        .channel-group-header:first-child {
+            padding-top: 0.3rem;
+        }
+
+        .channel-group-header .group-count {
+            font-size: 0.6rem;
+            background: rgba(255,255,255,0.08);
+            padding: 0.1rem 0.4rem;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+
+        .channel-group-header.collapsible {
+            cursor: pointer;
+        }
+
+        .channel-group-header.collapsible:hover {
+            color: var(--text-secondary);
+        }
+
+        .channel-group-header .collapse-icon {
+            font-size: 0.55rem;
+            transition: transform 0.2s;
+            margin-right: 0.3rem;
+        }
+
+        .channel-group-header.collapsed .collapse-icon {
+            transform: rotate(-90deg);
+        }
+
+        .channel-group-items.collapsed {
+            display: none;
+        }
+
         .channel-actions {
             padding: 0.5rem;
             border-top: 1px solid rgba(255,255,255,0.1);
@@ -120,6 +193,47 @@
 
         .clear-channel-btn:hover {
             background: rgba(239, 68, 68, 0.3);
+        }
+
+        .watch-stream-btn {
+            background: rgba(139, 92, 246, 0.2);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            color: #a78bfa;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: none;
+        }
+
+        .watch-stream-btn:hover {
+            background: rgba(139, 92, 246, 0.3);
+        }
+
+        .watch-stream-btn.is-live {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: rgba(239, 68, 68, 0.3);
+            color: var(--accent-red);
+        }
+
+        .watch-stream-btn.is-live:hover {
+            background: rgba(239, 68, 68, 0.3);
+        }
+
+        .live-pulse {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent-red);
+            margin-right: 4px;
+            animation: livePulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes livePulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
         }
 
         .chat-topic {
@@ -1128,9 +1242,14 @@
             <div class="chat-header">
                 <div class="chat-header-top">
                     <h2 id="channel-name">general</h2>
-                    <button class="clear-channel-btn" id="clear-channel-btn" onclick="confirmClearChannel()" title="Clear channel history" style="display: none;">
-                        🗑️ Clear
-                    </button>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <button class="watch-stream-btn" id="watch-stream-btn" onclick="openWatchStream()" title="Watch stream">
+                            Watch Stream
+                        </button>
+                        <button class="clear-channel-btn" id="clear-channel-btn" onclick="confirmClearChannel()" title="Clear channel history" style="display: none;">
+                            🗑️ Clear
+                        </button>
+                    </div>
                 </div>
                 <div class="chat-topic" id="channel-topic">General discussion</div>
             </div>
@@ -1446,17 +1565,65 @@
             }
         }
 
+        let offlineCollapsed = false;
+
         function renderChannels(channels) {
             channelsList = channels;
             const list = document.getElementById('channel-list');
-            list.innerHTML = channels.map(ch => `
-                <div class="channel-item ${ch.name === currentChannel ? 'active' : ''}"
+
+            const regular = channels.filter(ch => !ch.is_stream_channel);
+            const live = channels.filter(ch => ch.is_stream_channel && ch.stream_is_live);
+            const offline = channels.filter(ch => ch.is_stream_channel && !ch.stream_is_live);
+
+            let html = '';
+
+            // Regular channels
+            if (regular.length) {
+                html += `<div class="channel-group-header">Channels <span class="group-count">${regular.length}</span></div>`;
+                html += `<div class="channel-group-items">`;
+                html += regular.map(ch => renderChannelItem(ch, '')).join('');
+                html += `</div>`;
+            }
+
+            // Live stream channels
+            if (live.length) {
+                html += `<div class="channel-group-header">Live <span class="group-count">${live.length}</span></div>`;
+                html += `<div class="channel-group-items">`;
+                html += live.map(ch => renderChannelItem(ch, 'is-live')).join('');
+                html += `</div>`;
+            }
+
+            // Offline stream channels (collapsible)
+            if (offline.length) {
+                html += `<div class="channel-group-header collapsible${offlineCollapsed ? ' collapsed' : ''}" onclick="toggleOfflineChannels()">
+                    <span><span class="collapse-icon">&#9660;</span>Offline <span class="group-count">${offline.length}</span></span>
+                </div>`;
+                html += `<div class="channel-group-items${offlineCollapsed ? ' collapsed' : ''}" id="offline-channels">`;
+                html += offline.map(ch => renderChannelItem(ch, 'is-offline')).join('');
+                html += `</div>`;
+            }
+
+            list.innerHTML = html;
+        }
+
+        function renderChannelItem(ch, extraClass) {
+            return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
-                     data-is-stream="${ch.is_stream_channel || false}">
+                     data-is-stream="${ch.is_stream_channel || false}"
+                     data-stream-live="${ch.stream_is_live || false}">
                     ${escapeHtml(ch.name)}
-                </div>
-            `).join('');
+                </div>`;
+        }
+
+        function toggleOfflineChannels() {
+            offlineCollapsed = !offlineCollapsed;
+            const header = document.querySelector('.channel-group-header.collapsible');
+            const items = document.getElementById('offline-channels');
+            if (header && items) {
+                header.classList.toggle('collapsed', offlineCollapsed);
+                items.classList.toggle('collapsed', offlineCollapsed);
+            }
         }
 
         function switchChannel(channelName) {
@@ -1525,6 +1692,14 @@
                     break;
                 case 'channel_info':
                     updateChannelInfo(data);
+                    break;
+                case 'stream_status':
+                    updateStreamStatus(data);
+                    break;
+                case 'notification':
+                    if (typeof NotificationBell !== 'undefined' && data.notification) {
+                        NotificationBell.handlePush(data.notification);
+                    }
                     break;
                 case 'users':
                     updateUserList(data.users);
@@ -1688,9 +1863,60 @@
             container.scrollTop = container.scrollHeight;
         }
 
+        let currentStreamId = null;
+        let currentStreamPublicKey = null;
+
         function updateChannelInfo(data) {
             document.getElementById('channel-name').textContent = data.name;
             document.getElementById('channel-topic').textContent = data.topic || data.description || 'No topic set';
+
+            // Show/hide watch stream button
+            const watchBtn = document.getElementById('watch-stream-btn');
+            if (data.stream_id) {
+                currentStreamId = data.stream_id;
+                currentStreamPublicKey = data.stream_public_key || null;
+
+                watchBtn.style.display = 'inline-flex';
+                if (data.stream_is_live) {
+                    watchBtn.classList.add('is-live');
+                    watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';
+                } else {
+                    watchBtn.classList.remove('is-live');
+                    watchBtn.textContent = 'Watch Stream';
+                }
+            } else {
+                currentStreamId = null;
+                currentStreamPublicKey = null;
+                watchBtn.style.display = 'none';
+                watchBtn.classList.remove('is-live');
+            }
+        }
+
+        function openWatchStream() {
+            if (currentStreamPublicKey) {
+                window.open('/watch/' + currentStreamPublicKey, '_blank');
+            }
+        }
+
+        function updateStreamStatus(data) {
+            // Update watch button for current channel
+            if (data.stream_id === currentStreamId) {
+                const watchBtn = document.getElementById('watch-stream-btn');
+                if (data.is_live) {
+                    watchBtn.classList.add('is-live');
+                    watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';
+                } else {
+                    watchBtn.classList.remove('is-live');
+                    watchBtn.textContent = 'Watch Stream';
+                }
+            }
+
+            // Update channel list grouping — flip the stream's live status and re-render
+            const ch = channelsList.find(c => c.is_stream_channel && c.stream_id === data.stream_id);
+            if (ch) {
+                ch.stream_is_live = data.is_live;
+                renderChannels(channelsList);
+            }
         }
 
         function updateUserList(users) {

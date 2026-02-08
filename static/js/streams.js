@@ -130,7 +130,7 @@ function renderStreamCard(stream, isOwner = false) {
                     </div>
                     ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                     <div class="connection-actions">
-                        <button class="btn btn-sm btn-primary" onclick="viewStreamNewWindow(${stream.id}, event)">
+                        <button class="btn btn-sm btn-primary" onclick="viewStreamNewWindow('${escapeHtml(stream.public_key || '')}', event)">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -152,7 +152,7 @@ function renderStreamCard(stream, isOwner = false) {
     } else {
         // Community stream card
         return `
-            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : 'stream-offline'}" onclick="viewStream(${stream.id})" style="cursor: pointer;">
+            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : 'stream-offline'}" onclick="viewStream('${escapeHtml(stream.public_key || '')}')" style="cursor: pointer;">
                 <div class="stream-thumbnail">
                     ${thumbnailHtml}
                     ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
@@ -561,19 +561,22 @@ async function deleteStream(streamId) {
 /**
  * View a community stream - redirects to streams page
  */
-function viewStream(streamId) {
-    // Redirect to the streams page which has the full viewer
-    window.location.href = `/streams#watch-${streamId}`;
+function viewStream(publicKey) {
+    if (publicKey) {
+        window.location.href = `/streams#watch-${publicKey}`;
+    }
 }
 
 /**
  * Open stream in a new window
  */
-function viewStreamNewWindow(streamId, event) {
+function viewStreamNewWindow(publicKey, event) {
     if (event) {
         event.stopPropagation();
     }
-    window.open(`/watch/${streamId}`, '_blank', 'width=1280,height=720');
+    if (publicKey) {
+        window.open(`/watch/${publicKey}`, '_blank', 'width=1280,height=720');
+    }
 }
 
 /**

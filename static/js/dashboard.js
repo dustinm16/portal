@@ -442,6 +442,20 @@ function switchTab(tabName) {
     } else if (tabName === 'my-vods') {
         loadVods();
     }
+
+}
+
+/**
+ * Toggle pin status for a connection
+ */
+async function togglePin(connId) {
+    try {
+        const data = await Portal.api(`/api/connections/${connId}/pin`, { method: 'POST' });
+        Portal.toast(data.is_pinned ? 'Connection pinned' : 'Connection unpinned', 'success');
+        loadInlineConnections();
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to toggle pin', 'error');
+    }
 }
 
 /**
@@ -470,11 +484,14 @@ async function loadInlineConnections() {
 
         grid.innerHTML = connections.map(conn => {
             const typeBadge = `<span class="conn-type-badge conn-type-${escapeHtml(conn.type)}">${escapeHtml(conn.type.toUpperCase())}</span>`;
-            const created = conn.created_at ? Portal.formatRelativeTime(conn.created_at) : '';
+            const usageText = conn.last_used_at ? Portal.formatRelativeTime(conn.last_used_at) : '';
+            const useCount = conn.use_count || 0;
+            const isPinned = conn.is_pinned;
             const sshIndicator = conn.ssh_key_name
                 ? `<span class="conn-ssh-key" title="SSH Key: ${escapeHtml(conn.ssh_key_name)}"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg></span>`
                 : '';
-            return `<div class="connection-card">
+            const pinnedClass = isPinned ? ' connection-card-pinned' : '';
+            return `<div class="connection-card${pinnedClass}">
                 <div class="connection-card-header">
                     <div class="connection-icon">
                         ${getConnectionIcon(conn.icon || conn.type)}
@@ -485,11 +502,16 @@ async function loadInlineConnections() {
                     </div>
                 </div>
                 <div class="connection-details">
-                    ${created ? `<span class="connection-time">${created}</span>` : ''}
+                    ${usageText ? `<span class="connection-time" title="${useCount} uses">Used ${usageText}</span>` : '<span class="connection-time">Never used</span>'}
                 </div>
                 <div class="connection-actions">
                     <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo(${conn.id})">
                         Connect
+                    </button>
+                    <button class="btn btn-sm ${isPinned ? 'btn-primary' : 'btn-secondary'}" onclick="togglePin(${conn.id})" title="${isPinned ? 'Unpin' : 'Pin'}">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="${isPinned ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
                     </button>
                     <button class="btn btn-secondary btn-sm" onclick="editConnection(${conn.id})" title="Edit">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
@@ -702,7 +724,7 @@ async function loadInlineStreams() {
                         </svg>
                         Public
                     </button>` : ''}
-                    ${isLive ? `<button class="btn btn-primary btn-sm" onclick="window.open('/watch?key=${escapeHtml(stream.public_key || '')}', '_blank')">
+                    ${isLive && stream.public_key ? `<button class="btn btn-primary btn-sm" onclick="window.open('/watch/${escapeHtml(stream.public_key)}', '_blank')">
                         Watch
                     </button>` : ''}
                 </div>

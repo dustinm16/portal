@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Live Streams</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=27">
+    <link rel="stylesheet" href="/static/css/portal.css?v=29">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         .streams-container {
@@ -18,6 +18,37 @@
 
         .streams-content {
             padding: 1.5rem;
+        }
+
+        .streams-search {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            padding: 0.5rem 0.75rem;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            max-width: 400px;
+        }
+
+        .streams-search svg {
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .streams-search input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .streams-search input::placeholder {
+            color: var(--text-muted);
         }
 
         .streams-grid {
@@ -469,6 +500,13 @@
 
     <div class="streams-container">
         <div class="streams-content">
+            <div class="streams-search">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input type="text" id="stream-search" placeholder="Search streams..." oninput="filterStreams(this.value)">
+            </div>
+
             <div id="streams-loading" class="streams-loading">
                 <div class="spinner"></div>
                 <span>Loading streams...</span>
@@ -556,6 +594,17 @@
         let currentStream = null;
         let hlsPlayer = null;
         let statsInterval = null;
+
+        let _streamFilterDebounce = null;
+        function filterStreams(term) {
+            clearTimeout(_streamFilterDebounce);
+            _streamFilterDebounce = setTimeout(() => {
+                const lowerTerm = term.toLowerCase().trim();
+                document.querySelectorAll('#streams-grid .stream-card').forEach(card => {
+                    card.style.display = !lowerTerm || card.textContent.toLowerCase().includes(lowerTerm) ? '' : 'none';
+                });
+            }, 150);
+        }
 
         // HLS buffer presets
         const bufferPresets = {

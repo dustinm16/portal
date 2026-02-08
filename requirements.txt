@@ -13,5 +13,8 @@ asyncssh>=2.14
 # Optional: VPN encryption
 cryptography>=41.0
 
+# Optional: System health monitoring
+psutil>=5.9
+
 # Optional: Better async support
 uvloop>=0.19; sys_platform != 'win32'
