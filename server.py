@@ -1965,6 +1965,8 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     if not is_owner:
         # Always hide the private stream_key from non-owners
         stream.pop("stream_key", None)
+        stream.pop("stream_key_hash", None)
+        stream.pop("public_key_hash", None)
         # Also hide public_key for private streams
         if not is_public:
             stream.pop("public_key", None)
@@ -2313,10 +2315,12 @@ async def http_get_public_streams(request: web.Request) -> web.Response:
     live_only = request.query.get("live", "false").lower() == "true"
     streams = await db.get_public_streams(live_only=live_only)
 
-    # Remove private stream keys from public listing (security)
+    # Remove private stream keys and internal hashes from public listing (security)
     # Keep public_key for playback URLs
     for stream in streams:
         stream.pop("stream_key", None)
+        stream.pop("stream_key_hash", None)
+        stream.pop("public_key_hash", None)
 
     return web.json_response({"streams": streams})
 

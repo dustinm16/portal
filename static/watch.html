@@ -742,9 +742,25 @@
             }
         }
 
+        let refreshInterval = null;
+
         async function loadStream() {
             try {
-                const response = await fetch(`/api/streams/${streamId}`, { credentials: 'include' });
+                const response = await fetch(`/api/streams/${streamId}`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+
+                if (!response.ok) {
+                    document.getElementById('viewer-title').textContent = 'Stream not found';
+                    return;
+                }
+
                 const data = await response.json();
                 streamData = data.stream;
 
@@ -776,8 +792,8 @@
                     showOfflineMessage();
                 }
 
-                // Periodically refresh stream info
-                setInterval(refreshStreamInfo, 15000);
+                // Periodically refresh stream info (only after successful load)
+                refreshInterval = setInterval(refreshStreamInfo, 15000);
 
             } catch (error) {
                 console.error('Failed to load stream:', error);
@@ -1024,7 +1040,23 @@
 
         async function refreshStreamInfo() {
             try {
-                const response = await fetch(`/api/streams/${streamId}`, { credentials: 'include' });
+                const response = await fetch(`/api/streams/${streamId}`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (response.status === 401) {
+                    // Session expired — stop polling and redirect to login
+                    if (refreshInterval) {
+                        clearInterval(refreshInterval);
+                        refreshInterval = null;
+                    }
+                    window.location.href = '/login';
+                    return;
+                }
+
+                if (!response.ok) return;
+
                 const data = await response.json();
                 streamData = data.stream;
 
@@ -1424,6 +1456,7 @@
 
         // Clean up on close
         window.addEventListener('beforeunload', () => {
+            if (refreshInterval) clearInterval(refreshInterval);
             if (chatWs) chatWs.close();
             if (hlsPlayer) hlsPlayer.destroy();
             stopStatsUpdates();

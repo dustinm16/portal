@@ -687,6 +687,8 @@ Open Relay Portal is designed with privacy and security as core principles:
 17. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
 18. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving)
 19. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
+20. **Stream Hash Redaction** - Internal `stream_key_hash` and `public_key_hash` stripped from all API responses (open, public, non-owner individual stream endpoints)
+21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
 
 ---
 

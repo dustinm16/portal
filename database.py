@@ -1796,6 +1796,8 @@ class Database:
         streams = [self._decrypt_stream_keys(dict(row)) for row in rows]
         for s in streams:
             s.pop("stream_key", None)
+            s.pop("stream_key_hash", None)
+            s.pop("public_key_hash", None)
         return streams
 
     async def update_user_stream(self, stream_id: int, user_id: int = None, **kwargs) -> bool:
