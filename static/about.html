@@ -614,6 +614,17 @@
                 <h3>Online Users</h3>
                 <p>The right sidebar shows currently online users with their roles indicated by color. Click a username to insert an @mention.</p>
 
+                <h3 id="voice-chat">Voice Chat</h3>
+                <p>Each chat channel supports live voice chat, similar to Discord or TeamSpeak. Voice uses WebRTC for direct peer-to-peer audio &mdash; the server only relays connection setup, never processes or stores audio.</p>
+                <ul>
+                    <li><strong>Join/Leave</strong> &mdash; Click "Join Voice" in the channel header to start. Audio connects directly between participants.</li>
+                    <li><strong>Mute/Deafen</strong> &mdash; Mute your microphone or deafen to silence all incoming audio. Controls appear in the voice bar.</li>
+                    <li><strong>VAD Mode</strong> &mdash; Voice Activity Detection automatically transmits when you speak. Adjust sensitivity in voice settings.</li>
+                    <li><strong>Push-to-Talk</strong> &mdash; Hold a key (default: Space) to transmit. Rebind the key in voice settings.</li>
+                    <li><strong>Speaking Indicators</strong> &mdash; Users in voice show a green highlight when speaking, with mute/deafen icons in the user list.</li>
+                    <li><strong>Watch Page</strong> &mdash; Voice chat is also available in the stream watch page sidebar for coordinated viewing.</li>
+                </ul>
+
                 <!-- Notifications -->
                 <h3 id="notifications">Notifications</h3>
                 <p>The notification bell in the navbar keeps you informed of important events:</p>
@@ -786,6 +797,7 @@
                     <li><strong>HSTS</strong> &mdash; HTTP Strict Transport Security with 1-year max-age, includeSubDomains, and preload.</li>
                     <li><strong>WSS Only</strong> &mdash; All WebSocket connections use TLS encryption.</li>
                     <li><strong>TLS 1.2+</strong> &mdash; Only strong cipher suites are permitted.</li>
+                    <li><strong>Voice Encryption</strong> &mdash; Voice chat audio is encrypted end-to-end via WebRTC DTLS-SRTP. No audio is stored or processed server-side.</li>
                 </ul>
 
                 <h3>Data Protection</h3>

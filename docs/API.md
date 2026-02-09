@@ -1307,6 +1307,62 @@ Include the returned URL as `image_url` in the WS message payload.
 
 ---
 
+### Voice Chat
+
+Live voice chat uses WebRTC P2P mesh (2-10 users per channel). The server acts purely as a signaling relay — no audio is processed or stored server-side. Audio is encrypted via WebRTC DTLS-SRTP.
+
+Voice signaling piggybacks on the existing `/ws/chat` WebSocket. No separate WebSocket connection is needed.
+
+#### GET /api/voice/ice-servers
+Get ICE server configuration for WebRTC peer connections.
+
+**Response:**
+```json
+{
+  "ice_servers": [
+    {"urls": "stun:stun.l.google.com:19302"},
+    {"urls": "turn:turn.example.com:3478", "username": "user", "credential": "pass"}
+  ]
+}
+```
+
+TURN server is optional — only included if configured via environment variables (`TURN_SERVER`, `TURN_USERNAME`, `TURN_PASSWORD`).
+
+---
+
+#### Voice WebSocket Messages (via /ws/chat)
+
+**Client → Server:**
+```json
+{"type": "voice_join"}
+{"type": "voice_leave"}
+{"type": "voice_signal", "target_user_id": 5, "signal": {"type": "offer", "sdp": "..."}}
+{"type": "voice_signal", "target_user_id": 5, "signal": {"type": "answer", "sdp": "..."}}
+{"type": "voice_signal", "target_user_id": 5, "signal": {"type": "ice-candidate", "candidate": {...}}}
+{"type": "voice_mute", "muted": true}
+{"type": "voice_deafen", "deafened": true}
+{"type": "voice_speaking", "speaking": true}
+```
+
+**Server → Client:**
+```json
+{"type": "voice_state", "channel": "general", "users": [{"user_id": 1, "username": "alice", "muted": false, "deafened": false, "speaking": false}]}
+{"type": "voice_user_joined", "user_id": 2, "username": "bob"}
+{"type": "voice_user_left", "user_id": 2}
+{"type": "voice_signal", "from_user_id": 2, "signal": {"type": "offer", "sdp": "..."}}
+{"type": "voice_mute_changed", "user_id": 2, "muted": true}
+{"type": "voice_deafen_changed", "user_id": 2, "deafened": true}
+{"type": "voice_speaking_changed", "user_id": 2, "speaking": true}
+```
+
+- `voice_state`: Sent to joiner with list of all current voice users in the channel
+- `voice_signal`: Targeted relay — only sent to the specified user, never broadcast
+- `voice_speaking`: Rate-limited to 1 broadcast per 100ms per user
+- Users can only be in voice in one channel at a time; switching text channels auto-leaves voice
+- User list (`users` messages) includes `in_voice`, `voice_muted`, `voice_deafened`, `voice_speaking` fields
+
+---
+
 ### WebSocket Endpoints
 
 #### WS /ws/chat

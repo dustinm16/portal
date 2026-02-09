@@ -313,6 +313,7 @@
                 <h4>Community</h4>
                 <ul>
                     <li><a href="#chat">Chat/Forum</a></li>
+                    <li><a href="#voice-chat">Voice Chat</a></li>
                     <li><a href="#notifications">Notifications</a></li>
                 </ul>
                 <div class="admin-only">
@@ -2994,6 +2995,73 @@ ws.send(JSON.stringify({
                     </div>
                 </div>
                 </div>
+
+                <!-- Voice Chat -->
+                <h2 id="voice-chat">Voice Chat</h2>
+                <p>Live voice chat using WebRTC P2P mesh (2-10 users per channel). The server acts purely as a signaling relay &mdash; no audio processing or storage. Audio is encrypted via WebRTC DTLS-SRTP. Voice signaling piggybacks on the existing <code>/ws/chat</code> WebSocket.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/voice/ice-servers</span>
+                        <span class="endpoint-desc">Get ICE server configuration</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns STUN and optional TURN server configuration for WebRTC peer connections.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"ice_servers"</span>: [
+    {<span class="string">"urls"</span>: <span class="string">"stun:stun.l.google.com:19302"</span>},
+    {<span class="string">"urls"</span>: <span class="string">"turn:turn.example.com:3478"</span>, <span class="string">"username"</span>: <span class="string">"user"</span>, <span class="string">"credential"</span>: <span class="string">"pass"</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>Voice Signaling (via /ws/chat)</h3>
+                <p>Voice commands are sent as JSON messages on the existing chat WebSocket. Supported client-to-server message types:</p>
+                <table class="param-table">
+                    <tr><th>Type</th><th>Fields</th><th>Description</th></tr>
+                    <tr>
+                        <td><span class="param-name">voice_join</span></td>
+                        <td>&mdash;</td>
+                        <td>Join voice in the current text channel</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_leave</span></td>
+                        <td>&mdash;</td>
+                        <td>Leave voice chat</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_signal</span></td>
+                        <td>target_user_id, signal</td>
+                        <td>Forward WebRTC offer/answer/ICE candidate to a specific user</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_mute</span></td>
+                        <td>muted (bool)</td>
+                        <td>Toggle microphone mute state</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_deafen</span></td>
+                        <td>deafened (bool)</td>
+                        <td>Toggle deafen (mute all incoming audio)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_speaking</span></td>
+                        <td>speaking (bool)</td>
+                        <td>Voice activity indicator (rate-limited to 1/100ms)</td>
+                    </tr>
+                </table>
+
+                <h3>Voice Modes</h3>
+                <p>Users can choose between two voice activation modes (stored in browser localStorage):</p>
+                <ul>
+                    <li><strong>VAD (Voice Activity Detection)</strong> &mdash; Automatically detects speech using AudioContext analysis with configurable dBFS threshold</li>
+                    <li><strong>PTT (Push-to-Talk)</strong> &mdash; Transmit only while holding a configurable key (default: Space)</li>
+                </ul>
 
                 <!-- Notifications -->
                 <h2 id="notifications">Notifications</h2>

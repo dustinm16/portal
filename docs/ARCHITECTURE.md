@@ -483,8 +483,17 @@ PUT  /api/chat/channels/:id          - Update channel
 DELETE /api/chat/channels/:id        - Delete channel
 POST /api/chat/channels/:id/clear    - Clear history (superadmin)
 POST /api/chat/upload                - Upload chat image
-WS   /ws/chat                        - Chat WebSocket
+WS   /ws/chat                        - Chat WebSocket (text + voice signaling)
 ```
+
+### Voice Chat
+
+```
+GET  /api/voice/ice-servers          - ICE server config (STUN/TURN)
+WS   /ws/chat                        - Voice signaling (piggybacks on chat WS)
+```
+
+Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively.
 
 ### System Info
 
@@ -547,7 +556,7 @@ POST /api/vuln/nvd-api-key           - Set NVD API key
 ### WebSocket Endpoints
 
 ```
-WS /ws/chat                     - Chat real-time
+WS /ws/chat                     - Chat real-time + voice signaling
 WS /ws/terminal/local           - Local terminal (admin, ?shell= for shell selection)
 WS /ws/terminal/:id             - Terminal session (falls back to user-connection if no service)
 WS /ws/vnc/:id                  - VNC connection
@@ -689,6 +698,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 19. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
 20. **Stream Hash Redaction** - Internal `stream_key_hash` and `public_key_hash` stripped from all API responses (open, public, non-owner individual stream endpoints)
 21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
+22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
 
 ---
 
