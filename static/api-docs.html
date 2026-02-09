@@ -318,6 +318,8 @@
                 <div class="admin-only">
                     <h4>Admin Only</h4>
                     <ul>
+                        <li><a href="#admin-stats">System Stats</a></li>
+                        <li><a href="#system-info">System Info</a></li>
                         <li><a href="#managed-services">Managed Services</a></li>
                         <li><a href="#system-health">System Health</a></li>
                         <li><a href="#activity">Activity Feed</a></li>
@@ -529,6 +531,66 @@
                     </div>
                 </div>
 
+                <!-- Registration -->
+                <h3>Registration</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/register</span>
+                        <span class="endpoint-desc">Register a new account</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Register a new account using an invite code. Rate limited to 1 account per IP per 24 hours.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">username</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Desired username <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">password</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Password (min 8 chars) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">invite_code</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Daily invite code <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">5</span>,
+  <span class="string">"username"</span>: <span class="string">"newuser"</span>,
+  <span class="string">"message"</span>: <span class="string">"Registration successful"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/invite-code</span>
+                        <span class="endpoint-desc">Get daily invite code</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the current daily invite code for sharing with new users.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"invite_code"</span>: <span class="string">"ABC123"</span>,
+  <span class="string">"expires_at"</span>: <span class="string">"2026-02-10T00:00:00Z"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Public Stats -->
                 <h2 id="public-stats">Public Stats</h2>
                 <p>Public statistics available to all authenticated users.</p>
@@ -662,6 +724,61 @@
                     </div>
                 </div>
 
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/services/types</span>
+                        <span class="endpoint-desc">List service types</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns available managed service types with their configuration schemas. Used when creating new managed services.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/services/{id}</span>
+                        <span class="endpoint-desc">Update service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update a service's display name, configuration, or enabled state. Requires admin privileges.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">display_name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Updated display name</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">config</span></td>
+                                <td><span class="param-type">object</span></td>
+                                <td>Updated configuration</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">enabled</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Enable or disable the service</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/services/{id}</span>
+                        <span class="endpoint-desc">Delete service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete a service. Managed services are stopped before deletion.</p>
+                    </div>
+                </div>
+
                 <!-- User Connections -->
                 <h2 id="connections">User Connections</h2>
                 <p>User Connections are personal remote access points that you configure for your own use. Unlike Services (admin-configured), connections are private to each user.</p>
@@ -765,6 +882,63 @@
     }
   }'</pre>
                         </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/connections/{id}</span>
+                        <span class="endpoint-desc">Get connection details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns details for a specific connection. Sensitive config fields (passwords, private keys) are redacted and replaced with <code>has_&lt;field&gt;</code> boolean flags.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/connections/{id}</span>
+                        <span class="endpoint-desc">Update connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update a connection. Config fields are merged server-side with the existing config &mdash; sensitive fields not included in the request are preserved from the encrypted database record.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Updated display name</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">host</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Updated host address</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">port</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Updated port number</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">config</span></td>
+                                <td><span class="param-type">object</span></td>
+                                <td>Updated type-specific configuration</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/connections/{id}</span>
+                        <span class="endpoint-desc">Delete connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete a connection.</p>
                     </div>
                 </div>
 
@@ -1177,6 +1351,17 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Upload a custom thumbnail image (owner only). Multipart form data with field <code>thumbnail</code>. Max 2MB, JPEG/PNG.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/streams/{id}/thumbnail</span>
+                        <span class="endpoint-desc">Delete stream thumbnail</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Remove a custom thumbnail for a stream (owner only). The stream will revert to using a dynamic thumbnail when live.</p>
                     </div>
                 </div>
 
@@ -1711,11 +1896,45 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/ssh-keys/{id}</span>
+                        <span class="endpoint-desc">Get SSH key details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns details for a specific SSH key (public key only).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/ssh-keys/{id}</span>
+                        <span class="endpoint-desc">Delete SSH key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete an SSH key pair.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/ssh-keys/authorized</span>
                         <span class="endpoint-desc">Get authorized_keys format</span>
                     </div>
                     <div class="endpoint-body">
                         <p>Returns all your public keys in authorized_keys format for adding to remote servers.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/ssh-keys/all</span>
+                        <span class="endpoint-desc">List all SSH keys</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List all SSH keys across all users (admin only).</p>
                     </div>
                 </div>
 
@@ -1766,6 +1985,26 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                     </div>
                     <div class="endpoint-body">
                         <p>Verify a TOTP code to enable 2FA. Returns backup codes.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">code</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>6-digit TOTP code <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/user/2fa/disable</span>
+                        <span class="endpoint-desc">Disable 2FA</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Disable two-factor authentication. Requires a valid TOTP code to confirm.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -2024,6 +2263,24 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                         <p>Broadcasts <code>channel_deleted</code> to all connected clients before deletion.</p>
                     </div>
                 </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/clear</span>
+                        <span class="endpoint-desc">Clear channel history <span class="badge-admin">ADMIN</span></span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete all messages in a channel (superadmin only). The channel itself is preserved.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"deleted_count"</span>: <span class="number">150</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
                 </div>
 
                 <div class="endpoint">
@@ -2128,6 +2385,98 @@ ws.send(JSON.stringify({
   channel: <span class="string">'general'</span>,
   message: <span class="string">'Hello everyone!'</span>
 }));</pre>
+                </div>
+
+                <!-- System Stats (Admin) -->
+                <div class="admin-only">
+                <h2 id="admin-stats">System Stats <span class="badge-admin">ADMIN</span></h2>
+                <p>Authenticated statistics with additional detail beyond the public stats endpoint.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/stats</span>
+                        <span class="endpoint-desc">Get system statistics</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns detailed system statistics including user counts, active connections, and service counts.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"total_users"</span>: <span class="number">10</span>,
+  <span class="string">"active_connections"</span>: <span class="number">5</span>,
+  <span class="string">"total_services"</span>: <span class="number">3</span>,
+  <span class="string">"uptime_check"</span>: <span class="string">"2026-02-09T12:00:00Z"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+                </div>
+
+                <!-- System Info (Admin) -->
+                <div class="admin-only">
+                <h2 id="system-info">System Info <span class="badge-admin">ADMIN</span></h2>
+                <p>Server configuration and capability queries.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/plugins</span>
+                        <span class="endpoint-desc">List available plugins</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all available plugins with their configuration schemas.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"plugins"</span>: [
+    {
+      <span class="string">"name"</span>: <span class="string">"ssh"</span>,
+      <span class="string">"display_name"</span>: <span class="string">"SSH Terminal"</span>,
+      <span class="string">"description"</span>: <span class="string">"SSH connection over WebSocket"</span>,
+      <span class="string">"config_schema"</span>: {...}
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shells</span>
+                        <span class="endpoint-desc">List available shells</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns available shells on the server. Used by the terminal and SSH shell selectors.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"shells"</span>: [
+    {<span class="string">"path"</span>: <span class="string">"/usr/bin/bash"</span>, <span class="string">"name"</span>: <span class="string">"bash"</span>},
+    {<span class="string">"path"</span>: <span class="string">"/usr/bin/fish"</span>, <span class="string">"name"</span>: <span class="string">"fish"</span>},
+    {<span class="string">"path"</span>: <span class="string">"/usr/bin/zsh"</span>, <span class="string">"name"</span>: <span class="string">"zsh"</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/tunnels</span>
+                        <span class="endpoint-desc">Get active tunnel sessions</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns active secure tunnel sessions with connection details.</p>
+                    </div>
+                </div>
                 </div>
 
                 <!-- Managed Services (Admin) -->
@@ -2384,6 +2733,8 @@ ws.send(JSON.stringify({
                             </tr>
                         </table>
                     </div>
+                </div>
+
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>

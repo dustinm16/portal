@@ -555,6 +555,11 @@ Create a new user (admin only).
 
 ---
 
+#### PUT /api/users/:id/admin
+Legacy endpoint. Redirects to `PUT /api/users/:id/role`.
+
+---
+
 #### PUT /api/users/:id/role
 Change user role.
 
@@ -1631,6 +1636,18 @@ List available plugins with their configuration schemas.
       "config_schema": { ... }
     }
   ]
+}
+```
+
+---
+
+#### GET /api/tunnels
+Get active secure tunnel sessions (admin only).
+
+**Response:**
+```json
+{
+  "sessions": [...]
 }
 ```
 
