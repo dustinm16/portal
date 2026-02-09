@@ -438,7 +438,7 @@ function switchTab(tabName) {
     if (tabName === 'my-connections') {
         loadInlineConnections();
     } else if (tabName === 'my-streams') {
-        loadInlineStreams();
+        // streams.js handles this via its switchTab wrapper (loadUserStreams)
     } else if (tabName === 'my-vods') {
         loadVods();
     }
