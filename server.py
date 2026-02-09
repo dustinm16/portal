@@ -14,7 +14,7 @@ import weakref
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import time
+from time import monotonic, time
 from typing import Optional
 import re
 
@@ -5722,6 +5722,11 @@ chat_rooms: dict[str, set] = {}
 # Updated by HTTP handlers so WS handlers see changes immediately
 chat_user_state: dict[int, dict] = {}
 
+# Voice chat state: channel_name -> {user_id -> {ws, username, muted, deafened, speaking}}
+voice_state: dict[str, dict[int, dict]] = {}
+# Rate-limit speaking broadcasts: (channel, user_id) -> last_broadcast_time
+_voice_speaking_last: dict[tuple, float] = {}
+
 
 async def http_get_chat_channels(request: web.Request) -> web.Response:
     """Get all chat channels."""
@@ -6098,6 +6103,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         # Leave current channel
                         if current_channel and current_channel in chat_rooms:
+                            # Auto-leave voice in old channel
+                            if current_channel in voice_state and user_id in voice_state[current_channel]:
+                                del voice_state[current_channel][user_id]
+                                await broadcast_to_channel(current_channel, {
+                                    "type": "voice_user_left",
+                                    "user_id": user_id
+                                })
+                                if not voice_state[current_channel]:
+                                    del voice_state[current_channel]
+
                             chat_rooms[current_channel].discard(user_entry)
                             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
                             await broadcast_to_channel(current_channel, {
@@ -6218,6 +6233,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     avatar = json.loads(u["avatar"])
                                 except (json.JSONDecodeError, TypeError):
                                     pass
+                            voice_info = voice_state.get(current_channel, {}).get(u["id"], {})
                             users_list.append({
                                 "user_id": u["id"],
                                 "username": "Anonymous" if u.get("chat_anonymous") else (u.get("nickname") or u["username"]),
@@ -6226,7 +6242,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "status_message": u.get("status_message"),
                                 "role": u.get("role", "user"),
                                 "anonymous": bool(u.get("chat_anonymous")),
-                                "avatar": avatar
+                                "avatar": avatar,
+                                "in_voice": bool(voice_info),
+                                "voice_muted": voice_info.get("muted", False),
+                                "voice_deafened": voice_info.get("deafened", False),
+                                "voice_speaking": voice_info.get("speaking", False)
                             })
                         await ws.send_json({
                             "type": "users",
@@ -6510,6 +6530,141 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "bans": bans
                         })
 
+                    # =========================================================
+                    # Voice Chat Signaling
+                    # =========================================================
+                    elif msg_type == "voice_join":
+                        if not current_channel:
+                            await ws.send_json({"type": "error", "message": "Join a channel first"})
+                            continue
+
+                        # Check not already in voice anywhere
+                        already_in = None
+                        for vc, vc_users in voice_state.items():
+                            if user_id in vc_users:
+                                already_in = vc
+                                break
+                        if already_in:
+                            await ws.send_json({"type": "error", "message": "Already in voice chat"})
+                            continue
+
+                        # Add to voice state
+                        display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
+                        if current_channel not in voice_state:
+                            voice_state[current_channel] = {}
+                        voice_state[current_channel][user_id] = {
+                            "ws": ws,
+                            "username": display_name,
+                            "muted": False,
+                            "deafened": False,
+                            "speaking": False
+                        }
+
+                        # Send current voice users to joiner
+                        voice_users = []
+                        for vid, vdata in voice_state[current_channel].items():
+                            voice_users.append({
+                                "user_id": vid,
+                                "username": vdata["username"],
+                                "muted": vdata["muted"],
+                                "deafened": vdata["deafened"],
+                                "speaking": vdata["speaking"]
+                            })
+                        await ws.send_json({
+                            "type": "voice_state",
+                            "channel": current_channel,
+                            "users": voice_users
+                        })
+
+                        # Broadcast to channel that user joined voice
+                        await broadcast_to_channel(current_channel, {
+                            "type": "voice_user_joined",
+                            "user_id": user_id,
+                            "username": display_name
+                        }, exclude=ws)
+
+                        # Broadcast updated users list with voice state
+                        await broadcast_users_list(current_channel)
+                        logger.info(f"[Voice] {display_name} joined voice in #{current_channel}")
+
+                    elif msg_type == "voice_leave":
+                        if not current_channel:
+                            continue
+                        if current_channel in voice_state and user_id in voice_state[current_channel]:
+                            del voice_state[current_channel][user_id]
+                            await broadcast_to_channel(current_channel, {
+                                "type": "voice_user_left",
+                                "user_id": user_id
+                            })
+                            if not voice_state[current_channel]:
+                                del voice_state[current_channel]
+                            await broadcast_users_list(current_channel)
+                            display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
+                            logger.info(f"[Voice] {display_name} left voice in #{current_channel}")
+
+                    elif msg_type == "voice_signal":
+                        # Forward WebRTC signaling to target user
+                        target_user_id = data.get("target_user_id")
+                        signal_data = data.get("signal")
+                        if not target_user_id or not signal_data:
+                            continue
+
+                        try:
+                            target_user_id = int(target_user_id)
+                        except (ValueError, TypeError):
+                            continue
+
+                        # Find target in voice state
+                        if current_channel in voice_state and target_user_id in voice_state[current_channel]:
+                            target_ws = voice_state[current_channel][target_user_id]["ws"]
+                            try:
+                                if not target_ws.closed:
+                                    await target_ws.send_json({
+                                        "type": "voice_signal",
+                                        "from_user_id": user_id,
+                                        "signal": signal_data
+                                    })
+                            except Exception:
+                                pass
+
+                    elif msg_type == "voice_mute":
+                        muted = bool(data.get("muted", False))
+                        if current_channel in voice_state and user_id in voice_state[current_channel]:
+                            voice_state[current_channel][user_id]["muted"] = muted
+                            await broadcast_to_channel(current_channel, {
+                                "type": "voice_mute_changed",
+                                "user_id": user_id,
+                                "muted": muted
+                            })
+
+                    elif msg_type == "voice_deafen":
+                        deafened = bool(data.get("deafened", False))
+                        if current_channel in voice_state and user_id in voice_state[current_channel]:
+                            voice_state[current_channel][user_id]["deafened"] = deafened
+                            await broadcast_to_channel(current_channel, {
+                                "type": "voice_deafen_changed",
+                                "user_id": user_id,
+                                "deafened": deafened
+                            })
+
+                    elif msg_type == "voice_speaking":
+                        speaking = bool(data.get("speaking", False))
+                        if current_channel in voice_state and user_id in voice_state[current_channel]:
+                            # Rate-limit speaking broadcasts (max 1 per 100ms)
+                            rate_key = (current_channel, user_id)
+                            now = monotonic()
+                            last = _voice_speaking_last.get(rate_key, 0)
+                            if now - last < 0.1:
+                                continue
+                            _voice_speaking_last[rate_key] = now
+
+                            voice_state[current_channel][user_id]["speaking"] = speaking
+                            await broadcast_to_channel(current_channel, {
+                                "type": "voice_speaking_changed",
+                                "user_id": user_id,
+                                "speaking": speaking
+                            })
+
                 except json.JSONDecodeError:
                     await ws.send_json({"type": "error", "message": "Invalid JSON"})
 
@@ -6529,6 +6684,24 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             _online_users.pop(user_id, None)
         else:
             _online_users[user_id] = count
+
+        # Clean up voice state (remove from any channel)
+        for vc in list(voice_state.keys()):
+            if user_id in voice_state[vc]:
+                del voice_state[vc][user_id]
+                try:
+                    await broadcast_to_channel(vc, {
+                        "type": "voice_user_left",
+                        "user_id": user_id
+                    })
+                    await broadcast_users_list(vc)
+                except Exception:
+                    pass
+                if not voice_state[vc]:
+                    del voice_state[vc]
+        # Clean up speaking rate-limit entries
+        for key in [k for k in _voice_speaking_last if k[1] == user_id]:
+            _voice_speaking_last.pop(key, None)
 
         # Clean up chat room
         if current_channel and current_channel in chat_rooms:
@@ -6568,6 +6741,28 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+async def http_voice_ice_servers(request: web.Request) -> web.Response:
+    """Get ICE server configuration for WebRTC voice chat."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ice_servers = []
+    # STUN server
+    if Config.STUN_SERVER:
+        ice_servers.append({"urls": Config.STUN_SERVER})
+    # TURN server (optional)
+    if Config.TURN_SERVER:
+        turn_entry = {"urls": Config.TURN_SERVER}
+        if Config.TURN_USERNAME:
+            turn_entry["username"] = Config.TURN_USERNAME
+        if Config.TURN_PASSWORD:
+            turn_entry["credential"] = Config.TURN_PASSWORD
+        ice_servers.append(turn_entry)
+
+    return web.json_response({"ice_servers": ice_servers})
+
+
 async def broadcast_users_list(channel: str):
     """Broadcast the full users list to everyone in a channel."""
     if channel not in chat_rooms or not chat_rooms[channel]:
@@ -6582,6 +6777,7 @@ async def broadcast_users_list(channel: str):
                 avatar = json.loads(u["avatar"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        voice_info = voice_state.get(channel, {}).get(u["id"], {})
         users_list.append({
             "user_id": u["id"],
             "username": "Anonymous" if u.get("chat_anonymous") else (u.get("nickname") or u["username"]),
@@ -6590,7 +6786,11 @@ async def broadcast_users_list(channel: str):
             "status_message": u.get("status_message"),
             "role": u.get("role", "user"),
             "anonymous": bool(u.get("chat_anonymous")),
-            "avatar": avatar
+            "avatar": avatar,
+            "in_voice": bool(voice_info),
+            "voice_muted": voice_info.get("muted", False),
+            "voice_deafened": voice_info.get("deafened", False),
+            "voice_speaking": voice_info.get("speaking", False)
         })
     await broadcast_to_channel(channel, {
         "type": "users",
@@ -7384,7 +7584,7 @@ async def security_headers_middleware(request: web.Request, handler):
 
     # Permissions policy - restrict sensitive features
     response.headers.setdefault('Permissions-Policy',
-        'geolocation=(), microphone=(), camera=(), payment=()')
+        'geolocation=(), microphone=(self), camera=(), payment=()')
 
     # Content Security Policy for HTML pages
     content_type = response.headers.get('Content-Type', '')
@@ -7611,6 +7811,9 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/chat/channels/{id}", http_delete_chat_channel)
     app.router.add_post("/api/chat/channels/{id}/clear", http_clear_chat_channel)
     app.router.add_post("/api/chat/upload", http_upload_chat_image)
+
+    # Voice chat
+    app.router.add_get("/api/voice/ice-servers", http_voice_ice_servers)
 
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)

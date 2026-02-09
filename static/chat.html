@@ -1183,6 +1183,171 @@
             object-fit: contain;
             border-radius: 8px;
         }
+
+        /* Voice Chat Styles */
+        .voice-join-btn {
+            background: var(--accent-green, #43b581);
+            color: #fff;
+            border: none;
+            padding: 0.35rem 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            white-space: nowrap;
+        }
+        .voice-join-btn:hover { opacity: 0.85; }
+        .voice-join-btn.in-voice {
+            background: var(--accent-red, #f04747);
+        }
+
+        .voice-controls {
+            display: none;
+            background: var(--bg-secondary, #2f3136);
+            border-bottom: 1px solid var(--border-color, #3a3d41);
+            padding: 0.4rem 0.75rem;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .voice-controls.active { display: flex; }
+
+        .voice-ctrl-btn {
+            background: var(--bg-tertiary, #36393f);
+            color: var(--text-secondary, #b9bbbe);
+            border: 1px solid var(--border-color, #3a3d41);
+            border-radius: 4px;
+            padding: 0.3rem 0.5rem;
+            cursor: pointer;
+            font-size: 0.8rem;
+            min-width: 44px;
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+        }
+        .voice-ctrl-btn:hover { background: var(--bg-hover, #3e4147); }
+        .voice-ctrl-btn.active { color: var(--accent-red, #f04747); border-color: var(--accent-red, #f04747); }
+
+        .voice-disconnect-btn {
+            background: var(--accent-red, #f04747);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 0.3rem 0.6rem;
+            cursor: pointer;
+            font-size: 0.8rem;
+            min-height: 32px;
+        }
+        .voice-disconnect-btn:hover { opacity: 0.85; }
+
+        .voice-users-mini {
+            display: flex;
+            gap: 0.3rem;
+            align-items: center;
+            flex: 1;
+            overflow-x: auto;
+            font-size: 0.8rem;
+            color: var(--text-secondary, #b9bbbe);
+        }
+        .voice-user-mini {
+            display: flex;
+            align-items: center;
+            gap: 0.2rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            background: var(--bg-tertiary, #36393f);
+            white-space: nowrap;
+        }
+        .voice-user-mini.speaking {
+            outline: 2px solid var(--accent-green, #43b581);
+        }
+
+        .voice-mode-indicator {
+            font-size: 0.7rem;
+            color: var(--text-muted, #72767d);
+            padding: 0.15rem 0.35rem;
+            border-radius: 3px;
+            background: var(--bg-tertiary, #36393f);
+        }
+
+        .user-voice-indicator {
+            font-size: 0.7rem;
+            margin-left: 0.3rem;
+        }
+        .user-item.in-voice {
+            border-left: 2px solid var(--accent-green, #43b581);
+            padding-left: 0.5rem;
+        }
+        .user-item.in-voice.speaking {
+            border-left-color: #3ba55c;
+            box-shadow: inset 0 0 8px rgba(67, 181, 129, 0.15);
+        }
+
+        /* Voice Settings Modal */
+        .voice-settings-modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 1100;
+            justify-content: center;
+            align-items: center;
+        }
+        .voice-settings-modal.active { display: flex; }
+        .voice-settings-content {
+            background: var(--bg-primary, #1e1f22);
+            border: 1px solid var(--border-color, #3a3d41);
+            border-radius: 8px;
+            padding: 1.5rem;
+            width: 360px;
+            max-width: 90vw;
+        }
+        .voice-settings-content h3 { margin: 0 0 1rem; }
+        .voice-settings-content label {
+            display: block;
+            margin: 0.75rem 0 0.25rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary, #b9bbbe);
+        }
+        .voice-settings-content select,
+        .voice-settings-content input[type="range"] {
+            width: 100%;
+            padding: 0.35rem;
+            border-radius: 4px;
+            border: 1px solid var(--border-color, #3a3d41);
+            background: var(--bg-secondary, #2f3136);
+            color: var(--text-primary, #dcddde);
+        }
+        .voice-settings-content .ptt-key-capture {
+            padding: 0.5rem;
+            border: 1px dashed var(--border-color, #3a3d41);
+            border-radius: 4px;
+            text-align: center;
+            cursor: pointer;
+            color: var(--text-secondary, #b9bbbe);
+            font-size: 0.85rem;
+        }
+        .voice-settings-content .ptt-key-capture.capturing {
+            border-color: var(--accent-color, #5865f2);
+            color: var(--accent-color, #5865f2);
+        }
+        .voice-settings-actions {
+            margin-top: 1rem;
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+        }
+
+        @media (pointer: coarse) {
+            .voice-ctrl-btn, .voice-join-btn, .voice-disconnect-btn {
+                min-height: 44px;
+                min-width: 44px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1289,6 +1454,10 @@
                 <div class="chat-header-top">
                     <h2 id="channel-name">general</h2>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <button class="voice-join-btn" id="voice-join-btn" onclick="toggleVoice()" title="Join voice chat">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V14h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-1.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/></svg>
+                            <span id="voice-join-label">Join Voice</span>
+                        </button>
                         <button class="watch-stream-btn" id="watch-stream-btn" onclick="openWatchStream()" title="Watch stream">
                             Watch Stream
                         </button>
@@ -1298,6 +1467,22 @@
                     </div>
                 </div>
                 <div class="chat-topic" id="channel-topic">General discussion</div>
+            </div>
+            <div class="voice-controls" id="voice-controls">
+                <button class="voice-ctrl-btn" id="voice-mute-btn" onclick="VoiceChat.toggleMute()" title="Toggle mute">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V14h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-1.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/></svg>
+                    <span id="voice-mute-label">Mute</span>
+                </button>
+                <button class="voice-ctrl-btn" id="voice-deafen-btn" onclick="VoiceChat.toggleDeafen()" title="Toggle deafen">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a6 6 0 0 0-6 6v1c0 .6.4 1 1 1h1V7a4 4 0 1 1 8 0v2h1c.6 0 1-.4 1-1V7a6 6 0 0 0-6-6zM4 9v3a2 2 0 0 0 2 2h.5a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5H4zm8 0h-2.5a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 .5.5H10a2 2 0 0 0 2-2V9z"/></svg>
+                    <span id="voice-deafen-label">Deafen</span>
+                </button>
+                <button class="voice-ctrl-btn" id="voice-settings-btn" onclick="openVoiceSettings()" title="Voice settings">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.421 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.421-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.116l.094-.318z"/></svg>
+                </button>
+                <span class="voice-mode-indicator" id="voice-mode-indicator">VAD</span>
+                <div class="voice-users-mini" id="voice-users-mini"></div>
+                <button class="voice-disconnect-btn" onclick="VoiceChat.leave()" title="Disconnect from voice">Disconnect</button>
             </div>
             <div class="chat-messages" id="chat-messages">
                 <!-- Messages populated by JS -->
@@ -1445,6 +1630,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=22"></script>
+    <script src="/static/js/voice.js?v=1"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -1722,6 +1908,9 @@
                 updateConnectionStatus(true);
                 reconnectAttempts = 0;
 
+                // Initialize voice chat with this WebSocket
+                VoiceChat.init(ws, onVoiceStateChange);
+
                 // Join current channel
                 ws.send(JSON.stringify({
                     type: 'join',
@@ -1837,6 +2026,12 @@
                     break;
                 case 'error':
                     alert(data.message);
+                    break;
+                default:
+                    // Delegate voice_* messages to VoiceChat
+                    if (data.type && data.type.startsWith('voice_')) {
+                        VoiceChat.handleMessage(data);
+                    }
                     break;
             }
         }
@@ -2014,13 +2209,16 @@
             list.innerHTML = users.map(user => {
                 const displayName = user.nickname || user.username;
                 const showUsername = user.nickname && !user.anonymous;
+                const voiceClass = user.in_voice ? (user.voice_speaking ? 'in-voice speaking' : 'in-voice') : '';
+                const voiceIcons = user.in_voice ?
+                    `<span class="user-voice-indicator">${user.voice_muted ? '🔇' : '🎙️'}${user.voice_deafened ? '🔈' : ''}</span>` : '';
                 return `
-                <div class="user-item" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status)}"
+                <div class="user-item ${voiceClass}" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status)}"
                      onclick="insertMention('${escapeHtml(user.nickname || user.username)}')" style="cursor: pointer;">
                     <span class="user-status ${user.status || 'online'}"></span>
                     <div class="user-info">
                         <div class="user-name">
-                            ${escapeHtml(displayName)}${getRoleBadgeMini(user.role)}
+                            ${escapeHtml(displayName)}${getRoleBadgeMini(user.role)}${voiceIcons}
                         </div>
                         ${showUsername ? `<div class="user-nickname">@${escapeHtml(user.username)}</div>` : ''}
                         ${user.status_message ? `<div class="user-status-msg">${escapeHtml(user.status_message)}</div>` : ''}
@@ -2827,12 +3025,152 @@
             document.getElementById('image-lightbox').classList.remove('show');
         }
 
+        // =============================================
+        // Voice Chat UI
+        // =============================================
+        function toggleVoice() {
+            if (VoiceChat.isInVoice()) {
+                VoiceChat.leave();
+            } else {
+                VoiceChat.join();
+            }
+        }
+
+        function onVoiceStateChange(state) {
+            const joinBtn = document.getElementById('voice-join-btn');
+            const joinLabel = document.getElementById('voice-join-label');
+            const controls = document.getElementById('voice-controls');
+            const muteBtn = document.getElementById('voice-mute-btn');
+            const muteLabel = document.getElementById('voice-mute-label');
+            const deafenBtn = document.getElementById('voice-deafen-btn');
+            const deafenLabel = document.getElementById('voice-deafen-label');
+            const modeIndicator = document.getElementById('voice-mode-indicator');
+            const usersMini = document.getElementById('voice-users-mini');
+
+            if (state.inVoice) {
+                joinBtn.classList.add('in-voice');
+                joinLabel.textContent = 'Leave Voice';
+                controls.classList.add('active');
+                muteBtn.classList.toggle('active', state.muted);
+                muteLabel.textContent = state.muted ? 'Unmute' : 'Mute';
+                deafenBtn.classList.toggle('active', state.deafened);
+                deafenLabel.textContent = state.deafened ? 'Undeafen' : 'Deafen';
+                modeIndicator.textContent = state.mode === 'ptt' ? 'PTT' : 'VAD';
+
+                // Update mini user list
+                usersMini.innerHTML = state.users.map(u =>
+                    `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}">${escapeHtml(u.username)}${u.muted ? ' 🔇' : ''}</span>`
+                ).join('');
+            } else {
+                joinBtn.classList.remove('in-voice');
+                joinLabel.textContent = 'Join Voice';
+                controls.classList.remove('active');
+                usersMini.innerHTML = '';
+            }
+        }
+
+        function openVoiceSettings() {
+            const modal = document.getElementById('voice-settings-modal');
+            const prefs = VoiceChat.getPrefs();
+            document.getElementById('voice-mode-select').value = prefs.mode;
+            document.getElementById('vad-threshold-slider').value = prefs.vadThreshold;
+            document.getElementById('vad-threshold-value').textContent = prefs.vadThreshold;
+            document.getElementById('ptt-key-display').textContent = prefs.pttKey;
+            document.getElementById('vad-settings').style.display = prefs.mode === 'vad' ? '' : 'none';
+            document.getElementById('ptt-settings').style.display = prefs.mode === 'ptt' ? '' : 'none';
+
+            // Populate audio input devices
+            if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+                navigator.mediaDevices.enumerateDevices().then(devices => {
+                    const select = document.getElementById('voice-input-device');
+                    select.innerHTML = '<option value="">Default</option>';
+                    devices.filter(d => d.kind === 'audioinput').forEach(d => {
+                        const opt = document.createElement('option');
+                        opt.value = d.deviceId;
+                        opt.textContent = d.label || `Microphone ${select.options.length}`;
+                        select.appendChild(opt);
+                    });
+                });
+            }
+
+            modal.classList.add('active');
+        }
+
+        function closeVoiceSettings() {
+            document.getElementById('voice-settings-modal').classList.remove('active');
+        }
+
+        function handleVoiceModeChange(mode) {
+            VoiceChat.setMode(mode);
+            document.getElementById('vad-settings').style.display = mode === 'vad' ? '' : 'none';
+            document.getElementById('ptt-settings').style.display = mode === 'ptt' ? '' : 'none';
+        }
+
+        function handleVadThresholdChange(value) {
+            document.getElementById('vad-threshold-value').textContent = value;
+            VoiceChat.setVadThreshold(parseInt(value));
+        }
+
+        let _capturingPttKey = false;
+        function startPttKeyCapture() {
+            _capturingPttKey = true;
+            const el = document.getElementById('ptt-key-capture');
+            el.classList.add('capturing');
+            document.getElementById('ptt-key-display').textContent = 'Press a key...';
+            document.addEventListener('keydown', _captureKey, { once: true });
+        }
+
+        function _captureKey(e) {
+            e.preventDefault();
+            _capturingPttKey = false;
+            const el = document.getElementById('ptt-key-capture');
+            el.classList.remove('capturing');
+            document.getElementById('ptt-key-display').textContent = e.code;
+            VoiceChat.setPttKey(e.code);
+        }
+
         // Close lightbox with Escape key
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 closeLightbox();
+                closeVoiceSettings();
             }
         });
     </script>
+
+    <!-- Voice Settings Modal -->
+    <div class="voice-settings-modal" id="voice-settings-modal" onclick="if(event.target===this)closeVoiceSettings()">
+        <div class="voice-settings-content">
+            <h3>Voice Settings</h3>
+            <label>Voice Mode</label>
+            <select id="voice-mode-select" onchange="handleVoiceModeChange(this.value)">
+                <option value="vad">Voice Activity Detection (VAD)</option>
+                <option value="ptt">Push-to-Talk (PTT)</option>
+            </select>
+
+            <div id="vad-settings">
+                <label>VAD Sensitivity: <span id="vad-threshold-value">-50</span> dBFS</label>
+                <input type="range" id="vad-threshold-slider" min="-80" max="-20" value="-50"
+                       oninput="handleVadThresholdChange(this.value)">
+            </div>
+
+            <div id="ptt-settings" style="display:none;">
+                <label>Push-to-Talk Key</label>
+                <div class="ptt-key-capture" id="ptt-key-capture" onclick="startPttKeyCapture()">
+                    <span id="ptt-key-display">Space</span>
+                    <br><small>Click to rebind</small>
+                </div>
+            </div>
+
+            <label>Input Device</label>
+            <select id="voice-input-device">
+                <option value="">Default</option>
+            </select>
+
+            <div class="voice-settings-actions">
+                <button class="voice-ctrl-btn" onclick="closeVoiceSettings()">Close</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

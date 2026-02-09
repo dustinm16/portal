@@ -70,6 +70,12 @@ class Config:
     CVE_CACHE_TTL: int = int(os.getenv("CVE_CACHE_TTL", "3600"))  # 1 hour default
     VULN_SCAN_TIMEOUT: int = int(os.getenv("VULN_SCAN_TIMEOUT", "300"))  # 5 minutes
 
+    # Voice Chat (WebRTC ICE servers)
+    STUN_SERVER: str = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")
+    TURN_SERVER: str = os.getenv("TURN_SERVER", "")
+    TURN_USERNAME: str = os.getenv("TURN_USERNAME", "")
+    TURN_PASSWORD: str = os.getenv("TURN_PASSWORD", "")
+
     @classmethod
     def validate(cls) -> list[str]:
         """Validate configuration and return list of errors."""

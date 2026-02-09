@@ -572,6 +572,33 @@
         /* Message highlight */
         .chat-message.highlight { animation: msgHighlight 2s ease-out; }
         @keyframes msgHighlight { 0%, 30% { background: rgba(59,130,246,0.3); } 100% { background: rgba(0,0,0,0.2); } }
+
+        /* Voice Chat (compact) */
+        .watch-voice-btn {
+            background: var(--accent-green, #43b581);
+            color: #fff; border: none; border-radius: 4px;
+            padding: 0.25rem 0.5rem; cursor: pointer; font-size: 0.75rem;
+            white-space: nowrap;
+        }
+        .watch-voice-btn:hover { opacity: 0.85; }
+        .watch-voice-btn.in-voice { background: var(--accent-red, #f04747); }
+        .watch-voice-controls {
+            display: none; background: rgba(0,0,0,0.3);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding: 0.3rem 0.5rem; align-items: center; gap: 0.3rem; font-size: 0.75rem;
+        }
+        .watch-voice-controls.active { display: flex; }
+        .watch-voice-controls button {
+            background: rgba(255,255,255,0.1); color: var(--text-secondary, #b9bbbe);
+            border: 1px solid rgba(255,255,255,0.15); border-radius: 3px;
+            padding: 0.2rem 0.4rem; cursor: pointer; font-size: 0.7rem;
+            min-height: 28px;
+        }
+        .watch-voice-controls button:hover { background: rgba(255,255,255,0.15); }
+        .watch-voice-controls button.active { color: var(--accent-red, #f04747); border-color: var(--accent-red, #f04747); }
+        .watch-voice-controls .vc-disconnect { background: var(--accent-red, #f04747); color: #fff; border: none; }
+        .watch-voice-users { flex: 1; overflow-x: auto; color: var(--text-muted, #72767d); white-space: nowrap; }
+        @media (pointer: coarse) { .watch-voice-controls button, .watch-voice-btn { min-height: 44px; } }
     </style>
 </head>
 <body>
@@ -660,7 +687,16 @@
         <div class="viewer-chat" id="viewer-chat">
             <div class="viewer-chat-header">
                 <span>Stream Chat</span>
-                <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">Bans</button>
+                <div style="display:flex;gap:0.3rem;align-items:center;">
+                    <button class="watch-voice-btn" id="watch-voice-btn" onclick="toggleWatchVoice()">Join Voice</button>
+                    <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">Bans</button>
+                </div>
+            </div>
+            <div class="watch-voice-controls" id="watch-voice-controls">
+                <button id="wv-mute-btn" onclick="VoiceChat.toggleMute()">Mute</button>
+                <button id="wv-deafen-btn" onclick="VoiceChat.toggleDeafen()">Deafen</button>
+                <span class="watch-voice-users" id="wv-users"></span>
+                <button class="vc-disconnect" onclick="VoiceChat.leave()">X</button>
             </div>
             <div class="viewer-chat-messages" id="chat-messages"></div>
             <div class="chat-reply-indicator" id="chat-reply-indicator">
@@ -688,6 +724,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=22"></script>
+    <script src="/static/js/voice.js?v=1"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -1086,6 +1123,7 @@
             chatWs = new WebSocket(wsUrl);
 
             chatWs.onopen = () => {
+                VoiceChat.init(chatWs, onWatchVoiceState);
                 chatWs.send(JSON.stringify({
                     type: 'join',
                     stream_key: streamKey
@@ -1152,6 +1190,11 @@
                         currentUser.role === 'superadmin'
                     )) {
                         document.getElementById('mod-settings-btn').style.display = 'block';
+                    }
+                    break;
+                default:
+                    if (data.type && data.type.startsWith('voice_')) {
+                        VoiceChat.handleMessage(data);
                     }
                     break;
             }
@@ -1453,6 +1496,35 @@
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') document.getElementById('image-lightbox').classList.remove('show');
         });
+
+        // Voice chat (compact for watch page)
+        function toggleWatchVoice() {
+            if (VoiceChat.isInVoice()) VoiceChat.leave();
+            else VoiceChat.join();
+        }
+
+        function onWatchVoiceState(state) {
+            const btn = document.getElementById('watch-voice-btn');
+            const controls = document.getElementById('watch-voice-controls');
+            const muteBtn = document.getElementById('wv-mute-btn');
+            const deafenBtn = document.getElementById('wv-deafen-btn');
+            const users = document.getElementById('wv-users');
+
+            if (state.inVoice) {
+                btn.classList.add('in-voice');
+                btn.textContent = 'Leave Voice';
+                controls.classList.add('active');
+                muteBtn.classList.toggle('active', state.muted);
+                muteBtn.textContent = state.muted ? 'Unmute' : 'Mute';
+                deafenBtn.classList.toggle('active', state.deafened);
+                deafenBtn.textContent = state.deafened ? 'Undeafen' : 'Deafen';
+                users.textContent = state.users.map(u => u.username + (u.speaking ? '*' : '')).join(', ');
+            } else {
+                btn.classList.remove('in-voice');
+                btn.textContent = 'Join Voice';
+                controls.classList.remove('active');
+            }
+        }
 
         // Clean up on close
         window.addEventListener('beforeunload', () => {
