@@ -2386,14 +2386,34 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
     hls_port = mtx_config.get("hls_port", 8888)
     hls_url = f"https://127.0.0.1:{hls_port}/live/{stream_key}/index.m3u8"
 
-    # Build paths
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    # Build paths — date-only remote dir so chunks accumulate across restarts
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     safe_name = re.sub(r'[^\w\s-]', '', stream.get("name", "stream")).strip().replace(' ', '_')[:50] or "stream"
-    session_dir = os.path.join(VOD_TEMP_DIR, f"{stream_id}_{timestamp}")
+    session_dir = os.path.join(VOD_TEMP_DIR, f"{stream_id}_{date_str}_{int(time())}")
     os.makedirs(session_dir, exist_ok=True)
 
     remote_base = storage["remote_path"].rstrip("/")
-    remote_session_dir = f"{remote_base}/{safe_name}/{timestamp}"
+    remote_session_dir = f"{remote_base}/{safe_name}/{date_str}"
+
+    # Check remote SFTP for existing chunks to continue numbering
+    start_number = 0
+    conn, sftp, error = await _connect_vod_sftp(user_id)
+    if not error:
+        try:
+            await _sftp_makedirs(sftp, remote_session_dir)
+            existing = await sftp.listdir(remote_session_dir)
+            for fname in existing:
+                m = re.match(r'chunk_(\d+)\.mkv$', fname)
+                if m:
+                    n = int(m.group(1)) + 1
+                    if n > start_number:
+                        start_number = n
+            if start_number > 0:
+                logger.info(f"VOD resuming at chunk_{start_number:03d} in {safe_name}/{date_str}")
+        except Exception as e:
+            logger.debug(f"Could not check remote chunks: {e}")
+        finally:
+            conn.close()
 
     # Wait for MediaMTX HLS endpoint to be ready
     await asyncio.sleep(3)
@@ -2406,6 +2426,7 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         "-f", "segment",
         "-segment_time", str(VOD_SEGMENT_DURATION),
         "-segment_format", "matroska",
+        "-segment_start_number", str(start_number),
         "-reset_timestamps", "1",
         os.path.join(session_dir, "chunk_%03d.mkv"),
     ]
@@ -2444,7 +2465,7 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
     )
 
     active_recordings[stream_id] = recording
-    logger.info(f"VOD recording started: {safe_name}/{timestamp}/ (chunks every {VOD_SEGMENT_DURATION}s)")
+    logger.info(f"VOD recording started: {safe_name}/{date_str}/ from chunk_{start_number:03d} (every {VOD_SEGMENT_DURATION}s)")
 
 
 async def _vod_chunk_uploader(recording: dict) -> None:
@@ -2452,8 +2473,13 @@ async def _vod_chunk_uploader(recording: dict) -> None:
     stop_event: asyncio.Event = recording["stop_event"]
     session_dir = recording["session_dir"]
     uploaded: set = recording["uploaded"]
+    process = recording["process"]
 
     while not stop_event.is_set():
+        # Detect if ffmpeg exited on its own (e.g. HLS source 404)
+        if process.returncode is not None:
+            logger.info(f"VOD ffmpeg exited (code {process.returncode}), finalizing upload")
+            break
         await _do_vod_chunk_upload(recording, final=False)
         # Wait up to 30 seconds or until stop signal
         try:
@@ -2463,6 +2489,25 @@ async def _vod_chunk_uploader(recording: dict) -> None:
 
     # Final pass — ffmpeg has exited, all chunks are complete
     await _do_vod_chunk_upload(recording, final=True)
+
+    # If ffmpeg exited on its own (not via stop_vod_recording), clean up
+    if not stop_event.is_set():
+        stop_event.set()
+        # Remove from active_recordings
+        for sid, rec in list(active_recordings.items()):
+            if rec is recording:
+                active_recordings.pop(sid, None)
+                break
+        # Clean up local staging directory
+        try:
+            remaining = list(Path(session_dir).iterdir())
+            if remaining:
+                logger.warning(f"VOD staging dir has {len(remaining)} leftover file(s): {session_dir}")
+            else:
+                Path(session_dir).rmdir()
+        except OSError:
+            pass
+        logger.info(f"VOD recording auto-stopped for '{recording['stream_name']}' (ffmpeg exited)")
 
 
 async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
