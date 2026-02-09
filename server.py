@@ -2383,8 +2383,9 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         logger.warning("MediaMTX not configured, cannot start VOD recording")
         return
 
-    hls_port = mtx_config.get("hls_port", 8888)
-    hls_url = f"https://127.0.0.1:{hls_port}/live/{stream_key}/index.m3u8"
+    # Use RTSPS for reliable recording (HLS LL-HLS segments expire too fast for ffmpeg)
+    rtsps_port = 8322  # MediaMTX default RTSPS port (strict TLS)
+    source_url = f"rtsps://127.0.0.1:{rtsps_port}/live/{stream_key}"
 
     # Build paths — date-only remote dir so chunks accumulate across restarts
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2415,13 +2416,14 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         finally:
             conn.close()
 
-    # Wait for MediaMTX HLS endpoint to be ready
-    await asyncio.sleep(3)
+    # Wait for MediaMTX stream to be ready
+    await asyncio.sleep(2)
 
-    # ffmpeg segment muxer: lossless remux into 5-minute MKV chunks
+    # ffmpeg segment muxer: lossless remux into 5-minute MKV chunks via RTSPS
     cmd = [
         "ffmpeg", "-y",
-        "-i", hls_url,
+        "-rtsp_transport", "tcp",
+        "-i", source_url,
         "-c", "copy",
         "-f", "segment",
         "-segment_time", str(VOD_SEGMENT_DURATION),
