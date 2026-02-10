@@ -495,6 +495,34 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_rtmp_tokens_hash ON rtmp_tokens(token_hash)",
     "CREATE INDEX IF NOT EXISTS idx_rtmp_tokens_stream ON rtmp_tokens(stream_id)",
+    # Chat reactions
+    """CREATE TABLE IF NOT EXISTS chat_reactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        emoji TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(message_id, user_id, emoji)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_reactions_message ON chat_reactions(message_id)",
+    # Message editing
+    "ALTER TABLE chat_messages ADD COLUMN edited_at TEXT",
+    # Pinned messages
+    "ALTER TABLE chat_messages ADD COLUMN is_pinned INTEGER DEFAULT 0",
+    "ALTER TABLE chat_messages ADD COLUMN pinned_by INTEGER",
+    "ALTER TABLE chat_messages ADD COLUMN pinned_at TEXT",
+    # Unread tracking
+    """CREATE TABLE IF NOT EXISTS channel_read_positions (
+        user_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        last_read_message_id INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, channel_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
+    )""",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1796,7 +1824,7 @@ class Database:
                    WHERE us.is_public = 1"""
         if live_only:
             query += " AND us.is_live = 1"
-        query += " ORDER BY us.is_live DESC, us.viewer_count DESC, us.created_at DESC"
+        query += " ORDER BY (CASE us.is_live WHEN 1 THEN 0 WHEN 2 THEN 1 ELSE 2 END), us.viewer_count DESC, us.created_at DESC"
 
         cursor = await self.conn.execute(query)
         rows = await cursor.fetchall()
@@ -1808,7 +1836,7 @@ class Database:
                    FROM user_streams us
                    LEFT JOIN users u ON us.user_id = u.id
                    WHERE us.is_public = 1 AND us.allow_unauthenticated = 1
-                   ORDER BY us.is_live DESC, us.viewer_count DESC, us.created_at DESC"""
+                   ORDER BY (CASE us.is_live WHEN 1 THEN 0 WHEN 2 THEN 1 ELSE 2 END), us.viewer_count DESC, us.created_at DESC"""
         cursor = await self.conn.execute(query)
         rows = await cursor.fetchall()
         streams = [self._decrypt_stream_keys(dict(row)) for row in rows]
@@ -1846,7 +1874,7 @@ class Database:
         """Reset all streams to offline. Called on server startup."""
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            "UPDATE user_streams SET is_live = 0, viewer_count = 0, updated_at = ? WHERE is_live = 1",
+            "UPDATE user_streams SET is_live = 0, viewer_count = 0, updated_at = ? WHERE is_live != 0",
             (now,)
         )
         await self.conn.commit()
@@ -1870,6 +1898,18 @@ class Database:
                    WHERE id = ?""",
                 (now, now, stream_id)
             )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_stream_encoding(self, stream_id: int) -> bool:
+        """Set stream to encoding state (is_live=2). VOD chunks still being finalized."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """UPDATE user_streams
+               SET is_live = 2, viewer_count = 0, updated_at = ?
+               WHERE id = ?""",
+            (now, stream_id)
+        )
         await self.conn.commit()
         return cursor.rowcount > 0
 
@@ -2292,6 +2332,183 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount
+
+    # =========================================================================
+    # Chat Reactions
+    # =========================================================================
+
+    async def toggle_reaction(self, message_id: int, user_id: int, emoji: str) -> tuple[bool, int]:
+        """Toggle a reaction on a message. Returns (added, new_count)."""
+        # Try to insert; if exists, delete instead
+        try:
+            await self.conn.execute(
+                "INSERT INTO chat_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)",
+                (message_id, user_id, emoji)
+            )
+            await self.conn.commit()
+            added = True
+        except Exception:
+            # Already exists — remove it
+            await self.conn.execute(
+                "DELETE FROM chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+                (message_id, user_id, emoji)
+            )
+            await self.conn.commit()
+            added = False
+        # Get new count for this emoji on this message
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM chat_reactions WHERE message_id = ? AND emoji = ?",
+            (message_id, emoji)
+        )
+        row = await cursor.fetchone()
+        count = row[0] if row else 0
+        return added, count
+
+    async def get_bulk_reactions(self, message_ids: list[int]) -> dict[int, list[dict]]:
+        """Get reactions for multiple messages, grouped by message and emoji."""
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" * len(message_ids))
+        cursor = await self.conn.execute(
+            f"SELECT message_id, emoji, user_id FROM chat_reactions WHERE message_id IN ({placeholders}) ORDER BY created_at",
+            message_ids
+        )
+        rows = await cursor.fetchall()
+        # Group by message_id -> emoji -> user_ids
+        result: dict[int, dict[str, list[int]]] = {}
+        for row in rows:
+            mid = row["message_id"]
+            emoji = row["emoji"]
+            uid = row["user_id"]
+            if mid not in result:
+                result[mid] = {}
+            if emoji not in result[mid]:
+                result[mid][emoji] = []
+            result[mid][emoji].append(uid)
+        # Convert to list format
+        output = {}
+        for mid, emojis in result.items():
+            output[mid] = [
+                {"emoji": emoji, "count": len(uids), "user_ids": uids}
+                for emoji, uids in emojis.items()
+            ]
+        return output
+
+    # =========================================================================
+    # Message Editing
+    # =========================================================================
+
+    async def edit_chat_message(self, message_id: int, user_id: int, new_message: str, max_age_seconds: int = 300) -> Optional[dict]:
+        """Edit a chat message within time window. Returns updated message or None."""
+        msg = await self.get_chat_message(message_id)
+        if not msg or msg["user_id"] != user_id:
+            return None
+        created = datetime.fromisoformat(msg["created_at"])
+        now = datetime.now(timezone.utc)
+        if (now - created).total_seconds() > max_age_seconds:
+            return None
+        encrypted = encrypt_message(new_message)
+        edited_at = now.isoformat()
+        await self.conn.execute(
+            "UPDATE chat_messages SET message = ?, edited_at = ? WHERE id = ? AND user_id = ?",
+            (encrypted, edited_at, message_id, user_id)
+        )
+        await self.conn.commit()
+        msg["message"] = new_message
+        msg["edited_at"] = edited_at
+        return msg
+
+    # =========================================================================
+    # Pinned Messages
+    # =========================================================================
+
+    async def pin_message(self, message_id: int, pinned_by: int) -> bool:
+        """Pin a chat message."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "UPDATE chat_messages SET is_pinned = 1, pinned_by = ?, pinned_at = ? WHERE id = ?",
+            (pinned_by, now, message_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def unpin_message(self, message_id: int) -> bool:
+        """Unpin a chat message."""
+        cursor = await self.conn.execute(
+            "UPDATE chat_messages SET is_pinned = 0, pinned_by = NULL, pinned_at = NULL WHERE id = ?",
+            (message_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_pinned_messages(self, channel_id: int) -> list[dict]:
+        """Get all pinned messages in a channel."""
+        cursor = await self.conn.execute(
+            """SELECT cm.*, u.nickname as author_nickname, u.role as author_role,
+                      p.username as pinned_by_username
+               FROM chat_messages cm
+               LEFT JOIN users u ON cm.user_id = u.id
+               LEFT JOIN users p ON cm.pinned_by = p.id
+               WHERE cm.channel_id = ? AND cm.is_pinned = 1
+               ORDER BY cm.pinned_at DESC""",
+            (channel_id,)
+        )
+        rows = await cursor.fetchall()
+        messages = []
+        for row in rows:
+            msg = dict(row)
+            msg["message"] = decrypt_message(msg.get("message", ""))
+            messages.append(msg)
+        return messages
+
+    # =========================================================================
+    # Unread Tracking
+    # =========================================================================
+
+    async def update_read_position(self, user_id: int, channel_id: int, message_id: int) -> None:
+        """Update the last read message position for a user in a channel."""
+        await self.conn.execute(
+            """INSERT INTO channel_read_positions (user_id, channel_id, last_read_message_id, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id, channel_id) DO UPDATE
+               SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id),
+                   updated_at = CURRENT_TIMESTAMP""",
+            (user_id, channel_id, message_id)
+        )
+        await self.conn.commit()
+
+    async def get_unread_counts(self, user_id: int) -> dict[int, int]:
+        """Get unread message counts per channel for a user."""
+        cursor = await self.conn.execute(
+            """SELECT c.id, COUNT(m.id) as unread
+               FROM chat_channels c
+               LEFT JOIN channel_read_positions rp ON rp.channel_id = c.id AND rp.user_id = ?
+               INNER JOIN chat_messages m ON m.channel_id = c.id AND m.id > COALESCE(rp.last_read_message_id, 0)
+               GROUP BY c.id
+               HAVING unread > 0""",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return {row["id"]: row["unread"] for row in rows}
+
+    # =========================================================================
+    # Reply Chain (Threads)
+    # =========================================================================
+
+    async def get_reply_chain(self, message_id: int, max_depth: int = 20) -> list[dict]:
+        """Get the full reply chain for a message (walking reply_to backwards)."""
+        chain = []
+        current_id = message_id
+        seen = set()
+        while current_id and len(chain) < max_depth and current_id not in seen:
+            seen.add(current_id)
+            msg = await self.get_chat_message(current_id)
+            if not msg:
+                break
+            chain.append(msg)
+            current_id = msg.get("reply_to")
+        chain.reverse()
+        return chain
 
     # =========================================================================
     # Managed Services

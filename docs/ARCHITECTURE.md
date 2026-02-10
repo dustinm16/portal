@@ -363,7 +363,31 @@ CREATE TABLE chat_messages (
     anonymous INTEGER DEFAULT 0,    -- Per-message anonymous flag (preserves anonymity in history)
     reply_to INTEGER,              -- References chat_messages(id) for reply threading
     image_url TEXT,                -- URL to uploaded chat image (/static/uploads/chat/...)
+    edited_at TEXT,                -- ISO timestamp if message was edited (5-min window)
+    is_pinned INTEGER DEFAULT 0,   -- 1 if pinned by a moderator
+    pinned_by INTEGER,             -- User ID who pinned it
+    pinned_at TEXT,                -- ISO timestamp of pin
     FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
+);
+
+-- Chat reactions (emoji reactions on messages)
+CREATE TABLE chat_reactions (
+    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT,
+    UNIQUE(message_id, user_id, emoji),
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+
+-- Unread tracking per channel per user
+CREATE TABLE channel_read_positions (
+    user_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    last_read_message_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (user_id, channel_id)
 );
 ```
 
@@ -472,7 +496,7 @@ DELETE /api/streams/:id/thumbnail - Delete custom thumbnail
 POST /api/streams/:id/rtmp-token - Generate temporary RTMP publish token
 GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
 GET  /api/stream/:key/hls/...   - HLS playback proxy
-POST /api/stream/event          - MediaMTX webhook (online/offline)
+POST /api/stream/event          - MediaMTX webhook (live/encoding/offline)
 ```
 
 #### MediaMTX Configuration
@@ -495,7 +519,15 @@ DELETE /api/streams/:id/ban/:uid - Unban user
 
 ### VOD Storage (Personal)
 
-VODs are automatically recorded during live broadcasts as 5-minute MKV chunks (lossless remux via ffmpeg segment muxer). Chunks are continuously uploaded to the user's SFTP storage in an organized directory structure: `{StreamName}/{YYYY-MM-DD_HH-MM-SS}/chunk_NNN.mkv`.
+VODs are automatically recorded during live broadcasts as 5-minute MKV chunks (lossless remux via ffmpeg segment muxer). Chunks are continuously uploaded to the user's SFTP storage in an organized directory structure: `{StreamName}/{YYYY-MM-DD}/chunk_NNN.mkv`.
+
+**Stream Lifecycle:** When a stream stops broadcasting, it transitions to an **Encoding** state (`is_live=2`) while ffmpeg finishes writing the current chunk and all remaining chunks are uploaded to SFTP. The stream only goes **Offline** (`is_live=0`) after all VOD data has been fully offloaded. This prevents incomplete VODs caused by premature ffmpeg termination.
+
+| State | `is_live` | Description |
+|-------|-----------|-------------|
+| Live | `1` | Actively broadcasting |
+| Encoding | `2` | Broadcast ended, VOD chunks finalizing and uploading |
+| Offline | `0` | All VOD data offloaded, stream fully stopped |
 
 ```
 GET  /api/vods/storage               - Get storage config
@@ -511,14 +543,18 @@ DELETE /api/vods/{filename}          - Delete VOD file
 ### Chat
 
 ```
-GET  /api/chat/channels              - List channels
+GET  /api/chat/channels              - List channels (with unread counts)
 POST /api/chat/channels              - Create channel
 PUT  /api/chat/channels/:id          - Update channel
 DELETE /api/chat/channels/:id        - Delete channel
 POST /api/chat/channels/:id/clear    - Clear history (superadmin)
 POST /api/chat/upload                - Upload chat image
+GET  /api/chat/link-preview          - Fetch OpenGraph metadata for URL
+GET  /api/chat/thread/:id            - Get reply chain for a message
 WS   /ws/chat                        - Chat WebSocket (text + voice signaling)
 ```
+
+Chat features: emoji reactions (toggle per-message), message editing (5-min window), pinned messages (mod/admin), unread tracking (per-channel badges), @mention autocomplete, link previews (OpenGraph), thread expansion (reply chain panel).
 
 ### Voice Chat
 

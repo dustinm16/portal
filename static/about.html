@@ -571,7 +571,7 @@
                     <li><strong>Quality Selector</strong> &mdash; Viewers can choose stream quality when available</li>
                     <li><strong>Public/Private Toggle</strong> &mdash; Control whether your stream appears on the community Streams page</li>
                     <li><strong>Popout Player</strong> &mdash; Watch streams in a floating overlay or separate window</li>
-                    <li><strong>Offline Detection</strong> &mdash; Automatic detection when streams go offline</li>
+                    <li><strong>Stream Lifecycle</strong> &mdash; Live &rarr; Encoding &rarr; Offline: streams transition through an encoding state while VOD chunks are finalized and offloaded to SFTP, ensuring no recorded data is lost</li>
                     <li><strong>Standard RTMP with Temporary Tokens</strong> &mdash; Generate single-use publish tokens for plain RTMP when TLS is not available</li>
                 </ul>
 
@@ -613,12 +613,18 @@
                 <h3>Message Features</h3>
                 <ul>
                     <li><strong>Markdown</strong> &mdash; Use <code>**bold**</code>, <code>*italic*</code>, <code>`code`</code>, and <code>~~strikethrough~~</code></li>
-                    <li><strong>@Mentions</strong> &mdash; Type <code>@username</code> to notify someone. Mentioned users see highlighted messages.</li>
-                    <li><strong>Replies</strong> &mdash; Click the reply icon on any message to thread a response</li>
-                    <li><strong>Emoji</strong> &mdash; Click the emoji picker or type emoji directly</li>
+                    <li><strong>@Mentions</strong> &mdash; Type <code>@</code> to open an autocomplete dropdown filtered by your input. Select with arrow keys and Enter/Tab, or click a suggestion.</li>
+                    <li><strong>Replies &amp; Threads</strong> &mdash; Click the reply icon to respond to a message. Click any reply preview to open a thread panel showing the full reply chain.</li>
+                    <li><strong>Emoji Reactions</strong> &mdash; React to any message with emoji. Right-click a message and choose "React" to pick an emoji, or click an existing reaction pill to toggle yours.</li>
+                    <li><strong>Message Editing</strong> &mdash; Edit your own messages within 5 minutes of sending. Right-click and select "Edit" to modify inline. Edited messages show an <em>(edited)</em> indicator.</li>
+                    <li><strong>Pinned Messages</strong> &mdash; Moderators and admins can pin important messages. A pinned banner at the top of chat shows the count and expands to reveal all pinned messages.</li>
+                    <li><strong>Link Previews</strong> &mdash; URLs in messages automatically generate preview cards with title, description, and thumbnail from OpenGraph metadata.</li>
                     <li><strong>Image Sharing</strong> &mdash; Upload images via the attachment button or paste from clipboard</li>
                     <li><strong>Anonymous Mode</strong> &mdash; Post messages without revealing your identity</li>
                 </ul>
+
+                <h3>Unread Badges</h3>
+                <p>Channels with unread messages show a badge count in the sidebar. Badges update in real-time and clear automatically when you view the channel.</p>
 
                 <h3>Profiles</h3>
                 <p>Customize your chat presence with:</p>
@@ -795,7 +801,7 @@
                 </div>
 
                 <h3>VOD Storage</h3>
-                <p>All users can manage their recorded stream archives stored on remote SFTP servers. Configure your SFTP storage from the <strong>My VODs</strong> tab, then browse, search, download (individual or batch zip), and delete VOD files.</p>
+                <p>All users can manage their recorded stream archives stored on remote SFTP servers. VODs are automatically recorded as 5-minute MKV chunks during live broadcasts and continuously uploaded to your SFTP storage. When a stream ends, it enters an <strong>Encoding</strong> state while the final chunk is written and all remaining data is offloaded &mdash; the stream only goes fully offline once all VODs are safely stored. Configure your SFTP storage from the <strong>My VODs</strong> tab, then browse, search, download (individual or batch zip), and delete VOD files.</p>
 
                 <h3>System Health Dashboard</h3>
                 <p>The Admin Panel includes a real-time system health dashboard showing:</p>

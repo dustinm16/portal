@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stream - Open Relay Portal</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=33">
+    <link rel="stylesheet" href="/static/css/portal.css?v=34">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         body {
@@ -812,7 +812,7 @@
                 document.getElementById('viewer-broadcaster').textContent = broadcasterName;
                 document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
 
-                if (streamData.is_live) {
+                if (streamData.is_live === 1 || streamData.is_live === true) {
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
                     document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
@@ -845,6 +845,19 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
                     </svg>
                     <p>This stream is currently offline</p>
+                </div>
+            `;
+            document.getElementById('live-indicator').style.display = 'none';
+            document.getElementById('viewer-count').style.display = 'none';
+        }
+
+        function showEncodingMessage() {
+            document.getElementById('video-container').innerHTML = `
+                <div class="stream-offline" style="color: #d97706;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="animation: spin 2s linear infinite;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    <p>Stream ended — encoding VODs...</p>
                 </div>
             `;
             document.getElementById('live-indicator').style.display = 'none';
@@ -1097,10 +1110,12 @@
                 const data = await response.json();
                 streamData = data.stream;
 
-                if (streamData.is_live) {
+                if (streamData.is_live === 1 || streamData.is_live === true) {
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
                     document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
+                } else if (streamData.is_live === 2) {
+                    showEncodingMessage();
                 } else {
                     showOfflineMessage();
                     if (hlsPlayer) {
@@ -1139,7 +1154,7 @@
                 chatWs = null;
                 // Reconnect after a delay
                 setTimeout(() => {
-                    if (streamData && streamData.is_live) {
+                    if (streamData && (streamData.is_live === 1 || streamData.is_live === true)) {
                         const chatKey = streamData.public_key || streamData.stream_key;
                         if (chatKey) connectChat(chatKey);
                     }
@@ -1177,6 +1192,12 @@
                 case 'message_deleted':
                     const delEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
                     if (delEl) delEl.remove();
+                    break;
+                case 'reaction_update':
+                    handleWatchReactionUpdate(data);
+                    break;
+                case 'message_edited':
+                    handleWatchMessageEdited(data);
                     break;
                 case 'error':
                     if (data.message) {
@@ -1264,6 +1285,7 @@
                             <span class="chat-time">${time}</span>
                         </div>
                         <div class="chat-text">${escapeHtml(msg.message || '')}${imageHtml}</div>
+                        ${renderWatchReactions(msg)}
                     </div>
                 </div>
             `;
@@ -1272,6 +1294,62 @@
             if (scroll) {
                 container.scrollTop = container.scrollHeight;
             }
+        }
+
+        function renderWatchReactions(msg) {
+            if (!msg.reactions || msg.reactions.length === 0) return '';
+            return '<div class="watch-reactions" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">' +
+                msg.reactions.map(r => {
+                    const isMine = r.user_ids && r.user_ids.includes(currentUser?.id);
+                    return `<button class="watch-reaction-pill${isMine ? ' my-reaction' : ''}" onclick="toggleWatchReaction(${msg.id},'${r.emoji}')" style="display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid ${isMine ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)'};background:${isMine ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.05)'};color:${isMine ? 'var(--accent-blue)' : 'var(--text-secondary)'};font-size:0.75rem;cursor:pointer;">${r.emoji} ${r.count}</button>`;
+                }).join('') + '</div>';
+        }
+
+        function toggleWatchReaction(messageId, emoji) {
+            if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                chatWs.send(JSON.stringify({ type: 'react', message_id: messageId, emoji: emoji }));
+            }
+        }
+
+        function handleWatchReactionUpdate(data) {
+            const msgEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
+            if (!msgEl) return;
+            let reactionsDiv = msgEl.querySelector('.watch-reactions');
+            if (!reactionsDiv) {
+                reactionsDiv = document.createElement('div');
+                reactionsDiv.className = 'watch-reactions';
+                reactionsDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;';
+                const textEl = msgEl.querySelector('.chat-text');
+                if (textEl) textEl.parentNode.insertBefore(reactionsDiv, textEl.nextSibling);
+                else msgEl.appendChild(reactionsDiv);
+            }
+            let pill = reactionsDiv.querySelector(`[data-emoji="${data.emoji}"]`);
+            if (data.count === 0) {
+                if (pill) pill.remove();
+            } else {
+                if (!pill) {
+                    pill = document.createElement('button');
+                    pill.dataset.emoji = data.emoji;
+                    pill.onclick = () => toggleWatchReaction(data.message_id, data.emoji);
+                    pill.style.cssText = 'display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--text-secondary);font-size:0.75rem;cursor:pointer;';
+                    reactionsDiv.appendChild(pill);
+                }
+                pill.textContent = `${data.emoji} ${data.count}`;
+                const isMine = data.user_id === currentUser?.id;
+                if (isMine) {
+                    pill.style.borderColor = data.added ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)';
+                    pill.style.background = data.added ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.05)';
+                    pill.style.color = data.added ? 'var(--accent-blue)' : 'var(--text-secondary)';
+                }
+            }
+            if (reactionsDiv.children.length === 0) reactionsDiv.remove();
+        }
+
+        function handleWatchMessageEdited(data) {
+            const msgEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
+            if (!msgEl) return;
+            const textEl = msgEl.querySelector('.chat-text');
+            if (textEl) textEl.textContent = data.message || '';
         }
 
         function sendChatMessage(event) {

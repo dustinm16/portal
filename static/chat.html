@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Chat</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=33">
+    <link rel="stylesheet" href="/static/css/portal.css?v=34">
     <style>
         html, body {
             height: 100%;
@@ -17,6 +17,7 @@
             height: calc(100vh - 70px);
             background: var(--bg-primary);
             overflow: hidden;
+            position: relative;
             margin-bottom: 4px;
         }
 
@@ -939,6 +940,404 @@
             position: relative;
         }
 
+        /* @Mention autocomplete dropdown */
+        .mention-autocomplete {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            right: 0;
+            max-height: 240px;
+            overflow-y: auto;
+            background: var(--bg-secondary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px 8px 0 0;
+            z-index: 101;
+            margin-bottom: 4px;
+            box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+        }
+
+        .mention-autocomplete.show {
+            display: block;
+        }
+
+        .mention-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .mention-item:hover, .mention-item.selected {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--text-primary);
+        }
+
+        .mention-item-avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            flex-shrink: 0;
+        }
+
+        .mention-item-name {
+            font-weight: 600;
+        }
+
+        .mention-item-username {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .mention-item-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+
+        .mention-item-status.online {
+            background: var(--accent-green, #22c55e);
+        }
+
+        /* Emoji reactions */
+        .message-reactions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+
+        .reaction-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.05);
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        .reaction-pill:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .reaction-pill.my-reaction {
+            background: rgba(96, 165, 250, 0.15);
+            border-color: rgba(96, 165, 250, 0.3);
+            color: var(--accent-blue);
+        }
+
+        /* Reaction picker (inline mini picker) */
+        .reaction-picker {
+            display: none;
+            position: fixed;
+            background: var(--bg-secondary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 0.5rem;
+            z-index: 1002;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .reaction-picker.show {
+            display: block;
+        }
+
+        .reaction-picker-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 2px;
+        }
+
+        .reaction-picker-item {
+            cursor: pointer;
+            padding: 4px;
+            font-size: 1.2rem;
+            text-align: center;
+            border-radius: 4px;
+        }
+
+        .reaction-picker-item:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        /* Edited indicator */
+        .edited-indicator {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        /* Edit mode inline */
+        .edit-input-container {
+            margin-top: 4px;
+        }
+
+        .edit-input {
+            width: 100%;
+            background: var(--bg-primary);
+            border: 1px solid var(--accent-blue);
+            border-radius: 4px;
+            color: var(--text-primary);
+            padding: 0.5rem;
+            font-size: 0.9rem;
+            font-family: inherit;
+        }
+
+        .edit-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 4px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .edit-actions span {
+            cursor: pointer;
+        }
+
+        .edit-actions span:hover {
+            color: var(--text-primary);
+        }
+
+        /* Pinned messages */
+        .message.pinned {
+            border-left: 2px solid var(--accent-yellow, #eab308);
+        }
+
+        .pin-icon {
+            font-size: 0.7rem;
+            margin-left: 0.25rem;
+        }
+
+        .pinned-banner {
+            background: rgba(234, 179, 8, 0.08);
+            border-bottom: 1px solid rgba(234, 179, 8, 0.2);
+        }
+
+        .pinned-banner-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: var(--accent-yellow, #eab308);
+        }
+
+        .pinned-banner-toggle:hover {
+            background: rgba(234, 179, 8, 0.1);
+        }
+
+        .pinned-panel {
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 0.5rem 1rem;
+            display: none;
+        }
+
+        .pinned-panel.show {
+            display: block;
+        }
+
+        .pinned-message-item {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.03);
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .pinned-message-item:hover {
+            background: rgba(255,255,255,0.06);
+        }
+
+        .pinned-message-author {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 0.8rem;
+        }
+
+        .pinned-message-text {
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Unread badges */
+        .unread-badge {
+            background: var(--accent-red);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 10px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+
+        .channel-item.has-unread {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        /* Link preview cards */
+        .link-preview-card {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 0.5rem;
+            padding: 0.75rem;
+            border-left: 3px solid var(--accent-blue);
+            border-radius: 0 6px 6px 0;
+            background: rgba(255,255,255,0.03);
+            cursor: pointer;
+            max-width: 400px;
+            overflow: hidden;
+        }
+
+        .link-preview-card:hover {
+            background: rgba(255,255,255,0.06);
+        }
+
+        .link-preview-image {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        .link-preview-content {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .link-preview-site {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .link-preview-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--accent-blue);
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .link-preview-desc {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 2px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        /* Thread panel */
+        .thread-panel {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 320px;
+            background: var(--bg-secondary);
+            border-left: 1px solid rgba(255,255,255,0.1);
+            z-index: 50;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .thread-panel.open {
+            display: flex;
+        }
+
+        .thread-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .thread-panel-header h3 {
+            margin: 0;
+            font-size: 1rem;
+            color: var(--text-primary);
+        }
+
+        .thread-close-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .thread-close-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .thread-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.75rem;
+        }
+
+        .thread-message {
+            padding: 0.75rem;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.03);
+            margin-bottom: 0.5rem;
+        }
+
+        .thread-message.thread-target {
+            border-left: 3px solid var(--accent-blue);
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .thread-connector {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            padding: 0.15rem 0;
+        }
+
+        @media (max-width: 768px) {
+            .thread-panel {
+                width: 100%;
+                z-index: 60;
+            }
+        }
+
         /* User settings section */
         .user-settings {
             padding: 0.5rem;
@@ -1468,6 +1867,13 @@
                 </div>
                 <div class="chat-topic" id="channel-topic">General discussion</div>
             </div>
+            <div class="pinned-banner" id="pinned-banner" style="display:none;">
+                <div class="pinned-banner-toggle" onclick="togglePinnedPanel()">
+                    📌 <span id="pinned-count">0</span> pinned message(s)
+                    <span id="pinned-expand-icon" style="margin-left:auto;">▶</span>
+                </div>
+                <div class="pinned-panel" id="pinned-panel"></div>
+            </div>
             <div class="voice-controls" id="voice-controls">
                 <button class="voice-ctrl-btn" id="voice-mute-btn" onclick="VoiceChat.toggleMute()" title="Toggle mute">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V14h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-1.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/></svg>
@@ -1507,6 +1913,7 @@
             </div>
             <div class="chat-input-container">
                 <div class="chat-input-wrapper">
+                    <div class="mention-autocomplete" id="mention-autocomplete"></div>
                     <button class="emoji-btn" onclick="toggleEmojiPicker()" title="Insert emoji">😊</button>
                     <div class="emoji-picker" id="emoji-picker">
                         <div class="emoji-grid" id="emoji-grid"></div>
@@ -1532,6 +1939,15 @@
                 <!-- Users populated by JS -->
             </div>
         </aside>
+
+        <!-- Thread Panel -->
+        <div class="thread-panel" id="thread-panel">
+            <div class="thread-panel-header">
+                <h3>Thread</h3>
+                <button class="thread-close-btn" onclick="closeThreadPanel()">&times;</button>
+            </div>
+            <div class="thread-messages" id="thread-messages"></div>
+        </div>
     </div>
 
     <!-- Create Channel Modal -->
@@ -1595,9 +2011,18 @@
     <!-- Message Context Menu -->
     <div class="context-menu" id="message-context-menu">
         <div class="context-menu-item" onclick="replyToMessage()">↩️ Reply</div>
+        <div class="context-menu-item" onclick="openReactionPicker()">😀 React</div>
         <div class="context-menu-item" onclick="copyMessageText()">📋 Copy Text</div>
+        <div class="context-menu-item" id="edit-menu-item" onclick="startEditMessage()" style="display:none;">✏️ Edit</div>
+        <div class="context-menu-item" id="pin-menu-item" onclick="pinMessage()" style="display:none;">📌 Pin</div>
+        <div class="context-menu-item" id="unpin-menu-item" onclick="unpinMessage()" style="display:none;">📌 Unpin</div>
         <div class="context-menu-separator" id="delete-separator" style="display:none;"></div>
         <div class="context-menu-item danger" id="delete-menu-item" onclick="deleteMessage()" style="display:none;">🗑️ Delete</div>
+    </div>
+
+    <!-- Reaction Picker -->
+    <div class="reaction-picker" id="reaction-picker">
+        <div class="reaction-picker-grid" id="reaction-picker-grid"></div>
     </div>
 
     <!-- Channel Context Menu -->
@@ -1669,6 +2094,12 @@
         let knownChatNames = new Set(); // all names seen in messages + online users
         let pendingImageUrl = null; // uploaded image URL waiting to be sent
 
+        // @Mention autocomplete state
+        let mentionDropdownVisible = false;
+        let mentionSelectedIndex = 0;
+        let mentionMatches = [];
+        let mentionStartPos = 0;
+
         // Common emoji for quick picker
         const COMMON_EMOJI = [
             '😊', '😂', '🤣', '❤️', '😍', '🤔', '😎', '🙏',
@@ -1716,17 +2147,31 @@
             await loadChannels();
             connectWebSocket();
 
-            // Enter key to send
-            document.getElementById('chat-input').addEventListener('keypress', (e) => {
+            // Keyboard handler — mention autocomplete navigation + Enter to send
+            document.getElementById('chat-input').addEventListener('keydown', (e) => {
+                if (mentionDropdownVisible) {
+                    if (e.key === 'ArrowDown') { e.preventDefault(); mentionNav(1); return; }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); mentionNav(-1); return; }
+                    if (e.key === 'Tab' || (e.key === 'Enter' && mentionMatches.length > 0)) {
+                        e.preventDefault(); mentionSelect(); return;
+                    }
+                    if (e.key === 'Escape') { e.preventDefault(); hideMentionDropdown(); return; }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     sendMessage();
                 }
             });
 
-            // Typing indicator
-            document.getElementById('chat-input').addEventListener('input', () => {
+            // Typing indicator + mention autocomplete
+            document.getElementById('chat-input').addEventListener('input', (e) => {
                 sendTyping();
+                handleMentionAutocomplete(e.target);
+            });
+
+            // Hide mention dropdown on blur (delayed so mousedown on items fires first)
+            document.getElementById('chat-input').addEventListener('blur', () => {
+                setTimeout(hideMentionDropdown, 150);
             });
         });
 
@@ -1812,7 +2257,14 @@
             try {
                 const response = await fetch('/api/chat/channels', { credentials: 'include' });
                 const data = await response.json();
-                renderChannels(data.channels || []);
+                const channels = data.channels || [];
+                // Populate unread counts
+                channels.forEach(ch => {
+                    if (ch.unread_count > 0 && ch.name !== currentChannel) {
+                        unreadCounts.set(ch.name, ch.unread_count);
+                    }
+                });
+                renderChannels(channels);
             } catch (error) {
                 console.error('Failed to load channels:', error);
             }
@@ -1825,7 +2277,8 @@
             const list = document.getElementById('channel-list');
 
             const regular = channels.filter(ch => !ch.is_stream_channel);
-            const live = channels.filter(ch => ch.is_stream_channel && ch.stream_is_live);
+            const live = channels.filter(ch => ch.is_stream_channel && ch.stream_is_live === 1);
+            const encoding = channels.filter(ch => ch.is_stream_channel && ch.stream_is_live === 2);
             const offline = channels.filter(ch => ch.is_stream_channel && !ch.stream_is_live);
 
             let html = '';
@@ -1846,6 +2299,14 @@
                 html += `</div>`;
             }
 
+            // Encoding stream channels
+            if (encoding.length) {
+                html += `<div class="channel-group-header">Encoding <span class="group-count">${encoding.length}</span></div>`;
+                html += `<div class="channel-group-items">`;
+                html += encoding.map(ch => renderChannelItem(ch, 'is-encoding')).join('');
+                html += `</div>`;
+            }
+
             // Offline stream channels (collapsible)
             if (offline.length) {
                 html += `<div class="channel-group-header collapsible${offlineCollapsed ? ' collapsed' : ''}" onclick="toggleOfflineChannels()">
@@ -1860,12 +2321,14 @@
         }
 
         function renderChannelItem(ch, extraClass) {
-            return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''}"
+            const unread = unreadCounts.get(ch.name) || 0;
+            const badgeHtml = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
+            return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
                      data-is-stream="${ch.is_stream_channel || false}"
                      data-stream-live="${ch.stream_is_live || false}">
-                    ${escapeHtml(ch.name)}
+                    ${escapeHtml(ch.name)}${badgeHtml}
                 </div>`;
         }
 
@@ -1942,6 +2405,10 @@
             switch (data.type) {
                 case 'message':
                     appendMessage(data);
+                    // Mark as read if tab is focused
+                    if (data.id && document.hasFocus()) {
+                        markAsRead(data.id);
+                    }
                     break;
                 case 'history':
                     renderHistory(data.messages);
@@ -2024,6 +2491,21 @@
                 case 'typing':
                     showTypingIndicator(data.username);
                     break;
+                case 'reaction_update':
+                    handleReactionUpdate(data);
+                    break;
+                case 'message_edited':
+                    handleMessageEdited(data);
+                    break;
+                case 'message_pinned':
+                    handleMessagePinned(data);
+                    break;
+                case 'message_unpinned':
+                    handleMessageUnpinned(data);
+                    break;
+                case 'pinned_messages':
+                    renderPinnedMessages(data.messages);
+                    break;
                 case 'error':
                     alert(data.message);
                     break;
@@ -2055,9 +2537,10 @@
 
             const container = document.getElementById('chat-messages');
             const div = document.createElement('div');
-            div.className = 'message';
+            div.className = 'message' + (data.is_pinned ? ' pinned' : '');
             div.dataset.messageId = data.id;
             if (data.user_id) div.dataset.userId = data.user_id;
+            if (data.created_at) div.dataset.createdAt = data.created_at;
 
             // Per-message anonymous flag takes priority over current user state
             const msgAnonymous = !!data.anonymous;
@@ -2088,12 +2571,23 @@
                     `;
                 } else {
                     replyHtml = `
-                        <div class="message-reply-preview" onclick="scrollToMessage(${rp.id})">
+                        <div class="message-reply-preview" onclick="openThread(${data.id})" title="View thread">
                             <span class="message-reply-author">${escapeHtml(rp.username)}</span>
                             <span class="message-reply-text">${escapeHtml(rp.message)}</span>
                         </div>
                     `;
                 }
+            }
+
+            // Reactions bar
+            let reactionsHtml = '';
+            if (data.reactions && data.reactions.length > 0) {
+                reactionsHtml = '<div class="message-reactions">';
+                for (const r of data.reactions) {
+                    const isMine = r.user_ids && r.user_ids.includes(currentUser?.id);
+                    reactionsHtml += `<button class="reaction-pill${isMine ? ' my-reaction' : ''}" onclick="toggleReaction(${data.id}, '${r.emoji}')" title="${r.count}">${r.emoji} ${r.count}</button>`;
+                }
+                reactionsHtml += '</div>';
             }
 
             div.innerHTML = `
@@ -2105,12 +2599,22 @@
                         ${getRoleBadge(role)}
                         ${showRealUsername ? `<span class="message-realname" style="color: var(--text-muted); font-size: 0.75rem;">@${escapeHtml(data.username)}</span>` : ''}
                         <span class="message-time">${time}</span>
+                        ${data.edited_at ? '<span class="edited-indicator">(edited)</span>' : ''}
+                        ${data.is_pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}
                     </div>
                     <div class="message-text">${data.message ? formatMessage(data.message) : ''}${data.image_url ? `<br><img class="message-image" src="${escapeHtml(data.image_url)}" alt="image" onclick="openLightbox('${escapeHtml(data.image_url)}')" loading="lazy">` : ''}</div>
+                    ${reactionsHtml}
                 </div>
             `;
 
             container.appendChild(div);
+
+            // Fetch link previews for URLs in message
+            if (data.message) {
+                const urls = data.message.match(/https?:\/\/[^\s<>)"']+/g);
+                if (urls) fetchLinkPreviews(div, urls);
+            }
+
             if (scroll) {
                 container.scrollTop = container.scrollHeight;
             }
@@ -2139,9 +2643,12 @@
                 currentStreamPublicKey = data.stream_public_key || null;
 
                 watchBtn.style.display = 'inline-flex';
-                if (data.stream_is_live) {
+                if (data.stream_is_live === 1 || data.stream_is_live === true) {
                     watchBtn.classList.add('is-live');
                     watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';
+                } else if (data.stream_is_live === 2) {
+                    watchBtn.classList.remove('is-live');
+                    watchBtn.textContent = 'Encoding...';
                 } else {
                     watchBtn.classList.remove('is-live');
                     watchBtn.textContent = 'Watch Stream';
@@ -2164,16 +2671,19 @@
             // Update watch button for current channel
             if (data.stream_id === currentStreamId) {
                 const watchBtn = document.getElementById('watch-stream-btn');
-                if (data.is_live) {
+                if (data.is_live === 1 || data.is_live === true) {
                     watchBtn.classList.add('is-live');
                     watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';
+                } else if (data.is_live === 2) {
+                    watchBtn.classList.remove('is-live');
+                    watchBtn.textContent = 'Encoding...';
                 } else {
                     watchBtn.classList.remove('is-live');
                     watchBtn.textContent = 'Watch Stream';
                 }
             }
 
-            // Update channel list grouping — flip the stream's live status and re-render
+            // Update channel list grouping — update the stream's live status and re-render
             const ch = channelsList.find(c => c.is_stream_channel && c.stream_id === data.stream_id);
             if (ch) {
                 ch.stream_is_live = data.is_live;
@@ -2236,6 +2746,480 @@
             input.value = text.substring(0, start) + mention + text.substring(start);
             input.focus();
             input.setSelectionRange(start + mention.length, start + mention.length);
+        }
+
+        // === @Mention Autocomplete ===
+
+        function handleMentionAutocomplete(input) {
+            const text = input.value;
+            const cursor = input.selectionStart;
+            const beforeCursor = text.substring(0, cursor);
+
+            // Find @ that starts a mention (at start of string or after whitespace)
+            const atMatch = beforeCursor.match(/(?:^|[\s])@(\w*)$/);
+            if (!atMatch) {
+                hideMentionDropdown();
+                return;
+            }
+
+            const query = atMatch[1].toLowerCase();
+            mentionStartPos = cursor - atMatch[1].length - 1; // position of @
+            // If the @ was preceded by a space, adjust start
+            if (atMatch[0].length > atMatch[1].length + 1) {
+                mentionStartPos = cursor - atMatch[1].length - 1;
+            }
+
+            // Build candidate list from online users + known names from history
+            const candidates = new Map();
+            for (const [uid, u] of onlineUsers) {
+                if (u.anonymous) continue;
+                const displayName = u.nickname || u.username;
+                candidates.set(displayName.toLowerCase(), {
+                    name: displayName,
+                    username: u.username,
+                    avatar: u.avatar || {},
+                    online: true
+                });
+            }
+            for (const name of knownChatNames) {
+                const key = name.toLowerCase();
+                if (!candidates.has(key)) {
+                    candidates.set(key, { name, username: name, avatar: {}, online: false });
+                }
+            }
+
+            // Filter by query
+            mentionMatches = [...candidates.values()]
+                .filter(c => c.name.toLowerCase().startsWith(query) || c.username.toLowerCase().startsWith(query))
+                .sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name))
+                .slice(0, 8);
+
+            if (mentionMatches.length === 0) {
+                hideMentionDropdown();
+                return;
+            }
+
+            mentionSelectedIndex = 0;
+            showMentionDropdown();
+        }
+
+        function showMentionDropdown() {
+            const dropdown = document.getElementById('mention-autocomplete');
+            dropdown.innerHTML = mentionMatches.map((c, i) => {
+                const avatarColor = c.avatar.color || '#3b82f6';
+                const avatarContent = c.avatar.emoji || c.name[0].toUpperCase();
+                const showUsername = c.username !== c.name ? `<span class="mention-item-username">@${escapeHtml(c.username)}</span>` : '';
+                return `<div class="mention-item${i === 0 ? ' selected' : ''}" data-index="${i}" onmousedown="mentionClickSelect(${i})" onmouseenter="mentionHover(${i})">
+                    <div class="mention-item-avatar" style="background: ${escapeHtml(avatarColor)}">${avatarContent}</div>
+                    <span class="mention-item-name">${escapeHtml(c.name)}</span>
+                    ${showUsername}
+                    <span class="mention-item-status${c.online ? ' online' : ''}"></span>
+                </div>`;
+            }).join('');
+            dropdown.classList.add('show');
+            mentionDropdownVisible = true;
+        }
+
+        function hideMentionDropdown() {
+            const dropdown = document.getElementById('mention-autocomplete');
+            dropdown.classList.remove('show');
+            mentionDropdownVisible = false;
+            mentionMatches = [];
+            mentionSelectedIndex = 0;
+        }
+
+        function mentionNav(direction) {
+            const items = document.querySelectorAll('.mention-item');
+            if (items.length === 0) return;
+            items[mentionSelectedIndex]?.classList.remove('selected');
+            mentionSelectedIndex = (mentionSelectedIndex + direction + items.length) % items.length;
+            items[mentionSelectedIndex]?.classList.add('selected');
+            items[mentionSelectedIndex]?.scrollIntoView({ block: 'nearest' });
+        }
+
+        function mentionHover(index) {
+            const items = document.querySelectorAll('.mention-item');
+            items[mentionSelectedIndex]?.classList.remove('selected');
+            mentionSelectedIndex = index;
+            items[mentionSelectedIndex]?.classList.add('selected');
+        }
+
+        function mentionSelect() {
+            if (mentionSelectedIndex >= mentionMatches.length) return;
+            const selected = mentionMatches[mentionSelectedIndex];
+            const input = document.getElementById('chat-input');
+            const text = input.value;
+            const cursor = input.selectionStart;
+            // Replace from @ position to cursor with @name
+            const replacement = `@${selected.name} `;
+            input.value = text.substring(0, mentionStartPos) + replacement + text.substring(cursor);
+            const newPos = mentionStartPos + replacement.length;
+            input.focus();
+            input.setSelectionRange(newPos, newPos);
+            hideMentionDropdown();
+        }
+
+        function mentionClickSelect(index) {
+            mentionSelectedIndex = index;
+            mentionSelect();
+        }
+
+        // === Emoji Reactions ===
+
+        function toggleReaction(messageId, emoji) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'react', message_id: messageId, emoji: emoji }));
+            }
+        }
+
+        function handleReactionUpdate(data) {
+            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            if (!msgEl) return;
+            const contentEl = msgEl.querySelector('.message-content');
+            if (!contentEl) return;
+
+            let reactionsDiv = contentEl.querySelector('.message-reactions');
+            if (!reactionsDiv) {
+                reactionsDiv = document.createElement('div');
+                reactionsDiv.className = 'message-reactions';
+                contentEl.appendChild(reactionsDiv);
+            }
+
+            // Find existing pill for this emoji
+            let pill = reactionsDiv.querySelector(`[data-emoji="${CSS.escape(data.emoji)}"]`);
+
+            if (data.count === 0) {
+                // Remove pill
+                if (pill) pill.remove();
+            } else {
+                if (!pill) {
+                    pill = document.createElement('button');
+                    pill.className = 'reaction-pill';
+                    pill.dataset.emoji = data.emoji;
+                    pill.onclick = () => toggleReaction(data.message_id, data.emoji);
+                    reactionsDiv.appendChild(pill);
+                }
+                pill.textContent = `${data.emoji} ${data.count}`;
+                pill.title = `${data.count}`;
+                // Toggle my-reaction class
+                if (data.user_id === currentUser?.id) {
+                    pill.classList.toggle('my-reaction', data.added);
+                }
+            }
+
+            // Remove empty reactions div
+            if (reactionsDiv.children.length === 0) {
+                reactionsDiv.remove();
+            }
+        }
+
+        function openReactionPicker() {
+            hideContextMenus();
+            const picker = document.getElementById('reaction-picker');
+            const grid = document.getElementById('reaction-picker-grid');
+            const REACTION_EMOJI = ['👍', '👎', '😂', '❤️', '🔥', '🎉', '😢', '😡', '👀', '🤔', '✅', '❌', '🚀', '💯', '⭐', '🙏'];
+            grid.innerHTML = REACTION_EMOJI.map(e =>
+                `<div class="reaction-picker-item" onclick="selectReaction('${e}')">${e}</div>`
+            ).join('');
+            // Position near where context menu was
+            picker.style.left = (window._lastContextX || 100) + 'px';
+            picker.style.top = (window._lastContextY || 100) + 'px';
+            picker.classList.add('show');
+        }
+
+        function selectReaction(emoji) {
+            if (contextMenuMessageId) {
+                toggleReaction(contextMenuMessageId, emoji);
+            }
+            document.getElementById('reaction-picker').classList.remove('show');
+        }
+
+        // === Message Editing ===
+
+        function handleMessageEdited(data) {
+            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            if (!msgEl) return;
+            // Update message text
+            const textEl = msgEl.querySelector('.message-text');
+            if (textEl) {
+                // Preserve reactions and images, just update text
+                const reactionsDiv = msgEl.querySelector('.message-reactions');
+                textEl.innerHTML = formatMessage(data.message);
+                // Re-add reactions if they exist (they're a sibling, not child)
+            }
+            // Add (edited) indicator if not present
+            const header = msgEl.querySelector('.message-header');
+            if (header && !header.querySelector('.edited-indicator')) {
+                const indicator = document.createElement('span');
+                indicator.className = 'edited-indicator';
+                indicator.textContent = '(edited)';
+                header.appendChild(indicator);
+            }
+        }
+
+        function startEditMessage() {
+            hideContextMenus();
+            if (!contextMenuMessageId) return;
+            const msgEl = document.querySelector(`.message[data-message-id="${contextMenuMessageId}"]`);
+            if (!msgEl) return;
+            const textEl = msgEl.querySelector('.message-text');
+            if (!textEl) return;
+
+            // Get plain text (strip HTML)
+            const originalText = contextMenuMessageText || '';
+            const messageId = contextMenuMessageId;
+
+            // Replace text content with edit input
+            const originalHtml = textEl.innerHTML;
+            textEl.innerHTML = `
+                <div class="edit-input-container">
+                    <input type="text" class="edit-input" value="${escapeHtml(originalText)}" maxlength="4000">
+                    <div class="edit-actions">
+                        <span onclick="saveEdit(${messageId}, this)">Save (Enter)</span> · <span onclick="cancelEdit(this, '${btoa(encodeURIComponent(originalHtml))}')">Cancel (Esc)</span>
+                    </div>
+                </div>
+            `;
+
+            const editInput = textEl.querySelector('.edit-input');
+            editInput.focus();
+            editInput.setSelectionRange(editInput.value.length, editInput.value.length);
+
+            editInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    saveEdit(messageId, editInput);
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelEdit(editInput, btoa(encodeURIComponent(originalHtml)));
+                }
+            });
+        }
+
+        function saveEdit(messageId, el) {
+            const msgEl = document.querySelector(`.message[data-message-id="${messageId}"]`);
+            if (!msgEl) return;
+            const input = msgEl.querySelector('.edit-input');
+            if (!input) return;
+            const newText = input.value.trim();
+            if (!newText) return;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'edit_message', message_id: messageId, message: newText }));
+            }
+            // Optimistically update
+            const textEl = msgEl.querySelector('.message-text');
+            if (textEl) textEl.innerHTML = formatMessage(newText);
+        }
+
+        function cancelEdit(el, encodedOriginal) {
+            try {
+                const original = decodeURIComponent(atob(encodedOriginal));
+                const textEl = el.closest('.message-text');
+                if (textEl) textEl.innerHTML = original;
+            } catch (e) {
+                // Fallback: just remove the edit container
+                const container = el.closest('.edit-input-container');
+                if (container) container.remove();
+            }
+        }
+
+        function isWithinEditWindow(messageId) {
+            const msgEl = document.querySelector(`.message[data-message-id="${messageId}"]`);
+            if (!msgEl || !msgEl.dataset.createdAt) return false;
+            const created = new Date(msgEl.dataset.createdAt);
+            const now = new Date();
+            return (now - created) < 300000; // 5 minutes
+        }
+
+        // === Pinned Messages ===
+
+        let pinnedMessages = [];
+
+        function renderPinnedMessages(messages) {
+            pinnedMessages = messages || [];
+            const banner = document.getElementById('pinned-banner');
+            const panel = document.getElementById('pinned-panel');
+            const count = document.getElementById('pinned-count');
+
+            if (pinnedMessages.length === 0) {
+                banner.style.display = 'none';
+                return;
+            }
+
+            banner.style.display = '';
+            count.textContent = pinnedMessages.length;
+            panel.innerHTML = pinnedMessages.map(m => {
+                const author = m.anonymous ? 'Anonymous' : (m.author_nickname || m.username);
+                const text = m.message || '';
+                const preview = text.length > 100 ? text.substring(0, 100) + '...' : text;
+                return `<div class="pinned-message-item" onclick="scrollToMessage(${m.id})">
+                    <span class="pinned-message-author">${escapeHtml(author)}</span>
+                    <span class="pinned-message-text">${escapeHtml(preview)}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function togglePinnedPanel() {
+            const panel = document.getElementById('pinned-panel');
+            const icon = document.getElementById('pinned-expand-icon');
+            panel.classList.toggle('show');
+            icon.textContent = panel.classList.contains('show') ? '▼' : '▶';
+        }
+
+        function handleMessagePinned(data) {
+            // Add to pinned list
+            pinnedMessages.unshift({ id: data.message_id, username: data.username, message: data.message });
+            renderPinnedMessages(pinnedMessages);
+            // Mark message in DOM
+            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            if (msgEl) {
+                msgEl.classList.add('pinned');
+                const header = msgEl.querySelector('.message-header');
+                if (header && !header.querySelector('.pin-icon')) {
+                    const pin = document.createElement('span');
+                    pin.className = 'pin-icon';
+                    pin.title = 'Pinned';
+                    pin.textContent = '📌';
+                    header.appendChild(pin);
+                }
+            }
+            appendSystemMessage(`${data.pinned_by} pinned a message`);
+        }
+
+        function handleMessageUnpinned(data) {
+            pinnedMessages = pinnedMessages.filter(m => m.id !== data.message_id);
+            renderPinnedMessages(pinnedMessages);
+            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            if (msgEl) {
+                msgEl.classList.remove('pinned');
+                const pin = msgEl.querySelector('.pin-icon');
+                if (pin) pin.remove();
+            }
+        }
+
+        function pinMessage() {
+            hideContextMenus();
+            if (!contextMenuMessageId) return;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'pin_message', message_id: contextMenuMessageId }));
+            }
+        }
+
+        function unpinMessage() {
+            hideContextMenus();
+            if (!contextMenuMessageId) return;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'unpin_message', message_id: contextMenuMessageId }));
+            }
+        }
+
+        // === Unread Tracking ===
+
+        let unreadCounts = new Map();
+
+        function markAsRead(messageId) {
+            if (!messageId || !ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: 'mark_read', message_id: messageId }));
+            if (unreadCounts.has(currentChannel)) {
+                unreadCounts.delete(currentChannel);
+                renderChannels(channelsList);
+            }
+        }
+
+        // === Link Previews ===
+
+        const _linkPreviewCache = new Map();
+
+        function fetchLinkPreviews(msgEl, urls) {
+            const textEl = msgEl.querySelector('.message-text');
+            if (!textEl) return;
+
+            for (const url of urls.slice(0, 3)) {
+                if (_linkPreviewCache.has(url)) {
+                    const cached = _linkPreviewCache.get(url);
+                    if (cached) appendPreviewCard(textEl, cached);
+                    continue;
+                }
+
+                fetch(`/api/chat/link-preview?url=${encodeURIComponent(url)}`, { credentials: 'include' })
+                    .then(resp => resp.ok ? resp.json() : null)
+                    .then(preview => {
+                        if (preview && (preview.title || preview.description)) {
+                            _linkPreviewCache.set(url, preview);
+                            appendPreviewCard(textEl, preview);
+                        } else {
+                            _linkPreviewCache.set(url, null);
+                        }
+                    })
+                    .catch(() => _linkPreviewCache.set(url, null));
+            }
+        }
+
+        function appendPreviewCard(textEl, preview) {
+            const card = document.createElement('div');
+            card.className = 'link-preview-card';
+            card.onclick = () => window.open(preview.url, '_blank');
+            card.innerHTML = `
+                ${preview.image ? `<img class="link-preview-image" src="${escapeHtml(preview.image)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+                <div class="link-preview-content">
+                    <div class="link-preview-site">${escapeHtml(preview.site_name || preview.domain || '')}</div>
+                    ${preview.title ? `<div class="link-preview-title">${escapeHtml(preview.title)}</div>` : ''}
+                    ${preview.description ? `<div class="link-preview-desc">${escapeHtml(preview.description)}</div>` : ''}
+                </div>
+            `;
+            textEl.appendChild(card);
+        }
+
+        // === Thread Expansion ===
+
+        async function openThread(messageId) {
+            try {
+                const resp = await fetch(`/api/chat/thread/${messageId}`, { credentials: 'include' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                renderThreadPanel(data.thread, messageId);
+            } catch (e) {
+                console.error('Failed to load thread:', e);
+            }
+        }
+
+        function renderThreadPanel(messages, targetId) {
+            const panel = document.getElementById('thread-panel');
+            const container = document.getElementById('thread-messages');
+            container.innerHTML = '';
+
+            messages.forEach((msg, index) => {
+                const div = document.createElement('div');
+                div.className = 'thread-message' + (msg.id === targetId ? ' thread-target' : '');
+
+                const displayName = msg.anonymous ? 'Anonymous' : (msg.nickname || msg.username);
+                const msgTime = formatTime(msg.created_at);
+                const role = msg.role || 'user';
+                const avatar = msg.anonymous ? {} : (msg.avatar || {});
+                const avatarStyle = msg.anonymous ? 'background: var(--text-muted);' : getAvatarStyle(avatar);
+                const avatarContent = msg.anonymous ? '?' : getAvatarContent(avatar, displayName);
+
+                div.innerHTML = `
+                    <div style="display:flex;gap:0.5rem;align-items:flex-start;">
+                        <div class="message-avatar" style="${avatarStyle};width:28px;height:28px;font-size:0.7rem;">${avatarContent}</div>
+                        <div style="flex:1;min-width:0;">
+                            <div class="message-header" style="margin-bottom:2px;">
+                                <span class="message-username" style="font-size:0.85rem;">${escapeHtml(displayName)}</span>
+                                ${getRoleBadge(role)}
+                                <span class="message-time">${msgTime}</span>
+                            </div>
+                            <div class="message-text" style="font-size:0.85rem;">${msg.message ? formatMessage(msg.message) : ''}</div>
+                        </div>
+                    </div>
+                    ${index < messages.length - 1 ? '<div class="thread-connector">↓</div>' : ''}
+                `;
+                container.appendChild(div);
+            });
+
+            panel.classList.add('open');
+        }
+
+        function closeThreadPanel() {
+            document.getElementById('thread-panel').classList.remove('open');
         }
 
         function getStatusLabel(status) {
@@ -2742,6 +3726,10 @@
                 document.getElementById('emoji-picker').classList.remove('show');
             }
             hideContextMenus();
+            // Hide reaction picker on outside click
+            if (!e.target.closest('.reaction-picker') && !e.target.closest('.context-menu-item')) {
+                document.getElementById('reaction-picker').classList.remove('show');
+            }
         });
 
         function hideContextMenus() {
@@ -2758,6 +3746,8 @@
             contextMenuMessageId = parseInt(msgEl.dataset.messageId);
             contextMenuMessageUserId = parseInt(msgEl.dataset.userId) || null;
             contextMenuMessageText = msgEl.querySelector('.message-text')?.textContent || '';
+            window._lastContextX = e.clientX;
+            window._lastContextY = e.clientY;
 
             // Show/hide delete option
             const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
@@ -2765,6 +3755,15 @@
             const canDelete = isMod || isOwner;
             document.getElementById('delete-separator').style.display = canDelete ? '' : 'none';
             document.getElementById('delete-menu-item').style.display = canDelete ? '' : 'none';
+
+            // Show/hide edit option (own messages within 5-min window)
+            const canEdit = isOwner && isWithinEditWindow(contextMenuMessageId);
+            document.getElementById('edit-menu-item').style.display = canEdit ? '' : 'none';
+
+            // Show/hide pin/unpin (mods only)
+            const isPinned = msgEl.classList.contains('pinned');
+            document.getElementById('pin-menu-item').style.display = isMod && !isPinned ? '' : 'none';
+            document.getElementById('unpin-menu-item').style.display = isMod && isPinned ? '' : 'none';
 
             showContextMenu('message-context-menu', e.clientX, e.clientY);
         });

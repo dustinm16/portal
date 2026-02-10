@@ -760,6 +760,16 @@ Portal uses two types of keys for stream access control:
 - **Private key (`stream_key`)**: Used for OBS publishing and stream management. Never share this key.
 - **Public key (`public_key`)**: Safe to share with viewers for read-only playback access.
 
+**Stream Status (`is_live`):**
+
+| Value | State | Description |
+|-------|-------|-------------|
+| `0` | Offline | Stream is not broadcasting |
+| `1` | Live | Stream is actively broadcasting |
+| `2` | Encoding | Stream ended, VOD chunks being finalized and uploaded to SFTP |
+
+Stream lifecycle: **Live** (1) → **Encoding** (2) → **Offline** (0). The encoding state ensures all VOD chunks are fully written and offloaded before the stream goes offline.
+
 #### GET /api/streams
 List user's streams.
 
@@ -774,7 +784,7 @@ List user's streams.
       "stream_key": "live_abc123...",
       "public_key": "pub_xyz789...",
       "is_public": false,
-      "is_live": true,
+      "is_live": 1,
       "viewer_count": 5,
       "total_views": 150,
       "created_at": "2026-02-01T00:00:00Z"
@@ -824,7 +834,7 @@ List all public (community) streams. Requires authentication.
       "owner_username": "john",
       "owner_nickname": "John",
       "public_key": "pub_xyz789...",
-      "is_live": true,
+      "is_live": 1,
       "viewer_count": 10,
       "total_views": 500
     }
@@ -853,7 +863,7 @@ Get stream details.
     "stream_key": "live_abc123...",
     "public_key": "pub_xyz789...",
     "is_public": true,
-    "is_live": false,
+    "is_live": 0,
     "chat_channel_id": 5
   }
 }
@@ -867,7 +877,7 @@ Get stream details.
     "name": "My Stream",
     "public_key": "pub_xyz789...",
     "is_public": true,
-    "is_live": false,
+    "is_live": 0,
     "chat_channel_id": 5
   }
 }
@@ -952,7 +962,7 @@ List all currently live and public streams (for community streams page).
       "id": 1,
       "name": "Gaming Stream",
       "owner_username": "alice",
-      "is_live": true,
+      "is_live": 1,
       "viewer_count": 10,
       "public_key": "pub_xyz789..."
     }
@@ -1014,7 +1024,7 @@ MediaMTX authentication hook (internal use).
 #### POST /api/stream/event
 MediaMTX event notifications (internal use).
 
-Handles stream start/stop events to update live status.
+Handles stream start/stop events to update live status. Stream lifecycle: **Live** (`is_live=1`) → **Encoding** (`is_live=2`, VOD chunks finalizing) → **Offline** (`is_live=0`).
 
 ---
 
@@ -1029,7 +1039,7 @@ Get stream information and playback URLs.
   "stream_key": "live_abc123...",
   "public_key": "pub_xyz789...",
   "name": "My Stream",
-  "is_live": true,
+  "is_live": 1,
   "is_public": true,
   "playback": {
     "hls": "https://portal.example.com/api/stream/pub_xyz789/hls/index.m3u8",
@@ -1232,12 +1242,23 @@ Additional WebSocket message types for stream chat moderation:
 - `unban_success` - Confirmation of successful unban
 - `bans_list` - Response to get_bans request
 
+**Stream status broadcasts** (sent to all users in the stream's chat channel):
+```json
+{
+  "type": "stream_status",
+  "stream_id": 3,
+  "is_live": 2
+}
+```
+
+The `is_live` field follows the tri-state model: `1`=live (stream started), `2`=encoding (stream ended, VODs finalizing), `0`=offline (all VODs uploaded).
+
 ---
 
 ### Chat
 
 #### GET /api/chat/channels
-List chat channels. Stream-associated channels include live status and stream metadata for UI grouping (Live / Offline sections).
+List chat channels. Stream-associated channels include live status and stream metadata for UI grouping (Live / Encoding / Offline sections). The `stream_is_live` field uses the tri-state integer: `0`=offline, `1`=live, `2`=encoding.
 
 **Response:**
 ```json
@@ -1248,7 +1269,8 @@ List chat channels. Stream-associated channels include live status and stream me
       "name": "general",
       "description": "General discussion",
       "is_default": 1,
-      "is_stream_channel": false
+      "is_stream_channel": false,
+      "unread_count": 5
     },
     {
       "id": 5,
@@ -1257,13 +1279,16 @@ List chat channels. Stream-associated channels include live status and stream me
       "is_default": 0,
       "is_stream_channel": true,
       "stream_id": 3,
-      "stream_is_live": true,
+      "stream_is_live": 1,
       "stream_public_key": "pub_xyz789...",
-      "stream_owner": "dustin"
+      "stream_owner": "dustin",
+      "unread_count": 0
     }
   ]
 }
 ```
+
+- `unread_count`: Number of unread messages since the user's last read position in this channel.
 
 ---
 
@@ -1329,6 +1354,46 @@ Upload an image for embedding in chat messages (max 5MB, JPEG/PNG/GIF/WebP).
 ```
 
 Include the returned URL as `image_url` in the WS message payload.
+
+---
+
+#### GET /api/chat/link-preview
+Fetch OpenGraph metadata for a URL (for link preview cards in chat).
+
+**Query Parameters:**
+- `url` (required): The URL to fetch preview data for (http/https only)
+
+**Response:**
+```json
+{
+  "url": "https://github.com",
+  "title": "GitHub",
+  "description": "Where the world builds software",
+  "image": "https://github.githubassets.com/images/modules/open_graph/github-octocat.png",
+  "site_name": "GitHub",
+  "domain": "github.com"
+}
+```
+
+**Security:** Blocks private/loopback IPs (SSRF protection), 5s timeout, 1MB max response. Results cached for 1 hour.
+
+---
+
+#### GET /api/chat/thread/:id
+Get the reply chain for a message (thread view). Walks the `reply_to` chain backwards up to 20 messages.
+
+**Response:**
+```json
+{
+  "thread": [
+    {"id": 10, "user_id": 1, "username": "alice", "message": "Original message", "created_at": "..."},
+    {"id": 15, "user_id": 2, "username": "bob", "message": "Reply to alice", "reply_to": 10, "created_at": "..."},
+    {"id": 20, "user_id": 1, "username": "alice", "message": "Reply to bob", "reply_to": 15, "created_at": "..."}
+  ]
+}
+```
+
+Messages are returned in chronological order with user enrichment (nickname, avatar, role).
 
 ---
 
@@ -1403,10 +1468,19 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 {"type": "message", "channel": "general", "message": "", "image_url": "/static/uploads/chat/abc.jpg"}
 {"type": "typing", "channel": "general"}
 {"type": "delete", "message_id": 42}
+{"type": "react", "message_id": 42, "emoji": "👍"}
+{"type": "edit_message", "message_id": 42, "message": "Updated text"}
+{"type": "pin_message", "message_id": 42}
+{"type": "unpin_message", "message_id": 42}
+{"type": "mark_read", "message_id": 50}
 ```
 
 - `reply_to` (optional): Message ID to reply to. Must be in the same channel.
 - `delete`: Admins/moderators can delete any message; regular users can only delete their own.
+- `react`: Toggles a reaction on a message (add if not present, remove if present). Max 10 chars per emoji.
+- `edit_message`: Edit own message within 5-minute window. Re-encrypted before storage.
+- `pin_message` / `unpin_message`: Moderator/admin only. Pin or unpin a message in the current channel.
+- `mark_read`: Update the user's read position for unread tracking.
 
 **Messages (Server → Client):**
 ```json
@@ -1422,9 +1496,18 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 {"type": "channel_deleted", "channel": "old-channel"}
 {"type": "channel_cleared", "cleared_by": "admin", "message_count": 150}
 {"type": "error", "message": "Slow down! You're sending messages too fast."}
+{"type": "reaction_update", "message_id": 42, "emoji": "👍", "user_id": 1, "added": true, "count": 3}
+{"type": "message_edited", "message_id": 42, "message": "Updated text", "edited_at": "2026-02-10T..."}
+{"type": "message_pinned", "message_id": 42, "message": "Important info", "username": "alice", "pinned_by": "admin"}
+{"type": "message_unpinned", "message_id": 42}
+{"type": "pinned_messages", "messages": [{"id": 42, "username": "alice", "message": "Important info", "pinned_at": "..."}]}
 ```
 
 - `reply_to` / `reply_preview`: Present on messages that are replies. Preview includes parent message's username and text (truncated to 100 chars). Anonymous parent messages show "Anonymous" as username.
+- `reactions`: Array of `{emoji, count, user_ids}` included in history messages. Real-time updates sent as `reaction_update`.
+- `message_edited`: Broadcast when a message is edited (includes new plaintext).
+- `message_pinned` / `message_unpinned`: Broadcast when a mod pins/unpins a message.
+- `pinned_messages`: Sent on channel join with all pinned messages for the channel.
 - `message_deleted`: Broadcast when a message is deleted.
 - `channel_renamed`: Broadcast when an admin renames a channel via REST API.
 - `channel_deleted`: Broadcast when an admin deletes a channel via REST API.

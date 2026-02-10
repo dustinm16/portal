@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Live Streams</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=33">
+    <link rel="stylesheet" href="/static/css/portal.css?v=34">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         .streams-container {
@@ -890,8 +890,10 @@
             const displayName = stream.owner_nickname || stream.owner_username || 'Unknown';
             const initial = displayName[0].toUpperCase();
 
+            const isLive = stream.is_live === 1;
+            const isEncoding = stream.is_live === 2;
             let thumbnailUrl = stream.thumbnail_url;
-            if (stream.is_live && stream.public_key) {
+            if (isLive && stream.public_key) {
                 const cacheBuster = Math.floor(Date.now() / 15000);
                 thumbnailUrl = `/api/stream/${stream.public_key}/thumbnail?t=${cacheBuster}`;
             }
@@ -908,10 +910,10 @@
                    </svg>`;
 
             return `
-                <div class="stream-card" onclick="openStream(${stream.id}, '${escapeHtml(stream.public_key || '')}', '${escapeHtml(stream.name)}', '${escapeHtml(displayName)}', ${stream.is_live ? 'true' : 'false'})">
+                <div class="stream-card" onclick="openStream(${stream.id}, '${escapeHtml(stream.public_key || '')}', '${escapeHtml(stream.name)}', '${escapeHtml(displayName)}', ${stream.is_live === 1 ? 'true' : 'false'})">
                     <div class="stream-thumbnail">
                         ${thumbnailContent}
-                        ${stream.is_live ? `
+                        ${isLive ? `
                             <div class="stream-live-badge">
                                 <span class="pulse"></span>
                                 LIVE
@@ -923,7 +925,7 @@
                                 </svg>
                                 ${stream.viewer_count || 0}
                             </div>
-                        ` : '<div class="stream-offline-badge">OFFLINE</div>'}
+                        ` : isEncoding ? '<div class="stream-encoding-badge"><span class="encoding-spinner"></span>ENCODING</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
                     </div>
                     <div class="stream-info">
                         <h3 class="stream-title">${escapeHtml(stream.name)}</h3>

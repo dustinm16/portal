@@ -1207,7 +1207,7 @@
       <span class="string">"id"</span>: <span class="number">1</span>,
       <span class="string">"title"</span>: <span class="string">"My Live Stream"</span>,
       <span class="string">"stream_key"</span>: <span class="string">"sk_abc123..."</span>,
-      <span class="string">"is_live"</span>: <span class="keyword">false</span>,
+      <span class="string">"is_live"</span>: <span class="number">0</span>,  <span class="comment">// 0=offline, 1=live, 2=encoding</span>
       <span class="string">"is_public"</span>: <span class="keyword">true</span>,
       <span class="string">"rtmp_enabled"</span>: <span class="keyword">false</span>,
       <span class="string">"viewer_count"</span>: <span class="number">0</span>,
@@ -1284,7 +1284,7 @@
                         <span class="endpoint-desc">List public streams</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns all public streams (live and offline). Used by the community streams page.</p>
+                        <p>Returns all public streams (live, encoding, and offline). Used by the community streams page. The <code>is_live</code> field is an integer: <code>0</code>=offline, <code>1</code>=live, <code>2</code>=encoding (VOD finalization in progress).</p>
                         <div class="try-it">
                             <h4>Try It</h4>
                             <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/streams/public', this)">Send Request</button>
@@ -1435,7 +1435,7 @@
                         <span class="endpoint-desc">Get stream thumbnail</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns 404 if stream is offline. Accepts <code>live_xxx</code> or <code>pub_xxx</code> key.</p>
+                        <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns static thumbnail (or 404) if stream is offline or encoding. Accepts <code>live_xxx</code> or <code>pub_xxx</code> key.</p>
                     </div>
                 </div>
 
@@ -1515,7 +1515,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 
                 <!-- VOD Storage -->
                 <h2 id="vods">VOD Storage</h2>
-                <p>Manage remote SFTP storage for recorded VODs (MKV files). Each user configures their own storage server.</p>
+                <p>Manage remote SFTP storage for recorded VODs (MKV files). Each user configures their own storage server. VODs are automatically recorded as 5-minute MKV chunks during live broadcasts and continuously uploaded to SFTP. When a stream ends, it enters an <strong>Encoding</strong> state (<code>is_live=2</code>) while the final chunk is written and all remaining chunks are offloaded, ensuring no VOD data is lost.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
@@ -2365,6 +2365,52 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                     </div>
                 </div>
 
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/link-preview</span>
+                        <span class="endpoint-desc">Fetch OpenGraph preview for a URL</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Fetches OpenGraph metadata (title, description, image) for a given URL. Used by the chat frontend to render link preview cards. Results are cached server-side for 1 hour.</p>
+                        <h4>Query Parameters</h4>
+                        <table>
+                            <tr><td><code>url</code></td><td>The URL to preview (required, must be http/https)</td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"url"</span>: <span class="string">"https://example.com/article"</span>,
+  <span class="string">"title"</span>: <span class="string">"Article Title"</span>,
+  <span class="string">"description"</span>: <span class="string">"A brief description..."</span>,
+  <span class="string">"image"</span>: <span class="string">"https://example.com/image.jpg"</span>,
+  <span class="string">"site_name"</span>: <span class="string">"Example"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/thread/:id</span>
+                        <span class="endpoint-desc">Get reply chain for a message</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the full reply chain (thread) for a given message, walking backwards through <code>reply_to</code> references up to 20 messages deep. Messages are returned in chronological order (oldest first).</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"messages"</span>: [
+    {<span class="string">"id"</span>: <span class="number">10</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Original message"</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>},
+    {<span class="string">"id"</span>: <span class="number">15</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"message"</span>: <span class="string">"Reply"</span>, <span class="string">"reply_to"</span>: <span class="number">10</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>},
+    {<span class="string">"id"</span>: <span class="number">20</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Reply to reply"</span>, <span class="string">"reply_to"</span>: <span class="number">15</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
                 <h3>WebSocket API</h3>
                 <p>Connect to the chat WebSocket for real-time messaging:</p>
                 <div class="code-block">
@@ -2387,6 +2433,19 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Delete a message (admins/mods: any; users: own only)</span>
 {<span class="string">"type"</span>: <span class="string">"delete"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
+
+<span class="comment">// Toggle emoji reaction (adds if not present, removes if present)</span>
+{<span class="string">"type"</span>: <span class="string">"react"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"emoji"</span>: <span class="string">"👍"</span>}
+
+<span class="comment">// Edit own message (within 5-minute window)</span>
+{<span class="string">"type"</span>: <span class="string">"edit_message"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"message"</span>: <span class="string">"Updated text"</span>}
+
+<span class="comment">// Pin/unpin message (moderator/admin only)</span>
+{<span class="string">"type"</span>: <span class="string">"pin_message"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
+{<span class="string">"type"</span>: <span class="string">"unpin_message"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
+
+<span class="comment">// Mark channel as read (for unread tracking)</span>
+{<span class="string">"type"</span>: <span class="string">"mark_read"</span>, <span class="string">"message_id"</span>: <span class="number">50</span>}
 
 <span class="comment">// Typing indicator</span>
 {<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}</pre>
@@ -2421,6 +2480,21 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Channel deleted (admin action via REST)</span>
 {<span class="string">"type"</span>: <span class="string">"channel_deleted"</span>, <span class="string">"channel"</span>: <span class="string">"old-channel"</span>}
+
+<span class="comment">// Reaction update (add or remove)</span>
+{<span class="string">"type"</span>: <span class="string">"reaction_update"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"emoji"</span>: <span class="string">"👍"</span>, <span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"action"</span>: <span class="string">"add"</span>}
+
+<span class="comment">// Message edited</span>
+{<span class="string">"type"</span>: <span class="string">"message_edited"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"new_text"</span>: <span class="string">"Updated message"</span>, <span class="string">"edited_at"</span>: <span class="string">"2026-02-10T12:00:00"</span>}
+
+<span class="comment">// Message pinned (mod/admin action)</span>
+{<span class="string">"type"</span>: <span class="string">"message_pinned"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"pinned_by"</span>: <span class="number">1</span>, <span class="string">"pinned_by_username"</span>: <span class="string">"alice"</span>}
+
+<span class="comment">// Message unpinned (mod/admin action)</span>
+{<span class="string">"type"</span>: <span class="string">"message_unpinned"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
+
+<span class="comment">// Pinned messages list (sent on channel join)</span>
+{<span class="string">"type"</span>: <span class="string">"pinned_messages"</span>, <span class="string">"messages"</span>: [{<span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Important info"</span>, <span class="string">"pinned_by"</span>: <span class="number">1</span>, <span class="string">"pinned_at"</span>: <span class="string">"..."</span>}]}
 
 <span class="comment">// Rate limit error (5 messages per 5 seconds)</span>
 {<span class="string">"type"</span>: <span class="string">"error"</span>, <span class="string">"message"</span>: <span class="string">"Slow down! You're sending messages too fast."</span>}</pre>

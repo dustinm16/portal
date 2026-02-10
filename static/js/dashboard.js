@@ -670,9 +670,10 @@ async function loadInlineStreams() {
         }
 
         grid.innerHTML = streams.map(stream => {
-            const isLive = stream.is_live;
-            const statusClass = isLive ? 'online' : 'offline';
-            const statusText = isLive ? 'Live' : 'Offline';
+            const isLive = stream.is_live === 1;
+            const isEncoding = stream.is_live === 2;
+            const statusClass = isLive ? 'online' : isEncoding ? 'encoding' : 'offline';
+            const statusText = isLive ? 'Live' : isEncoding ? 'Encoding' : 'Offline';
             const visibilityBadge = stream.is_public
                 ? '<span class="stream-badge stream-badge-public">Public</span>'
                 : '<span class="stream-badge stream-badge-private">Private</span>';

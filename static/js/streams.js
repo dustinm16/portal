@@ -83,14 +83,16 @@ async function loadCommunityStreams() {
  * Render a stream card
  */
 function renderStreamCard(stream, isOwner = false) {
-    const statusClass = stream.is_live ? 'live' : 'offline';
-    const statusText = stream.is_live ? 'LIVE' : 'Offline';
-    const viewerCount = stream.is_live ? `${stream.viewer_count || 0} viewers` : '';
+    const isEncoding = stream.is_live === 2;
+    const isLive = stream.is_live === 1;
+    const statusClass = isLive ? 'live' : isEncoding ? 'encoding' : 'offline';
+    const statusText = isLive ? 'LIVE' : isEncoding ? 'Encoding' : 'Offline';
+    const viewerCount = isLive ? `${stream.viewer_count || 0} viewers` : '';
     const publicBadge = stream.is_public ? '<span class="badge badge-public">Public</span>' : '<span class="badge badge-private">Private</span>';
 
     // Thumbnail URL - use dynamic thumbnail for live streams, static for offline
     let thumbnailUrl = stream.thumbnail_url;
-    if (stream.is_live && stream.public_key) {
+    if (isLive && stream.public_key) {
         // Use dynamic thumbnail from HLS stream (with cache buster)
         const cacheBuster = Math.floor(Date.now() / 15000); // Changes every 15 seconds
         thumbnailUrl = `/api/stream/${stream.public_key}/thumbnail?t=${cacheBuster}`;
@@ -112,10 +114,10 @@ function renderStreamCard(stream, isOwner = false) {
 
     if (isOwner) {
         return `
-            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : 'stream-offline'}">
+            <div class="connection-card stream-card has-thumbnail ${isLive ? 'stream-live' : isEncoding ? 'stream-encoding' : 'stream-offline'}">
                 <div class="stream-thumbnail">
                     ${thumbnailHtml}
-                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
+                    ${isLive ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : isEncoding ? '<div class="stream-encoding-badge"><span class="encoding-spinner"></span>ENCODING</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
                 </div>
                 <div class="stream-card-content">
                     <div class="connection-header">
@@ -152,11 +154,11 @@ function renderStreamCard(stream, isOwner = false) {
     } else {
         // Community stream card
         return `
-            <div class="connection-card stream-card has-thumbnail ${stream.is_live ? 'stream-live' : 'stream-offline'}" onclick="viewStream('${escapeHtml(stream.public_key || '')}')" style="cursor: pointer;">
+            <div class="connection-card stream-card has-thumbnail ${isLive ? 'stream-live' : isEncoding ? 'stream-encoding' : 'stream-offline'}" onclick="viewStream('${escapeHtml(stream.public_key || '')}')" style="cursor: pointer;">
                 <div class="stream-thumbnail">
                     ${thumbnailHtml}
-                    ${stream.is_live ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
-                    ${stream.is_live ? `<div class="stream-viewers"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>${stream.viewer_count || 0}</div>` : ''}
+                    ${isLive ? '<div class="stream-live-badge"><span class="pulse"></span>LIVE</div>' : isEncoding ? '<div class="stream-encoding-badge"><span class="encoding-spinner"></span>ENCODING</div>' : '<div class="stream-offline-badge">OFFLINE</div>'}
+                    ${isLive ? `<div class="stream-viewers"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>${stream.viewer_count || 0}</div>` : ''}
                 </div>
                 <div class="stream-card-content">
                     <div class="connection-header">
@@ -254,9 +256,9 @@ async function showStreamDetails(streamId) {
             <div class="stream-details">
                 <div class="info-section">
                     <h4>Stream Status</h4>
-                    <p class="stream-status ${stream.is_live ? 'live' : 'offline'}">
-                        ${stream.is_live ? 'LIVE' : 'Offline'}
-                        ${stream.is_live ? `(${stream.viewer_count || 0} viewers)` : ''}
+                    <p class="stream-status ${stream.is_live === 1 ? 'live' : stream.is_live === 2 ? 'encoding' : 'offline'}">
+                        ${stream.is_live === 1 ? 'LIVE' : stream.is_live === 2 ? 'Encoding VODs...' : 'Offline'}
+                        ${stream.is_live === 1 ? `(${stream.viewer_count || 0} viewers)` : ''}
                     </p>
                 </div>
 

@@ -120,6 +120,10 @@ notification_subscribers: dict[int, set] = {}
 # Active VOD recordings: stream_id -> {process, local_path, filename, user_id, stream_name, started_at}
 active_recordings: dict[int, dict] = {}
 
+# Pending disconnect grace tasks: stream_id -> asyncio.Task
+# Allows cancellation if the stream reconnects during the grace period
+_disconnect_grace_tasks: dict[int, "asyncio.Task"] = {}
+
 # Active RTMP token paths: stream_id -> rtmp_token_key (MediaMTX path override)
 # When a stream publishes via rtmp_ token, MediaMTX uses the token as the path
 # instead of the live_ key. This mapping lets HLS/thumbnail/VOD find the right path.
@@ -2632,28 +2636,54 @@ async def _sftp_makedirs(sftp, path: str) -> None:
                 pass  # May already exist from race condition
 
 
-async def stop_vod_recording(stream_id: int) -> None:
-    """Stop recording, finalize last chunk, upload remaining, clean up."""
+async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
+    """Stop recording, finalize last chunk, upload remaining, clean up.
+
+    When force=False (stream disconnect), wait for ffmpeg to exit naturally
+    as the RTSPS source disappearing causes ffmpeg to finish the current
+    chunk and exit cleanly. Only use force=True on server shutdown.
+    """
     recording = active_recordings.pop(stream_id, None)
     if not recording:
         return
 
     process = recording["process"]
 
-    # Gracefully stop ffmpeg (SIGINT finalizes MKV chunk headers)
-    try:
-        process.send_signal(signal.SIGINT)
-        await asyncio.wait_for(process.wait(), timeout=15)
-    except asyncio.TimeoutError:
-        logger.warning("ffmpeg did not exit cleanly, terminating")
-        process.terminate()
+    if force:
+        # Server shutdown — SIGINT immediately to finalize MKV headers
         try:
-            await asyncio.wait_for(process.wait(), timeout=5)
+            process.send_signal(signal.SIGINT)
+            await asyncio.wait_for(process.wait(), timeout=15)
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-    except ProcessLookupError:
-        pass
+            logger.warning("ffmpeg did not exit cleanly, terminating")
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        except ProcessLookupError:
+            pass
+    else:
+        # Normal disconnect — let ffmpeg finish the current chunk naturally.
+        # When the RTSPS source ends, ffmpeg finalizes the segment and exits.
+        try:
+            await asyncio.wait_for(process.wait(), timeout=300)
+            logger.info(f"VOD ffmpeg exited naturally (code {process.returncode})")
+        except asyncio.TimeoutError:
+            logger.warning("ffmpeg did not exit after source ended, sending SIGINT")
+            try:
+                process.send_signal(signal.SIGINT)
+                await asyncio.wait_for(process.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            except ProcessLookupError:
+                pass
 
     # Signal uploader to do final pass then exit
     recording["stop_event"].set()
@@ -2685,12 +2715,121 @@ async def stop_vod_recording(stream_id: int) -> None:
 
 async def stop_all_recordings() -> None:
     """Stop all active VOD recordings (called on server shutdown)."""
+    # Cancel any pending disconnect grace tasks
+    for stream_id, task in list(_disconnect_grace_tasks.items()):
+        if not task.done():
+            task.cancel()
+    _disconnect_grace_tasks.clear()
+
     if not active_recordings:
         return
     logger.info(f"Stopping {len(active_recordings)} active VOD recording(s)...")
     stream_ids = list(active_recordings.keys())
     for stream_id in stream_ids:
+        await stop_vod_recording(stream_id, force=True)
+
+
+async def _handle_disconnect_grace(stream: dict) -> None:
+    """Grace period before triggering encoding/offline on stream disconnect.
+
+    Waits 7 seconds, then re-checks if the stream reconnected. If still disconnected,
+    proceeds with encoding (if VOD active) or offline transition. This prevents
+    accidental brief disconnects from triggering the full finalization flow.
+    """
+    stream_id = stream["id"]
+    stream_name = stream.get("name", "?")
+    try:
+        await asyncio.sleep(7)
+
+        # Re-check stream state — did it reconnect during grace period?
+        current = await db.get_user_stream(stream_id)
+        if current and current.get("is_live") == 1:
+            logger.info(f"Stream {stream_name} reconnected during grace period, aborting disconnect")
+            return
+
+        # Still disconnected — proceed with encoding/offline transition
+        has_vod = stream_id in active_recordings
+
+        if has_vod:
+            # Transition to encoding state — VOD chunks still being finalized
+            await db.set_stream_encoding(stream_id)
+            logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
+
+            # Broadcast encoding status to chat channel
+            if stream.get("chat_channel_id"):
+                channel = await db.get_chat_channel(stream["chat_channel_id"])
+                if channel:
+                    await broadcast_to_channel(channel["name"], {
+                        "type": "stream_status",
+                        "stream_id": stream_id,
+                        "is_live": 2  # encoding
+                    })
+
+            # Finalize VOD in background, then transition to offline
+            asyncio.create_task(_finalize_stream_offline(stream))
+        else:
+            # No VOD recording — go straight to offline
+            await db.set_stream_live(stream_id, False)
+            logger.info(f"Stream {stream_name} ended (after grace period)")
+            await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream_name}' went offline")
+
+            if stream.get("chat_channel_id"):
+                channel = await db.get_chat_channel(stream["chat_channel_id"])
+                if channel:
+                    await broadcast_to_channel(channel["name"], {
+                        "type": "stream_status",
+                        "stream_id": stream_id,
+                        "is_live": 0
+                    })
+
+            # Clear chat history for the stream's channel
+            if stream.get("chat_channel_id"):
+                deleted = await db.clear_channel_messages(stream["chat_channel_id"])
+                if deleted > 0:
+                    logger.info(f"Cleared {deleted} chat messages for stream {stream_name}")
+    except asyncio.CancelledError:
+        logger.info(f"Stream {stream_name} disconnect grace period cancelled (reconnected)")
+    except Exception as e:
+        logger.error(f"Error in disconnect grace for stream {stream_name}: {e}")
+    finally:
+        _disconnect_grace_tasks.pop(stream_id, None)
+
+
+async def _finalize_stream_offline(stream: dict) -> None:
+    """Background task: wait for VOD finalization, then transition stream to offline."""
+    stream_id = stream["id"]
+    stream_name = stream.get("name", "?")
+    try:
+        # Wait for ffmpeg to finish the current chunk and upload all chunks
         await stop_vod_recording(stream_id)
+
+        # Now transition to fully offline
+        await db.set_stream_live(stream_id, False)
+        logger.info(f"Stream {stream_name} VOD finalized, now offline")
+        await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream_name}' went offline")
+
+        # Broadcast offline status to chat channel
+        if stream.get("chat_channel_id"):
+            channel = await db.get_chat_channel(stream["chat_channel_id"])
+            if channel:
+                await broadcast_to_channel(channel["name"], {
+                    "type": "stream_status",
+                    "stream_id": stream_id,
+                    "is_live": 0
+                })
+
+        # Clear chat history for the stream's channel
+        if stream.get("chat_channel_id"):
+            deleted = await db.clear_channel_messages(stream["chat_channel_id"])
+            if deleted > 0:
+                logger.info(f"Cleared {deleted} chat messages for stream {stream_name}")
+    except Exception as e:
+        logger.error(f"Error finalizing stream {stream_name} offline: {e}")
+        # Ensure stream goes offline even if VOD finalization fails
+        try:
+            await db.set_stream_live(stream_id, False)
+        except Exception:
+            pass
 
 
 async def http_stream_auth(request: web.Request) -> web.Response:
@@ -2785,9 +2924,15 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             logger.warning(f"Invalid stream key attempt from {ip}")
             return web.json_response({"error": "Invalid stream key"}, status=401)
 
+        # Cancel any pending disconnect grace task (stream reconnected)
+        stream_id = stream["id"]
+        grace_task = _disconnect_grace_tasks.pop(stream_id, None)
+        if grace_task and not grace_task.done():
+            grace_task.cancel()
+            logger.info(f"Stream {stream['name']} reconnected, cancelled disconnect grace period")
+
         # Mark stream as live (only log activity on state change)
         was_live = stream.get("is_live")
-        stream_id = stream["id"]
         await db.set_stream_live(stream_id, True)
         if not was_live:
             logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
@@ -2864,7 +3009,7 @@ async def http_stream_event(request: web.Request) -> web.Response:
     logger.debug(f"Stream event: event={event}, path={path}")
 
     if event == "disconnect" and path:
-        # Find stream and mark as offline
+        # Find stream and mark as offline (after grace period)
         stream_key = path.split("/")[-1] if "/" in path else path
         # Handle rtmp_ token paths — map back to parent stream
         if stream_key.startswith("rtmp_"):
@@ -2877,31 +3022,20 @@ async def http_stream_event(request: web.Request) -> web.Response:
         else:
             stream = await db.get_stream_by_key(stream_key)
         if stream:
+            stream_id = stream["id"]
+
             # Clean up rtmp_ path mapping
-            _rtmp_stream_paths.pop(stream["id"], None)
+            _rtmp_stream_paths.pop(stream_id, None)
 
-            # Stop VOD recording and upload to SFTP
-            await stop_vod_recording(stream["id"])
+            # Cancel any existing grace task for this stream (shouldn't happen, but be safe)
+            existing_task = _disconnect_grace_tasks.pop(stream_id, None)
+            if existing_task and not existing_task.done():
+                existing_task.cancel()
 
-            await db.set_stream_live(stream["id"], False)
-            logger.info(f"Stream {stream['name']} ended")
-            await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream['name']}' went offline")
-
-            # Notify chat channel that stream went offline
-            if stream.get("chat_channel_id"):
-                channel = await db.get_chat_channel(stream["chat_channel_id"])
-                if channel:
-                    await broadcast_to_channel(channel["name"], {
-                        "type": "stream_status",
-                        "stream_id": stream["id"],
-                        "is_live": False
-                    })
-
-            # Clear chat history for the stream's channel
-            if stream.get("chat_channel_id"):
-                deleted = await db.clear_channel_messages(stream["chat_channel_id"])
-                if deleted > 0:
-                    logger.info(f"Cleared {deleted} chat messages for stream {stream['name']}")
+            # Spawn grace period task — waits before triggering encoding/offline
+            logger.info(f"Stream {stream['name']} disconnected, starting 7s grace period...")
+            task = asyncio.create_task(_handle_disconnect_grace(stream))
+            _disconnect_grace_tasks[stream_id] = task
 
     return web.json_response({"ok": True})
 
@@ -3053,8 +3187,8 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     if error:
         return web.json_response({"error": error}, status=403)
 
-    # Check if stream is live
-    if not stream.get("is_live"):
+    # Check if stream is live (only generate dynamic thumbnail for active broadcast)
+    if stream.get("is_live") != 1:
         # Return static thumbnail if available, or 404
         if stream.get("thumbnail_url"):
             raise web.HTTPFound(stream["thumbnail_url"])
@@ -3360,7 +3494,7 @@ async def http_stream_info(request: web.Request) -> web.Response:
     return web.json_response({
         "stream_key": full_stream_key,
         "name": stream.get("name", ""),
-        "is_live": stream.get("is_live", False),
+        "is_live": stream.get("is_live", 0),
         "is_public": stream.get("is_public", False),
         "playback": {
             "hls": f"{base_url}/api/stream/{stream_key}/hls/index.m3u8",
@@ -5920,9 +6054,13 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
         ch["is_stream_channel"] = bool(stream)
         if stream:
             ch["stream_id"] = stream["id"]
-            ch["stream_is_live"] = bool(stream.get("is_live", 0))
+            ch["stream_is_live"] = stream.get("is_live", 0)
             ch["stream_public_key"] = stream.get("public_key", "")
             ch["stream_owner"] = stream.get("owner_nickname") or stream.get("owner_username", "")
+    # Enrich with unread counts
+    unread_counts = await db.get_unread_counts(token.user_id)
+    for ch in channels:
+        ch["unread_count"] = unread_counts.get(ch["id"], 0)
     return web.json_response({"channels": channels})
 
 
@@ -6161,6 +6299,162 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
         return web.json_response({"error": "Upload failed"}, status=500)
 
 
+# Link preview cache: url -> (preview_data, timestamp)
+_link_preview_cache: dict[str, tuple[dict, float]] = {}
+_LINK_PREVIEW_TTL = 3600  # 1 hour
+
+
+def _parse_opengraph(html: str, url: str) -> dict:
+    """Extract OpenGraph metadata from HTML."""
+    import urllib.parse as _urlparse
+
+    def get_meta(prop):
+        m = re.search(rf'<meta[^>]+(?:property|name)=["\']og:{prop}["\'][^>]+content=["\']([^"\']*)["\']', html, re.I)
+        if not m:
+            m = re.search(rf'<meta[^>]+content=["\']([^"\']*)["\'][^>]+(?:property|name)=["\']og:{prop}["\']', html, re.I)
+        return m.group(1) if m else None
+
+    title = get_meta("title")
+    if not title:
+        m = re.search(r'<title[^>]*>([^<]+)</title>', html, re.I)
+        title = m.group(1).strip() if m else None
+
+    description = get_meta("description")
+    if not description:
+        m = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)["\']', html, re.I)
+        if not m:
+            m = re.search(r'<meta[^>]+content=["\']([^"\']*)["\'][^>]+name=["\']description["\']', html, re.I)
+        description = m.group(1) if m else None
+
+    image = get_meta("image")
+    site_name = get_meta("site_name")
+    parsed = _urlparse.urlparse(url)
+    domain = parsed.hostname
+
+    return {
+        "url": url,
+        "title": title,
+        "description": description[:300] if description else None,
+        "image": image,
+        "site_name": site_name or domain,
+        "domain": domain
+    }
+
+
+async def http_link_preview(request: web.Request) -> web.Response:
+    """Fetch link preview (OpenGraph metadata) for a URL."""
+    import urllib.parse as _urlparse
+    import ipaddress
+
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    url = request.query.get("url", "").strip()
+    if not url:
+        return web.json_response({"error": "url parameter required"}, status=400)
+
+    parsed = _urlparse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return web.json_response({"error": "Only http/https URLs allowed"}, status=400)
+
+    hostname = parsed.hostname
+    if not hostname:
+        return web.json_response({"error": "Invalid URL"}, status=400)
+
+    # SSRF protection
+    if is_blocked_host(hostname):
+        return web.json_response({"error": "Blocked host"}, status=403)
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+            return web.json_response({"error": "Blocked host"}, status=403)
+    except ValueError:
+        pass
+
+    # Check cache
+    now = time()
+    if url in _link_preview_cache:
+        cached, ts = _link_preview_cache[url]
+        if now - ts < _LINK_PREVIEW_TTL:
+            return web.json_response(cached)
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers={"User-Agent": "PortalBot/1.0"}, allow_redirects=True, max_redirects=3) as resp:
+                if resp.status != 200:
+                    return web.json_response({"error": "Failed to fetch URL"}, status=502)
+                content_type = resp.content_type or ""
+                if "html" not in content_type:
+                    return web.json_response({"error": "Not an HTML page"}, status=400)
+                body = await resp.content.read(1_048_576)  # 1MB max
+                html = body.decode("utf-8", errors="replace")
+
+        preview = _parse_opengraph(html, url)
+        _link_preview_cache[url] = (preview, now)
+
+        # Trim cache if too large
+        if len(_link_preview_cache) > 500:
+            sorted_items = sorted(_link_preview_cache.items(), key=lambda x: x[1][1])
+            for k, _ in sorted_items[:250]:
+                _link_preview_cache.pop(k, None)
+
+        return web.json_response(preview)
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "Timeout"}, status=504)
+    except Exception as e:
+        logger.debug(f"Link preview error for {url}: {e}")
+        return web.json_response({"error": "Failed to fetch preview"}, status=502)
+
+
+async def http_get_chat_thread(request: web.Request) -> web.Response:
+    """Get reply chain for a message (thread view)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        message_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid message ID"}, status=400)
+
+    chain = await db.get_reply_chain(message_id)
+    if not chain:
+        return web.json_response({"error": "Message not found"}, status=404)
+
+    # Enrich with user data
+    user_ids = list(set(m["user_id"] for m in chain if m.get("user_id")))
+    users_info = await db.get_users_status(user_ids)
+    users_map = {}
+    for u in users_info:
+        u_avatar = {}
+        if u.get("avatar"):
+            try:
+                u_avatar = json.loads(u["avatar"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        users_map[u["id"]] = {
+            "nickname": u.get("nickname"),
+            "avatar": u_avatar,
+            "role": u.get("role", "user"),
+            "anonymous": bool(u.get("chat_anonymous"))
+        }
+
+    for m in chain:
+        ui = users_map.get(m.get("user_id"), {})
+        was_anonymous = bool(m.get("anonymous"))
+        m["nickname"] = ui.get("nickname") if not was_anonymous else None
+        m["avatar"] = ui.get("avatar", {}) if not was_anonymous else {}
+        m["role"] = ui.get("role", "user")
+        if was_anonymous:
+            m["username"] = "Anonymous"
+        elif ui.get("nickname"):
+            m["username"] = ui["nickname"]
+
+    return web.json_response({"thread": chain})
+
+
 async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     """Handle chat WebSocket connections."""
     token = await authenticate_request(request)
@@ -6327,7 +6621,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if stream:
                             channel_info["stream_id"] = stream["id"]
                             channel_info["stream_name"] = stream.get("name", "")
-                            channel_info["stream_is_live"] = bool(stream.get("is_live", 0))
+                            channel_info["stream_is_live"] = stream.get("is_live", 0)
                             channel_info["stream_public_key"] = stream.get("public_key", "")
                         await ws.send_json(channel_info)
 
@@ -6396,10 +6690,38 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                                 "deleted": True
                                             }
 
+                        # Enrich messages with reactions
+                        if messages:
+                            msg_ids = [m["id"] for m in messages]
+                            all_reactions = await db.get_bulk_reactions(msg_ids)
+                            for m in messages:
+                                m["reactions"] = all_reactions.get(m["id"], [])
+
                         await ws.send_json({
                             "type": "history",
                             "messages": messages
                         })
+
+                        # Send pinned messages
+                        if channel:
+                            pinned = await db.get_pinned_messages(channel["id"])
+                            if pinned:
+                                # Enrich pinned messages with user info
+                                for p in pinned:
+                                    p_ui = msg_users_map.get(p.get("user_id"), {}) if messages else {}
+                                    if p.get("anonymous"):
+                                        p["username"] = "Anonymous"
+                                    elif p_ui.get("nickname"):
+                                        p["username"] = p_ui["nickname"]
+                                await ws.send_json({
+                                    "type": "pinned_messages",
+                                    "messages": pinned
+                                })
+
+                        # Mark channel as read
+                        if messages and channel:
+                            last_msg_id = messages[-1]["id"]
+                            await db.update_read_position(user_id, channel["id"], last_msg_id)
 
                         # Send user list with status info
                         user_ids = [entry[1] for entry in chat_rooms[current_channel]]
@@ -6571,6 +6893,128 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "message_id": message_id,
                                 "deleted_by": user_id
                             })
+
+                    elif msg_type == "react":
+                        if not current_channel:
+                            continue
+                        message_id = data.get("message_id")
+                        emoji = data.get("emoji", "").strip()
+                        if not message_id or not emoji or len(emoji) > 10:
+                            continue
+                        try:
+                            message_id = int(message_id)
+                        except (ValueError, TypeError):
+                            continue
+                        # Verify message belongs to current channel
+                        msg = await db.get_chat_message(message_id)
+                        if not msg:
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel or msg["channel_id"] != channel["id"]:
+                            continue
+                        added, count = await db.toggle_reaction(message_id, user_id, emoji)
+                        await broadcast_to_channel(current_channel, {
+                            "type": "reaction_update",
+                            "message_id": message_id,
+                            "emoji": emoji,
+                            "user_id": user_id,
+                            "added": added,
+                            "count": count
+                        })
+
+                    elif msg_type == "edit_message":
+                        if not current_channel:
+                            continue
+                        message_id = data.get("message_id")
+                        new_text = data.get("message", "").strip()
+                        if not message_id or not new_text:
+                            continue
+                        try:
+                            message_id = int(message_id)
+                        except (ValueError, TypeError):
+                            continue
+                        if len(new_text) > 4000:
+                            continue
+                        updated = await db.edit_chat_message(message_id, user_id, new_text)
+                        if updated:
+                            await broadcast_to_channel(current_channel, {
+                                "type": "message_edited",
+                                "message_id": message_id,
+                                "message": new_text,
+                                "edited_at": updated["edited_at"]
+                            })
+                        else:
+                            await ws.send_json({"type": "error", "message": "Cannot edit (5-minute window expired or not your message)"})
+
+                    elif msg_type == "pin_message":
+                        if not current_channel:
+                            continue
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if not is_mod:
+                            await ws.send_json({"type": "error", "message": "Only moderators can pin messages"})
+                            continue
+                        message_id = data.get("message_id")
+                        if not message_id:
+                            continue
+                        try:
+                            message_id = int(message_id)
+                        except (ValueError, TypeError):
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+                        msg = await db.get_chat_message(message_id)
+                        if not msg or msg["channel_id"] != channel["id"]:
+                            continue
+                        success = await db.pin_message(message_id, user_id)
+                        if success:
+                            my_state = chat_user_state.get(user_id, {})
+                            display_name = "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username)
+                            msg_author = msg.get("username", "Unknown")
+                            if msg.get("anonymous"):
+                                msg_author = "Anonymous"
+                            await broadcast_to_channel(current_channel, {
+                                "type": "message_pinned",
+                                "message_id": message_id,
+                                "message": msg["message"],
+                                "username": msg_author,
+                                "pinned_by": display_name
+                            })
+
+                    elif msg_type == "unpin_message":
+                        if not current_channel:
+                            continue
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if not is_mod:
+                            await ws.send_json({"type": "error", "message": "Only moderators can unpin messages"})
+                            continue
+                        message_id = data.get("message_id")
+                        if not message_id:
+                            continue
+                        try:
+                            message_id = int(message_id)
+                        except (ValueError, TypeError):
+                            continue
+                        success = await db.unpin_message(message_id)
+                        if success:
+                            await broadcast_to_channel(current_channel, {
+                                "type": "message_unpinned",
+                                "message_id": message_id
+                            })
+
+                    elif msg_type == "mark_read":
+                        if not current_channel:
+                            continue
+                        message_id = data.get("message_id")
+                        if not message_id:
+                            continue
+                        try:
+                            message_id = int(message_id)
+                        except (ValueError, TypeError):
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if channel:
+                            await db.update_read_position(user_id, channel["id"], message_id)
 
                     elif msg_type == "ban":
                         # Stream owner can ban a user from chat
@@ -7991,6 +8435,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/chat/channels/{id}", http_delete_chat_channel)
     app.router.add_post("/api/chat/channels/{id}/clear", http_clear_chat_channel)
     app.router.add_post("/api/chat/upload", http_upload_chat_image)
+    app.router.add_get("/api/chat/link-preview", http_link_preview)
+    app.router.add_get("/api/chat/thread/{id}", http_get_chat_thread)
 
     # Voice chat
     app.router.add_get("/api/voice/ice-servers", http_voice_ice_servers)
@@ -8179,7 +8625,7 @@ class PortalServer:
 
                         # Get current stream
                         stream = await db.get_stream_by_key(stream_key)
-                        if stream and stream.get("is_live"):
+                        if stream and stream.get("is_live") == 1:
                             # Update viewer count directly
                             current_count = stream.get("viewer_count", 0)
                             if current_count != reader_count:

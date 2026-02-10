@@ -2327,6 +2327,11 @@ select option {
     color: var(--text-muted);
 }
 
+.stream-status.encoding {
+    background: rgba(217, 119, 6, 0.15);
+    color: #d97706;
+}
+
 .stream-status-dot {
     width: 8px;
     height: 8px;
@@ -2654,6 +2659,35 @@ select option {
     border-radius: 4px;
     font-size: 0.7rem;
     font-weight: 600;
+}
+
+.stream-card.has-thumbnail .stream-encoding-badge,
+.stream-card .stream-encoding-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: #d97706;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.stream-encoding-badge .encoding-spinner {
+    width: 6px;
+    height: 6px;
+    border: 1.5px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
 .stream-card.has-thumbnail .stream-viewers {
