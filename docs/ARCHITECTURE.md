@@ -153,6 +153,8 @@ Permission Hierarchy:
 ├── shodan_integration.py  # Shodan API for recon
 ├── traffic_metrics.py     # Connection metrics, time series, Chart.js data
 ├── vulnerability_scanner.py # CVE/port scanning
+├── cert_manager.py        # TLS certificate lifecycle (self-signed, Let's Encrypt, custom)
+├── setup.py               # Interactive setup wizard
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry
@@ -623,6 +625,23 @@ GET  /api/vuln/search                - Search CVEs
 POST /api/vuln/nvd-api-key           - Set NVD API key
 ```
 
+### Certificate Management (Admin)
+
+```
+GET  /api/certs/info                 - Certificate details (subject, issuer, SANs, expiry)
+POST /api/certs/upload               - Upload custom PEM cert+key
+POST /api/certs/self-signed          - Generate self-signed certificate
+POST /api/certs/letsencrypt          - Request Let's Encrypt certificate
+POST /api/certs/apply                - Restart server to apply new certs
+```
+
+### Server Settings (Admin)
+
+```
+GET  /api/settings/hostname          - Get hostname and port
+PUT  /api/settings/hostname          - Update hostname
+```
+
 ### WebSocket Endpoints
 
 ```
@@ -770,6 +789,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
 22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
 23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; single-use with a configurable grace period for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
+24. **Certificate Management** - Admin-only cert operations (upload, generation, Let's Encrypt); private keys never exposed via API; cert/key pair validation before activation; file permissions 0o600 on private keys
 
 ---
 
@@ -824,13 +844,29 @@ RTMP_PLAIN_ENABLED=false          # Enable plain RTMP ingress (default: false)
 RTMP_PLAIN_PORT=1935              # Plain RTMP port (default: 1935)
 RTMP_TOKEN_EXPIRY_MINUTES=15      # Token expiry time in minutes (default: 15)
 RTMP_TOKEN_GRACE_SECONDS=30       # Grace period for reconnects (default: 30)
+
+# Certificate Management
+CERT_METHOD=                      # letsencrypt, selfsigned, or custom
+CERT_EMAIL=                       # Email for Let's Encrypt renewal notifications
 ```
 
 ---
 
 ## Deployment
 
+### Setup Wizard
+
+The fastest way to deploy from a fresh clone:
+
+```bash
+python server.py setup
+```
+
+The wizard walks through: hostname, port, TLS certificate method (self-signed / Let's Encrypt / custom), JWT secret generation, admin user creation, virtual environment + dependencies, and systemd service installation. Supports both fresh installs and reconfiguration of existing setups.
+
 ### Systemd Service
+
+The setup wizard auto-generates a service file with correct paths. Manual template:
 
 ```ini
 [Unit]
@@ -839,11 +875,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=portal
+User=root
 WorkingDirectory=/opt/portal
 ExecStart=/opt/portal/venv/bin/python server.py serve
 Restart=always
 RestartSec=5
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -852,6 +889,9 @@ WantedBy=multi-user.target
 ### Commands
 
 ```bash
+# Setup/reconfigure
+python server.py setup
+
 # Start/stop/restart
 sudo systemctl start portal
 sudo systemctl stop portal

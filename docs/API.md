@@ -2421,6 +2421,99 @@ Set the NVD API key for higher rate limits (persists to database).
 
 ---
 
+### Certificate Management (Admin)
+
+Manage TLS certificates from the admin panel or via API. Supports custom uploads, self-signed generation, and Let's Encrypt automation.
+
+#### GET /api/certs/info
+Get current certificate details. Never exposes private key material.
+
+**Response:**
+```json
+{
+  "subject": {"CN": "portal.example.com", "O": "..."},
+  "issuer": {"CN": "...", "O": "..."},
+  "sans": ["portal.example.com", "*.example.com"],
+  "not_before": "2026-02-10T00:00:00+00:00",
+  "not_after": "2027-02-10T00:00:00+00:00",
+  "days_until_expiry": 365,
+  "is_expired": false,
+  "is_self_signed": false,
+  "fingerprint_sha256": "AB:CD:...",
+  "key_type": "RSA 4096",
+  "method": "custom"
+}
+```
+
+---
+
+#### POST /api/certs/upload
+Upload a custom PEM certificate and private key. Validates that the cert and key match before saving.
+
+**Request:**
+```json
+{
+  "cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+  "key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+}
+```
+
+**Response:** `{"status": "success", "message": "...", "cert_info": {...}}`
+
+---
+
+#### POST /api/certs/self-signed
+Generate a self-signed RSA 4096-bit certificate with SANs for hostname, localhost, and 127.0.0.1.
+
+**Request:**
+```json
+{
+  "hostname": "portal.example.com",
+  "validity_days": 365
+}
+```
+
+---
+
+#### POST /api/certs/letsencrypt
+Request a Let's Encrypt certificate via certbot standalone mode. Requires port 80 accessible from the internet. Installs auto-renewal hook.
+
+**Request:**
+```json
+{
+  "hostname": "portal.example.com",
+  "email": "admin@example.com"
+}
+```
+
+---
+
+#### POST /api/certs/apply
+Validate staged certificates and trigger a graceful server restart (2-second delay). All active connections will be briefly interrupted.
+
+---
+
+### Server Settings (Admin)
+
+#### GET /api/settings/hostname
+Get current server hostname and port.
+
+**Response:** `{"hostname": "portal.example.com", "port": 443}`
+
+---
+
+#### PUT /api/settings/hostname
+Update the server hostname in the configuration.
+
+**Request:**
+```json
+{
+  "hostname": "new-hostname.example.com"
+}
+```
+
+---
+
 ### Deprecated Endpoints
 
 The following endpoints are deprecated and will be removed in a future version. Use the unified `/api/services` endpoints instead.
