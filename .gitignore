@@ -3,30 +3,82 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
+dist/
+build/
 venv/
 .venv/
 env/
+
+# Environment & secrets
 .env
+.env.*
+!.env.example
+*.secret
+*.secrets
 
 # Database
 *.db
+*.db-journal
+*.db-wal
 *.db.backup
+*.sqlite
+*.sqlite3
 
-# Secrets
+# Certificates & private keys
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.pub
+!*.pub.example
+
+# Credentials & auth
 .invite_code
 .claude_test_creds
-certs/
+admin_credentials.txt
+*_credentials*
+*.keystore
+*.truststore
 
-# IDE
+# SSH known hosts
+known_hosts
+
+# Recordings & uploads
+recordings/
+static/uploads/
+
+# Logs
+logs/
+*.log
+
+# IDE & editors
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# Uploads
-static/uploads/
+*~
+.project
+.settings/
+*.sublime-project
+*.sublime-workspace
 
 # OS
 .DS_Store
 Thumbs.db
-logs/
+Desktop.ini
+.Trash-*
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+.cache/

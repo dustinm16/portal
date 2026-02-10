@@ -837,6 +837,59 @@
                 </ul>
                 </div>
 
+                <!-- System Monitor -->
+                <h2 id="system-monitor">System Monitor</h2>
+                <p>Real-time server monitoring and management tools for administrators.</p>
+
+                <div class="feature-card">
+                <h3>Process Manager</h3>
+                <p>View all running processes with CPU, memory, and command info. Features include:</p>
+                <ul>
+                    <li>Sort by CPU usage, memory, PID, or name</li>
+                    <li>Search and filter processes</li>
+                    <li>Kill processes with SIGTERM/SIGKILL (safety: refuses PID 1 and portal process)</li>
+                    <li>Auto-refresh mode (5-second interval)</li>
+                </ul>
+
+                <h3>Service Manager</h3>
+                <p>Monitor and control systemd services directly from the web UI:</p>
+                <ul>
+                    <li>View all services with status badges (running/stopped/failed)</li>
+                    <li>Start, stop, and restart services</li>
+                    <li>View journal logs with configurable line count</li>
+                    <li>Filter by running, failed, or text search</li>
+                </ul>
+
+                <h3>Network Info</h3>
+                <p>View network interfaces (IPs, MAC, speed, TX/RX bytes) and all listening ports with associated processes.</p>
+                </div>
+
+                <!-- File Manager -->
+                <h2 id="file-manager">File Manager</h2>
+                <p>Browse and manage files through the web interface.</p>
+
+                <div class="feature-card">
+                <h3>Server Files (Admin)</h3>
+                <p>Full-featured local file browser for administrators:</p>
+                <ul>
+                    <li>Navigate with breadcrumb path bar</li>
+                    <li>Edit text files in a monospace editor with save/cancel</li>
+                    <li>Upload files via button or drag-and-drop</li>
+                    <li>Create folders, rename, and delete files/directories</li>
+                    <li>Download any file as an attachment</li>
+                    <li>Security: path traversal protection, blocked sensitive files (.env, credentials), configurable root directory</li>
+                </ul>
+
+                <h3>Remote Files (SFTP)</h3>
+                <p>Browse files on remote servers using your existing SSH/SFTP connections:</p>
+                <ul>
+                    <li>Select from your configured SSH/SFTP connections</li>
+                    <li>Full file browsing with the same UI as local files</li>
+                    <li>Edit, upload, download, create, rename, and delete remote files</li>
+                    <li>Per-user access &mdash; only your own connections are accessible</li>
+                </ul>
+                </div>
+
                 <!-- Security -->
                 <h2 id="security">Security</h2>
                 <p>Open Relay Portal is designed with security as a core principle.</p>

@@ -2514,6 +2514,239 @@ Update the server hostname in the configuration.
 
 ---
 
+### System Monitor (Admin)
+
+#### GET /api/sysmon/processes
+List running processes sorted by CPU, memory, PID, or name.
+
+**Query:** `?sort=cpu&limit=100`
+
+**Response:** Array of process objects:
+```json
+[{
+  "pid": 1234,
+  "name": "python",
+  "username": "root",
+  "cpu_percent": 2.5,
+  "memory_percent": 1.0,
+  "memory_rss": 86216704,
+  "status": "running",
+  "cmdline": "/usr/bin/python server.py serve",
+  "create_time": 1770762758.51
+}]
+```
+
+---
+
+#### GET /api/sysmon/processes/:pid
+Get detailed info for a single process.
+
+---
+
+#### POST /api/sysmon/processes/:pid/kill
+Kill a process. Refuses PID 1, kernel threads, and the portal process.
+
+**Request:** `{"signal": "SIGTERM"}` (SIGTERM, SIGKILL, SIGINT, SIGHUP)
+
+**Response:** `{"success": true, "message": "Sent SIGTERM to python (PID 1234)"}`
+
+---
+
+#### GET /api/sysmon/services
+List systemd services.
+
+**Query:** `?filter=running` (running, failed, or search text)
+
+**Response:** Array of service objects:
+```json
+[{
+  "name": "portal",
+  "unit": "portal.service",
+  "load_state": "loaded",
+  "active_state": "active",
+  "sub_state": "running",
+  "description": "Open Relay Portal"
+}]
+```
+
+---
+
+#### GET /api/sysmon/services/:name
+Detailed service status including PID, memory, start time, enabled state.
+
+---
+
+#### GET /api/sysmon/services/:name/logs
+Service journal logs.
+
+**Query:** `?lines=50` (10-500)
+
+**Response:** `{"logs": "...", "service": "portal", "lines": 50}`
+
+---
+
+#### POST /api/sysmon/services/:name/control
+Control a systemd service.
+
+**Request:** `{"action": "restart"}` (start, stop, restart, enable, disable)
+
+**Response:** `{"success": true, "message": "Service portal restart successful"}`
+
+---
+
+#### GET /api/sysmon/network
+Network interface information (IPs, MAC, speed, TX/RX bytes).
+
+---
+
+#### GET /api/sysmon/ports
+Listening TCP ports with process info.
+
+**Response:** Array of port objects:
+```json
+[{"proto": "tcp", "address": "0.0.0.0", "port": 443, "pid": 1234, "process": "python"}]
+```
+
+---
+
+### File Manager (Admin)
+
+#### GET /api/files/list
+List directory contents (sorted: directories first).
+
+**Query:** `?path=/home`
+
+**Response:** Array of file entries:
+```json
+[{
+  "name": "portal",
+  "type": "directory",
+  "size": 4096,
+  "permissions": "drwxr-xr-x",
+  "modified": 1770762210.45,
+  "owner": "dustin",
+  "group": "dustin"
+}]
+```
+
+---
+
+#### GET /api/files/info
+File stat information.
+
+**Query:** `?path=/home/file.txt`
+
+---
+
+#### GET /api/files/read
+Read text file content (max 5MB).
+
+**Query:** `?path=/home/file.txt`
+
+**Response:** `{"content": "file contents...", "path": "/home/file.txt"}`
+
+---
+
+#### GET /api/files/download
+Download file as streaming attachment.
+
+**Query:** `?path=/home/file.txt`
+
+---
+
+#### POST /api/files/upload
+Upload file (multipart form: `path` + `file`).
+
+---
+
+#### POST /api/files/write
+Write/save text file.
+
+**Request:** `{"path": "/home/file.txt", "content": "new content"}`
+
+---
+
+#### POST /api/files/mkdir
+Create directory.
+
+**Request:** `{"path": "/home/new-folder"}`
+
+---
+
+#### POST /api/files/rename
+Rename/move file or directory.
+
+**Request:** `{"old_path": "/home/old", "new_path": "/home/new"}`
+
+---
+
+#### DELETE /api/files/delete
+Delete file or empty directory.
+
+**Query:** `?path=/home/file.txt`
+
+---
+
+### SFTP Browser (Per-User)
+
+SFTP endpoints require the user to own the connection. Only SSH/SFTP connection types are eligible.
+
+#### GET /api/sftp/:conn_id/list
+List remote directory contents.
+
+**Query:** `?path=/`
+
+---
+
+#### GET /api/sftp/:conn_id/read
+Read remote text file (max 5MB).
+
+**Query:** `?path=/home/file.txt`
+
+**Response:** `{"content": "...", "path": "/home/file.txt"}`
+
+---
+
+#### GET /api/sftp/:conn_id/download
+Download remote file.
+
+**Query:** `?path=/home/file.txt`
+
+---
+
+#### POST /api/sftp/:conn_id/upload
+Upload to remote (multipart form: `path` + `file`).
+
+---
+
+#### POST /api/sftp/:conn_id/write
+Write remote text file.
+
+**Request:** `{"path": "/home/file.txt", "content": "new content"}`
+
+---
+
+#### POST /api/sftp/:conn_id/mkdir
+Create remote directory.
+
+**Request:** `{"path": "/home/new-folder"}`
+
+---
+
+#### POST /api/sftp/:conn_id/rename
+Rename/move remote path.
+
+**Request:** `{"old_path": "/home/old", "new_path": "/home/new"}`
+
+---
+
+#### DELETE /api/sftp/:conn_id/delete
+Delete remote file or empty directory.
+
+**Query:** `?path=/home/file.txt`
+
+---
+
 ### Deprecated Endpoints
 
 The following endpoints are deprecated and will be removed in a future version. Use the unified `/api/services` endpoints instead.

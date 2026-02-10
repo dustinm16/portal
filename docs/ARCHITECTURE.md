@@ -155,6 +155,9 @@ Permission Hierarchy:
 ├── vulnerability_scanner.py # CVE/port scanning
 ├── cert_manager.py        # TLS certificate lifecycle (self-signed, Let's Encrypt, custom)
 ├── setup.py               # Interactive setup wizard
+├── system_monitor.py      # Process, systemd service, and network monitoring
+├── file_manager.py        # Local filesystem operations (admin)
+├── sftp_browser.py        # Remote SFTP file browsing (per-user)
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry
@@ -192,6 +195,8 @@ Permission Hierarchy:
 │   ├── github.html        # GitHub browser
 │   ├── api-docs.html      # Interactive API documentation
 │   ├── about.html         # Feature guide & docs
+│   ├── files.html         # File manager (admin local + user SFTP)
+│   ├── sysmon.html        # System monitor (processes, services, network)
 │   ├── unauthorized.html  # Auth error page
 │   ├── css/portal.css     # Shared styles (~3100 lines, 6 responsive breakpoints)
 │   ├── uploads/           # User-uploaded content (gitignored)
@@ -642,6 +647,47 @@ GET  /api/settings/hostname          - Get hostname and port
 PUT  /api/settings/hostname          - Update hostname
 ```
 
+### System Monitor (Admin)
+
+```
+GET  /api/sysmon/processes           - List processes (sort, limit)
+GET  /api/sysmon/processes/:pid      - Process details
+POST /api/sysmon/processes/:pid/kill - Kill process (signal)
+GET  /api/sysmon/services            - List systemd services (filter)
+GET  /api/sysmon/services/:name      - Service status
+GET  /api/sysmon/services/:name/logs - Service journal logs (lines)
+POST /api/sysmon/services/:name/control - Control service (action)
+GET  /api/sysmon/network             - Network interfaces
+GET  /api/sysmon/ports               - Listening ports
+```
+
+### File Manager (Admin)
+
+```
+GET    /api/files/list               - List directory (?path=)
+GET    /api/files/info               - File stat (?path=)
+GET    /api/files/read               - Read text file (?path=)
+GET    /api/files/download           - Download file (?path=)
+POST   /api/files/upload             - Upload file (multipart)
+POST   /api/files/write              - Write text file (JSON)
+POST   /api/files/mkdir              - Create directory (JSON)
+POST   /api/files/rename             - Rename/move (JSON)
+DELETE /api/files/delete             - Delete file/directory (?path=)
+```
+
+### SFTP Browser (Per-User)
+
+```
+GET    /api/sftp/:conn_id/list       - List remote directory (?path=)
+GET    /api/sftp/:conn_id/read       - Read remote text file (?path=)
+GET    /api/sftp/:conn_id/download   - Download remote file (?path=)
+POST   /api/sftp/:conn_id/upload     - Upload to remote (multipart)
+POST   /api/sftp/:conn_id/write      - Write remote text file (JSON)
+POST   /api/sftp/:conn_id/mkdir      - Create remote directory (JSON)
+POST   /api/sftp/:conn_id/rename     - Rename/move remote path (JSON)
+DELETE /api/sftp/:conn_id/delete     - Delete remote path (?path=)
+```
+
 ### WebSocket Endpoints
 
 ```
@@ -670,6 +716,8 @@ GET /proxmox             - Proxmox dashboard
 GET /watch/:id           - Stream viewer (HLS)
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (feature guide)
+GET /files               - File manager (admin local + user SFTP)
+GET /sysmon              - System monitor (admin only)
 GET /live                - Public live streams (unauthenticated)
 ```
 
@@ -790,6 +838,9 @@ Open Relay Portal is designed with privacy and security as core principles:
 22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
 23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; single-use with a configurable grace period for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
 24. **Certificate Management** - Admin-only cert operations (upload, generation, Let's Encrypt); private keys never exposed via API; cert/key pair validation before activation; file permissions 0o600 on private keys
+25. **File Manager Security** - Path traversal prevention via `Path.resolve()` + root check; blocked files list (`.env`, credentials); symlinks resolved and checked; configurable root directory; upload size limits enforced server-side
+26. **SFTP Browser Security** - Per-user connection ownership enforced on every request; only SSH/SFTP connection types eligible; SFTP connections are ephemeral (opened per-request, closed after); no path traversal possible (remote filesystem)
+27. **System Monitor Safety** - Process kill refuses PID 1, kernel threads, and portal process; systemd service control limited to start/stop/restart/enable/disable (no mask/daemon-reload); all subprocess calls use list args (no shell=True); service names validated with regex
 
 ---
 
@@ -848,6 +899,10 @@ RTMP_TOKEN_GRACE_SECONDS=30       # Grace period for reconnects (default: 30)
 # Certificate Management
 CERT_METHOD=                      # letsencrypt, selfsigned, or custom
 CERT_EMAIL=                       # Email for Let's Encrypt renewal notifications
+
+# File Manager
+FILE_MANAGER_ROOT=/               # Root directory for admin file browser
+FILE_MANAGER_MAX_UPLOAD_MB=100    # Max upload size in MB
 ```
 
 ---

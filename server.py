@@ -85,6 +85,9 @@ from services import (
     load_service_types,
 )
 import cert_manager
+import system_monitor
+import file_manager
+import sftp_browser
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -4991,6 +4994,641 @@ async def http_update_server_hostname(request: web.Request) -> web.Response:
     })
 
 
+# =============================================================================
+# System Monitor (admin only)
+# =============================================================================
+
+async def http_sysmon_processes(request: web.Request) -> web.Response:
+    """GET /api/sysmon/processes - List running processes."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    sort_by = request.query.get("sort", "cpu")
+    try:
+        limit = min(int(request.query.get("limit", "100")), 500)
+    except (ValueError, TypeError):
+        limit = 100
+
+    procs = system_monitor.list_processes(sort_by=sort_by, limit=limit)
+    return web.json_response(procs)
+
+
+async def http_sysmon_process_detail(request: web.Request) -> web.Response:
+    """GET /api/sysmon/processes/{pid} - Process details."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        pid = int(request.match_info["pid"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid PID"}, status=400)
+
+    info = system_monitor.get_process_info(pid)
+    if not info:
+        return web.json_response({"error": "Process not found"}, status=404)
+    return web.json_response(info)
+
+
+async def http_sysmon_kill_process(request: web.Request) -> web.Response:
+    """POST /api/sysmon/processes/{pid}/kill - Kill a process."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        pid = int(request.match_info["pid"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid PID"}, status=400)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+
+    signal_name = data.get("signal", "SIGTERM")
+    success, message = system_monitor.kill_process(pid, signal_name)
+    status = 200 if success else 400
+    return web.json_response({"success": success, "message": message}, status=status)
+
+
+async def http_sysmon_services(request: web.Request) -> web.Response:
+    """GET /api/sysmon/services - List systemd services."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    filter_str = request.query.get("filter")
+    services = system_monitor.list_services(filter_str)
+    return web.json_response(services)
+
+
+async def http_sysmon_service_status(request: web.Request) -> web.Response:
+    """GET /api/sysmon/services/{name} - Service status."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    name = request.match_info["name"]
+    status = system_monitor.get_service_status(name)
+    if not status:
+        return web.json_response({"error": "Service not found"}, status=404)
+    return web.json_response(status)
+
+
+async def http_sysmon_service_logs(request: web.Request) -> web.Response:
+    """GET /api/sysmon/services/{name}/logs - Service journal logs."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    name = request.match_info["name"]
+    try:
+        lines = int(request.query.get("lines", "50"))
+    except (ValueError, TypeError):
+        lines = 50
+
+    logs = system_monitor.get_service_logs(name, lines)
+    return web.json_response({"logs": logs, "service": name, "lines": lines})
+
+
+async def http_sysmon_service_control(request: web.Request) -> web.Response:
+    """POST /api/sysmon/services/{name}/control - Control a service."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    name = request.match_info["name"]
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    action = data.get("action", "")
+    success, message = system_monitor.control_service(name, action)
+    status = 200 if success else 400
+    return web.json_response({"success": success, "message": message}, status=status)
+
+
+async def http_sysmon_network(request: web.Request) -> web.Response:
+    """GET /api/sysmon/network - Network interfaces."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    interfaces = system_monitor.get_network_interfaces()
+    return web.json_response(interfaces)
+
+
+async def http_sysmon_ports(request: web.Request) -> web.Response:
+    """GET /api/sysmon/ports - Listening ports."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    ports = system_monitor.get_listening_ports()
+    return web.json_response(ports)
+
+
+# =============================================================================
+# File Manager (admin only)
+# =============================================================================
+
+async def http_list_files(request: web.Request) -> web.Response:
+    """GET /api/files/list - List directory contents."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    path = request.query.get("path", "/")
+    try:
+        entries = file_manager.list_directory(path, Config.FILE_MANAGER_ROOT)
+        return web.json_response(entries)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"error": "Failed to list directory"}, status=500)
+
+
+async def http_file_info(request: web.Request) -> web.Response:
+    """GET /api/files/info - File info/stat."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    path = request.query.get("path", "")
+    if not path:
+        return web.json_response({"error": "path parameter required"}, status=400)
+    try:
+        info = file_manager.get_file_info(path, Config.FILE_MANAGER_ROOT)
+        return web.json_response(info)
+    except (ValueError, FileNotFoundError) as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_read_file(request: web.Request) -> web.Response:
+    """GET /api/files/read - Read text file content."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    path = request.query.get("path", "")
+    if not path:
+        return web.json_response({"error": "path parameter required"}, status=400)
+    try:
+        content = file_manager.read_file(path, Config.FILE_MANAGER_ROOT)
+        # Try to decode as text
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return web.json_response({"error": "File is not a text file"}, status=400)
+        return web.json_response({"content": text, "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_download_file(request: web.Request) -> web.Response:
+    """GET /api/files/download - Download file (streaming)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    path = request.query.get("path", "")
+    if not path:
+        return web.json_response({"error": "path parameter required"}, status=400)
+
+    try:
+        resolved = file_manager._validate_path(path, Config.FILE_MANAGER_ROOT)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+    if not resolved.is_file():
+        return web.json_response({"error": "Not a file"}, status=400)
+
+    mime = file_manager.get_mime_type(path, Config.FILE_MANAGER_ROOT)
+    filename = resolved.name
+
+    response = web.StreamResponse()
+    response.content_type = mime
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response.headers["Content-Length"] = str(resolved.stat().st_size)
+    await response.prepare(request)
+
+    with open(resolved, "rb") as f:
+        while chunk := f.read(65536):
+            await response.write(chunk)
+
+    await response.write_eof()
+    return response
+
+
+async def http_upload_file(request: web.Request) -> web.Response:
+    """POST /api/files/upload - Upload file (multipart)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    reader = await request.multipart()
+    target_path = "/"
+    file_data = None
+    file_name = None
+
+    async for part in reader:
+        if part.name == "path":
+            target_path = (await part.text()).strip()
+        elif part.name == "file":
+            file_name = part.filename
+            file_data = await part.read(Config.FILE_MANAGER_MAX_UPLOAD)
+            # Check if there's more data (file too large)
+            extra = await part.read(1)
+            if extra:
+                return web.json_response({"error": f"File too large (max {Config.FILE_MANAGER_MAX_UPLOAD // (1024*1024)}MB)"}, status=400)
+
+    if not file_data or not file_name:
+        return web.json_response({"error": "No file provided"}, status=400)
+
+    dest = target_path.rstrip("/") + "/" + file_name
+    try:
+        file_manager.write_file(dest, Config.FILE_MANAGER_ROOT, file_data)
+        return web.json_response({"status": "success", "path": dest})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_write_file(request: web.Request) -> web.Response:
+    """POST /api/files/write - Write/save text file."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    path = data.get("path", "")
+    content = data.get("content", "")
+    if not path:
+        return web.json_response({"error": "path is required"}, status=400)
+
+    try:
+        file_manager.write_file(path, Config.FILE_MANAGER_ROOT, content.encode("utf-8"))
+        return web.json_response({"status": "success", "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_mkdir(request: web.Request) -> web.Response:
+    """POST /api/files/mkdir - Create directory."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    path = data.get("path", "")
+    if not path:
+        return web.json_response({"error": "path is required"}, status=400)
+
+    try:
+        file_manager.create_directory(path, Config.FILE_MANAGER_ROOT)
+        return web.json_response({"status": "success", "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_rename_file(request: web.Request) -> web.Response:
+    """POST /api/files/rename - Rename/move file."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    old_path = data.get("old_path", "")
+    new_path = data.get("new_path", "")
+    if not old_path or not new_path:
+        return web.json_response({"error": "old_path and new_path are required"}, status=400)
+
+    try:
+        file_manager.rename_path(old_path, new_path, Config.FILE_MANAGER_ROOT)
+        return web.json_response({"status": "success"})
+    except (ValueError, FileNotFoundError) as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def http_delete_file(request: web.Request) -> web.Response:
+    """DELETE /api/files/delete - Delete file/directory."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    path = request.query.get("path", "")
+    if not path:
+        return web.json_response({"error": "path parameter required"}, status=400)
+
+    try:
+        file_manager.delete_path(path, Config.FILE_MANAGER_ROOT)
+        return web.json_response({"status": "success"})
+    except (ValueError, FileNotFoundError) as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+# =============================================================================
+# SFTP Browser (per-user, connection ownership checked)
+# =============================================================================
+
+async def _get_sftp_connection(request: web.Request, token: TokenPayload):
+    """Helper: get user connection and establish SFTP. Returns (conn, sftp, error_response)."""
+    try:
+        conn_id = int(request.match_info["conn_id"])
+    except (ValueError, KeyError):
+        return None, None, web.json_response({"error": "Invalid connection ID"}, status=400)
+
+    connection = await db.get_user_connection(conn_id, token.user_id)
+    if not connection:
+        return None, None, web.json_response({"error": "Connection not found"}, status=404)
+
+    if connection.get("connection_type") not in sftp_browser.SFTP_ELIGIBLE_TYPES:
+        return None, None, web.json_response({"error": "Connection is not SSH/SFTP type"}, status=400)
+
+    ssh_conn, sftp_client, error = await sftp_browser.connect_sftp(connection)
+    if error:
+        return None, None, web.json_response({"error": error}, status=502)
+
+    return ssh_conn, sftp_client, None
+
+
+async def http_sftp_list(request: web.Request) -> web.Response:
+    """GET /api/sftp/{conn_id}/list - List remote directory."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    path = request.query.get("path", "/")
+    try:
+        entries = await sftp_browser.list_remote_directory(sftp, path)
+        return web.json_response(entries)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_read(request: web.Request) -> web.Response:
+    """GET /api/sftp/{conn_id}/read - Read remote text file."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    path = request.query.get("path", "")
+    if not path:
+        ssh_conn.close()
+        return web.json_response({"error": "path parameter required"}, status=400)
+
+    try:
+        content = await sftp_browser.read_remote_file(sftp, path)
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return web.json_response({"error": "File is not a text file"}, status=400)
+        return web.json_response({"content": text, "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_download(request: web.Request) -> web.Response:
+    """GET /api/sftp/{conn_id}/download - Download remote file."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    path = request.query.get("path", "")
+    if not path:
+        ssh_conn.close()
+        return web.json_response({"error": "path parameter required"}, status=400)
+
+    try:
+        content = await sftp_browser.read_remote_file(sftp, path, max_size=100 * 1024 * 1024)
+        filename = path.rsplit("/", 1)[-1] or "download"
+        response = web.Response(body=content)
+        response.content_type = "application/octet-stream"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_upload(request: web.Request) -> web.Response:
+    """POST /api/sftp/{conn_id}/upload - Upload to remote."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    try:
+        reader = await request.multipart()
+        target_path = "/"
+        file_data = None
+        file_name = None
+
+        async for part in reader:
+            if part.name == "path":
+                target_path = (await part.text()).strip()
+            elif part.name == "file":
+                file_name = part.filename
+                file_data = await part.read(Config.FILE_MANAGER_MAX_UPLOAD)
+
+        if not file_data or not file_name:
+            return web.json_response({"error": "No file provided"}, status=400)
+
+        dest = target_path.rstrip("/") + "/" + file_name
+        await sftp_browser.write_remote_file(sftp, dest, file_data)
+        return web.json_response({"status": "success", "path": dest})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_write(request: web.Request) -> web.Response:
+    """POST /api/sftp/{conn_id}/write - Write remote text file."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        ssh_conn.close()
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    path = data.get("path", "")
+    content = data.get("content", "")
+    if not path:
+        ssh_conn.close()
+        return web.json_response({"error": "path is required"}, status=400)
+
+    try:
+        await sftp_browser.write_remote_file(sftp, path, content.encode("utf-8"))
+        return web.json_response({"status": "success", "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_mkdir(request: web.Request) -> web.Response:
+    """POST /api/sftp/{conn_id}/mkdir - Create remote directory."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        ssh_conn.close()
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    path = data.get("path", "")
+    if not path:
+        ssh_conn.close()
+        return web.json_response({"error": "path is required"}, status=400)
+
+    try:
+        await sftp_browser.create_remote_directory(sftp, path)
+        return web.json_response({"status": "success", "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_rename(request: web.Request) -> web.Response:
+    """POST /api/sftp/{conn_id}/rename - Rename remote path."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        ssh_conn.close()
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    old_path = data.get("old_path", "")
+    new_path = data.get("new_path", "")
+    if not old_path or not new_path:
+        ssh_conn.close()
+        return web.json_response({"error": "old_path and new_path are required"}, status=400)
+
+    try:
+        await sftp_browser.rename_remote_path(sftp, old_path, new_path)
+        return web.json_response({"status": "success"})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_delete(request: web.Request) -> web.Response:
+    """DELETE /api/sftp/{conn_id}/delete - Delete remote path."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_sftp_connection(request, token)
+    if err:
+        return err
+
+    path = request.query.get("path", "")
+    if not path:
+        ssh_conn.close()
+        return web.json_response({"error": "path parameter required"}, status=400)
+
+    try:
+        await sftp_browser.delete_remote_path(sftp, path)
+        return web.json_response({"status": "success"})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    finally:
+        ssh_conn.close()
+
+
 async def http_activity_feed(request: web.Request) -> web.Response:
     """Get recent activity feed. Admins see all; regular users see their own."""
     token = await authenticate_request(request)
@@ -6372,6 +7010,28 @@ async def http_about_page(request: web.Request) -> web.Response:
         raise web.HTTPFound("/login")
 
     html = load_static_file("about.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_files_page(request: web.Request) -> web.Response:
+    """Serve file manager page (authenticated users - SFTP tab; admin - both tabs)."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    html = load_static_file("files.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_sysmon_page(request: web.Request) -> web.Response:
+    """Serve system monitor page (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        raise web.HTTPFound("/dashboard")
+
+    html = load_static_file("sysmon.html")
     return web.Response(text=html, content_type="text/html")
 
 
@@ -8802,6 +9462,38 @@ def create_app() -> web.Application:
     app.router.add_get("/api/settings/hostname", http_get_server_hostname)
     app.router.add_put("/api/settings/hostname", http_update_server_hostname)
 
+    # System Monitor (admin only)
+    app.router.add_get("/api/sysmon/processes", http_sysmon_processes)
+    app.router.add_get("/api/sysmon/processes/{pid}", http_sysmon_process_detail)
+    app.router.add_post("/api/sysmon/processes/{pid}/kill", http_sysmon_kill_process)
+    app.router.add_get("/api/sysmon/services", http_sysmon_services)
+    app.router.add_get("/api/sysmon/services/{name}", http_sysmon_service_status)
+    app.router.add_get("/api/sysmon/services/{name}/logs", http_sysmon_service_logs)
+    app.router.add_post("/api/sysmon/services/{name}/control", http_sysmon_service_control)
+    app.router.add_get("/api/sysmon/network", http_sysmon_network)
+    app.router.add_get("/api/sysmon/ports", http_sysmon_ports)
+
+    # File Manager (admin only)
+    app.router.add_get("/api/files/list", http_list_files)
+    app.router.add_get("/api/files/info", http_file_info)
+    app.router.add_get("/api/files/read", http_read_file)
+    app.router.add_get("/api/files/download", http_download_file)
+    app.router.add_post("/api/files/upload", http_upload_file)
+    app.router.add_post("/api/files/write", http_write_file)
+    app.router.add_post("/api/files/mkdir", http_mkdir)
+    app.router.add_post("/api/files/rename", http_rename_file)
+    app.router.add_delete("/api/files/delete", http_delete_file)
+
+    # SFTP Browser (per-user)
+    app.router.add_get("/api/sftp/{conn_id}/list", http_sftp_list)
+    app.router.add_get("/api/sftp/{conn_id}/read", http_sftp_read)
+    app.router.add_get("/api/sftp/{conn_id}/download", http_sftp_download)
+    app.router.add_post("/api/sftp/{conn_id}/upload", http_sftp_upload)
+    app.router.add_post("/api/sftp/{conn_id}/write", http_sftp_write)
+    app.router.add_post("/api/sftp/{conn_id}/mkdir", http_sftp_mkdir)
+    app.router.add_post("/api/sftp/{conn_id}/rename", http_sftp_rename)
+    app.router.add_delete("/api/sftp/{conn_id}/delete", http_sftp_delete)
+
     # Web UI routes
     app.router.add_get("/live", http_live_page)
     app.router.add_get("/login", http_login_page)
@@ -8819,6 +9511,8 @@ def create_app() -> web.Application:
     app.router.add_get("/docs", http_api_docs_page)
     app.router.add_get("/api-docs", http_api_docs_page)  # Alias
     app.router.add_get("/about", http_about_page)
+    app.router.add_get("/files", http_files_page)
+    app.router.add_get("/sysmon", http_sysmon_page)
     app.router.add_get("/chat", http_chat_page)
     app.router.add_get("/streams", http_streams_page)
     app.router.add_get("/watch/{id}", http_watch_stream_page)

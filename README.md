@@ -1,0 +1,150 @@
+# Open Relay Portal
+
+A self-hosted, encrypted communication and infrastructure gateway. One server gives you everything — live streaming, encrypted chat, voice calls, remote access, and file management — all under your control, on your hardware, with zero third-party dependencies.
+
+## Why This Exists
+
+The internet's communication infrastructure is centralized. Discord owns your chat history. Twitch takes 50% of your revenue and can deplatform you overnight. Kick, YouTube, and every other platform can censor, throttle, or shut down your content at will.
+
+**Open Relay Portal is the alternative.**
+
+### For communities that need sovereignty
+- **Content creators** who want to own their platform, their audience, and their revenue
+- **Organizations** that need secure internal communication without trusting a third party
+- **Gaming communities** tired of Discord's arbitrary moderation and data harvesting
+
+### For people in hostile environments
+- **Journalists** in countries where press freedom is under attack — encrypted chat and streaming that no corporation can be compelled to hand over
+- **Activists and organizers** in authoritarian regimes — your server, your data, your rules
+- **Aid workers and NGOs** operating in conflict zones where commercial services are blocked, monitored, or unreliable
+- **War-torn regions** where centralized infrastructure is destroyed but a single server (or a VPS anywhere in the world) can restore communication
+
+### For infrastructure operators
+- **Homelab enthusiasts** who want a single portal to manage their entire infrastructure
+- **Small businesses** that need VPN-less remote access to internal services
+- **DevOps teams** who want SSH, VNC, RDP, and database access through a web browser
+
+## What You Get
+
+### Live Streaming
+RTMPS ingress with HLS playback. Stream from OBS, use hardware encoding (NVENC/AMF/x264), automatic VOD recording to your own storage. No platform cut, no algorithm, no ToS surprises.
+
+### Encrypted Chat
+Real-time messaging with Fernet encryption at rest. Channels, replies, threads, reactions, @mentions, image embeds, link previews, pinned messages. Everything Discord does, except you own the database.
+
+### Voice Chat
+WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
+
+### Remote Access
+SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 28 connection types supported. No VPN required.
+
+### File Management
+Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI.
+
+### System Monitoring
+Process manager, systemd service control, network interfaces, listening ports. Manage your server without opening a terminal.
+
+### Administration
+User management with role hierarchy (superadmin/admin/moderator/user), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning.
+
+## Quick Start
+
+```bash
+git clone https://github.com/dustinm16/portal.git
+cd portal
+python server.py setup
+```
+
+The setup wizard walks you through everything: hostname, TLS certificates (self-signed, Let's Encrypt, or custom), admin account creation, and systemd service installation.
+
+### Manual Setup
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Configure
+cp .env.example .env
+# Edit .env with your settings (JWT_SECRET, hostname, SSL paths)
+
+# Initialize database and admin user
+python server.py init
+
+# Run
+python server.py serve
+```
+
+### Requirements
+- Python 3.11+
+- Linux (systemd for service management features)
+- TLS certificate (self-signed works for testing)
+- Port 443 (HTTPS)
+
+## Architecture
+
+```
+Python/aiohttp backend ──── SQLite database
+       │                         │
+       ├── WebSocket relay ──── Plugins (SSH, VNC, RDP, SPICE, ...)
+       ├── HLS streaming ────── MediaMTX (managed process)
+       ├── Chat engine ──────── Fernet encryption at rest
+       ├── Voice signaling ──── WebRTC P2P (no server-side audio)
+       ├── File manager ─────── Local + remote SFTP
+       └── System monitor ───── psutil + systemd
+```
+
+Single binary. No Docker required. No microservices. No external databases. One Python process, one SQLite file, one `.env` config.
+
+## Security
+
+- **HTTPS only** — TLS 1.2+ with HSTS preload, no HTTP fallback
+- **Encryption at rest** — Chat messages, connection configs, stream keys all encrypted (Fernet/PBKDF2)
+- **Argon2id** password hashing
+- **Zero-knowledge voice** — WebRTC DTLS-SRTP, audio never touches the server
+- **Path traversal protection** — File manager validates all paths with `Path.resolve()`
+- **Input validation** — All user input sanitized, no shell injection vectors
+- **API credential redaction** — Passwords and keys never returned from API endpoints
+- **Stream key encryption** — SHA-256 hashed for lookups, encrypted at rest
+- **Rate limiting** — Per-IP request throttling on all endpoints
+- **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model (27 documented security features).
+
+## Streaming
+
+Publish from OBS or any RTMP client:
+
+| Method | URL | Auth |
+|--------|-----|------|
+| RTMPS (recommended) | `rtmps://your-domain:1936/live` | Stream key (`live_xxx`) |
+| RTMP (optional) | `rtmp://your-domain:1935/live` | Temporary token |
+
+Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage.
+
+## Connection Types
+
+SSH, VNC, RDP, SPICE, Proxmox, HTTP Proxy, TCP Tunnel, MongoDB, Elasticsearch, Redis, PostgreSQL, MySQL, Home Assistant, Portainer, TrueNAS, pfSense, Jupyter, Grafana, Prometheus, Telnet, Minecraft RCON, and more.
+
+## API
+
+Full REST API with JWT authentication, API keys, and session cookies. See [API.md](docs/API.md) for the complete reference.
+
+Interactive API documentation is available at `/api-docs` when the server is running.
+
+## Contributing
+
+Contributions welcome. The codebase is vanilla Python and vanilla JS — no frameworks, no build steps, no transpilation.
+
+```bash
+# Lint
+pip install flake8
+flake8 server.py database.py auth.py --max-line-length=120
+```
+
+## License
+
+AGPL-3.0 — If you run a modified version as a network service, you must share your source code. This ensures the software stays free and open for everyone, especially the communities that need it most.
+
+See [LICENSE](LICENSE) for the full text.

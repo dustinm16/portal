@@ -80,6 +80,10 @@ class Config:
     CERT_METHOD: str = os.getenv("CERT_METHOD", "")  # letsencrypt, selfsigned, custom
     CERTS_DIR: str = str(Path(__file__).parent / "certs")
 
+    # File Manager
+    FILE_MANAGER_ROOT: str = os.getenv("FILE_MANAGER_ROOT", "/")
+    FILE_MANAGER_MAX_UPLOAD: int = int(os.getenv("FILE_MANAGER_MAX_UPLOAD_MB", "100")) * 1024 * 1024
+
     # Voice Chat (WebRTC ICE servers)
     STUN_SERVER: str = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")
     TURN_SERVER: str = os.getenv("TURN_SERVER", "")

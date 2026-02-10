@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Open Relay Portal - File Manager</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=33">
+    <style>
+        .fm-toolbar {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .fm-toolbar button, .fm-toolbar select {
+            padding: 0.4rem 0.75rem;
+            font-size: 0.8rem;
+            border-radius: 8px;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .fm-toolbar button:hover { background: rgba(255,255,255,0.1); }
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            flex-wrap: wrap;
+            flex: 1;
+            min-width: 200px;
+            padding: 0.4rem 0.75rem;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            font-size: 0.85rem;
+            overflow-x: auto;
+        }
+        .breadcrumb a {
+            color: var(--accent-blue);
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .breadcrumb a:hover { text-decoration: underline; }
+        .breadcrumb span { color: var(--text-muted); }
+        .file-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        .file-table th, .file-table td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .file-table th {
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            position: sticky;
+            top: 0;
+            background: var(--card-bg);
+            z-index: 1;
+        }
+        .file-table tr:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
+        .file-table .file-name {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .file-icon { font-size: 1.1rem; width: 24px; text-align: center; }
+        .table-scroll {
+            overflow-x: auto;
+            max-height: calc(100vh - 280px);
+            overflow-y: auto;
+        }
+        .btn-sm {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+            border-radius: 6px;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .btn-sm:hover { background: rgba(255,255,255,0.1); }
+        .btn-danger { border-color: #ef4444; color: #ef4444; }
+        .btn-danger:hover { background: rgba(239, 68, 68, 0.15); }
+        .edit-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .edit-modal-content {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 1000px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .edit-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .edit-modal-header h3 { margin: 0; font-size: 1rem; }
+        .edit-modal-body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+        .edit-modal-body textarea {
+            flex: 1;
+            width: 100%;
+            border: none;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            padding: 1rem 1.5rem;
+            resize: none;
+            tab-size: 4;
+        }
+        .edit-modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-top: 1px solid var(--card-border);
+        }
+        .upload-zone {
+            border: 2px dashed var(--card-border);
+            border-radius: 12px;
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+            transition: all 0.2s;
+        }
+        .upload-zone.dragover {
+            border-color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.05);
+            color: var(--accent-blue);
+        }
+        .upload-zone input[type="file"] { display: none; }
+        .sftp-conn-select {
+            padding: 0.4rem 0.75rem;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            min-width: 200px;
+        }
+        .conn-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+        .conn-status.connected { color: #10b981; }
+        .conn-status.error { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+            </svg>
+            Open Relay Portal - File Manager
+        </div>
+        <button class="navbar-toggle" aria-label="Toggle menu" aria-expanded="false">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
+            <a href="/docs">API Docs</a>
+            <a href="/about">About</a>
+            <a href="#" onclick="window.open('/terminal/local','_blank','width=900,height=600'); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+            </a>
+            <a href="/dashboard" class="navbar-user" id="user-info" title="User Profile">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <span id="username-display"></span>
+                <span id="admin-badge" class="admin-badge" style="display: none;">Admin</span>
+            </a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="dashboard">
+        <main class="main-content" style="max-width: 1400px; margin: 0 auto;">
+            <div class="tab-nav">
+                <button class="tab-btn" id="tab-btn-server" onclick="showTab('server')" style="display:none;">Server Files</button>
+                <button class="tab-btn" id="tab-btn-sftp" onclick="showTab('sftp')">Remote Files (SFTP)</button>
+            </div>
+
+            <!-- Server Files Tab (admin only) -->
+            <div id="tab-server" class="tab-content" style="display:none;">
+                <div class="fm-toolbar">
+                    <div class="breadcrumb" id="server-breadcrumb"></div>
+                    <button onclick="serverNewFolder()">New Folder</button>
+                    <button onclick="document.getElementById('server-upload-input').click()">Upload</button>
+                    <button onclick="loadServerDirectory(currentServerPath)">Refresh</button>
+                    <input type="file" id="server-upload-input" multiple onchange="serverUploadFiles(this.files)" style="display:none;">
+                </div>
+                <div id="server-upload-zone" class="upload-zone" style="display:none;">
+                    Drop files here to upload
+                </div>
+                <div class="table-scroll">
+                    <table class="file-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Size</th>
+                                <th>Modified</th>
+                                <th>Permissions</th>
+                                <th>Owner</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="server-file-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- SFTP Tab -->
+            <div id="tab-sftp" class="tab-content" style="display:none;">
+                <div class="fm-toolbar">
+                    <select class="sftp-conn-select" id="sftp-conn-select" onchange="onSftpConnChange()">
+                        <option value="">-- Select Connection --</option>
+                    </select>
+                    <span class="conn-status" id="sftp-status"></span>
+                    <div class="breadcrumb" id="sftp-breadcrumb" style="flex:1;"></div>
+                    <button onclick="sftpNewFolder()">New Folder</button>
+                    <button onclick="document.getElementById('sftp-upload-input').click()">Upload</button>
+                    <button onclick="loadSftpDirectory(currentSftpConnId, currentSftpPath)">Refresh</button>
+                    <input type="file" id="sftp-upload-input" multiple onchange="sftpUploadFiles(this.files)" style="display:none;">
+                </div>
+                <div class="table-scroll">
+                    <table class="file-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Size</th>
+                                <th>Modified</th>
+                                <th>Permissions</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sftp-file-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Edit Modal -->
+    <div id="edit-modal" class="edit-modal" style="display:none;" onclick="if(event.target===this)closeEditModal()">
+        <div class="edit-modal-content">
+            <div class="edit-modal-header">
+                <h3 id="edit-modal-title">Edit File</h3>
+                <button class="btn-sm" onclick="closeEditModal()">Close</button>
+            </div>
+            <div class="edit-modal-body">
+                <textarea id="edit-textarea" spellcheck="false"></textarea>
+            </div>
+            <div class="edit-modal-footer">
+                <button class="btn-sm" onclick="closeEditModal()">Cancel</button>
+                <button class="btn-sm" style="border-color:var(--accent-blue);color:var(--accent-blue);" onclick="saveEditedFile()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=22"></script>
+    <script>
+        let isAdmin = false;
+        let currentServerPath = '/';
+        let currentSftpPath = '/';
+        let currentSftpConnId = null;
+        let editingFile = null;  // { path, mode: 'server'|'sftp', connId }
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            const tabEl = document.getElementById('tab-' + tab);
+            const btnEl = document.getElementById('tab-btn-' + tab);
+            if (tabEl) tabEl.style.display = '';
+            if (btnEl) btnEl.classList.add('active');
+
+            if (tab === 'server') loadServerDirectory(currentServerPath);
+            else if (tab === 'sftp') loadSftpConnections();
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '-';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function formatDate(ts) {
+            if (!ts) return '-';
+            return new Date(ts * 1000).toLocaleString();
+        }
+
+        function fileIcon(type) {
+            if (type === 'directory') return '<span class="file-icon" style="color:#f59e0b;">&#128193;</span>';
+            if (type === 'symlink') return '<span class="file-icon" style="color:#8b5cf6;">&#128279;</span>';
+            return '<span class="file-icon" style="color:#9ca3af;">&#128196;</span>';
+        }
+
+        function joinPath(base, name) {
+            if (base === '/') return '/' + name;
+            return base.replace(/\/+$/, '') + '/' + name;
+        }
+
+        function buildBreadcrumb(path, containerId, clickFn) {
+            const el = document.getElementById(containerId);
+            const parts = path.split('/').filter(Boolean);
+            let html = `<a href="#" onclick="${clickFn}('/'); return false;">/</a>`;
+            let cumulative = '';
+            for (const part of parts) {
+                cumulative += '/' + part;
+                const p = cumulative;
+                html += `<span>/</span><a href="#" onclick="${clickFn}('${p}'); return false;">${escapeHtml(part)}</a>`;
+            }
+            el.innerHTML = html;
+        }
+
+        function showToast(msg, type) {
+            if (window.showNotification) window.showNotification(msg, type);
+            else alert(msg);
+        }
+
+        // ===== SERVER FILES =====
+
+        async function loadServerDirectory(path) {
+            currentServerPath = path || '/';
+            buildBreadcrumb(currentServerPath, 'server-breadcrumb', 'loadServerDirectory');
+
+            try {
+                const res = await fetch(`/api/files/list?path=${encodeURIComponent(currentServerPath)}`, { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) { const d = await res.json(); showToast(d.error || 'Error', 'error'); return; }
+                const entries = await res.json();
+                renderServerFiles(entries);
+            } catch (e) {
+                console.error('Failed to load directory:', e);
+            }
+        }
+
+        function renderServerFiles(entries) {
+            const tbody = document.getElementById('server-file-body');
+
+            // Add parent directory entry if not root
+            let html = '';
+            if (currentServerPath !== '/') {
+                const parent = currentServerPath.replace(/\/[^/]+\/?$/, '') || '/';
+                html += `<tr ondblclick="loadServerDirectory('${parent}')">
+                    <td><span class="file-name">${fileIcon('directory')} <strong>..</strong></span></td>
+                    <td>-</td><td>-</td><td>-</td><td>-</td><td></td>
+                </tr>`;
+            }
+
+            html += entries.map(e => {
+                const fullPath = joinPath(currentServerPath, e.name);
+                const dblClick = e.type === 'directory'
+                    ? `ondblclick="loadServerDirectory('${escapeHtml(fullPath)}')" `
+                    : '';
+                return `<tr ${dblClick}>
+                    <td><span class="file-name">${fileIcon(e.type)} ${escapeHtml(e.name)}</span></td>
+                    <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
+                    <td>${formatDate(e.modified)}</td>
+                    <td style="font-family:monospace;font-size:0.8rem;">${escapeHtml(e.permissions)}</td>
+                    <td>${escapeHtml(e.owner)}</td>
+                    <td style="display:flex;gap:0.25rem;" onclick="event.stopPropagation()">
+                        ${e.type === 'file' ? `
+                            <button class="btn-sm" onclick="editServerFile('${escapeHtml(fullPath)}')">Edit</button>
+                            <a class="btn-sm" href="/api/files/download?path=${encodeURIComponent(fullPath)}" style="text-decoration:none;">DL</a>
+                        ` : ''}
+                        <button class="btn-sm" onclick="renameServerFile('${escapeHtml(fullPath)}', '${escapeHtml(e.name)}')">Rename</button>
+                        <button class="btn-sm btn-danger" onclick="deleteServerFile('${escapeHtml(fullPath)}', '${escapeHtml(e.name)}', '${e.type}')">Del</button>
+                    </td>
+                </tr>`;
+            }).join('');
+
+            tbody.innerHTML = html;
+        }
+
+        async function editServerFile(path) {
+            try {
+                const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`, { credentials: 'include' });
+                if (!res.ok) { const d = await res.json(); showToast(d.error || 'Cannot read file', 'error'); return; }
+                const data = await res.json();
+                editingFile = { path, mode: 'server' };
+                document.getElementById('edit-modal-title').textContent = 'Edit: ' + path.split('/').pop();
+                document.getElementById('edit-textarea').value = data.content;
+                document.getElementById('edit-modal').style.display = 'flex';
+            } catch (e) {
+                showToast('Failed to read file', 'error');
+            }
+        }
+
+        async function deleteServerFile(path, name, type) {
+            if (!confirm(`Delete "${name}"?`)) return;
+            try {
+                const res = await fetch(`/api/files/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE', credentials: 'include' });
+                const data = await res.json();
+                if (res.ok) { showToast('Deleted ' + name, 'success'); loadServerDirectory(currentServerPath); }
+                else showToast(data.error, 'error');
+            } catch (e) { showToast('Delete failed', 'error'); }
+        }
+
+        async function renameServerFile(path, oldName) {
+            const newName = prompt('New name:', oldName);
+            if (!newName || newName === oldName) return;
+            const dir = path.replace(/\/[^/]+$/, '') || '/';
+            const newPath = joinPath(dir, newName);
+            try {
+                const res = await fetch('/api/files/rename', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_path: path, new_path: newPath })
+                });
+                const data = await res.json();
+                if (res.ok) { showToast('Renamed', 'success'); loadServerDirectory(currentServerPath); }
+                else showToast(data.error, 'error');
+            } catch (e) { showToast('Rename failed', 'error'); }
+        }
+
+        async function serverNewFolder() {
+            const name = prompt('Folder name:');
+            if (!name) return;
+            const path = joinPath(currentServerPath, name);
+            try {
+                const res = await fetch('/api/files/mkdir', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+                const data = await res.json();
+                if (res.ok) { showToast('Folder created', 'success'); loadServerDirectory(currentServerPath); }
+                else showToast(data.error, 'error');
+            } catch (e) { showToast('Failed to create folder', 'error'); }
+        }
+
+        async function serverUploadFiles(files) {
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('path', currentServerPath);
+                formData.append('file', file);
+                try {
+                    const res = await fetch('/api/files/upload', { method: 'POST', credentials: 'include', body: formData });
+                    const data = await res.json();
+                    if (!res.ok) showToast(`Upload ${file.name}: ${data.error}`, 'error');
+                } catch (e) { showToast(`Upload ${file.name} failed`, 'error'); }
+            }
+            showToast('Upload complete', 'success');
+            loadServerDirectory(currentServerPath);
+            document.getElementById('server-upload-input').value = '';
+        }
+
+        // ===== SFTP FILES =====
+
+        async function loadSftpConnections() {
+            try {
+                const res = await fetch('/api/user-connections', { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                const conns = await res.json();
+                const select = document.getElementById('sftp-conn-select');
+                // Keep first option
+                select.innerHTML = '<option value="">-- Select Connection --</option>';
+                const eligible = conns.filter(c => c.connection_type === 'ssh' || c.connection_type === 'sftp');
+                for (const c of eligible) {
+                    const opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = `${c.name} (${c.host}:${c.port || 22})`;
+                    if (c.id == currentSftpConnId) opt.selected = true;
+                    select.appendChild(opt);
+                }
+                if (eligible.length === 0) {
+                    document.getElementById('sftp-file-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem;">No SSH/SFTP connections configured. Add one in Dashboard > My Connections.</td></tr>';
+                }
+            } catch (e) {
+                console.error('Failed to load connections:', e);
+            }
+        }
+
+        async function onSftpConnChange() {
+            const connId = document.getElementById('sftp-conn-select').value;
+            if (!connId) {
+                currentSftpConnId = null;
+                document.getElementById('sftp-file-body').innerHTML = '';
+                document.getElementById('sftp-status').innerHTML = '';
+                return;
+            }
+            currentSftpConnId = connId;
+            currentSftpPath = '/';
+            document.getElementById('sftp-status').innerHTML = '<span class="conn-status">Connecting...</span>';
+            await loadSftpDirectory(connId, '/');
+        }
+
+        async function loadSftpDirectory(connId, path) {
+            if (!connId) return;
+            currentSftpPath = path || '/';
+            currentSftpConnId = connId;
+            buildBreadcrumb(currentSftpPath, 'sftp-breadcrumb', "navigateSftp");
+
+            try {
+                const res = await fetch(`/api/sftp/${connId}/list?path=${encodeURIComponent(currentSftpPath)}`, { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) {
+                    const d = await res.json();
+                    document.getElementById('sftp-status').innerHTML = `<span class="conn-status error">${escapeHtml(d.error)}</span>`;
+                    return;
+                }
+                document.getElementById('sftp-status').innerHTML = '<span class="conn-status connected">Connected</span>';
+                const entries = await res.json();
+                renderSftpFiles(entries);
+            } catch (e) {
+                document.getElementById('sftp-status').innerHTML = '<span class="conn-status error">Connection failed</span>';
+            }
+        }
+
+        function navigateSftp(path) {
+            loadSftpDirectory(currentSftpConnId, path);
+        }
+
+        function renderSftpFiles(entries) {
+            const tbody = document.getElementById('sftp-file-body');
+            let html = '';
+            if (currentSftpPath !== '/') {
+                const parent = currentSftpPath.replace(/\/[^/]+\/?$/, '') || '/';
+                html += `<tr ondblclick="loadSftpDirectory('${currentSftpConnId}','${parent}')">
+                    <td><span class="file-name">${fileIcon('directory')} <strong>..</strong></span></td>
+                    <td>-</td><td>-</td><td>-</td><td></td>
+                </tr>`;
+            }
+
+            html += entries.map(e => {
+                const fullPath = joinPath(currentSftpPath, e.name);
+                const dblClick = e.type === 'directory'
+                    ? `ondblclick="loadSftpDirectory('${currentSftpConnId}','${escapeHtml(fullPath)}')" `
+                    : '';
+                return `<tr ${dblClick}>
+                    <td><span class="file-name">${fileIcon(e.type)} ${escapeHtml(e.name)}</span></td>
+                    <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
+                    <td>${formatDate(e.modified)}</td>
+                    <td style="font-family:monospace;font-size:0.8rem;">${escapeHtml(e.permissions)}</td>
+                    <td style="display:flex;gap:0.25rem;" onclick="event.stopPropagation()">
+                        ${e.type === 'file' ? `
+                            <button class="btn-sm" onclick="editSftpFile('${escapeHtml(fullPath)}')">Edit</button>
+                            <a class="btn-sm" href="/api/sftp/${currentSftpConnId}/download?path=${encodeURIComponent(fullPath)}" style="text-decoration:none;">DL</a>
+                        ` : ''}
+                        <button class="btn-sm" onclick="renameSftpFile('${escapeHtml(fullPath)}', '${escapeHtml(e.name)}')">Rename</button>
+                        <button class="btn-sm btn-danger" onclick="deleteSftpFile('${escapeHtml(fullPath)}', '${escapeHtml(e.name)}')">Del</button>
+                    </td>
+                </tr>`;
+            }).join('');
+
+            tbody.innerHTML = html;
+        }
+
+        async function editSftpFile(path) {
+            try {
+                const res = await fetch(`/api/sftp/${currentSftpConnId}/read?path=${encodeURIComponent(path)}`, { credentials: 'include' });
+                if (!res.ok) { const d = await res.json(); showToast(d.error || 'Cannot read file', 'error'); return; }
+                const data = await res.json();
+                editingFile = { path, mode: 'sftp', connId: currentSftpConnId };
+                document.getElementById('edit-modal-title').textContent = 'Edit: ' + path.split('/').pop();
+                document.getElementById('edit-textarea').value = data.content;
+                document.getElementById('edit-modal').style.display = 'flex';
+            } catch (e) {
+                showToast('Failed to read file', 'error');
+            }
+        }
+
+        async function deleteSftpFile(path, name) {
+            if (!confirm(`Delete "${name}" on remote?`)) return;
+            try {
+                const res = await fetch(`/api/sftp/${currentSftpConnId}/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE', credentials: 'include' });
+                const data = await res.json();
+                if (res.ok) { showToast('Deleted ' + name, 'success'); loadSftpDirectory(currentSftpConnId, currentSftpPath); }
+                else showToast(data.error, 'error');
+            } catch (e) { showToast('Delete failed', 'error'); }
+        }
+
+        async function renameSftpFile(path, oldName) {
+            const newName = prompt('New name:', oldName);
+            if (!newName || newName === oldName) return;
+            const dir = path.replace(/\/[^/]+$/, '') || '/';
+            const newPath = joinPath(dir, newName);
+            try {
+                const res = await fetch(`/api/sftp/${currentSftpConnId}/rename`, {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_path: path, new_path: newPath })
+                });
+                const data = await res.json();
+                if (res.ok) { showToast('Renamed', 'success'); loadSftpDirectory(currentSftpConnId, currentSftpPath); }
+                else showToast(data.error, 'error');
+            } catch (e) { showToast('Rename failed', 'error'); }
+        }
+
+        async function sftpNewFolder() {
+            if (!currentSftpConnId) { showToast('Select a connection first', 'error'); return; }
+            const name = prompt('Folder name:');
+            if (!name) return;
+            const path = joinPath(currentSftpPath, name);
+            try {
+                const res = await fetch(`/api/sftp/${currentSftpConnId}/mkdir`, {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+                const data = await res.json();
+                if (res.ok) { showToast('Folder created', 'success'); loadSftpDirectory(currentSftpConnId, currentSftpPath); }
+                else showToast(data.error, 'error');
+            } catch (e) { showToast('Failed to create folder', 'error'); }
+        }
+
+        async function sftpUploadFiles(files) {
+            if (!currentSftpConnId) { showToast('Select a connection first', 'error'); return; }
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('path', currentSftpPath);
+                formData.append('file', file);
+                try {
+                    const res = await fetch(`/api/sftp/${currentSftpConnId}/upload`, { method: 'POST', credentials: 'include', body: formData });
+                    const data = await res.json();
+                    if (!res.ok) showToast(`Upload ${file.name}: ${data.error}`, 'error');
+                } catch (e) { showToast(`Upload ${file.name} failed`, 'error'); }
+            }
+            showToast('Upload complete', 'success');
+            loadSftpDirectory(currentSftpConnId, currentSftpPath);
+            document.getElementById('sftp-upload-input').value = '';
+        }
+
+        // ===== EDIT MODAL =====
+
+        async function saveEditedFile() {
+            if (!editingFile) return;
+            const content = document.getElementById('edit-textarea').value;
+
+            try {
+                let res;
+                if (editingFile.mode === 'server') {
+                    res = await fetch('/api/files/write', {
+                        method: 'POST', credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: editingFile.path, content })
+                    });
+                } else {
+                    res = await fetch(`/api/sftp/${editingFile.connId}/write`, {
+                        method: 'POST', credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: editingFile.path, content })
+                    });
+                }
+                const data = await res.json();
+                if (res.ok) {
+                    showToast('File saved', 'success');
+                    closeEditModal();
+                    if (editingFile.mode === 'server') loadServerDirectory(currentServerPath);
+                    else loadSftpDirectory(editingFile.connId, currentSftpPath);
+                } else {
+                    showToast(data.error || 'Save failed', 'error');
+                }
+            } catch (e) {
+                showToast('Save failed', 'error');
+            }
+        }
+
+        function closeEditModal() {
+            document.getElementById('edit-modal').style.display = 'none';
+            editingFile = null;
+        }
+
+        // ===== DRAG & DROP (server files) =====
+
+        function setupDragDrop() {
+            const zone = document.getElementById('server-upload-zone');
+            if (!zone) return;
+            const main = document.getElementById('tab-server');
+
+            main.addEventListener('dragover', e => { e.preventDefault(); zone.style.display = ''; zone.classList.add('dragover'); });
+            main.addEventListener('dragleave', e => {
+                if (!main.contains(e.relatedTarget)) { zone.style.display = 'none'; zone.classList.remove('dragover'); }
+            });
+            zone.addEventListener('dragover', e => e.preventDefault());
+            zone.addEventListener('drop', e => {
+                e.preventDefault();
+                zone.style.display = 'none';
+                zone.classList.remove('dragover');
+                if (e.dataTransfer.files.length) serverUploadFiles(e.dataTransfer.files);
+            });
+        }
+
+        // ===== INIT =====
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Navbar toggle
+            const toggle = document.querySelector('.navbar-toggle');
+            const menu = document.querySelector('.navbar-menu');
+            if (toggle && menu) {
+                toggle.addEventListener('click', () => {
+                    const expanded = toggle.getAttribute('aria-expanded') === 'true';
+                    toggle.setAttribute('aria-expanded', !expanded);
+                    menu.classList.toggle('active');
+                });
+            }
+
+            document.addEventListener('keydown', e => {
+                if (e.key === 'Escape') closeEditModal();
+            });
+
+            // Load user info
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.ok) {
+                    const user = await response.json();
+                    document.getElementById('username-display').textContent = user.nickname || user.username;
+                    isAdmin = user.is_admin;
+                    if (isAdmin) {
+                        const termBtn = document.getElementById('terminal-btn');
+                        const badge = document.getElementById('admin-badge');
+                        if (termBtn) termBtn.style.display = '';
+                        if (badge) badge.style.display = '';
+
+                        // Show server files tab for admins
+                        document.getElementById('tab-btn-server').style.display = '';
+                        document.getElementById('tab-btn-server').classList.add('active');
+                        document.getElementById('tab-server').style.display = '';
+                        loadServerDirectory('/');
+                        setupDragDrop();
+                    } else {
+                        // Non-admin: show only SFTP tab
+                        document.getElementById('tab-btn-sftp').classList.add('active');
+                        document.getElementById('tab-sftp').style.display = '';
+                        loadSftpConnections();
+                    }
+                }
+            } catch (e) {}
+        });
+    </script>
+</body>
+</html>

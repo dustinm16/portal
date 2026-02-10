@@ -3468,6 +3468,160 @@ ws.send(JSON.stringify({
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
+                <h2 id="sysmon">System Monitor <span class="badge-admin">ADMIN</span></h2>
+                <p>Monitor and manage system processes, systemd services, and network interfaces.</p>
+
+                <div class="endpoint-group admin-section">
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/processes</code>
+                        <p>List running processes. Query params: <code>sort</code> (cpu|memory|pid|name), <code>limit</code> (default 100, max 500).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/processes/:pid</code>
+                        <p>Detailed info for a single process (threads, nice, cwd, exe, ppid).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/sysmon/processes/:pid/kill</code>
+                        <p>Kill a process. Body: <code>{"signal": "SIGTERM"}</code>. Refuses PID 1, kernel threads, and the portal process.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/services</code>
+                        <p>List systemd services. Query: <code>filter</code> (running|failed|search text).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/services/:name</code>
+                        <p>Detailed service status (PID, memory, tasks, start time, enabled state).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/services/:name/logs</code>
+                        <p>Service journal logs. Query: <code>lines</code> (10-500, default 50).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/sysmon/services/:name/control</code>
+                        <p>Control a service. Body: <code>{"action": "restart"}</code> (start|stop|restart|enable|disable).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/network</code>
+                        <p>Network interfaces with IPs, MAC addresses, speed, TX/RX bytes.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sysmon/ports</code>
+                        <p>Listening TCP ports with PID and process name.</p>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2 id="file-manager">File Manager <span class="badge-admin">ADMIN</span></h2>
+                <p>Browse, edit, upload, and manage files on the server. Protected against path traversal and blocked files (.env, credentials).</p>
+
+                <div class="endpoint-group admin-section">
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/files/list?path=/home</code>
+                        <p>List directory contents (sorted: directories first, then files alphabetically).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/files/info?path=/home/file.txt</code>
+                        <p>File stat information (size, permissions, owner, MIME type).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/files/read?path=/home/file.txt</code>
+                        <p>Read text file content for editing (max 5MB).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/files/download?path=/home/file.txt</code>
+                        <p>Download file as streaming attachment.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/files/upload</code>
+                        <p>Upload file. Multipart form with <code>path</code> and <code>file</code> fields. Max 100MB default.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/files/write</code>
+                        <p>Write/save text file. Body: <code>{"path": "...", "content": "..."}</code>.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/files/mkdir</code>
+                        <p>Create directory. Body: <code>{"path": "/new/folder"}</code>.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/files/rename</code>
+                        <p>Rename/move. Body: <code>{"old_path": "...", "new_path": "..."}</code>.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method delete">DELETE</span>
+                        <code>/api/files/delete?path=/home/file.txt</code>
+                        <p>Delete file or empty directory.</p>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2 id="sftp-browser">SFTP Browser</h2>
+                <p>Browse and manage files on remote servers via your existing SSH/SFTP connections. Per-user access — only connections you own are accessible.</p>
+
+                <div class="endpoint-group">
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sftp/:conn_id/list?path=/</code>
+                        <p>List remote directory contents.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sftp/:conn_id/read?path=/file.txt</code>
+                        <p>Read remote text file for editing (max 5MB).</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <code>/api/sftp/:conn_id/download?path=/file.txt</code>
+                        <p>Download remote file.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/sftp/:conn_id/upload</code>
+                        <p>Upload to remote server. Multipart form with <code>path</code> and <code>file</code> fields.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/sftp/:conn_id/write</code>
+                        <p>Write remote text file. Body: <code>{"path": "...", "content": "..."}</code>.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/sftp/:conn_id/mkdir</code>
+                        <p>Create remote directory. Body: <code>{"path": "/new/folder"}</code>.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <code>/api/sftp/:conn_id/rename</code>
+                        <p>Rename/move remote path. Body: <code>{"old_path": "...", "new_path": "..."}</code>.</p>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method delete">DELETE</span>
+                        <code>/api/sftp/:conn_id/delete?path=/file.txt</code>
+                        <p>Delete remote file or empty directory.</p>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
                 <h2>Rate Limits</h2>
                 <p>API requests are rate limited to prevent abuse:</p>
                 <ul>
