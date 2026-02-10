@@ -322,7 +322,6 @@ async function showStreamDetails(streamId) {
                     </div>
                     ${stream.rtmp_enabled ? `
                     <div id="rtmp-token-section">
-                        <button class="btn btn-primary btn-sm" onclick="generateRtmpToken(${stream.id})">Generate RTMP Token</button>
                         <div id="rtmp-token-result" style="display: none; margin-top: 0.75rem;"></div>
                     </div>
                     ` : ''}
@@ -357,6 +356,7 @@ async function showStreamDetails(streamId) {
 
                 <div class="form-actions">
                     <button class="btn btn-warning" onclick="regenerateStreamKey(${stream.id})">Regenerate Key</button>
+                    ${stream.rtmp_enabled ? `<button class="btn btn-primary" onclick="generateRtmpToken(${stream.id})">Generate RTMP Token</button>` : ''}
                     <button class="btn btn-secondary" onclick="closeModal('stream-details-modal')">Close</button>
                 </div>
             </div>
