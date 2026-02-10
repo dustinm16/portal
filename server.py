@@ -119,6 +119,11 @@ notification_subscribers: dict[int, set] = {}
 
 # Active VOD recordings: stream_id -> {process, local_path, filename, user_id, stream_name, started_at}
 active_recordings: dict[int, dict] = {}
+
+# Active RTMP token paths: stream_id -> rtmp_token_key (MediaMTX path override)
+# When a stream publishes via rtmp_ token, MediaMTX uses the token as the path
+# instead of the live_ key. This mapping lets HLS/thumbnail/VOD find the right path.
+_rtmp_stream_paths: dict[int, str] = {}
 VOD_TEMP_DIR = "/tmp/portal_vods"
 
 # Static files cache
@@ -2767,6 +2772,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                 "public_key": token_record.get("public_key"),
             }
             logger.info(f"RTMP token auth successful for stream {stream['name']} from {ip}")
+            # Store path mapping so HLS/thumbnail/VOD can find the MediaMTX path
+            _rtmp_stream_paths[token_record["stream_id"]] = stream_key
 
         elif stream_key and stream_key.startswith("live_"):
             stream = await db.get_stream_by_key(stream_key)
@@ -2804,8 +2811,9 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             )
 
         # Start VOD recording on every publish (guards against duplicates internally)
-        # Use real live_ stream key for RTSPS URL (not the rtmp_ token)
-        asyncio.create_task(start_vod_recording(stream, real_stream_key))
+        # Use the actual MediaMTX path key (rtmp_ token or live_ key)
+        vod_stream_key = stream_key if stream_key.startswith("rtmp_") else (real_stream_key or stream_key)
+        asyncio.create_task(start_vod_recording(stream, vod_stream_key))
 
         return web.json_response({"allowed": True})
 
@@ -2869,6 +2877,9 @@ async def http_stream_event(request: web.Request) -> web.Response:
         else:
             stream = await db.get_stream_by_key(stream_key)
         if stream:
+            # Clean up rtmp_ path mapping
+            _rtmp_stream_paths.pop(stream["id"], None)
+
             # Stop VOD recording and upload to SFTP
             await stop_vod_recording(stream["id"])
 
@@ -2979,7 +2990,8 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     hls_port = mtx_config.get("hls_port", 8888)
 
     # MediaMTX uses the private stream_key for paths (not public_key)
-    private_key = stream["stream_key"]
+    # When publishing via rtmp_ token, MediaMTX path is the token, not the live_ key
+    private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
     # MediaMTX path includes the RTMP app name "live"
     mtx_path = f"live/{private_key}"
     url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
@@ -3069,7 +3081,8 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
         return web.json_response({"error": "MediaMTX not configured"}, status=503)
 
     hls_port = mtx_config.get("hls_port", 8888)
-    private_key = stream["stream_key"]
+    # When publishing via rtmp_ token, MediaMTX path is the token, not the live_ key
+    private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
     hls_url = f"https://127.0.0.1:{hls_port}/live/{private_key}/index.m3u8"
 
     try:
