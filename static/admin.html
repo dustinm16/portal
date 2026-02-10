@@ -7,6 +7,15 @@
     <title>Open Relay Portal - Admin Panel</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=33">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <script>
+        if (typeof Chart === 'undefined') {
+            document.addEventListener('DOMContentLoaded', () => {
+                document.querySelectorAll('.chart-container').forEach(el => {
+                    el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;">Charts unavailable: Chart.js failed to load from CDN</div>';
+                });
+            });
+        }
+    </script>
     <style>
         .admin-grid {
             display: grid;
@@ -588,7 +597,7 @@
                 <div class="admin-card">
                     <h3>IP Lookup</h3>
                     <div class="shodan-lookup">
-                        <input type="text" id="shodan-ip" placeholder="Enter IP address (e.g., 8.8.8.8)" pattern="^(\d{1,3}\.){3}\d{1,3}$">
+                        <input type="text" id="shodan-ip" placeholder="Enter IP address (e.g., 8.8.8.8)" pattern="^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$">
                         <button class="btn btn-primary" style="width: auto;" onclick="lookupIP()">Lookup</button>
                     </div>
                     <div id="shodan-results">
@@ -820,7 +829,7 @@
                             <tbody>
                                 ${topServices.map(s => `
                                     <tr>
-                                        <td>${s.service_id}</td>
+                                        <td>${s.service_name || ('Service #' + s.service_id)}</td>
                                         <td>${s.total_connections}</td>
                                         <td>${s.active_connections}</td>
                                         <td>${formatBytes(s.total_bytes)}</td>
@@ -942,9 +951,9 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                ${serviceList.map(s => `
+                                ${serviceList.filter(s => s.total_connections > 0).map(s => `
                                     <tr>
-                                        <td>${s.service_id}</td>
+                                        <td>${s.service_name || ('Service #' + s.service_id)}</td>
                                         <td>${s.total_connections}</td>
                                         <td>${s.active_connections}</td>
                                         <td>${formatBytes(s.total_bytes_sent)}</td>
@@ -1214,8 +1223,9 @@
                 return;
             }
 
-            // Validate IP format
-            if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+            // Validate IP format (check octets are 0-255)
+            const parts = ip.split('.');
+            if (parts.length !== 4 || parts.some(p => !/^\d{1,3}$/.test(p) || +p > 255)) {
                 Portal.toast('Invalid IP address format', 'error');
                 return;
             }
@@ -1321,7 +1331,7 @@
                 document.getElementById('active-connections').innerHTML = connections.map(c => `
                     <div class="conn-item">
                         <div class="conn-info">
-                            <span class="conn-service">${c.service_id ? 'Service #' + c.service_id + ' (' + c.plugin + ')' : c.plugin}</span>
+                            <span class="conn-service">${c.service_name || c.plugin}</span>
                             <span class="conn-details">User #${c.user_id} | ${formatDuration(c.duration_seconds)}</span>
                         </div>
                         <div class="conn-stats">

@@ -198,6 +198,28 @@ class TrafficMetrics:
             if bytes_received > 0:
                 metrics.messages_received += 1
 
+    def update_service_id(self, connection_id: str, service_id: int):
+        """Update the service_id for an active connection (deferred resolution)."""
+        if connection_id not in self._active:
+            return
+        metrics = self._active[connection_id]
+        old_id = metrics.service_id
+        if old_id == service_id:
+            return
+        metrics.service_id = service_id
+        # Move counters from old service to new service
+        old_svc = self._service_metrics[old_id]
+        old_svc.active_connections = max(0, old_svc.active_connections - 1)
+        old_svc.total_connections = max(0, old_svc.total_connections - 1)
+        old_svc.unique_users.discard(metrics.user_id)
+        new_svc = self._service_metrics[service_id]
+        new_svc.service_id = service_id
+        new_svc.active_connections += 1
+        new_svc.total_connections += 1
+        new_svc.unique_users.add(metrics.user_id)
+        new_svc.last_connection = metrics.connected_at
+        new_svc.peak_concurrent = max(new_svc.peak_concurrent, new_svc.active_connections)
+
     def record_error(self, service_id: int):
         """Record an error for a service."""
         self._total_errors += 1

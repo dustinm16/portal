@@ -3532,9 +3532,22 @@ async def http_get_metrics_services(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    return web.json_response({
-        "services": traffic_metrics.get_all_service_metrics()
-    })
+    service_metrics = traffic_metrics.get_all_service_metrics()
+
+    # Enrich with service names
+    all_services = await db.get_all_services()
+    name_map = {s["id"]: s["name"] for s in all_services}
+    special_names = {-1: "Local Terminal", -2: "Chat", 0: "Unresolved"}
+    for m in service_metrics:
+        sid = m["service_id"]
+        if sid in special_names:
+            m["service_name"] = special_names[sid]
+        elif sid > 0:
+            m["service_name"] = name_map.get(sid, f"Service #{sid}")
+        else:
+            m["service_name"] = f"User Connection #{abs(sid)}"
+
+    return web.json_response({"services": service_metrics})
 
 
 async def http_get_metrics_active(request: web.Request) -> web.Response:
@@ -3546,9 +3559,21 @@ async def http_get_metrics_active(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    return web.json_response({
-        "connections": traffic_metrics.get_active_connections()
-    })
+    connections = traffic_metrics.get_active_connections()
+    # Enrich with service names
+    all_services = await db.get_all_services()
+    name_map = {s["id"]: s["name"] for s in all_services}
+    special_names = {-1: "Local Terminal", -2: "Chat", 0: "Unresolved"}
+    for c in connections:
+        sid = c["service_id"]
+        if sid in special_names:
+            c["service_name"] = special_names[sid]
+        elif sid > 0:
+            c["service_name"] = name_map.get(sid, f"Service #{sid}")
+        else:
+            c["service_name"] = f"User Connection #{abs(sid)}"
+
+    return web.json_response({"connections": connections})
 
 
 async def http_get_metrics_time_series(request: web.Request) -> web.Response:
@@ -3586,8 +3611,22 @@ async def http_get_metrics_top(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid limit parameter"}, status=400)
     limit = min(max(limit, 1), 50)  # Clamp between 1 and 50
 
+    top_services = traffic_metrics.get_top_services(limit)
+    # Enrich with service names
+    all_services = await db.get_all_services()
+    name_map = {s["id"]: s["name"] for s in all_services}
+    special_names = {-1: "Local Terminal", -2: "Chat", 0: "Unresolved"}
+    for m in top_services:
+        sid = m["service_id"]
+        if sid in special_names:
+            m["service_name"] = special_names[sid]
+        elif sid > 0:
+            m["service_name"] = name_map.get(sid, f"Service #{sid}")
+        else:
+            m["service_name"] = f"User Connection #{abs(sid)}"
+
     return web.json_response({
-        "top_services": traffic_metrics.get_top_services(limit),
+        "top_services": top_services,
         "top_users": traffic_metrics.get_top_users(limit)
     })
 
@@ -3611,7 +3650,10 @@ async def http_shodan_lookup(request: web.Request) -> web.Response:
         return web.json_response({"error": "IP address required"}, status=400)
 
     # Validate IP format
-    if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip):
+    import ipaddress as _ipaddress
+    try:
+        _ipaddress.ip_address(ip)
+    except ValueError:
         return web.json_response({"error": "Invalid IP address format"}, status=400)
 
     if not Config.SHODAN_API_KEY and not shodan_client.api_key:
@@ -5169,6 +5211,64 @@ async def http_root_redirect(request: web.Request) -> web.Response:
 # WebSocket Handler
 # =============================================================================
 
+# Service ID constants for non-service connections
+SERVICE_ID_TERMINAL = -1
+SERVICE_ID_CHAT = -2
+
+
+class MetricsWebSocket:
+    """Transparent wrapper around WebSocketResponse that records traffic metrics."""
+
+    def __init__(self, ws: web.WebSocketResponse, conn_id: str):
+        self._ws = ws
+        self._conn_id = conn_id
+
+    @property
+    def conn_id(self) -> str:
+        return self._conn_id
+
+    async def send_str(self, data: str, compress=None):
+        traffic_metrics.record_traffic(self._conn_id, bytes_sent=len(data.encode('utf-8')))
+        return await self._ws.send_str(data, compress=compress)
+
+    async def send_bytes(self, data: bytes, compress=None):
+        traffic_metrics.record_traffic(self._conn_id, bytes_sent=len(data))
+        return await self._ws.send_bytes(data, compress=compress)
+
+    async def send_json(self, data, compress=None, *, dumps=json.dumps):
+        serialized = dumps(data)
+        traffic_metrics.record_traffic(self._conn_id, bytes_sent=len(serialized.encode('utf-8')))
+        return await self._ws.send_json(data, compress=compress, dumps=dumps)
+
+    async def receive(self, timeout=None):
+        msg = await self._ws.receive(timeout=timeout)
+        if msg.type in (WSMsgType.TEXT, WSMsgType.BINARY):
+            byte_len = len(msg.data) if isinstance(msg.data, bytes) else len(msg.data.encode('utf-8'))
+            traffic_metrics.record_traffic(self._conn_id, bytes_received=byte_len)
+        return msg
+
+    def __aiter__(self):
+        return self._MetricsIter(self._ws.__aiter__(), self._conn_id)
+
+    class _MetricsIter:
+        def __init__(self, inner, conn_id):
+            self._inner = inner
+            self._conn_id = conn_id
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            msg = await self._inner.__anext__()
+            if msg.type in (WSMsgType.TEXT, WSMsgType.BINARY):
+                byte_len = len(msg.data) if isinstance(msg.data, bytes) else len(msg.data.encode('utf-8'))
+                traffic_metrics.record_traffic(self._conn_id, bytes_received=byte_len)
+            return msg
+
+    def __getattr__(self, name):
+        return getattr(self._ws, name)
+
+
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     """Handle WebSocket connections for relay and ping."""
     client_ip = get_client_ip(request)
@@ -5240,19 +5340,27 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
     conn_id = str(uuid.uuid4())
     traffic_metrics.start_connection(conn_id, 0, token.user_id, _plugin, client_ip)
+    mws = MetricsWebSocket(ws, conn_id)
 
     try:
         if path == "/" or path == "/ws":
-            await handle_ping_ws(ws, token)
+            await handle_ping_ws(mws, token)
         elif path == "/ws/terminal/local":
-            await handle_local_terminal_ws(ws, token, client_ip)
+            await handle_local_terminal_ws(mws, token, client_ip)
         elif path.startswith("/ws/user-connection/"):
-            await handle_user_connection_ws(ws, path, token, client_ip)
+            await handle_user_connection_ws(mws, path, token, client_ip)
         else:
-            await handle_relay_ws(ws, path, token, client_ip)
+            await handle_relay_ws(mws, path, token, client_ip)
     finally:
         active_connections.discard(ws)
-        traffic_metrics.end_connection(conn_id)
+        metrics = traffic_metrics.end_connection(conn_id)
+        # Persist session to database for real services (service_id > 0)
+        if metrics and metrics.service_id > 0:
+            try:
+                session_id = await db.create_session(token.user_id, metrics.service_id, client_ip)
+                await db.end_session(session_id, metrics.bytes_sent, metrics.bytes_received)
+            except Exception as e:
+                logger.debug(f"Failed to persist session: {e}")
         count = _online_users.get(token.user_id, 1) - 1
         if count <= 0:
             _online_users.pop(token.user_id, None)
@@ -5335,11 +5443,14 @@ async def handle_local_terminal_ws(
     )
 
     logger.info(f"Local terminal session started for user {token.user_id} from {client_ip}")
+    if hasattr(ws, 'conn_id'):
+        traffic_metrics.update_service_id(ws.conn_id, SERVICE_ID_TERMINAL)
 
     try:
         await plugin.handle_websocket(ws, target, token.user_id)
     except Exception as e:
         logger.error(f"Local terminal error for user {token.user_id}: {e}")
+        traffic_metrics.record_error(SERVICE_ID_TERMINAL)
         if not ws.closed:
             await ws.send_json({"type": "error", "message": f"Terminal error: {type(e).__name__}"})
             await ws.close(code=4500, message=b"Terminal error")
@@ -5426,11 +5537,14 @@ async def handle_user_connection_ws(
     )
 
     logger.info(f"User connection {conn_id} ({conn_type}) for user {token.user_id} via {plugin_name}")
+    if hasattr(ws, 'conn_id'):
+        traffic_metrics.update_service_id(ws.conn_id, -conn_id)
 
     try:
         await plugin.handle_websocket(ws, target, token.user_id)
     except Exception as e:
         logger.error(f"User connection {conn_id} error: {e}")
+        traffic_metrics.record_error(-conn_id)
         if not ws.closed:
             await ws.send_json({"type": "error", "message": f"Connection error: {type(e).__name__}"})
             await ws.close(code=4500, message=b"Connection error")
@@ -5512,11 +5626,14 @@ async def handle_relay_ws(
     )
 
     logger.info(f"Routing {service['name']} via {plugin_name} plugin for user {token.user_id}")
+    if hasattr(ws, 'conn_id'):
+        traffic_metrics.update_service_id(ws.conn_id, service["id"])
 
     try:
         await plugin.handle_websocket(ws, target, token.user_id)
     except Exception as e:
         logger.error(f"Plugin {plugin_name} error for {service['name']}: {e}")
+        traffic_metrics.record_error(service["id"])
         if not ws.closed:
             await ws.send_json({
                 "type": "error",
@@ -6495,8 +6612,6 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     }
     chat_user_state[user_id] = my_state
 
-    user_entry = (ws, user_id, username, user_role)
-
     # Rate limiting: max 5 messages per 5 seconds
     chat_rate_limit = 5
     chat_rate_window = 5.0
@@ -6504,19 +6619,23 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
     logger.info(f"[Chat] User {username} connected")
 
-    active_connections.add(ws)
+    raw_ws = ws  # Keep raw reference for active_connections and notification cleanup
+    active_connections.add(raw_ws)
     _online_users[user_id] = _online_users.get(user_id, 0) + 1
     chat_conn_id = str(uuid.uuid4())
     client_ip = get_client_ip(request)
-    traffic_metrics.start_connection(chat_conn_id, 0, user_id, "chat", client_ip)
+    traffic_metrics.start_connection(chat_conn_id, SERVICE_ID_CHAT, user_id, "chat", client_ip)
+    ws = MetricsWebSocket(raw_ws, chat_conn_id)  # Shadow ws for automatic traffic recording
+
+    user_entry = (ws, user_id, username, user_role)
 
     # Subscribe to notifications
     if user_id not in notification_subscribers:
         notification_subscribers[user_id] = set()
-    notification_subscribers[user_id].add(ws)
+    notification_subscribers[user_id].add(raw_ws)
 
     try:
-        async for msg in ws:
+        async for msg in chat_mws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
@@ -7297,10 +7416,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
     except Exception as e:
         logger.error(f"[Chat] Error: {e}")
+        traffic_metrics.record_error(SERVICE_ID_CHAT)
 
     finally:
         # Clean up global connection tracking
-        active_connections.discard(ws)
+        active_connections.discard(raw_ws)
         traffic_metrics.end_connection(chat_conn_id)
         count = _online_users.get(user_id, 1) - 1
         if count <= 0:
@@ -7355,13 +7475,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
         # Unsubscribe from notifications
         if user_id in notification_subscribers:
-            notification_subscribers[user_id].discard(ws)
+            notification_subscribers[user_id].discard(raw_ws)
             if not notification_subscribers[user_id]:
                 del notification_subscribers[user_id]
 
         logger.info(f"[Chat] User {username} disconnected")
 
-    return ws
+    return raw_ws
 
 
 async def http_voice_ice_servers(request: web.Request) -> web.Response:
