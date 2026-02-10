@@ -290,7 +290,7 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                             Live Streaming
                         </h4>
-                        <p>Broadcast live via RTMPS from OBS or any encoder. Community members can watch streams with HLS playback.</p>
+                        <p>Broadcast live via RTMPS or plain RTMP (with temporary tokens) from OBS or any encoder. Community members can watch streams with HLS playback.</p>
                     </div>
                     <div class="feature-card">
                         <h4>
@@ -513,19 +513,28 @@
 
                 <!-- Streaming -->
                 <h2 id="streaming">Streaming</h2>
-                <p>Open Relay Portal includes a full live streaming platform. Broadcast from OBS or any RTMP-capable encoder and viewers can watch via the community Streams page.</p>
+                <p>Open Relay Portal includes a full live streaming platform. Broadcast from OBS or any RTMP-capable encoder via secure RTMPS or standard RTMP with temporary publish tokens. Viewers can watch via the community Streams page.</p>
 
                 <h3>Setting Up OBS</h3>
                 <p>In OBS Studio, go to <strong>Settings &rarr; Stream</strong> and configure:</p>
                 <div class="code-block">
-<pre><span class="comment"># OBS Stream Settings</span>
+<pre><span class="comment"># Option 1: RTMPS (recommended, encrypted)</span>
 <span class="keyword">Service:</span>  Custom
 <span class="keyword">Server:</span>   <span class="string">rtmps://stream.yourdomain.com:1936/live</span>
-<span class="keyword">Stream Key:</span> <span class="string">live_xxxxxxxxxxxx</span>  <span class="comment">(your private stream key)</span></pre>
+<span class="keyword">Stream Key:</span> <span class="string">live_xxxxxxxxxxxx</span>  <span class="comment">(your private stream key)</span>
+
+<span class="comment"># Option 2: Plain RTMP (temporary token, enable RTMP on stream first)</span>
+<span class="keyword">Service:</span>  Custom
+<span class="keyword">Server:</span>   <span class="string">rtmp://stream.yourdomain.com:1935/live</span>
+<span class="keyword">Stream Key:</span> <span class="string">rtmp_xxxxxxxxxxxx</span>  <span class="comment">(generate from My Streams tab)</span></pre>
+                </div>
+
+                <div class="alert alert-info">
+                    <strong>Plain RTMP:</strong> To use standard RTMP, first enable it on your stream from the <strong>My Streams</strong> tab, then generate a temporary publish token. Tokens are single-use and expire after 15 minutes (with a 30-second grace period once connected).
                 </div>
 
                 <h3>Stream Keys</h3>
-                <p>Each user has two stream keys:</p>
+                <p>Each user has two permanent stream keys and can generate temporary RTMP tokens:</p>
                 <table class="param-table">
                     <thead>
                         <tr>
@@ -538,25 +547,32 @@
                         <tr>
                             <td><strong>Private Key</strong></td>
                             <td><code>live_</code></td>
-                            <td>Used in OBS to publish your stream. Keep this secret.</td>
+                            <td>Used in OBS to publish your stream via RTMPS. Keep this secret.</td>
                         </tr>
                         <tr>
                             <td><strong>Public Key</strong></td>
                             <td><code>pub_</code></td>
                             <td>Used for sharing stream links. Viewers use this to watch.</td>
                         </tr>
+                        <tr>
+                            <td><strong>RTMP Token</strong></td>
+                            <td><code>rtmp_</code></td>
+                            <td>Temporary publish token for plain RTMP. Single-use, expires after 15 minutes (30-second grace period once connected).</td>
+                        </tr>
                     </tbody>
                 </table>
-                <p>Manage your stream keys from the <strong>My Streams</strong> tab on the Dashboard.</p>
+                <p>Manage your stream keys and generate RTMP tokens from the <strong>My Streams</strong> tab on the Dashboard.</p>
 
                 <h3>Streaming Features</h3>
                 <ul>
+                    <li><strong>Dual Publishing</strong> &mdash; Publish via secure RTMPS (port 1936) or standard RTMP (port 1935) with temporary tokens</li>
                     <li><strong>Dynamic Thumbnails</strong> &mdash; Auto-generated preview images from your live stream, updated every 15 seconds</li>
                     <li><strong>Viewer Count</strong> &mdash; Real-time viewer count displayed on the stream page, polled every 10 seconds</li>
                     <li><strong>Quality Selector</strong> &mdash; Viewers can choose stream quality when available</li>
                     <li><strong>Public/Private Toggle</strong> &mdash; Control whether your stream appears on the community Streams page</li>
                     <li><strong>Popout Player</strong> &mdash; Watch streams in a floating overlay or separate window</li>
                     <li><strong>Offline Detection</strong> &mdash; Automatic detection when streams go offline</li>
+                    <li><strong>Standard RTMP with Temporary Tokens</strong> &mdash; Generate single-use publish tokens for plain RTMP when TLS is not available</li>
                 </ul>
 
                 <h3>Encoder Support</h3>
@@ -707,6 +723,11 @@
                             <td>Programmatic access</td>
                             <td>Long-lived keys with scoped permissions. Prefix: <code>portal_</code></td>
                         </tr>
+                        <tr>
+                            <td><strong>RTMP Tokens</strong></td>
+                            <td>Plain RTMP publishing</td>
+                            <td>Temporary single-use tokens for standard RTMP streams. Prefix: <code>rtmp_</code>. 15-minute expiry, 30-second grace period.</td>
+                        </tr>
                     </tbody>
                 </table>
 
@@ -806,6 +827,7 @@
                     <li><strong>Password Hashing</strong> &mdash; All passwords are hashed with Argon2id (memory-hard, timing-safe).</li>
                     <li><strong>API Key Storage</strong> &mdash; API keys are stored as hashed values. Only the prefix is kept for lookup.</li>
                     <li><strong>SSH Private Keys</strong> &mdash; Never stored server-side. Returned once at creation time only.</li>
+                    <li><strong>RTMP Tokens</strong> &mdash; Plain RTMP uses temporary single-use tokens instead of permanent stream keys. Tokens expire after 15 minutes and are invalidated immediately on use.</li>
                     <li><strong>Log Redaction</strong> &mdash; Sensitive data (passwords, tokens, keys) is automatically stripped from logs.</li>
                 </ul>
 

@@ -292,6 +292,23 @@ CREATE TABLE service_logs (
     FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
 );
 
+-- Temporary RTMP publish tokens (single-use, short-lived)
+CREATE TABLE rtmp_tokens (
+    id INTEGER PRIMARY KEY,
+    stream_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL,        -- SHA-256 hash of rtmp_ prefixed token
+    expires_at TEXT NOT NULL,
+    used INTEGER DEFAULT 0,
+    used_at TEXT,
+    created_at TEXT,
+    FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- user_streams table also includes:
+--   rtmp_enabled INTEGER DEFAULT 0   -- Per-stream toggle for plain RTMP ingress
+
 -- VOD remote storage config (per-user SFTP)
 CREATE TABLE vod_storage (
     id INTEGER PRIMARY KEY,
@@ -436,6 +453,12 @@ GET  /api/services/:id/logs     - Get managed service logs
 
 ### Streaming
 
+Publishing is available via two methods:
+- **RTMPS** (port 1936) - Primary method, encrypted, always available: `rtmps://stream.dddvm.xyz:1936/live`
+- **RTMP** (port 1935) - Optional plain RTMP ingress using temporary tokens for security; enabled per-stream via `rtmp_enabled` flag
+
+Playback is proxied through Cloudflare: `https://portal.dddvm.xyz/api/stream/{key}/hls/...`
+
 ```
 GET  /api/streams               - List user's streams
 POST /api/streams               - Create stream config
@@ -446,10 +469,20 @@ GET  /api/streams/public        - List public streams
 GET  /api/streams/open          - List currently live public streams
 POST /api/streams/:id/thumbnail - Upload custom thumbnail
 DELETE /api/streams/:id/thumbnail - Delete custom thumbnail
+POST /api/streams/:id/rtmp-token - Generate temporary RTMP publish token
 GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
 GET  /api/stream/:key/hls/...   - HLS playback proxy
 POST /api/stream/event          - MediaMTX webhook (online/offline)
 ```
+
+#### MediaMTX Configuration
+
+The MediaMTX managed service configuration is generated dynamically by Portal. Key streaming settings:
+
+- **RTMPS** (port 1936) - Always enabled with TLS encryption (`rtmpEncryption: strict`)
+- **RTMP** (port 1935) - Conditionally enabled based on `rtmp_plain_enabled` config; when enabled, `rtmpEncryption: optional` is set to allow both plain and encrypted connections on the RTMPS port
+- **Publish auth** - All publish requests validated via MediaMTX external auth webhook back to Portal
+- **Playback** - Read/playback auth handled by Portal's HLS proxy, not MediaMTX
 
 ### Stream Moderation
 
@@ -699,6 +732,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 20. **Stream Hash Redaction** - Internal `stream_key_hash` and `public_key_hash` stripped from all API responses (open, public, non-owner individual stream endpoints)
 21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
 22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
+23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; single-use with a configurable grace period for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
 
 ---
 
@@ -747,6 +781,12 @@ SSL_KEY=/path/to/key.pem
 # Optional integrations
 SHODAN_API_KEY=<key>
 NVD_API_KEY=<key>
+
+# Plain RTMP ingress (optional)
+RTMP_PLAIN_ENABLED=false          # Enable plain RTMP ingress (default: false)
+RTMP_PLAIN_PORT=1935              # Plain RTMP port (default: 1935)
+RTMP_TOKEN_EXPIRY_MINUTES=15      # Token expiry time in minutes (default: 15)
+RTMP_TOKEN_GRACE_SECONDS=30       # Grace period for reconnects (default: 30)
 ```
 
 ---

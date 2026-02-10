@@ -354,10 +354,11 @@
 
                 <!-- Authentication -->
                 <h2 id="authentication">Authentication</h2>
-                <p>Open Relay Portal supports two authentication methods:</p>
+                <p>Open Relay Portal supports the following authentication methods:</p>
                 <ul>
                     <li><strong>JWT Tokens</strong> - Session-based authentication via cookies (used by the web UI)</li>
-                    <li><strong>API Keys</strong> - Long-lived keys for programmatic access</li>
+                    <li><strong>API Keys</strong> - Long-lived keys for programmatic access (prefixed <code>portal_</code>)</li>
+                    <li><strong>RTMP Tokens</strong> - Temporary, single-use publish tokens for plain RTMP streaming (prefixed <code>rtmp_</code>). Generated via API or the My Streams UI. Expire after 15 minutes with a 30-second grace period for reconnects.</li>
                 </ul>
 
                 <h3>Using API Keys</h3>
@@ -1027,10 +1028,15 @@
                         <td>portal.example.com:443</td>
                         <td><code>https://portal.example.com/api/stream/{stream_key}/webrtc/whip</code></td>
                     </tr>
+                    <tr>
+                        <td><span class="param-name">RTMP Publishing</span></td>
+                        <td>stream.example.com:1935</td>
+                        <td><code>rtmp://stream.example.com:1935/live</code></td>
+                    </tr>
                 </table>
 
                 <h3>OBS Studio Setup (Recommended)</h3>
-                <p>To broadcast with OBS Studio:</p>
+                <p>To broadcast with OBS Studio using RTMPS (encrypted, recommended):</p>
                 <ol style="color: var(--text-secondary); line-height: 1.8;">
                     <li>Go to <strong>Settings → Stream</strong></li>
                     <li>Set Service to <strong>Custom</strong></li>
@@ -1038,6 +1044,21 @@
                     <li>Stream Key: Your stream key (e.g., <code>live_abc123...</code>)</li>
                     <li>Click OK and Start Streaming</li>
                 </ol>
+
+                <h3>Plain RTMP (Alternative)</h3>
+                <p>If your encoder does not support RTMPS, you can use standard RTMP with a temporary token. This requires enabling RTMP on your stream first.</p>
+                <ol style="color: var(--text-secondary); line-height: 1.8;">
+                    <li>Enable RTMP on your stream (My Streams tab or <code>PUT /api/streams/{id}</code> with <code>rtmp_enabled: true</code>)</li>
+                    <li>Generate a temporary RTMP token via the My Streams tab or <code>POST /api/streams/{id}/rtmp-token</code></li>
+                    <li>In OBS, go to <strong>Settings → Stream</strong></li>
+                    <li>Set Service to <strong>Custom</strong></li>
+                    <li>Server: <code>rtmp://stream.example.com:1935/live</code></li>
+                    <li>Stream Key: Your temporary token (e.g., <code>rtmp_abc123...</code>)</li>
+                    <li>Click OK and Start Streaming</li>
+                </ol>
+                <div class="alert alert-warning">
+                    <strong>Note:</strong> RTMP tokens are single-use, expire in 15 minutes, and have a 30-second grace period for reconnects. The global <code>RTMP_PLAIN_ENABLED</code> setting must also be enabled by the server administrator.
+                </div>
 
                 <h3 id="encoder-settings">Encoder Settings</h3>
                 <p>Configure your encoder in <strong>Settings → Output → Streaming</strong> (Output Mode: Advanced).</p>
@@ -1188,6 +1209,7 @@
       <span class="string">"stream_key"</span>: <span class="string">"sk_abc123..."</span>,
       <span class="string">"is_live"</span>: <span class="keyword">false</span>,
       <span class="string">"is_public"</span>: <span class="keyword">true</span>,
+      <span class="string">"rtmp_enabled"</span>: <span class="keyword">false</span>,
       <span class="string">"viewer_count"</span>: <span class="number">0</span>,
       <span class="string">"chat_channel_id"</span>: <span class="number">5</span>,
       <span class="string">"created_at"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>
@@ -1229,6 +1251,11 @@
                                 <td><span class="param-type">boolean</span></td>
                                 <td>Whether stream is publicly visible (default: true)</td>
                             </tr>
+                            <tr>
+                                <td><span class="param-name">rtmp_enabled</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Enable plain RTMP publishing with temporary tokens (default: false)</td>
+                            </tr>
                         </table>
                         <h4>Response</h4>
                         <div class="code-block">
@@ -1236,6 +1263,7 @@
   <span class="string">"id"</span>: <span class="number">1</span>,
   <span class="string">"title"</span>: <span class="string">"My Stream"</span>,
   <span class="string">"stream_key"</span>: <span class="string">"sk_abc123def456..."</span>,
+  <span class="string">"rtmp_enabled"</span>: <span class="keyword">false</span>,
   <span class="string">"chat_channel_id"</span>: <span class="number">5</span>,
   <span class="string">"playback_urls"</span>: {
     <span class="string">"hls"</span>: <span class="string">"https://portal.example.com/api/stream/sk_abc123/hls/index.m3u8"</span>,
@@ -1318,6 +1346,11 @@
                                 <td><span class="param-type">boolean</span></td>
                                 <td>Change visibility</td>
                             </tr>
+                            <tr>
+                                <td><span class="param-name">rtmp_enabled</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Enable or disable plain RTMP publishing with temporary tokens</td>
+                            </tr>
                         </table>
                     </div>
                 </div>
@@ -1330,6 +1363,34 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Generate a new stream key, invalidating the old one. Use this if your key is compromised.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/rtmp-token</span>
+                        <span class="endpoint-desc">Generate temporary RTMP publish token</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Generate a temporary token for publishing via plain RTMP (unencrypted). The stream must have <code>rtmp_enabled: true</code> and the server must have <code>RTMP_PLAIN_ENABLED</code> set globally.</p>
+                        <h4>Prerequisites</h4>
+                        <ul style="color: var(--text-secondary); line-height: 1.8;">
+                            <li>Stream must have <code>rtmp_enabled</code> set to <code>true</code></li>
+                            <li>Global <code>RTMP_PLAIN_ENABLED</code> must be enabled by the server administrator</li>
+                            <li>Authenticated as the stream owner (Bearer token)</li>
+                        </ul>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"token"</span>: <span class="string">"rtmp_abc123..."</span>,
+  <span class="string">"expires_in"</span>: <span class="number">900</span>,
+  <span class="string">"rtmp_url"</span>: <span class="string">"rtmp://stream.example.com:1935/live"</span>
+}</pre>
+                        </div>
+                        <div class="alert alert-warning">
+                            <strong>Important:</strong> The token is shown only once and is never stored in plain text. It is single-use with a 30-second grace period for reconnects. Expires in 15 minutes if unused.
+                        </div>
                     </div>
                 </div>
 
