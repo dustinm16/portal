@@ -47,6 +47,43 @@ Process manager, systemd service control, network interfaces, listening ports. M
 ### Administration
 User management with role hierarchy (superadmin/admin/moderator/user), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning.
 
+## Screenshots
+
+![Dashboard](docs/screenshots/dashboard.png)
+*Dashboard — Services, connections, streams, and system stats at a glance*
+
+![Chat](docs/screenshots/chat.png)
+*Encrypted Chat — Channels, reactions, threads, @mentions, voice chat*
+
+![Admin Panel](docs/screenshots/admin.png)
+*Admin Panel — Server stats, traffic metrics, user management*
+
+![File Manager](docs/screenshots/files.png)
+*File Manager — Browse server files or remote SFTP connections*
+
+![System Monitor](docs/screenshots/sysmon.png)
+*System Monitor — Processes, systemd services, network interfaces*
+
+![Streams](docs/screenshots/streams.png)
+*Community Streams — Live streaming with HLS playback and VOD recording*
+
+![API Docs](docs/screenshots/api-docs.png)
+*API Documentation — Interactive endpoint reference*
+
+<details>
+<summary>More screenshots</summary>
+
+![Login](docs/screenshots/login.png)
+*Login page with TOTP 2FA support*
+
+![About](docs/screenshots/about.png)
+*Feature guide and documentation*
+
+![System Services](docs/screenshots/sysmon-services.png)
+*Systemd service management*
+
+</details>
+
 ## Quick Start
 
 ```bash
