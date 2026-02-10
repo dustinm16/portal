@@ -916,6 +916,30 @@ Regenerate stream key.
 
 ---
 
+#### POST /api/streams/{id}/rtmp-token
+Generate a temporary, single-use token for plain RTMP (non-TLS) publishing.
+
+**Authentication:** Required (stream owner only)
+
+**Prerequisites:** `rtmp_enabled` must be true on the stream, and `RTMP_PLAIN_ENABLED` must be true server-side.
+
+**Response:**
+```json
+{
+  "token": "rtmp_...",
+  "expires_in": 900,
+  "rtmp_url": "rtmp://stream.dddvm.xyz:1935/live"
+}
+```
+
+**Notes:**
+- Token expires after 15 minutes (configurable via `RTMP_TOKEN_EXPIRY_MINUTES`)
+- Single-use with 30-second grace period for OBS reconnect
+- Use as the stream key in OBS: `rtmp://stream.dddvm.xyz:1935/live` with token as key
+- Tokens are revoked when `rtmp_enabled` is toggled off
+
+---
+
 #### GET /api/streams/open
 List all currently live and public streams (for community streams page).
 
@@ -1522,18 +1546,20 @@ Test SFTP connection with provided credentials.
 #### GET /api/vods
 List MKV files in user's remote storage. Recursively scans all subdirectories.
 
-VOD files are organized in a directory structure created by the automatic recording pipeline:
+VOD files are organized in a directory structure created by the automatic recording pipeline, sourced from RTSPS:
 ```
 {remote_path}/
 ├── StreamName/
-│   ├── 2026-02-08_04-24-49/
+│   ├── 2026-02-08/
 │   │   ├── chunk_000.mkv
 │   │   ├── chunk_001.mkv
 │   │   └── chunk_002.mkv
-│   └── 2026-02-08_12-30-00/
+│   └── 2026-02-09/
 │       └── chunk_000.mkv
 └── standalone-recording.mkv
 ```
+
+Sessions on the same date accumulate in the same directory with chunk numbering continuing from the highest existing chunk.
 
 **Query Parameters:**
 - `sort` (optional): Sort by `name`, `size`, or `modified` (default: `modified`)
@@ -1544,12 +1570,12 @@ VOD files are organized in a directory structure created by the automatic record
 {
   "files": [
     {
-      "name": "StreamName/2026-02-08_04-24-49/chunk_000.mkv",
+      "name": "StreamName/2026-02-08/chunk_000.mkv",
       "size": 233436982,
       "modified": 1770525031
     },
     {
-      "name": "StreamName/2026-02-08_04-24-49/chunk_001.mkv",
+      "name": "StreamName/2026-02-08/chunk_001.mkv",
       "size": 6102991,
       "modified": 1770525033
     }
@@ -1578,8 +1604,8 @@ Download multiple VOD files as a single zip archive streamed from SFTP. The zip 
 ```json
 {
   "files": [
-    "StreamName/2026-02-08_04-24-49/chunk_000.mkv",
-    "StreamName/2026-02-08_04-24-49/chunk_001.mkv"
+    "StreamName/2026-02-08/chunk_000.mkv",
+    "StreamName/2026-02-08/chunk_001.mkv"
   ]
 }
 ```

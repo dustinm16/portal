@@ -32,6 +32,7 @@ SENSITIVE_PATTERNS = [
     (re.compile(r'(api[_-]?key["\s:=]+)portal_[A-Za-z0-9_-]+', re.IGNORECASE), r'\1[REDACTED]'),
     (re.compile(r'(secret["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
     (re.compile(r'(-----BEGIN[^-]+-----)[^-]+(-----END[^-]+-----)', re.DOTALL), r'\1[REDACTED]\2'),
+    (re.compile(r'rtmp_[A-Za-z0-9_-]{20,}'), '[RTMP_TOKEN_REDACTED]'),
 ]
 
 # Log settings (can be modified at runtime)

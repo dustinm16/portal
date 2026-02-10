@@ -311,6 +311,23 @@ async function showStreamDetails(streamId) {
                     </div>
                 </div>
 
+                <div class="info-section">
+                    <h4>Standard RTMP (Plain)</h4>
+                    <p class="info-description">Enable plain RTMP on port 1935 for encoders that don't support RTMPS. Uses temporary tokens instead of your permanent stream key for security.</p>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" ${stream.rtmp_enabled ? 'checked' : ''} onchange="toggleStreamRtmp(${stream.id}, this.checked)">
+                            <span>Enable standard RTMP publishing</span>
+                        </label>
+                    </div>
+                    ${stream.rtmp_enabled ? `
+                    <div id="rtmp-token-section">
+                        <button class="btn btn-primary btn-sm" onclick="generateRtmpToken(${stream.id})">Generate RTMP Token</button>
+                        <div id="rtmp-token-result" style="display: none; margin-top: 0.75rem;"></div>
+                    </div>
+                    ` : ''}
+                </div>
+
                 ${stream.public_key ? `
                 <div class="info-section">
                     <h4>Public API Key</h4>
@@ -423,6 +440,86 @@ async function toggleStreamUnauthenticated(streamId, allowed) {
     } catch (error) {
         console.error('Failed to update stream:', error);
         alert('Failed to update stream');
+    }
+}
+
+/**
+ * Toggle RTMP plain publishing for a stream
+ */
+async function toggleStreamRtmp(streamId, enabled) {
+    try {
+        const response = await fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ rtmp_enabled: enabled ? 1 : 0 })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            alert(error.error || 'Failed to update stream');
+        }
+        // Refresh the modal to show/hide token section
+        showStreamDetails(streamId);
+    } catch (error) {
+        console.error('Failed to toggle RTMP:', error);
+        alert('Failed to update stream');
+    }
+}
+
+/**
+ * Generate a temporary RTMP publish token
+ */
+let _rtmpCountdownInterval = null;
+async function generateRtmpToken(streamId) {
+    try {
+        const data = await Portal.fetchJSON(`/api/streams/${streamId}/rtmp-token`, {
+            method: 'POST'
+        });
+
+        const resultEl = document.getElementById('rtmp-token-result');
+        if (!resultEl) return;
+        resultEl.style.display = 'block';
+        resultEl.innerHTML = `
+            <div class="form-group">
+                <label>RTMP Server</label>
+                <div class="input-with-copy">
+                    <input type="text" value="${escapeHtml(data.rtmp_url)}" readonly>
+                    <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${escapeHtml(data.rtmp_url)}')">Copy</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Temporary Stream Key (expires in ${Math.floor(data.expires_in / 60)} min)</label>
+                <div class="input-with-copy">
+                    <input type="text" value="${escapeHtml(data.token)}" readonly id="rtmp-token-input">
+                    <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${escapeHtml(data.token)}')">Copy</button>
+                </div>
+                <small class="warning-text">Single-use token. Generate a new one for each streaming session.</small>
+            </div>
+            <div id="rtmp-token-countdown" style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;"></div>
+        `;
+
+        // Start countdown timer
+        if (_rtmpCountdownInterval) clearInterval(_rtmpCountdownInterval);
+        let remaining = data.expires_in;
+        const updateCountdown = () => {
+            const el = document.getElementById('rtmp-token-countdown');
+            if (!el || remaining <= 0) {
+                clearInterval(_rtmpCountdownInterval);
+                if (el) el.textContent = 'Token expired — generate a new one';
+                return;
+            }
+            const m = Math.floor(remaining / 60);
+            const s = remaining % 60;
+            el.textContent = `Expires in ${m}:${String(s).padStart(2, '0')}`;
+            remaining--;
+        };
+        updateCountdown();
+        _rtmpCountdownInterval = setInterval(updateCountdown, 1000);
+
+    } catch (error) {
+        console.error('Failed to generate RTMP token:', error);
+        alert(error.message || 'Failed to generate RTMP token');
     }
 }
 

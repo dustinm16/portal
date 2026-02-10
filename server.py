@@ -2,10 +2,12 @@
 """Open Relay Portal - Secure WebSocket Authentication and Relay Server."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
 import os
+import secrets
 import signal
 import ssl
 import sys
@@ -2012,6 +2014,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
 
     success = await db.update_user_stream(stream_id, user_id=token.user_id, **data)
     if success:
+        # Revoke all RTMP tokens if rtmp_enabled was toggled off
+        if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
+            revoked = await db.revoke_rtmp_tokens_for_stream(stream_id)
+            if revoked:
+                logger.info(f"Revoked {revoked} RTMP token(s) for stream {stream_id}")
         updated_stream = await db.get_user_stream(stream_id)
         return web.json_response({"stream": updated_stream})
     return web.json_response({"error": "Failed to update stream"}, status=500)
@@ -2061,6 +2068,52 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
     if success:
         return web.json_response({"stream_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
+
+
+async def http_create_rtmp_token(request: web.Request) -> web.Response:
+    """Generate a temporary RTMP publish token (owner only).
+
+    Returns a single-use token for plain RTMP (non-TLS) publishing.
+    Token expires after RTMP_TOKEN_EXPIRY_MINUTES (default 15 min).
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    # Global kill switch
+    if not Config.RTMP_PLAIN_ENABLED:
+        return web.json_response({"error": "Plain RTMP is not enabled on this server"}, status=403)
+
+    stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
+
+    # Verify ownership and rtmp_enabled
+    stream = await db.get_user_stream(stream_id)
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+    if stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Not authorized"}, status=403)
+    if not stream.get("rtmp_enabled"):
+        return web.json_response({"error": "RTMP is not enabled for this stream"}, status=400)
+
+    # Generate token: rtmp_ prefix + 32 random URL-safe chars
+    rtmp_token = f"rtmp_{secrets.token_urlsafe(24)}"
+    token_hash = hashlib.sha256(rtmp_token.encode()).hexdigest()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=Config.RTMP_TOKEN_EXPIRY_MINUTES)).isoformat()
+
+    await db.create_rtmp_token(stream_id, token.user_id, token_hash, expires_at)
+
+    # RTMP URL uses the streaming hostname (direct, bypasses Cloudflare)
+    rtmp_url = f"rtmp://stream.dddvm.xyz:{Config.RTMP_PLAIN_PORT}/live"
+
+    return web.json_response({
+        "token": rtmp_token,
+        "expires_in": Config.RTMP_TOKEN_EXPIRY_MINUTES * 60,
+        "rtmp_url": rtmp_url,
+    })
 
 
 async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
@@ -2660,21 +2713,77 @@ async def http_stream_auth(request: web.Request) -> web.Response:
     stream_key = password or path.split("/")[-1] if path else ""
 
     if action == "publish":
-        # Validate stream key
-        if not stream_key or not stream_key.startswith("live_"):
-            logger.warning(f"Invalid stream key attempt from {ip}")
-            return web.json_response({"error": "Invalid stream key"}, status=401)
+        # Resolve stream from key — supports live_ (permanent) and rtmp_ (temporary token)
+        real_stream_key = None  # The live_ key for VOD recording
+        stream = None
 
-        stream = await db.get_stream_by_key(stream_key)
-        if not stream:
-            logger.warning(f"Unknown stream key from {ip}")
+        if stream_key and stream_key.startswith("rtmp_"):
+            # Validate temporary RTMP publish token
+            if not Config.RTMP_PLAIN_ENABLED:
+                logger.warning(f"RTMP token rejected (plain RTMP disabled globally) from {ip}")
+                return web.json_response({"error": "Plain RTMP is disabled"}, status=401)
+
+            token_hash = hashlib.sha256(stream_key.encode()).hexdigest()
+            token_record = await db.get_rtmp_token(token_hash)
+            if not token_record:
+                logger.warning(f"Unknown RTMP token from {ip}")
+                return web.json_response({"error": "Invalid token"}, status=401)
+            if token_record["revoked"]:
+                logger.warning(f"Revoked RTMP token from {ip}")
+                return web.json_response({"error": "Token revoked"}, status=401)
+            if datetime.fromisoformat(token_record["expires_at"]) < datetime.now(timezone.utc):
+                logger.warning(f"Expired RTMP token from {ip}")
+                return web.json_response({"error": "Token expired"}, status=401)
+            # Grace period: allow re-auth within window after first use (OBS reconnect)
+            if token_record["used"]:
+                used_at = datetime.fromisoformat(token_record["used_at"])
+                grace = timedelta(seconds=Config.RTMP_TOKEN_GRACE_SECONDS)
+                if datetime.now(timezone.utc) - used_at > grace:
+                    logger.warning(f"RTMP token grace period expired from {ip}")
+                    return web.json_response({"error": "Token already used"}, status=401)
+            else:
+                await db.mark_rtmp_token_used(token_record["id"])
+            # Verify stream has rtmp_enabled
+            if not token_record.get("rtmp_enabled"):
+                logger.warning(f"RTMP token for stream with RTMP disabled from {ip}")
+                return web.json_response({"error": "RTMP disabled on this stream"}, status=401)
+
+            # Build a stream-like dict from JOIN result for downstream compatibility
+            real_stream_key = token_record.get("stream_key", "")
+            stream = {
+                "id": token_record["stream_id"],
+                "user_id": token_record.get("stream_user_id", token_record.get("user_id")),
+                "name": token_record.get("stream_name", ""),
+                "is_public": token_record.get("is_public"),
+                "is_live": token_record.get("is_live"),
+                "chat_channel_id": token_record.get("chat_channel_id"),
+                "allow_unauthenticated": token_record.get("allow_unauthenticated"),
+                "viewer_count": token_record.get("viewer_count", 0),
+                "started_at": token_record.get("started_at"),
+                "ended_at": token_record.get("ended_at"),
+                "thumbnail_url": token_record.get("thumbnail_url"),
+                "owner_username": token_record.get("owner_username"),
+                "owner_nickname": token_record.get("owner_nickname"),
+                "public_key": token_record.get("public_key"),
+            }
+            logger.info(f"RTMP token auth successful for stream {stream['name']} from {ip}")
+
+        elif stream_key and stream_key.startswith("live_"):
+            stream = await db.get_stream_by_key(stream_key)
+            if not stream:
+                logger.warning(f"Unknown stream key from {ip}")
+                return web.json_response({"error": "Invalid stream key"}, status=401)
+            real_stream_key = stream_key
+        else:
+            logger.warning(f"Invalid stream key attempt from {ip}")
             return web.json_response({"error": "Invalid stream key"}, status=401)
 
         # Mark stream as live (only log activity on state change)
         was_live = stream.get("is_live")
-        await db.set_stream_live(stream["id"], True)
+        stream_id = stream["id"]
+        await db.set_stream_live(stream_id, True)
         if not was_live:
-            logger.info(f"Stream {stream['name']} started by user {stream['owner_username']} from {ip}")
+            logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
             await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_live", f"Stream '{stream['name']}' went live", ip)
             # Notify chat channel that stream went live
             if stream.get("chat_channel_id"):
@@ -2682,7 +2791,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                 if channel:
                     await broadcast_to_channel(channel["name"], {
                         "type": "stream_status",
-                        "stream_id": stream["id"],
+                        "stream_id": stream_id,
                         "is_live": True
                     })
             # Send notification to all users
@@ -2690,12 +2799,13 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             await broadcast_notification(
                 "stream_live", f"{streamer_name} is live!",
                 f"{stream['name']} just went live",
-                data={"stream_id": stream["id"], "public_key": stream.get("public_key", "")},
+                data={"stream_id": stream_id, "public_key": stream.get("public_key", "")},
                 exclude_user_id=stream.get("user_id")
             )
 
         # Start VOD recording on every publish (guards against duplicates internally)
-        asyncio.create_task(start_vod_recording(stream, stream_key))
+        # Use real live_ stream key for RTSPS URL (not the rtmp_ token)
+        asyncio.create_task(start_vod_recording(stream, real_stream_key))
 
         return web.json_response({"allowed": True})
 
@@ -2748,7 +2858,16 @@ async def http_stream_event(request: web.Request) -> web.Response:
     if event == "disconnect" and path:
         # Find stream and mark as offline
         stream_key = path.split("/")[-1] if "/" in path else path
-        stream = await db.get_stream_by_key(stream_key)
+        # Handle rtmp_ token paths — map back to parent stream
+        if stream_key.startswith("rtmp_"):
+            token_hash = hashlib.sha256(stream_key.encode()).hexdigest()
+            token_record = await db.get_rtmp_token(token_hash)
+            if token_record and token_record.get("stream_key"):
+                stream = await db.get_stream_by_key(token_record["stream_key"])
+            else:
+                stream = None
+        else:
+            stream = await db.get_stream_by_key(stream_key)
         if stream:
             # Stop VOD recording and upload to SFTP
             await stop_vod_recording(stream["id"])
@@ -7777,6 +7896,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/streams/{id}", http_update_user_stream)
     app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
     app.router.add_post("/api/streams/{id}/regenerate-key", http_regenerate_stream_key)
+    app.router.add_post("/api/streams/{id}/rtmp-token", http_create_rtmp_token)
     # Stream thumbnails
     app.router.add_post("/api/streams/{id}/thumbnail", http_upload_stream_thumbnail)
     app.router.add_delete("/api/streams/{id}/thumbnail", http_delete_stream_thumbnail)
@@ -7930,6 +8050,9 @@ class PortalServer:
         # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
         asyncio.create_task(self._viewer_sync_task())
 
+        # Start RTMP token cleanup task (runs every 5 minutes)
+        asyncio.create_task(self._rtmp_token_cleanup_task())
+
         # Initialize vulnerability scanner - check database for NVD API key
         nvd_api_key = await db.get_setting("nvd_api_key") or Config.NVD_API_KEY
         await init_scanner(
@@ -7976,6 +8099,19 @@ class PortalServer:
         logger.info(f"  - Dashboard:  GET  /dashboard")
         logger.info(f"  - Register:   POST /api/register (requires invite code)")
         logger.info(f"  - WebSocket:  wss://{Config.HOSTNAME}/ws/")
+
+    async def _rtmp_token_cleanup_task(self) -> None:
+        """Background task to clean up expired RTMP tokens (runs every 5 minutes)."""
+        while True:
+            try:
+                await asyncio.sleep(5 * 60)  # 5 minutes
+                deleted = await db.cleanup_expired_rtmp_tokens()
+                if deleted > 0:
+                    logger.debug(f"Cleaned up {deleted} expired RTMP token(s)")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"RTMP token cleanup error: {e}")
 
     async def _chat_cleanup_task(self) -> None:
         """Background task to clean up old chat messages (runs every 6 hours)."""

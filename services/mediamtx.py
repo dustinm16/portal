@@ -87,6 +87,11 @@ class MediaMTXService(ManagedService):
                         "type": "string",
                         "default": "",
                         "description": "Path to TLS private key (auto-generated if empty)"
+                    },
+                    "rtmp_plain_enabled": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Allow plain RTMP (non-TLS) on port 1935 for temporary token auth"
                     }
                 }
             }
@@ -108,9 +113,11 @@ class MediaMTXService(ManagedService):
             "read_timeout": "10s",
             "write_timeout": "10s",
             "tls_cert_path": "",
-            "tls_key_path": ""
+            "tls_key_path": "",
+            "rtmp_plain_enabled": False
         }
-        # Note: TLS is mandatory - encryption cannot be disabled
+        # Note: TLS is mandatory for RTSP/HLS/WebRTC/API
+        # RTMP can optionally allow plain (non-TLS) when rtmp_plain_enabled=True
 
     def _get_tls_paths(self) -> tuple[str, str]:
         """Get TLS certificate and key paths.
@@ -181,6 +188,11 @@ class MediaMTXService(ManagedService):
         # Uses the hostname for proper TLS certificate validation
         portal_url = cfg.get('portal_url', 'https://portal.dddvm.xyz')
 
+        # RTMP plain (non-TLS) support for temporary token auth
+        rtmp_plain_enabled = cfg.get('rtmp_plain_enabled', False)
+        rtmp_encryption = 'optional' if rtmp_plain_enabled else 'strict'
+        rtmp_bind = f'0.0.0.0:{rtmp_port}' if rtmp_plain_enabled else f'127.0.0.1:{rtmp_port}'
+
         # YAML configuration for MediaMTX v1.9.x with mandatory TLS
         # All services bound to localhost - external access via Portal proxy on 443
         yaml_content = f'''# MediaMTX Configuration
@@ -236,11 +248,11 @@ rtspsAddress: 127.0.0.1:{rtsps_port}
 ###############################################
 # RTMP/RTMPS settings
 # RTMPS (1936) is exposed externally for OBS publishing
-# Plain RTMP (1935) is localhost only for security
+# Plain RTMP (1935): {'exposed for temporary token auth' if rtmp_plain_enabled else 'localhost only for security'}
 
 rtmp: yes
-rtmpEncryption: strict
-rtmpAddress: 127.0.0.1:{rtmp_port}
+rtmpEncryption: {rtmp_encryption}
+rtmpAddress: {rtmp_bind}
 rtmpsAddress: 0.0.0.0:{rtmps_port}
 rtmpServerKey: {key_path}
 rtmpServerCert: {cert_path}

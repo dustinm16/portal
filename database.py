@@ -477,6 +477,24 @@ MIGRATIONS = [
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at DESC)",
+    # RTMP plain ingress - per-stream toggle
+    "ALTER TABLE user_streams ADD COLUMN rtmp_enabled INTEGER DEFAULT 0",
+    # RTMP temporary publish tokens
+    """CREATE TABLE IF NOT EXISTS rtmp_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        stream_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used INTEGER DEFAULT 0,
+        used_at TEXT,
+        revoked INTEGER DEFAULT 0,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_rtmp_tokens_hash ON rtmp_tokens(token_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_rtmp_tokens_stream ON rtmp_tokens(stream_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1804,7 +1822,7 @@ class Database:
         """Update a user stream. If user_id is provided, verify ownership."""
         allowed_fields = {"name", "description", "is_public", "is_live", "viewer_count",
                          "chat_channel_id", "thumbnail_url", "started_at", "ended_at",
-                         "allow_unauthenticated"}
+                         "allow_unauthenticated", "rtmp_enabled"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:
@@ -1898,6 +1916,83 @@ class Database:
         cursor = await self.conn.execute(query, params)
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    # RTMP Token operations
+    async def create_rtmp_token(self, stream_id: int, user_id: int, token_hash: str, expires_at: str) -> int:
+        """Create a temporary RTMP publish token."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """INSERT INTO rtmp_tokens (token_hash, stream_id, user_id, created_at, expires_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (token_hash, stream_id, user_id, now, expires_at)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_rtmp_token(self, token_hash: str) -> Optional[dict]:
+        """Get an RTMP token by hash, joined with stream data."""
+        cursor = await self.conn.execute(
+            """SELECT rt.*, us.stream_key, us.stream_key_hash, us.rtmp_enabled,
+                      us.user_id as stream_user_id, us.name as stream_name,
+                      us.is_public, us.is_live, us.chat_channel_id,
+                      us.allow_unauthenticated, us.viewer_count,
+                      us.started_at, us.ended_at, us.thumbnail_url,
+                      u.username as owner_username, u.nickname as owner_nickname
+               FROM rtmp_tokens rt
+               JOIN user_streams us ON rt.stream_id = us.id
+               LEFT JOIN users u ON us.user_id = u.id
+               WHERE rt.token_hash = ?""",
+            (token_hash,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            result = dict(row)
+            # Decrypt stream key for downstream use (VOD recording needs it)
+            if result.get("stream_key"):
+                result["stream_key"] = decrypt_config(result["stream_key"])
+            return result
+        return None
+
+    async def mark_rtmp_token_used(self, token_id: int) -> bool:
+        """Mark an RTMP token as used."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "UPDATE rtmp_tokens SET used = 1, used_at = ? WHERE id = ?",
+            (now, token_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def revoke_rtmp_tokens_for_stream(self, stream_id: int) -> int:
+        """Revoke all active tokens for a stream."""
+        cursor = await self.conn.execute(
+            "UPDATE rtmp_tokens SET revoked = 1 WHERE stream_id = ? AND revoked = 0",
+            (stream_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def cleanup_expired_rtmp_tokens(self) -> int:
+        """Delete tokens that expired more than 1 hour ago."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM rtmp_tokens WHERE expires_at < ?",
+            (cutoff,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def get_active_rtmp_tokens(self, stream_id: int) -> list[dict]:
+        """Get active (non-expired, non-revoked) tokens for a stream."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """SELECT id, created_at, expires_at, used, used_at
+               FROM rtmp_tokens
+               WHERE stream_id = ? AND revoked = 0 AND expires_at > ?
+               ORDER BY created_at DESC""",
+            (stream_id, now)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
     # Stream Ban operations (moderation)
     async def create_stream_ban(
