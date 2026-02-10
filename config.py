@@ -76,6 +76,10 @@ class Config:
     RTMP_TOKEN_EXPIRY_MINUTES: int = int(os.getenv("RTMP_TOKEN_EXPIRY_MINUTES", "15"))
     RTMP_TOKEN_GRACE_SECONDS: int = int(os.getenv("RTMP_TOKEN_GRACE_SECONDS", "30"))
 
+    # Certificate Management
+    CERT_METHOD: str = os.getenv("CERT_METHOD", "")  # letsencrypt, selfsigned, custom
+    CERTS_DIR: str = str(Path(__file__).parent / "certs")
+
     # Voice Chat (WebRTC ICE servers)
     STUN_SERVER: str = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")
     TURN_SERVER: str = os.getenv("TURN_SERVER", "")

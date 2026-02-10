@@ -84,6 +84,7 @@ from services import (
     get_available_service_types,
     load_service_types,
 )
+import cert_manager
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -4727,6 +4728,269 @@ async def http_system_health(request: web.Request) -> web.Response:
     })
 
 
+# =============================================================================
+# Certificate Management (admin only)
+# =============================================================================
+
+async def http_get_cert_info(request: web.Request) -> web.Response:
+    """GET /api/certs/info - Get current certificate information."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        info = cert_manager.get_cert_info(Config.SSL_CERT)
+    except FileNotFoundError:
+        return web.json_response({"error": "Certificate file not found"}, status=404)
+    except Exception as e:
+        return web.json_response({"error": f"Failed to read certificate: {e}"}, status=500)
+
+    # Override method from env if set
+    if Config.CERT_METHOD:
+        info["method"] = Config.CERT_METHOD
+
+    return web.json_response(info)
+
+
+async def http_upload_cert(request: web.Request) -> web.Response:
+    """POST /api/certs/upload - Upload custom PEM cert+key."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    cert_pem = data.get("cert", "").strip()
+    key_pem = data.get("key", "").strip()
+
+    if not cert_pem or not key_pem:
+        return web.json_response({"error": "Both 'cert' and 'key' fields are required"}, status=400)
+
+    cert_bytes = cert_pem.encode()
+    key_bytes = key_pem.encode()
+
+    # Validate pair
+    is_valid, error = cert_manager.validate_cert_key_pair(cert_bytes, key_bytes)
+    if not is_valid:
+        return web.json_response({"error": error}, status=400)
+
+    try:
+        cert_path, key_path = cert_manager.save_uploaded_cert(
+            cert_bytes, key_bytes, Config.CERTS_DIR
+        )
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"error": f"Failed to save certificate: {e}"}, status=500)
+
+    # Update .env
+    env_path = str(Path(__file__).parent / ".env")
+    cert_manager.update_env_ssl_paths(env_path, cert_path, key_path)
+    cert_manager.update_env_value(env_path, "CERT_METHOD", "custom")
+
+    logger.info(f"Custom certificate uploaded by user {token.user_id}")
+
+    info = cert_manager.get_cert_info(cert_path)
+    return web.json_response({
+        "status": "success",
+        "message": "Certificate uploaded. Click 'Apply & Restart' to activate.",
+        "cert_info": info,
+    })
+
+
+async def http_generate_selfsigned(request: web.Request) -> web.Response:
+    """POST /api/certs/self-signed - Generate a self-signed certificate."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+
+    hostname = data.get("hostname", Config.HOSTNAME).strip()
+    validity_days = data.get("validity_days", 365)
+
+    if not hostname:
+        return web.json_response({"error": "Hostname is required"}, status=400)
+
+    try:
+        validity_days = int(validity_days)
+        if validity_days < 30 or validity_days > 3650:
+            return web.json_response({"error": "Validity must be between 30 and 3650 days"}, status=400)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid validity_days"}, status=400)
+
+    try:
+        cert_path, key_path = cert_manager.generate_self_signed_cert(
+            hostname, Config.CERTS_DIR, validity_days
+        )
+    except Exception as e:
+        return web.json_response({"error": f"Failed to generate certificate: {e}"}, status=500)
+
+    # Update .env
+    env_path = str(Path(__file__).parent / ".env")
+    cert_manager.update_env_ssl_paths(env_path, cert_path, key_path)
+    cert_manager.update_env_value(env_path, "CERT_METHOD", "selfsigned")
+
+    logger.info(f"Self-signed certificate generated for {hostname} by user {token.user_id}")
+
+    info = cert_manager.get_cert_info(cert_path)
+    return web.json_response({
+        "status": "success",
+        "message": "Self-signed certificate generated. Click 'Apply & Restart' to activate.",
+        "cert_info": info,
+    })
+
+
+async def http_trigger_letsencrypt(request: web.Request) -> web.Response:
+    """POST /api/certs/letsencrypt - Request/renew a Let's Encrypt certificate."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    hostname = data.get("hostname", Config.HOSTNAME).strip()
+    email = data.get("email", "").strip()
+
+    if not hostname:
+        return web.json_response({"error": "Hostname is required"}, status=400)
+    if not email:
+        return web.json_response({"error": "Email is required for Let's Encrypt"}, status=400)
+
+    logger.info(f"Let's Encrypt certificate requested for {hostname} by user {token.user_id}")
+
+    success, message = cert_manager.request_letsencrypt_cert(hostname, email)
+    if not success:
+        return web.json_response({"error": message}, status=500)
+
+    # Get cert paths and update .env
+    cert_path, key_path = cert_manager.get_letsencrypt_cert_paths(hostname)
+    env_path = str(Path(__file__).parent / ".env")
+    cert_manager.update_env_ssl_paths(env_path, cert_path, key_path)
+    cert_manager.update_env_value(env_path, "CERT_METHOD", "letsencrypt")
+    cert_manager.update_env_value(env_path, "CERT_EMAIL", email)
+
+    # Install renewal hook
+    cert_manager.install_renewal_hook("portal")
+
+    info = cert_manager.get_cert_info(cert_path)
+    return web.json_response({
+        "status": "success",
+        "message": "Let's Encrypt certificate issued. Click 'Apply & Restart' to activate.",
+        "cert_info": info,
+    })
+
+
+async def http_apply_certs(request: web.Request) -> web.Response:
+    """POST /api/certs/apply - Graceful restart to apply new certificates."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    import subprocess as _sp
+
+    # Validate that cert files exist before restarting
+    env_path = str(Path(__file__).parent / ".env")
+    # Re-read .env to get latest paths
+    from dotenv import dotenv_values
+    env_vals = dotenv_values(env_path)
+    cert_path = env_vals.get("SSL_CERT", Config.SSL_CERT)
+    key_path = env_vals.get("SSL_KEY", Config.SSL_KEY)
+
+    if not Path(cert_path).exists():
+        return web.json_response({"error": f"Certificate file not found: {cert_path}"}, status=400)
+    if not Path(key_path).exists():
+        return web.json_response({"error": f"Key file not found: {key_path}"}, status=400)
+
+    # Validate the pair
+    try:
+        cert_data = Path(cert_path).read_bytes()
+        key_data = Path(key_path).read_bytes()
+        is_valid, error = cert_manager.validate_cert_key_pair(cert_data, key_data)
+        if not is_valid:
+            return web.json_response({"error": f"Invalid certificate pair: {error}"}, status=400)
+    except Exception as e:
+        return web.json_response({"error": f"Failed to validate certificates: {e}"}, status=400)
+
+    logger.warning(f"Server restart requested by user {token.user_id} to apply new certificates")
+
+    # Schedule restart after response is sent
+    async def _restart():
+        await asyncio.sleep(2)
+        _sp.run(["systemctl", "restart", "portal"], capture_output=True)
+
+    asyncio.ensure_future(_restart())
+
+    return web.json_response({
+        "status": "success",
+        "message": "Server will restart in 2 seconds to apply new certificates.",
+    })
+
+
+async def http_get_server_hostname(request: web.Request) -> web.Response:
+    """GET /api/settings/hostname - Get current hostname."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    return web.json_response({"hostname": Config.HOSTNAME, "port": Config.PORT})
+
+
+async def http_update_server_hostname(request: web.Request) -> web.Response:
+    """PUT /api/settings/hostname - Update server hostname."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    hostname = data.get("hostname", "").strip()
+    if not hostname:
+        return web.json_response({"error": "Hostname is required"}, status=400)
+
+    # Basic validation: no spaces, no special chars except dots and hyphens
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]$', hostname) and hostname != "localhost":
+        return web.json_response({"error": "Invalid hostname format"}, status=400)
+
+    env_path = str(Path(__file__).parent / ".env")
+    cert_manager.update_env_value(env_path, "HOSTNAME", hostname)
+    Config.HOSTNAME = hostname
+
+    logger.info(f"Hostname updated to {hostname} by user {token.user_id}")
+
+    return web.json_response({
+        "status": "success",
+        "hostname": hostname,
+        "message": "Hostname updated. Restart the server for full effect.",
+    })
+
+
 async def http_activity_feed(request: web.Request) -> web.Response:
     """Get recent activity feed. Admins see all; regular users see their own."""
     token = await authenticate_request(request)
@@ -8527,6 +8791,17 @@ def create_app() -> web.Application:
     app.router.add_get("/api/vuln/status", http_vuln_scanner_status)
     app.router.add_post("/api/vuln/nvd-api-key", http_vuln_set_nvd_api_key)
 
+    # Certificate Management (admin only)
+    app.router.add_get("/api/certs/info", http_get_cert_info)
+    app.router.add_post("/api/certs/upload", http_upload_cert)
+    app.router.add_post("/api/certs/self-signed", http_generate_selfsigned)
+    app.router.add_post("/api/certs/letsencrypt", http_trigger_letsencrypt)
+    app.router.add_post("/api/certs/apply", http_apply_certs)
+
+    # Server Settings (admin only)
+    app.router.add_get("/api/settings/hostname", http_get_server_hostname)
+    app.router.add_put("/api/settings/hostname", http_update_server_hostname)
+
     # Web UI routes
     app.router.add_get("/live", http_live_page)
     app.router.add_get("/login", http_login_page)
@@ -9013,6 +9288,9 @@ def main():
     # List users
     subparsers.add_parser("list-users", help="List all users")
 
+    # Setup wizard
+    subparsers.add_parser("setup", help="Interactive setup wizard")
+
     args = parser.parse_args()
 
     if args.command == "serve" or args.command is None:
@@ -9030,6 +9308,9 @@ def main():
         asyncio.run(set_admin_cli(args.username, args.remove))
     elif args.command == "list-users":
         asyncio.run(list_users_cli())
+    elif args.command == "setup":
+        from setup import run_setup_wizard
+        run_setup_wizard()
     else:
         parser.print_help()
 

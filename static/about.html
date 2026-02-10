@@ -812,6 +812,29 @@
                     <li><strong>Portal Process</strong> &mdash; RSS memory, virtual memory, thread count, and PID</li>
                     <li><strong>System Uptime</strong> &mdash; Time since last system boot</li>
                 </ul>
+
+                <h3>Certificate Management</h3>
+                <p>Manage TLS certificates directly from the Admin Panel Settings tab:</p>
+                <ul>
+                    <li><strong>Upload Custom</strong> &mdash; Bring your own PEM certificate and key (Cloudflare Origin CA, internal CA, etc.)</li>
+                    <li><strong>Self-Signed</strong> &mdash; Auto-generate RSA 4096-bit certificates for development or LAN use</li>
+                    <li><strong>Let's Encrypt</strong> &mdash; Request free trusted certificates with automated renewal</li>
+                    <li><strong>Certificate Info</strong> &mdash; View subject, issuer, SANs, expiry countdown, fingerprint, and key type</li>
+                    <li><strong>Expiry Warnings</strong> &mdash; Automatic alerts when certificates are expiring within 30 days</li>
+                    <li><strong>Apply &amp; Restart</strong> &mdash; Seamlessly activate new certificates with one click</li>
+                </ul>
+
+                <h3>Setup Wizard</h3>
+                <p>One-command setup from fresh clone to running server:</p>
+                <div class="code-block" style="margin: 0.5rem 0;"><pre>python server.py setup</pre></div>
+                <ul>
+                    <li>Interactive prompts for hostname, port, and TLS certificate method</li>
+                    <li>Auto-generates JWT secret and <code>.env</code> configuration</li>
+                    <li>Creates virtual environment and installs dependencies</li>
+                    <li>Generates systemd service file with correct paths for any install location</li>
+                    <li>Optionally installs, enables, and starts the service</li>
+                    <li>Works for both fresh installs and reconfiguration of existing setups</li>
+                </ul>
                 </div>
 
                 <!-- Security -->

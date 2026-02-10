@@ -3358,6 +3358,114 @@ ws.send(JSON.stringify({
                     </div>
                 </div>
 
+                <h2 id="certificates">Certificate Management <span class="badge-admin">ADMIN</span></h2>
+                <p>Manage TLS certificates via the admin panel or API. Supports custom uploads, self-signed generation, and Let's Encrypt automation.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/certs/info</span>
+                        <span class="endpoint-desc">Get current certificate details</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns subject, issuer, SANs, expiry, fingerprint, key type, and certificate method. Never exposes private key material.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/certs/upload</span>
+                        <span class="endpoint-desc">Upload custom PEM certificate and key</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><td><code>cert</code></td><td>string</td><td>Certificate PEM content</td></tr>
+                            <tr><td><code>key</code></td><td>string</td><td>Private key PEM content</td></tr>
+                        </table>
+                        <p>Validates that the certificate and key match before saving. Returns cert info on success.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/certs/self-signed</span>
+                        <span class="endpoint-desc">Generate a self-signed certificate</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><td><code>hostname</code></td><td>string</td><td>Hostname for the certificate (defaults to server hostname)</td></tr>
+                            <tr><td><code>validity_days</code></td><td>integer</td><td>Days until expiry (30-3650, default 365)</td></tr>
+                        </table>
+                        <p>Generates RSA 4096-bit self-signed certificate with SANs for hostname, localhost, and 127.0.0.1.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/certs/letsencrypt</span>
+                        <span class="endpoint-desc">Request Let's Encrypt certificate</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><td><code>hostname</code></td><td>string</td><td>Domain name (must resolve to this server)</td></tr>
+                            <tr><td><code>email</code></td><td>string</td><td>Email for renewal notifications</td></tr>
+                        </table>
+                        <p>Runs certbot in standalone mode. Requires port 80 to be accessible. Installs auto-renewal hook.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/certs/apply</span>
+                        <span class="endpoint-desc">Restart server to apply new certificates</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Validates the new certificate and key, then triggers a graceful server restart after a 2-second delay. Active connections will be briefly interrupted.</p>
+                    </div>
+                </div>
+
+                <h2 id="server-settings">Server Settings <span class="badge-admin">ADMIN</span></h2>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/settings/hostname</span>
+                        <span class="endpoint-desc">Get current server hostname and port</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"hostname": "...", "port": 443}</code></p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/settings/hostname</span>
+                        <span class="endpoint-desc">Update server hostname</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><td><code>hostname</code></td><td>string</td><td>New hostname (FQDN or IP)</td></tr>
+                        </table>
+                        <p>Updates the hostname in the configuration. Requires a server restart for full effect.</p>
+                    </div>
+                </div>
+
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2>Rate Limits</h2>

@@ -377,6 +377,7 @@
                 <button class="tab-btn" onclick="showTab('vuln')">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
                 <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
+                <button class="tab-btn" onclick="showTab('settings')">Settings</button>
             </div>
 
             <!-- Overview Tab -->
@@ -732,6 +733,164 @@
                 </div>
             </div>
 
+            <!-- Settings Tab -->
+            <div id="tab-settings" class="tab-content">
+                <!-- Certificate Expiry Warning Banner -->
+                <div id="cert-expiry-warning" class="admin-card" style="display:none; border-color: var(--accent-yellow); margin-bottom: 1.5rem;">
+                    <h3 style="color: var(--accent-yellow);">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        Certificate Warning
+                    </h3>
+                    <p id="cert-expiry-warning-text" style="color: var(--accent-yellow); margin: 0;"></p>
+                </div>
+
+                <div class="admin-grid">
+                    <!-- Certificate Info Card -->
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                            </svg>
+                            TLS Certificate
+                        </h3>
+                        <div id="cert-info">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+
+                    <!-- Certificate Management Card -->
+                    <div class="admin-card" style="grid-column: span 1;">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            Certificate Management
+                        </h3>
+                        <div class="cert-actions">
+                            <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap: wrap;">
+                                <button class="range-btn active" id="cert-tab-upload" onclick="showCertMethod('upload')">Upload Custom</button>
+                                <button class="range-btn" id="cert-tab-selfsigned" onclick="showCertMethod('selfsigned')">Self-Signed</button>
+                                <button class="range-btn" id="cert-tab-letsencrypt" onclick="showCertMethod('letsencrypt')">Let's Encrypt</button>
+                            </div>
+
+                            <!-- Upload Custom Cert -->
+                            <div id="cert-method-upload" class="cert-method-panel">
+                                <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                                    <div>
+                                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Certificate (PEM)</label>
+                                        <textarea id="cert-pem-input" rows="4" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                                            style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); font-family:monospace; font-size:0.75rem; padding:0.5rem; resize:vertical; box-sizing:border-box;"></textarea>
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Private Key (PEM)</label>
+                                        <textarea id="key-pem-input" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                                            style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); font-family:monospace; font-size:0.75rem; padding:0.5rem; resize:vertical; box-sizing:border-box;"></textarea>
+                                    </div>
+                                    <div style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+                                        <label style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">
+                                            Cert file: <input type="file" id="cert-file-input" accept=".pem,.crt,.cer" style="font-size:0.75rem; max-width:150px;">
+                                        </label>
+                                        <label style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">
+                                            Key file: <input type="file" id="key-file-input" accept=".pem,.key" style="font-size:0.75rem; max-width:150px;">
+                                        </label>
+                                    </div>
+                                    <button class="btn btn-primary" onclick="uploadCert()">Upload Certificate</button>
+                                </div>
+                            </div>
+
+                            <!-- Self-Signed Generation -->
+                            <div id="cert-method-selfsigned" class="cert-method-panel" style="display:none;">
+                                <p style="color:var(--text-secondary); font-size:0.8rem; margin-bottom:1rem; margin-top:0;">
+                                    Generate a self-signed certificate for development or LAN use. Browsers will show a security warning until the certificate is trusted.
+                                </p>
+                                <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                                    <div>
+                                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Hostname</label>
+                                        <input type="text" id="selfsigned-hostname" placeholder="portal.example.com"
+                                            style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem; box-sizing:border-box;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Validity (days)</label>
+                                        <input type="number" id="selfsigned-days" value="365" min="30" max="3650"
+                                            style="width:120px; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem;">
+                                    </div>
+                                    <button class="btn btn-primary" onclick="generateSelfSigned()">Generate Self-Signed Certificate</button>
+                                </div>
+                            </div>
+
+                            <!-- Let's Encrypt -->
+                            <div id="cert-method-letsencrypt" class="cert-method-panel" style="display:none;">
+                                <p style="color:var(--text-secondary); font-size:0.8rem; margin-bottom:1rem; margin-top:0;">
+                                    Request a free trusted certificate from Let's Encrypt. Requires port 80 to be accessible from the internet for the HTTP challenge.
+                                </p>
+                                <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                                    <div>
+                                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Hostname</label>
+                                        <input type="text" id="le-hostname" placeholder="portal.example.com"
+                                            style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem; box-sizing:border-box;">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Email (for renewal notices)</label>
+                                        <input type="email" id="le-email" placeholder="admin@example.com"
+                                            style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem; box-sizing:border-box;">
+                                    </div>
+                                    <button class="btn btn-primary" onclick="requestLetsEncrypt()">Request Certificate</button>
+                                    <div id="le-status"></div>
+                                </div>
+                            </div>
+
+                            <!-- Apply button (shown after any cert change) -->
+                            <div id="cert-apply-section" style="display:none; margin-top:1.5rem; padding-top:1rem; border-top:1px solid var(--card-border);">
+                                <p style="color:var(--accent-yellow); font-size:0.8rem; margin-bottom:0.75rem; margin-top:0;">
+                                    New certificate staged. Apply to restart the server with the new certificate.
+                                </p>
+                                <button class="btn btn-primary" onclick="applyCerts()" style="background:var(--accent-green);">
+                                    Apply &amp; Restart Server
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Server Settings Card -->
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                            </svg>
+                            Server Settings
+                        </h3>
+                        <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                            <div>
+                                <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Hostname</label>
+                                <div style="display:flex; gap:0.5rem;">
+                                    <input type="text" id="settings-hostname" style="flex:1; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem;">
+                                    <button class="btn btn-secondary" onclick="updateHostname()">Update</button>
+                                </div>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Port</span>
+                                <span class="stat-value" id="settings-port">443</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">TLS Version</span>
+                                <span class="stat-value">TLSv1.2+</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Server PID</span>
+                                <span class="stat-value" id="settings-pid">-</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Uptime</span>
+                                <span class="stat-value" id="settings-uptime">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
     </div>
 
@@ -752,6 +911,7 @@
                 case 'vuln': loadKnownCVEs(); loadScannerStatus(); break;
                 case 'shodan': loadShodanConfig(); break;
                 case 'connections': loadActiveConnections(); break;
+                case 'settings': loadSettingsTab(); break;
             }
         }
 
@@ -2143,6 +2303,283 @@
                 loadOverview();
             } catch (error) {
                 window.location.href = '/login';
+            }
+        }
+
+        // =====================================================
+        // Settings Tab: Certificate & Server Management
+        // =====================================================
+
+        async function loadSettingsTab() {
+            await Promise.all([loadCertInfo(), loadServerSettings()]);
+        }
+
+        async function loadCertInfo() {
+            const el = document.getElementById('cert-info');
+            try {
+                const resp = await fetch('/api/certs/info', { credentials: 'include' });
+                if (!resp.ok) throw new Error('Failed to load');
+                const info = await resp.json();
+
+                const daysLeft = info.days_until_expiry;
+                let statusColor = 'var(--accent-green)';
+                let statusText = `${daysLeft} days remaining`;
+                if (daysLeft <= 0) {
+                    statusColor = 'var(--accent-red)';
+                    statusText = 'EXPIRED';
+                } else if (daysLeft <= 30) {
+                    statusColor = 'var(--accent-yellow)';
+                    statusText = `${daysLeft} days (expiring soon)`;
+                }
+
+                const methodBadges = {
+                    'letsencrypt': '<span style="background:rgba(52,211,153,0.2); color:var(--accent-green); padding:2px 8px; border-radius:4px; font-size:0.75rem;">Let\'s Encrypt</span>',
+                    'selfsigned': '<span style="background:rgba(251,191,36,0.2); color:var(--accent-yellow); padding:2px 8px; border-radius:4px; font-size:0.75rem;">Self-Signed</span>',
+                    'custom': '<span style="background:rgba(96,165,250,0.2); color:var(--accent-blue); padding:2px 8px; border-radius:4px; font-size:0.75rem;">Custom</span>'
+                };
+
+                el.innerHTML = `
+                    <div class="stat-row">
+                        <span class="stat-label">Method</span>
+                        <span class="stat-value">${methodBadges[info.method] || info.method}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Subject</span>
+                        <span class="stat-value">${info.subject.CN || 'N/A'}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Issuer</span>
+                        <span class="stat-value">${info.issuer.CN || info.issuer.O || 'N/A'}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">SANs</span>
+                        <span class="stat-value" style="font-size:0.75rem; text-align:right; max-width:60%;">${(info.sans || []).join(', ') || 'None'}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Valid Until</span>
+                        <span class="stat-value" style="color:${statusColor}">${new Date(info.not_after).toLocaleDateString()} (${statusText})</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Fingerprint</span>
+                        <span class="stat-value" style="font-size:0.6rem; word-break:break-all; text-align:right; max-width:60%;">${info.fingerprint_sha256}</span>
+                    </div>
+                    <div class="stat-row" style="border-bottom:none;">
+                        <span class="stat-label">Key Type</span>
+                        <span class="stat-value">${info.key_type}</span>
+                    </div>
+                `;
+
+                // Show/hide expiry warning
+                const warningEl = document.getElementById('cert-expiry-warning');
+                const warningText = document.getElementById('cert-expiry-warning-text');
+                if (daysLeft <= 0) {
+                    warningText.textContent = 'Your TLS certificate has EXPIRED. Connections may fail. Renew immediately.';
+                    warningEl.style.display = '';
+                    warningEl.style.borderColor = 'var(--accent-red)';
+                } else if (daysLeft <= 30) {
+                    warningText.textContent = `Your TLS certificate expires in ${daysLeft} days (${new Date(info.not_after).toLocaleDateString()}). Renew soon to avoid disruption.`;
+                    warningEl.style.display = '';
+                    warningEl.style.borderColor = 'var(--accent-yellow)';
+                } else {
+                    warningEl.style.display = 'none';
+                }
+
+                // Pre-fill hostnames in cert forms
+                const cn = info.subject.CN || '';
+                document.getElementById('selfsigned-hostname').value = cn;
+                document.getElementById('le-hostname').value = cn;
+            } catch (error) {
+                el.innerHTML = '<span style="color:var(--accent-red);">Failed to load certificate info</span>';
+            }
+        }
+
+        async function loadServerSettings() {
+            try {
+                const [hostnameResp, healthResp] = await Promise.all([
+                    fetch('/api/settings/hostname', { credentials: 'include' }),
+                    fetch('/api/system/health', { credentials: 'include' })
+                ]);
+                if (hostnameResp.ok) {
+                    const data = await hostnameResp.json();
+                    document.getElementById('settings-hostname').value = data.hostname;
+                    document.getElementById('settings-port').textContent = data.port;
+                }
+                if (healthResp.ok) {
+                    const health = await healthResp.json();
+                    document.getElementById('settings-pid').textContent = health.process.pid;
+                    const uptimeHrs = Math.floor(health.uptime_seconds / 3600);
+                    const uptimeMins = Math.floor((health.uptime_seconds % 3600) / 60);
+                    document.getElementById('settings-uptime').textContent =
+                        uptimeHrs > 0 ? `${uptimeHrs}h ${uptimeMins}m` : `${uptimeMins}m`;
+                }
+            } catch (e) {}
+        }
+
+        function showCertMethod(method) {
+            document.querySelectorAll('.cert-method-panel').forEach(p => p.style.display = 'none');
+            document.querySelectorAll('[id^="cert-tab-"]').forEach(b => b.classList.remove('active'));
+            document.getElementById('cert-method-' + method).style.display = '';
+            document.getElementById('cert-tab-' + method).classList.add('active');
+        }
+
+        // File input handlers - read PEM files into textareas
+        document.addEventListener('DOMContentLoaded', () => {
+            const certFileInput = document.getElementById('cert-file-input');
+            const keyFileInput = document.getElementById('key-file-input');
+            if (certFileInput) {
+                certFileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => { document.getElementById('cert-pem-input').value = ev.target.result; };
+                        reader.readAsText(file);
+                    }
+                });
+            }
+            if (keyFileInput) {
+                keyFileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => { document.getElementById('key-pem-input').value = ev.target.result; };
+                        reader.readAsText(file);
+                    }
+                });
+            }
+        });
+
+        async function uploadCert() {
+            const certPem = document.getElementById('cert-pem-input').value.trim();
+            const keyPem = document.getElementById('key-pem-input').value.trim();
+
+            if (!certPem || !keyPem) {
+                Portal.showToast('Please provide both certificate and private key', 'error');
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/certs/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ cert: certPem, key: keyPem })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    Portal.showToast('Certificate uploaded successfully', 'success');
+                    document.getElementById('cert-apply-section').style.display = '';
+                    await loadCertInfo();
+                } else {
+                    Portal.showToast(data.error || 'Upload failed', 'error');
+                }
+            } catch (error) {
+                Portal.showToast('Upload failed: ' + error.message, 'error');
+            }
+        }
+
+        async function generateSelfSigned() {
+            const hostname = document.getElementById('selfsigned-hostname').value.trim();
+            const days = parseInt(document.getElementById('selfsigned-days').value) || 365;
+
+            if (!hostname) {
+                Portal.showToast('Please enter a hostname', 'error');
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/certs/self-signed', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ hostname, validity_days: days })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    Portal.showToast('Self-signed certificate generated', 'success');
+                    document.getElementById('cert-apply-section').style.display = '';
+                    await loadCertInfo();
+                } else {
+                    Portal.showToast(data.error || 'Generation failed', 'error');
+                }
+            } catch (error) {
+                Portal.showToast('Generation failed: ' + error.message, 'error');
+            }
+        }
+
+        async function requestLetsEncrypt() {
+            const hostname = document.getElementById('le-hostname').value.trim();
+            const email = document.getElementById('le-email').value.trim();
+
+            if (!hostname || !email) {
+                Portal.showToast('Please enter hostname and email', 'error');
+                return;
+            }
+
+            const statusEl = document.getElementById('le-status');
+            statusEl.innerHTML = '<div class="loading"><div class="spinner"></div> Requesting certificate (this may take a minute)...</div>';
+
+            try {
+                const resp = await fetch('/api/certs/letsencrypt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ hostname, email })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    statusEl.innerHTML = '<span style="color:var(--accent-green);">Certificate issued successfully!</span>';
+                    document.getElementById('cert-apply-section').style.display = '';
+                    await loadCertInfo();
+                } else {
+                    statusEl.innerHTML = '<span style="color:var(--accent-red);">' + (data.error || 'Request failed') + '</span>';
+                }
+            } catch (error) {
+                statusEl.innerHTML = '<span style="color:var(--accent-red);">Request failed: ' + error.message + '</span>';
+            }
+        }
+
+        async function applyCerts() {
+            if (!confirm('This will restart the server to apply the new certificate. All active connections will be briefly interrupted. Continue?')) {
+                return;
+            }
+
+            try {
+                await fetch('/api/certs/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: '{}'
+                });
+                Portal.showToast('Server restarting... Page will reload in 5 seconds.', 'success');
+            } catch (e) {
+                // Expected — server is restarting
+                Portal.showToast('Server restarting... Page will reload in 5 seconds.', 'success');
+            }
+            setTimeout(() => window.location.reload(), 5000);
+        }
+
+        async function updateHostname() {
+            const hostname = document.getElementById('settings-hostname').value.trim();
+            if (!hostname) {
+                Portal.showToast('Hostname cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/settings/hostname', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ hostname })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    Portal.showToast('Hostname updated. Restart to take effect.', 'success');
+                } else {
+                    Portal.showToast(data.error || 'Update failed', 'error');
+                }
+            } catch (error) {
+                Portal.showToast('Failed: ' + error.message, 'error');
             }
         }
 
