@@ -2344,6 +2344,7 @@
 
         function switchChannel(channelName) {
             currentChannel = channelName;
+            _lastReadMessageId = 0;
 
             // Update UI
             document.querySelectorAll('.channel-item').forEach(el => {
@@ -2405,10 +2406,6 @@
             switch (data.type) {
                 case 'message':
                     appendMessage(data);
-                    // Mark as read if tab is focused
-                    if (data.id && document.hasFocus()) {
-                        markAsRead(data.id);
-                    }
                     break;
                 case 'history':
                     renderHistory(data.messages);
@@ -2608,6 +2605,9 @@
             `;
 
             container.appendChild(div);
+
+            // Observe for read tracking (IntersectionObserver marks read when scrolled into view)
+            if (data.id) observeMessageForRead(div);
 
             // Fetch link previews for URLs in message
             if (data.message) {
@@ -3115,6 +3115,32 @@
         // === Unread Tracking ===
 
         let unreadCounts = new Map();
+        let _lastReadMessageId = 0;
+
+        // IntersectionObserver: marks messages as read when they scroll into view
+        const _readObserver = new IntersectionObserver((entries) => {
+            let highestId = 0;
+            for (const entry of entries) {
+                if (entry.isIntersecting) {
+                    const msgId = parseInt(entry.target.dataset.messageId, 10);
+                    if (msgId > highestId) highestId = msgId;
+                    _readObserver.unobserve(entry.target);
+                }
+            }
+            if (highestId > _lastReadMessageId) {
+                _lastReadMessageId = highestId;
+                markAsRead(highestId);
+            }
+        }, {
+            root: document.getElementById('chat-messages'),
+            threshold: 0.1
+        });
+
+        function observeMessageForRead(el) {
+            const msgId = parseInt(el.dataset.messageId, 10);
+            if (!msgId || msgId <= _lastReadMessageId) return;
+            _readObserver.observe(el);
+        }
 
         function markAsRead(messageId) {
             if (!messageId || !ws || ws.readyState !== WebSocket.OPEN) return;
