@@ -937,6 +937,7 @@ Generate a temporary, single-use token for plain RTMP (non-TLS) publishing.
 - Single-use with 30-second grace period for OBS reconnect
 - Use as the stream key in OBS: `rtmp://stream.dddvm.xyz:1935/live` with token as key
 - Tokens are revoked when `rtmp_enabled` is toggled off
+- Internally, the token is used as the MediaMTX publish path (`live/rtmp_xxx`). Portal maps this back to the stream so HLS playback, dynamic thumbnails, and VOD recording all work seamlessly regardless of whether the stream publishes via RTMPS (`live_` key) or plain RTMP (`rtmp_` token).
 
 ---
 

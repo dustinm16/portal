@@ -483,6 +483,7 @@ The MediaMTX managed service configuration is generated dynamically by Portal. K
 - **RTMP** (port 1935) - Conditionally enabled based on `rtmp_plain_enabled` config; when enabled, `rtmpEncryption: optional` is set to allow both plain and encrypted connections on the RTMPS port
 - **Publish auth** - All publish requests validated via MediaMTX external auth webhook back to Portal
 - **Playback** - Read/playback auth handled by Portal's HLS proxy, not MediaMTX
+- **RTMP path mapping** - When publishing via `rtmp_` token, MediaMTX creates the path using the token instead of the `live_` key (i.e., `live/rtmp_xxx` not `live/live_xxx`). Portal maintains an internal mapping (`_rtmp_stream_paths`) so HLS proxy, thumbnails, and VOD recording resolve to the correct MediaMTX path.
 
 ### Stream Moderation
 
