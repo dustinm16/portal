@@ -342,7 +342,7 @@ Update display nickname.
 **Request:**
 ```json
 {
-  "nickname": "DustinM"
+  "nickname": "JohnN"
 }
 ```
 
@@ -1281,7 +1281,7 @@ List chat channels. Stream-associated channels include live status and stream me
       "stream_id": 3,
       "stream_is_live": 1,
       "stream_public_key": "pub_xyz789...",
-      "stream_owner": "dustin",
+      "stream_owner": "John",
       "unread_count": 0
     }
   ]
@@ -2624,8 +2624,8 @@ List directory contents (sorted: directories first).
   "size": 4096,
   "permissions": "drwxr-xr-x",
   "modified": 1770762210.45,
-  "owner": "dustin",
-  "group": "dustin"
+  "owner": "John",
+  "group": "John"
 }]
 ```
 
