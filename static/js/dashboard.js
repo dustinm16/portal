@@ -102,7 +102,7 @@ async function loadServices() {
 async function refreshResources() {
     const promises = [
         loadInlineConnections(),
-        loadInlineStreams(),
+        loadUserStreams(),
         loadDashboardStats()
     ];
     if (typeof loadServices === 'function') {
@@ -660,107 +660,3 @@ function getActivityIcon(action) {
     return icons[action] || '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>';
 }
 
-/**
- * Load inline streams (My Streams tab)
- */
-async function loadInlineStreams() {
-    const loading = document.getElementById('streams-loading');
-    const grid = document.getElementById('streams-grid');
-    const empty = document.getElementById('streams-empty');
-
-    if (!grid) return;
-
-    loading.style.display = 'flex';
-    grid.style.display = 'none';
-    empty.style.display = 'none';
-
-    try {
-        const data = await Portal.api('/api/streams');
-        const streams = data.streams || [];
-
-        if (streams.length === 0) {
-            loading.style.display = 'none';
-            empty.style.display = 'block';
-            return;
-        }
-
-        grid.innerHTML = streams.map(stream => {
-            const isLive = stream.is_live === 1;
-            const isEncoding = stream.is_live === 2;
-            const statusClass = isLive ? 'online' : isEncoding ? 'encoding' : 'offline';
-            const statusText = isLive ? 'Live' : isEncoding ? 'Encoding' : 'Offline';
-            const visibilityBadge = stream.is_public
-                ? '<span class="stream-badge stream-badge-public">Public</span>'
-                : '<span class="stream-badge stream-badge-private">Private</span>';
-            const viewerCount = isLive && stream.viewer_count
-                ? `<span class="stream-viewers">${stream.viewer_count} viewer${stream.viewer_count !== 1 ? 's' : ''}</span>`
-                : '';
-            const created = Portal.formatRelativeTime(stream.created_at);
-            const maskedKey = stream.stream_key
-                ? stream.stream_key.substring(0, 8) + '...'
-                : '***';
-
-            return `<div class="connection-card stream-card">
-                <div class="connection-card-header">
-                    <div class="connection-icon">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                    </div>
-                    <div class="connection-info">
-                        <h4>${escapeHtml(stream.name)} ${visibilityBadge}</h4>
-                        <div class="stream-meta">
-                            <span class="service-status ${statusClass}">
-                                <span class="service-status-dot"></span>
-                                ${statusText}
-                            </span>
-                            ${viewerCount}
-                        </div>
-                    </div>
-                </div>
-                <div class="connection-details">
-                    <span class="stream-key-display" title="Click to copy stream key">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                        </svg>
-                        ${maskedKey}
-                    </span>
-                    <span class="connection-type">${created}</span>
-                </div>
-                <div class="connection-actions">
-                    <button class="btn btn-secondary btn-sm" onclick="copyStreamKey('${escapeHtml(stream.stream_key || '')}')" title="Copy stream key">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                        Key
-                    </button>
-                    ${stream.public_key ? `<button class="btn btn-secondary btn-sm" onclick="copyStreamKey('${escapeHtml(stream.public_key)}')" title="Copy public key">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                        </svg>
-                        Public
-                    </button>` : ''}
-                    ${isLive && stream.public_key ? `<button class="btn btn-primary btn-sm" onclick="window.open('/watch/${escapeHtml(stream.public_key)}', '_blank')">
-                        Watch
-                    </button>` : ''}
-                </div>
-            </div>`;
-        }).join('');
-
-        loading.style.display = 'none';
-        grid.style.display = 'grid';
-    } catch (error) {
-        console.error('Failed to load streams:', error);
-        loading.style.display = 'none';
-        empty.style.display = 'block';
-    }
-}
-
-function copyStreamKey(key) {
-    if (!key) return;
-    navigator.clipboard.writeText(key).then(() => {
-        Portal.toast('Key copied to clipboard');
-    }).catch(() => {
-        Portal.toast('Failed to copy key', 'error');
-    });
-}
