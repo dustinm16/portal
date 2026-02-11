@@ -89,6 +89,9 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 ![Chat](docs/screenshots/chat.png)
 *Encrypted Chat — Channels, reactions, threads, @mentions, voice chat*
 
+![Direct Messages](docs/screenshots/dms.png)
+*Direct Messages — Private 1:1 and group DMs with encryption at rest*
+
 ![Admin Panel](docs/screenshots/admin.png)
 *Admin Panel — Server stats, traffic metrics, user management*
 
