@@ -70,6 +70,9 @@ class Config:
     CVE_CACHE_TTL: int = int(os.getenv("CVE_CACHE_TTL", "3600"))  # 1 hour default
     VULN_SCAN_TIMEOUT: int = int(os.getenv("VULN_SCAN_TIMEOUT", "300"))  # 5 minutes
 
+    # Stream hostname (for direct RTMP/RTMPS, bypasses CDN)
+    STREAM_HOSTNAME: str = os.getenv("STREAM_HOSTNAME", os.getenv("HOSTNAME", "localhost"))
+
     # RTMP Plain (standard, non-TLS) ingress
     RTMP_PLAIN_ENABLED: bool = os.getenv("RTMP_PLAIN_ENABLED", "false").lower() == "true"
     RTMP_PLAIN_PORT: int = int(os.getenv("RTMP_PLAIN_PORT", "1935"))

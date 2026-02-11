@@ -1534,6 +1534,7 @@ def redact_connection_config(connection: dict) -> dict:
 CONNECTION_TYPES = {
     # Remote Access
     "ssh": {"name": "SSH Terminal", "icon": "terminal", "default_port": 22, "plugin": "ssh"},
+    "sftp": {"name": "SFTP File Transfer", "icon": "server", "default_port": 22, "plugin": "ssh"},
     "vnc": {"name": "VNC Desktop", "icon": "desktop", "default_port": 5900, "plugin": "vnc"},
     "rdp": {"name": "RDP Desktop", "icon": "desktop", "default_port": 3389, "plugin": "vnc"},
     "spice": {"name": "SPICE Console", "icon": "desktop", "default_port": 5930, "plugin": "spice"},
@@ -2120,7 +2121,7 @@ async def http_create_rtmp_token(request: web.Request) -> web.Response:
     await db.create_rtmp_token(stream_id, token.user_id, token_hash, expires_at)
 
     # RTMP URL uses the streaming hostname (direct, bypasses Cloudflare)
-    rtmp_url = f"rtmp://stream.dddvm.xyz:{Config.RTMP_PLAIN_PORT}/live"
+    rtmp_url = f"rtmp://{Config.STREAM_HOSTNAME}:{Config.RTMP_PLAIN_PORT}/live"
 
     return web.json_response({
         "token": rtmp_token,
@@ -3492,7 +3493,7 @@ async def http_stream_info(request: web.Request) -> web.Response:
     full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
 
     # Base URL for the portal
-    host = request.headers.get("Host", "portal.dddvm.xyz")
+    host = request.headers.get("Host", Config.HOSTNAME)
     base_url = f"https://{host}"
 
     return web.json_response({
@@ -5380,6 +5381,219 @@ async def http_delete_file(request: web.Request) -> web.Response:
 # =============================================================================
 # SFTP Browser (per-user, connection ownership checked)
 # =============================================================================
+
+async def _get_vod_sftp(request: web.Request, token: TokenPayload):
+    """Helper: connect to user's VOD SFTP storage. Returns (conn, sftp, error_response)."""
+    conn, sftp, error = await _connect_vod_sftp(token.user_id)
+    if error:
+        return None, None, web.json_response({"error": error}, status=502)
+    return conn, sftp, None
+
+
+async def http_sftp_vod_list(request: web.Request) -> web.Response:
+    """GET /api/sftp/vod/list - List VOD storage directory."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        path = request.query.get("path", "/")
+        entries = await sftp_browser.list_remote_directory(sftp, path)
+        return web.json_response(entries)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_read(request: web.Request) -> web.Response:
+    """GET /api/sftp/vod/read - Read file from VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        path = request.query.get("path")
+        if not path:
+            return web.json_response({"error": "path required"}, status=400)
+        content = await sftp_browser.read_remote_file(sftp, path)
+        return web.json_response({"path": path, "content": content.decode("utf-8", errors="replace")})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_download(request: web.Request) -> web.Response:
+    """GET /api/sftp/vod/download - Download file from VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        path = request.query.get("path")
+        if not path:
+            return web.json_response({"error": "path required"}, status=400)
+        content = await sftp_browser.read_remote_file(sftp, path, max_size=100 * 1024 * 1024)
+        filename = path.split("/")[-1]
+        return web.Response(
+            body=content,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "application/octet-stream",
+            }
+        )
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_mkdir(request: web.Request) -> web.Response:
+    """POST /api/sftp/vod/mkdir - Create directory on VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        data = await request.json()
+        path = data.get("path")
+        if not path:
+            return web.json_response({"error": "path required"}, status=400)
+        await sftp_browser.create_remote_directory(sftp, path)
+        return web.json_response({"status": "created", "path": path})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_delete(request: web.Request) -> web.Response:
+    """DELETE /api/sftp/vod/delete - Delete file/dir on VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        path = request.query.get("path")
+        if not path:
+            return web.json_response({"error": "path required"}, status=400)
+        await sftp_browser.delete_remote_path(sftp, path)
+        return web.json_response({"status": "deleted"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_upload(request: web.Request) -> web.Response:
+    """POST /api/sftp/vod/upload - Upload file to VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        reader = await request.multipart()
+        target_path = "/"
+        file_data = None
+        file_name = None
+
+        async for part in reader:
+            if part.name == "path":
+                target_path = (await part.text()).strip()
+            elif part.name == "file":
+                file_name = part.filename
+                file_data = await part.read(Config.FILE_MANAGER_MAX_UPLOAD)
+
+        if not file_data or not file_name:
+            return web.json_response({"error": "No file provided"}, status=400)
+
+        dest = target_path.rstrip("/") + "/" + file_name
+        await sftp_browser.write_remote_file(sftp, dest, file_data)
+        return web.json_response({"status": "success", "path": dest})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_write(request: web.Request) -> web.Response:
+    """POST /api/sftp/vod/write - Write text file to VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        ssh_conn.close()
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    path = data.get("path", "")
+    content = data.get("content", "")
+    if not path:
+        ssh_conn.close()
+        return web.json_response({"error": "path is required"}, status=400)
+
+    try:
+        await sftp_browser.write_remote_file(sftp, path, content.encode("utf-8"))
+        return web.json_response({"status": "success", "path": path})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
+
+async def http_sftp_vod_rename(request: web.Request) -> web.Response:
+    """POST /api/sftp/vod/rename - Rename path on VOD storage."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    ssh_conn, sftp, err = await _get_vod_sftp(request, token)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        ssh_conn.close()
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    old_path = data.get("old_path", "")
+    new_path = data.get("new_path", "")
+    if not old_path or not new_path:
+        ssh_conn.close()
+        return web.json_response({"error": "old_path and new_path are required"}, status=400)
+
+    try:
+        await sftp_browser.rename_remote_path(sftp, old_path, new_path)
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    finally:
+        ssh_conn.close()
+
 
 async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     """Helper: get user connection and establish SFTP. Returns (conn, sftp, error_response)."""
@@ -9485,6 +9699,16 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/files/delete", http_delete_file)
 
     # SFTP Browser (per-user)
+    # VOD Storage SFTP (must be before {conn_id} routes)
+    app.router.add_get("/api/sftp/vod/list", http_sftp_vod_list)
+    app.router.add_get("/api/sftp/vod/read", http_sftp_vod_read)
+    app.router.add_get("/api/sftp/vod/download", http_sftp_vod_download)
+    app.router.add_post("/api/sftp/vod/mkdir", http_sftp_vod_mkdir)
+    app.router.add_post("/api/sftp/vod/upload", http_sftp_vod_upload)
+    app.router.add_post("/api/sftp/vod/write", http_sftp_vod_write)
+    app.router.add_post("/api/sftp/vod/rename", http_sftp_vod_rename)
+    app.router.add_delete("/api/sftp/vod/delete", http_sftp_vod_delete)
+
     app.router.add_get("/api/sftp/{conn_id}/list", http_sftp_list)
     app.router.add_get("/api/sftp/{conn_id}/read", http_sftp_read)
     app.router.add_get("/api/sftp/{conn_id}/download", http_sftp_download)
@@ -9801,6 +10025,19 @@ async def init_admin_user() -> None:
         print(f"{'='*50}\n")
     else:
         logger.info("Admin user already exists.")
+
+    # Create default services if none exist
+    services = await db.get_all_services()
+    if not services:
+        await db.create_service(
+            name="Local Shell", path="/shell", plugin="terminal",
+            host="localhost", port=0, config={},
+            required_scopes=["admin"], icon="terminal",
+            service_type="proxy", display_name="Local Shell",
+            description="Admin local terminal access"
+        )
+        logger.info("Default Local Shell service created")
+        print("Default service created: Local Shell")
 
     await db.close()
 

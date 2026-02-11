@@ -171,6 +171,17 @@
         }
         .conn-status.connected { color: #10b981; }
         .conn-status.error { color: #ef4444; }
+        .commander-panel {
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            overflow: hidden;
+            background: var(--card-bg);
+        }
+        .commander-panel .file-table { font-size: 0.8rem; }
+        .commander-panel .file-table th,
+        .commander-panel .file-table td { padding: 0.35rem 0.5rem; }
     </style>
 </head>
 <body>
@@ -244,30 +255,70 @@
 
             <!-- SFTP Tab -->
             <div id="tab-sftp" class="tab-content">
-                <div class="fm-toolbar">
-                    <select class="sftp-conn-select" id="sftp-conn-select" onchange="onSftpConnChange()">
-                        <option value="">-- Select Connection --</option>
-                    </select>
-                    <span class="conn-status" id="sftp-status"></span>
-                    <div class="breadcrumb" id="sftp-breadcrumb" style="flex:1;"></div>
-                    <button onclick="sftpNewFolder()">New Folder</button>
-                    <button onclick="document.getElementById('sftp-upload-input').click()">Upload</button>
-                    <button onclick="loadSftpDirectory(currentSftpConnId, currentSftpPath)">Refresh</button>
-                    <input type="file" id="sftp-upload-input" multiple onchange="sftpUploadFiles(this.files)" style="display:none;">
+                <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center;">
+                    <button class="btn-sm" id="toggle-split" onclick="toggleSplitView()" style="display: none;">Split View</button>
+                    <span id="sftp-conn-count" style="font-size: 0.8rem; color: var(--text-muted);"></span>
                 </div>
-                <div class="table-scroll">
-                    <table class="file-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Size</th>
-                                <th>Modified</th>
-                                <th>Permissions</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="sftp-file-body"></tbody>
-                    </table>
+
+                <!-- Single Pane Mode -->
+                <div id="sftp-single-pane">
+                    <div class="fm-toolbar">
+                        <select class="sftp-conn-select" id="sftp-conn-select" onchange="onPanelConnChange('single')">
+                            <option value="">-- Select Connection --</option>
+                        </select>
+                        <span class="conn-status" id="sftp-status-single"></span>
+                        <div class="breadcrumb" id="sftp-breadcrumb-single" style="flex:1;"></div>
+                        <button onclick="panelNewFolder('single')">New Folder</button>
+                        <button onclick="document.getElementById('sftp-upload-single').click()">Upload</button>
+                        <button onclick="refreshPanel('single')">Refresh</button>
+                        <input type="file" id="sftp-upload-single" multiple onchange="panelUploadFiles('single', this.files)" style="display:none;">
+                    </div>
+                    <div class="table-scroll">
+                        <table class="file-table">
+                            <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Permissions</th><th>Actions</th></tr></thead>
+                            <tbody id="sftp-file-body-single"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Dual Pane Commander Mode -->
+                <div id="sftp-dual-pane" style="display: none;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; height: calc(100vh - 260px);">
+                        <div class="commander-panel">
+                            <div class="fm-toolbar" style="padding: 0.5rem;">
+                                <select class="sftp-conn-select" id="sftp-conn-left" onchange="onPanelConnChange('left')" style="min-width:140px;"></select>
+                                <span class="conn-status" id="sftp-status-left"></span>
+                                <div class="breadcrumb" id="sftp-breadcrumb-left" style="flex:1;font-size:0.8rem;"></div>
+                                <button onclick="panelNewFolder('left')" style="font-size:0.75rem;padding:0.25rem 0.5rem;">New</button>
+                                <button onclick="document.getElementById('sftp-upload-left').click()" style="font-size:0.75rem;padding:0.25rem 0.5rem;">Upload</button>
+                                <button onclick="refreshPanel('left')" style="font-size:0.75rem;padding:0.25rem 0.5rem;">Refresh</button>
+                                <input type="file" id="sftp-upload-left" multiple onchange="panelUploadFiles('left', this.files)" style="display:none;">
+                            </div>
+                            <div class="table-scroll" style="flex:1;overflow-y:auto;">
+                                <table class="file-table">
+                                    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+                                    <tbody id="sftp-file-body-left"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="commander-panel">
+                            <div class="fm-toolbar" style="padding: 0.5rem;">
+                                <select class="sftp-conn-select" id="sftp-conn-right" onchange="onPanelConnChange('right')" style="min-width:140px;"></select>
+                                <span class="conn-status" id="sftp-status-right"></span>
+                                <div class="breadcrumb" id="sftp-breadcrumb-right" style="flex:1;font-size:0.8rem;"></div>
+                                <button onclick="panelNewFolder('right')" style="font-size:0.75rem;padding:0.25rem 0.5rem;">New</button>
+                                <button onclick="document.getElementById('sftp-upload-right').click()" style="font-size:0.75rem;padding:0.25rem 0.5rem;">Upload</button>
+                                <button onclick="refreshPanel('right')" style="font-size:0.75rem;padding:0.25rem 0.5rem;">Refresh</button>
+                                <input type="file" id="sftp-upload-right" multiple onchange="panelUploadFiles('right', this.files)" style="display:none;">
+                            </div>
+                            <div class="table-scroll" style="flex:1;overflow-y:auto;">
+                                <table class="file-table">
+                                    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+                                    <tbody id="sftp-file-body-right"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>
@@ -294,9 +345,7 @@
     <script>
         let isAdmin = false;
         let currentServerPath = '/';
-        let currentSftpPath = '/';
-        let currentSftpConnId = null;
-        let editingFile = null;  // { path, mode: 'server'|'sftp', connId }
+        let editingFile = null;  // { path, mode: 'server'|'sftp', connId, panel }
 
         function showTab(tab) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -485,113 +534,222 @@
             document.getElementById('server-upload-input').value = '';
         }
 
-        // ===== SFTP FILES =====
+        // ===== SFTP FILES (Panel-based) =====
+
+        const panels = {
+            single: { connId: null, path: '/', tbody: 'sftp-file-body-single', breadcrumb: 'sftp-breadcrumb-single', status: 'sftp-status-single', select: 'sftp-conn-select', upload: 'sftp-upload-single' },
+            left:   { connId: null, path: '/', tbody: 'sftp-file-body-left', breadcrumb: 'sftp-breadcrumb-left', status: 'sftp-status-left', select: 'sftp-conn-left', upload: 'sftp-upload-left' },
+            right:  { connId: null, path: '/', tbody: 'sftp-file-body-right', breadcrumb: 'sftp-breadcrumb-right', status: 'sftp-status-right', select: 'sftp-conn-right', upload: 'sftp-upload-right' }
+        };
+        let splitMode = false;
+        let sftpConnectionList = [];
+
+        function isVodConn(connId) { return connId && connId.startsWith('vod:'); }
+
+        function sftpApiBase(connId) {
+            if (isVodConn(connId)) return '/api/sftp/vod';
+            return `/api/sftp/${connId}`;
+        }
 
         async function loadSftpConnections() {
             try {
-                const res = await fetch('/api/user-connections', { credentials: 'include' });
-                if (res.status === 401) { window.location.href = '/login'; return; }
-                const conns = await res.json();
-                const select = document.getElementById('sftp-conn-select');
-                // Keep first option
-                select.innerHTML = '<option value="">-- Select Connection --</option>';
+                const [connRes, vodRes] = await Promise.all([
+                    fetch('/api/connections', { credentials: 'include' }),
+                    fetch('/api/vods/storage', { credentials: 'include' }).catch(() => null)
+                ]);
+                if (connRes.status === 401) { window.location.href = '/login'; return; }
+                const connData = await connRes.json();
+                const conns = connData.connections || connData;
                 const eligible = conns.filter(c => c.connection_type === 'ssh' || c.connection_type === 'sftp');
+
+                sftpConnectionList = [];
                 for (const c of eligible) {
-                    const opt = document.createElement('option');
-                    opt.value = c.id;
-                    opt.textContent = `${c.name} (${c.host}:${c.port || 22})`;
-                    if (c.id == currentSftpConnId) opt.selected = true;
-                    select.appendChild(opt);
+                    sftpConnectionList.push({ id: String(c.id), label: `${c.name} (${c.host}:${c.port || 22})` });
                 }
-                if (eligible.length === 0) {
-                    document.getElementById('sftp-file-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem;">No SSH/SFTP connections configured. Add one in Dashboard > My Connections.</td></tr>';
+
+                // Add VOD storage if configured
+                if (vodRes && vodRes.ok) {
+                    try {
+                        const vodData = await vodRes.json();
+                        if (vodData.storage && vodData.storage.host) {
+                            const s = vodData.storage;
+                            sftpConnectionList.push({ id: 'vod:storage', label: `VOD Storage (${s.host}:${s.port || 22})` });
+                        }
+                    } catch (e) {}
+                }
+
+                populatePanelSelect('single');
+                populatePanelSelect('left');
+                populatePanelSelect('right');
+
+                // Show split toggle if 2+ connections
+                const toggleBtn = document.getElementById('toggle-split');
+                const countSpan = document.getElementById('sftp-conn-count');
+                if (sftpConnectionList.length >= 2) {
+                    toggleBtn.style.display = '';
+                    countSpan.textContent = `${sftpConnectionList.length} connections available`;
+                } else {
+                    toggleBtn.style.display = 'none';
+                    countSpan.textContent = sftpConnectionList.length === 1 ? '1 connection' : '';
+                }
+
+                if (sftpConnectionList.length === 0) {
+                    document.getElementById('sftp-file-body-single').innerHTML =
+                        '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem;">No SSH/SFTP connections configured. Add one in Dashboard &gt; My Connections.</td></tr>';
                 }
             } catch (e) {
                 console.error('Failed to load connections:', e);
             }
         }
 
-        async function onSftpConnChange() {
-            const connId = document.getElementById('sftp-conn-select').value;
-            if (!connId) {
-                currentSftpConnId = null;
-                document.getElementById('sftp-file-body').innerHTML = '';
-                document.getElementById('sftp-status').innerHTML = '';
-                return;
+        function populatePanelSelect(panel) {
+            const sel = document.getElementById(panels[panel].select);
+            if (!sel) return;
+            const current = panels[panel].connId;
+            sel.innerHTML = '<option value="">-- Select Connection --</option>';
+            for (const c of sftpConnectionList) {
+                const opt = document.createElement('option');
+                opt.value = c.id;
+                opt.textContent = c.label;
+                if (c.id === current) opt.selected = true;
+                sel.appendChild(opt);
             }
-            currentSftpConnId = connId;
-            currentSftpPath = '/';
-            document.getElementById('sftp-status').innerHTML = '<span class="conn-status">Connecting...</span>';
-            await loadSftpDirectory(connId, '/');
         }
 
-        async function loadSftpDirectory(connId, path) {
+        function toggleSplitView() {
+            splitMode = !splitMode;
+            document.getElementById('toggle-split').textContent = splitMode ? 'Single View' : 'Split View';
+            document.getElementById('sftp-single-pane').style.display = splitMode ? 'none' : '';
+            document.getElementById('sftp-dual-pane').style.display = splitMode ? '' : 'none';
+
+            if (splitMode) {
+                // Auto-assign connections to panels
+                if (!panels.left.connId && sftpConnectionList.length >= 1) {
+                    panels.left.connId = sftpConnectionList[0].id;
+                    panels.left.path = '/';
+                    document.getElementById(panels.left.select).value = panels.left.connId;
+                    loadPanelDirectory('left');
+                }
+                if (!panels.right.connId && sftpConnectionList.length >= 2) {
+                    panels.right.connId = sftpConnectionList[1].id;
+                    panels.right.path = '/';
+                    document.getElementById(panels.right.select).value = panels.right.connId;
+                    loadPanelDirectory('right');
+                }
+            }
+        }
+
+        function onPanelConnChange(panel) {
+            const sel = document.getElementById(panels[panel].select);
+            const connId = sel.value;
+            if (!connId) {
+                panels[panel].connId = null;
+                panels[panel].path = '/';
+                document.getElementById(panels[panel].tbody).innerHTML = '';
+                document.getElementById(panels[panel].status).innerHTML = '';
+                document.getElementById(panels[panel].breadcrumb).innerHTML = '';
+                return;
+            }
+            panels[panel].connId = connId;
+            panels[panel].path = '/';
+            document.getElementById(panels[panel].status).innerHTML = '<span class="conn-status">Connecting...</span>';
+            loadPanelDirectory(panel);
+        }
+
+        async function loadPanelDirectory(panel, path) {
+            const p = panels[panel];
+            const connId = p.connId;
             if (!connId) return;
-            currentSftpPath = path || '/';
-            currentSftpConnId = connId;
-            buildBreadcrumb(currentSftpPath, 'sftp-breadcrumb', "navigateSftp");
+            if (path !== undefined) p.path = path;
+
+            // Build breadcrumb
+            const bcEl = document.getElementById(p.breadcrumb);
+            const parts = p.path.split('/').filter(Boolean);
+            let bcHtml = `<a href="#" onclick="navigatePanel('${panel}','/'); return false;">/</a>`;
+            let cum = '';
+            for (const part of parts) {
+                cum += '/' + part;
+                bcHtml += `<span>/</span><a href="#" onclick="navigatePanel('${panel}','${cum}'); return false;">${escapeHtml(part)}</a>`;
+            }
+            bcEl.innerHTML = bcHtml;
 
             try {
-                const res = await fetch(`/api/sftp/${connId}/list?path=${encodeURIComponent(currentSftpPath)}`, { credentials: 'include' });
+                const base = sftpApiBase(connId);
+                const res = await fetch(`${base}/list?path=${encodeURIComponent(p.path)}`, { credentials: 'include' });
                 if (res.status === 401) { window.location.href = '/login'; return; }
                 if (!res.ok) {
                     const d = await res.json();
-                    document.getElementById('sftp-status').innerHTML = `<span class="conn-status error">${escapeHtml(d.error)}</span>`;
+                    document.getElementById(p.status).innerHTML = `<span class="conn-status error">${escapeHtml(d.error)}</span>`;
                     return;
                 }
-                document.getElementById('sftp-status').innerHTML = '<span class="conn-status connected">Connected</span>';
+                document.getElementById(p.status).innerHTML = '<span class="conn-status connected">Connected</span>';
                 const entries = await res.json();
-                renderSftpFiles(entries);
+                renderPanelFiles(panel, entries);
             } catch (e) {
-                document.getElementById('sftp-status').innerHTML = '<span class="conn-status error">Connection failed</span>';
+                document.getElementById(p.status).innerHTML = '<span class="conn-status error">Connection failed</span>';
             }
         }
 
-        function navigateSftp(path) {
-            loadSftpDirectory(currentSftpConnId, path);
+        function navigatePanel(panel, path) {
+            panels[panel].path = path;
+            loadPanelDirectory(panel, path);
         }
 
-        function renderSftpFiles(entries) {
-            const tbody = document.getElementById('sftp-file-body');
+        function renderPanelFiles(panel, entries) {
+            const p = panels[panel];
+            const tbody = document.getElementById(p.tbody);
+            const connId = p.connId;
+            const isCompact = (panel === 'left' || panel === 'right');
+            const isVod = isVodConn(connId);
             let html = '';
-            if (currentSftpPath !== '/') {
-                const parent = currentSftpPath.replace(/\/[^/]+\/?$/, '') || '/';
-                html += `<tr ondblclick="loadSftpDirectory('${currentSftpConnId}','${parent}')">
+
+            if (p.path !== '/') {
+                const parent = p.path.replace(/\/[^/]+\/?$/, '') || '/';
+                html += `<tr ondblclick="navigatePanel('${panel}','${parent}')">
                     <td><span class="file-name">${fileIcon('directory')} <strong>..</strong></span></td>
-                    <td>-</td><td>-</td><td>-</td><td></td>
+                    <td>-</td><td>-</td>${isCompact ? '' : '<td>-</td>'}<td></td>
                 </tr>`;
             }
 
             html += entries.map(e => {
-                const fullPath = joinPath(currentSftpPath, e.name);
-                const dblClick = e.type === 'directory'
-                    ? `ondblclick="loadSftpDirectory('${currentSftpConnId}','${escapeHtml(fullPath)}')" `
-                    : '';
+                const fullPath = joinPath(p.path, e.name);
+                const escapedPath = escapeHtml(fullPath);
+                const dblClick = e.type === 'directory' ? `ondblclick="navigatePanel('${panel}','${escapedPath}')"` : '';
+                const base = sftpApiBase(connId);
+                const dlUrl = `${base}/download?path=${encodeURIComponent(fullPath)}`;
+
+                const actions = [];
+                if (e.type === 'file') {
+                    actions.push(`<button class="btn-sm" onclick="editPanelFile('${panel}','${escapedPath}')">Edit</button>`);
+                    actions.push(`<a class="btn-sm" href="${dlUrl}" style="text-decoration:none;">DL</a>`);
+                }
+                actions.push(`<button class="btn-sm" onclick="renamePanelFile('${panel}','${escapedPath}','${escapeHtml(e.name)}')">Rename</button>`);
+                actions.push(`<button class="btn-sm btn-danger" onclick="deletePanelFile('${panel}','${escapedPath}','${escapeHtml(e.name)}')">Del</button>`);
+
                 return `<tr ${dblClick}>
                     <td><span class="file-name">${fileIcon(e.type)} ${escapeHtml(e.name)}</span></td>
                     <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
                     <td>${formatDate(e.modified)}</td>
-                    <td style="font-family:monospace;font-size:0.8rem;">${escapeHtml(e.permissions)}</td>
-                    <td style="display:flex;gap:0.25rem;" onclick="event.stopPropagation()">
-                        ${e.type === 'file' ? `
-                            <button class="btn-sm" onclick="editSftpFile('${escapeHtml(fullPath)}')">Edit</button>
-                            <a class="btn-sm" href="/api/sftp/${currentSftpConnId}/download?path=${encodeURIComponent(fullPath)}" style="text-decoration:none;">DL</a>
-                        ` : ''}
-                        <button class="btn-sm" onclick="renameSftpFile('${escapeHtml(fullPath)}', '${escapeHtml(e.name)}')">Rename</button>
-                        <button class="btn-sm btn-danger" onclick="deleteSftpFile('${escapeHtml(fullPath)}', '${escapeHtml(e.name)}')">Del</button>
-                    </td>
+                    ${isCompact ? '' : `<td style="font-family:monospace;font-size:0.8rem;">${escapeHtml(e.permissions || '')}</td>`}
+                    <td style="display:flex;gap:0.25rem;flex-wrap:wrap;" onclick="event.stopPropagation()">${actions.join('')}</td>
                 </tr>`;
             }).join('');
 
             tbody.innerHTML = html;
         }
 
-        async function editSftpFile(path) {
+        function refreshPanel(panel) {
+            if (panels[panel].connId) loadPanelDirectory(panel);
+        }
+
+        async function editPanelFile(panel, path) {
+            const connId = panels[panel].connId;
+            const base = sftpApiBase(connId);
             try {
-                const res = await fetch(`/api/sftp/${currentSftpConnId}/read?path=${encodeURIComponent(path)}`, { credentials: 'include' });
+                const res = await fetch(`${base}/read?path=${encodeURIComponent(path)}`, { credentials: 'include' });
                 if (!res.ok) { const d = await res.json(); showToast(d.error || 'Cannot read file', 'error'); return; }
                 const data = await res.json();
-                editingFile = { path, mode: 'sftp', connId: currentSftpConnId };
+                editingFile = { path, mode: 'sftp', connId, panel };
                 document.getElementById('edit-modal-title').textContent = 'Edit: ' + path.split('/').pop();
                 document.getElementById('edit-textarea').value = data.content;
                 document.getElementById('edit-modal').style.display = 'flex';
@@ -600,65 +758,73 @@
             }
         }
 
-        async function deleteSftpFile(path, name) {
+        async function deletePanelFile(panel, path, name) {
             if (!confirm(`Delete "${name}" on remote?`)) return;
+            const connId = panels[panel].connId;
+            const base = sftpApiBase(connId);
             try {
-                const res = await fetch(`/api/sftp/${currentSftpConnId}/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE', credentials: 'include' });
+                const res = await fetch(`${base}/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE', credentials: 'include' });
                 const data = await res.json();
-                if (res.ok) { showToast('Deleted ' + name, 'success'); loadSftpDirectory(currentSftpConnId, currentSftpPath); }
+                if (res.ok) { showToast('Deleted ' + name, 'success'); loadPanelDirectory(panel); }
                 else showToast(data.error, 'error');
             } catch (e) { showToast('Delete failed', 'error'); }
         }
 
-        async function renameSftpFile(path, oldName) {
+        async function renamePanelFile(panel, path, oldName) {
+            const connId = panels[panel].connId;
             const newName = prompt('New name:', oldName);
             if (!newName || newName === oldName) return;
             const dir = path.replace(/\/[^/]+$/, '') || '/';
             const newPath = joinPath(dir, newName);
+            const base = sftpApiBase(connId);
             try {
-                const res = await fetch(`/api/sftp/${currentSftpConnId}/rename`, {
+                const res = await fetch(`${base}/rename`, {
                     method: 'POST', credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ old_path: path, new_path: newPath })
                 });
                 const data = await res.json();
-                if (res.ok) { showToast('Renamed', 'success'); loadSftpDirectory(currentSftpConnId, currentSftpPath); }
+                if (res.ok) { showToast('Renamed', 'success'); loadPanelDirectory(panel); }
                 else showToast(data.error, 'error');
             } catch (e) { showToast('Rename failed', 'error'); }
         }
 
-        async function sftpNewFolder() {
-            if (!currentSftpConnId) { showToast('Select a connection first', 'error'); return; }
+        async function panelNewFolder(panel) {
+            const connId = panels[panel].connId;
+            if (!connId) { showToast('Select a connection first', 'error'); return; }
             const name = prompt('Folder name:');
             if (!name) return;
-            const path = joinPath(currentSftpPath, name);
+            const path = joinPath(panels[panel].path, name);
+            const base = sftpApiBase(connId);
             try {
-                const res = await fetch(`/api/sftp/${currentSftpConnId}/mkdir`, {
+                const res = await fetch(`${base}/mkdir`, {
                     method: 'POST', credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path })
                 });
                 const data = await res.json();
-                if (res.ok) { showToast('Folder created', 'success'); loadSftpDirectory(currentSftpConnId, currentSftpPath); }
+                if (res.ok) { showToast('Folder created', 'success'); loadPanelDirectory(panel); }
                 else showToast(data.error, 'error');
             } catch (e) { showToast('Failed to create folder', 'error'); }
         }
 
-        async function sftpUploadFiles(files) {
-            if (!currentSftpConnId) { showToast('Select a connection first', 'error'); return; }
+        async function panelUploadFiles(panel, files) {
+            const connId = panels[panel].connId;
+            if (!connId) { showToast('Select a connection first', 'error'); return; }
+            const base = sftpApiBase(connId);
             for (const file of files) {
                 const formData = new FormData();
-                formData.append('path', currentSftpPath);
+                formData.append('path', panels[panel].path);
                 formData.append('file', file);
                 try {
-                    const res = await fetch(`/api/sftp/${currentSftpConnId}/upload`, { method: 'POST', credentials: 'include', body: formData });
+                    const res = await fetch(`${base}/upload`, { method: 'POST', credentials: 'include', body: formData });
                     const data = await res.json();
                     if (!res.ok) showToast(`Upload ${file.name}: ${data.error}`, 'error');
                 } catch (e) { showToast(`Upload ${file.name} failed`, 'error'); }
             }
             showToast('Upload complete', 'success');
-            loadSftpDirectory(currentSftpConnId, currentSftpPath);
-            document.getElementById('sftp-upload-input').value = '';
+            loadPanelDirectory(panel);
+            document.getElementById(panels[panel].upload).value = '';
         }
 
         // ===== EDIT MODAL =====
@@ -676,7 +842,8 @@
                         body: JSON.stringify({ path: editingFile.path, content })
                     });
                 } else {
-                    res = await fetch(`/api/sftp/${editingFile.connId}/write`, {
+                    const base = sftpApiBase(editingFile.connId);
+                    res = await fetch(`${base}/write`, {
                         method: 'POST', credentials: 'include',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ path: editingFile.path, content })
@@ -687,7 +854,7 @@
                     showToast('File saved', 'success');
                     closeEditModal();
                     if (editingFile.mode === 'server') loadServerDirectory(currentServerPath);
-                    else loadSftpDirectory(editingFile.connId, currentSftpPath);
+                    else if (editingFile.panel) loadPanelDirectory(editingFile.panel);
                 } else {
                     showToast(data.error || 'Save failed', 'error');
                 }

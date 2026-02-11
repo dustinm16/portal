@@ -507,6 +507,46 @@ async function submitAddService(event) {
 }
 
 /**
+ * Quick Add a service from preset (Dashboard Quick Add bar)
+ */
+async function quickAddService(presetKey) {
+    const preset = SERVICE_PRESETS[presetKey];
+    if (!preset) return;
+
+    let host = preset.host;
+    if (!host) {
+        host = prompt(`Enter hostname/IP for ${preset.name}:`);
+        if (!host) return;
+    }
+
+    try {
+        const response = await Portal.fetch('/api/services', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: preset.name,
+                path: preset.path,
+                plugin: preset.plugin,
+                host: host,
+                port: preset.port || 0,
+                config: preset.config || {},
+                required_scopes: '*'
+            })
+        });
+        if (response.ok) {
+            Portal.toast(`${preset.name} added`, 'success');
+            await loadServices();
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to add service', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to add service', 'error');
+        console.error('Quick add error:', error);
+    }
+}
+
+/**
  * Show Edit Service Modal
  */
 async function showEditServiceModal(serviceId) {

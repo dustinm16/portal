@@ -130,7 +130,7 @@
                         </a>
                     </li>
                     <li>
-                        <a href="/sysmon">
+                        <a href="/admin#system">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
@@ -304,6 +304,19 @@
                     </div>
                 </div>
                 <p class="tab-description" style="margin-bottom: 1rem;">Backend services - both proxy routes to external backends and managed processes run by Portal.</p>
+
+                <div id="quick-add-bar" style="display: none; margin-bottom: 1rem;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                        <span style="color: var(--text-muted); font-size: 0.8rem;">Quick Add:</span>
+                        <button class="btn btn-sm" onclick="quickAddService('local-shell')">Local Shell</button>
+                        <button class="btn btn-sm" onclick="quickAddService('ssh-server')">SSH</button>
+                        <button class="btn btn-sm" onclick="quickAddService('vnc-server')">VNC</button>
+                        <button class="btn btn-sm" onclick="quickAddService('rdp-server')">RDP</button>
+                        <button class="btn btn-sm" onclick="quickAddService('proxmox-cluster')">Proxmox</button>
+                        <button class="btn btn-sm" onclick="quickAddService('https-proxy')">HTTPS Proxy</button>
+                        <button class="btn btn-sm" onclick="quickAddService('github')">GitHub</button>
+                    </div>
+                </div>
 
                 <div id="loading" class="loading">
                     <div class="spinner"></div>
@@ -1255,6 +1268,7 @@
                         <select id="connection-type" required onchange="onConnectionTypeChange()">
                             <optgroup label="Remote Access">
                                 <option value="ssh">SSH Terminal</option>
+                                <option value="sftp">SFTP File Transfer</option>
                                 <option value="vnc">VNC Desktop</option>
                                 <option value="rdp">RDP Desktop</option>
                                 <option value="spice">SPICE Console</option>

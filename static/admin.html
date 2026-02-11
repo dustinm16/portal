@@ -253,6 +253,166 @@
             color: var(--accent-blue);
             border-color: var(--accent-blue);
         }
+        /* System Monitor styles */
+        .sysmon-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        .sysmon-table th, .sysmon-table td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--card-border);
+            white-space: nowrap;
+        }
+        .sysmon-table th {
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            position: sticky;
+            top: 0;
+            background: var(--card-bg);
+            z-index: 1;
+        }
+        .sysmon-table tr:hover { background: rgba(255,255,255,0.03); }
+        .sysmon-table td.cmdline {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .sysmon-toolbar {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .sysmon-toolbar input[type="text"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 0.5rem 0.75rem;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+        .sysmon-toolbar select {
+            padding: 0.5rem 0.75rem;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+        .badge-running {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-stopped {
+            background: rgba(156, 163, 175, 0.15);
+            color: #9ca3af;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-failed {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .btn-success { border-color: #10b981; color: #10b981; }
+        .btn-success:hover { background: rgba(16, 185, 129, 0.15); }
+        .btn-warning { border-color: #f59e0b; color: #f59e0b; }
+        .btn-warning:hover { background: rgba(245, 158, 11, 0.15); }
+        .auto-refresh-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .auto-refresh-toggle input[type="checkbox"] {
+            accent-color: var(--accent-blue);
+        }
+        .sys-logs-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .sys-logs-modal-content {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .sys-logs-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .sys-logs-modal-header h3 { margin: 0; font-size: 1rem; }
+        .sys-logs-modal-body {
+            flex: 1;
+            overflow: auto;
+            padding: 1rem 1.5rem;
+        }
+        .sys-logs-modal-body pre {
+            margin: 0;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: var(--text-primary);
+        }
+        .sys-net-section { margin-bottom: 2rem; }
+        .sys-net-section h3 {
+            font-size: 0.95rem;
+            margin-bottom: 0.75rem;
+            color: var(--text-primary);
+        }
+        .sys-sub-tabs {
+            display: flex;
+            gap: 0.25rem;
+            margin-bottom: 1rem;
+        }
+        .sys-sub-tab {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-secondary);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+        }
+        .sys-sub-tab:hover { color: var(--text-primary); border-color: var(--accent-blue); }
+        .sys-sub-tab.active { background: rgba(96,165,250,0.15); color: var(--accent-blue); border-color: var(--accent-blue); }
+        .sys-sub-content { display: none; }
+        .sys-sub-content.active { display: block; }
+        .sys-table-scroll { overflow-x: auto; max-height: calc(100vh - 340px); overflow-y: auto; }
         /* Modal styles */
         .modal {
             position: fixed;
@@ -378,6 +538,7 @@
                 <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
                 <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
                 <button class="tab-btn" onclick="showTab('settings')">Settings</button>
+                <button class="tab-btn" onclick="showTab('system')">System</button>
             </div>
 
             <!-- Overview Tab -->
@@ -891,7 +1052,143 @@
                 </div>
             </div>
 
+            <!-- System Monitor Tab -->
+            <div id="tab-system" class="tab-content">
+                <div class="sys-sub-tabs">
+                    <button class="sys-sub-tab active" onclick="showSysSubTab('processes')">Processes</button>
+                    <button class="sys-sub-tab" onclick="showSysSubTab('sysservices')">Services</button>
+                    <button class="sys-sub-tab" onclick="showSysSubTab('network')">Network</button>
+                </div>
+
+                <!-- Processes Sub-tab -->
+                <div id="sys-sub-processes" class="sys-sub-content active">
+                    <div class="sysmon-toolbar">
+                        <input type="text" id="sys-proc-search" placeholder="Search processes..." oninput="sysFilterProcesses()">
+                        <select id="sys-proc-sort" onchange="sysLoadProcesses()">
+                            <option value="cpu">Sort by CPU</option>
+                            <option value="memory">Sort by Memory</option>
+                            <option value="pid">Sort by PID</option>
+                            <option value="name">Sort by Name</option>
+                        </select>
+                        <button class="range-btn" onclick="sysLoadProcesses()">Refresh</button>
+                        <label class="auto-refresh-toggle">
+                            <input type="checkbox" id="sys-proc-auto-refresh" onchange="sysToggleAutoRefresh()">
+                            Auto-refresh (5s)
+                        </label>
+                    </div>
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>PID</th>
+                                    <th>Name</th>
+                                    <th>User</th>
+                                    <th>CPU %</th>
+                                    <th>MEM %</th>
+                                    <th>Memory</th>
+                                    <th>Status</th>
+                                    <th class="cmdline">Command</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sys-process-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Services Sub-tab -->
+                <div id="sys-sub-sysservices" class="sys-sub-content">
+                    <div class="sysmon-toolbar">
+                        <input type="text" id="sys-svc-search" placeholder="Search services..." oninput="sysFilterServices()">
+                        <select id="sys-svc-filter" onchange="sysLoadServices()">
+                            <option value="">All Services</option>
+                            <option value="running">Running</option>
+                            <option value="failed">Failed</option>
+                        </select>
+                        <button class="range-btn" onclick="sysLoadServices()">Refresh</button>
+                    </div>
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>Service</th>
+                                    <th>Status</th>
+                                    <th>State</th>
+                                    <th>Description</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sys-service-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Network Sub-tab -->
+                <div id="sys-sub-network" class="sys-sub-content">
+                    <div class="sysmon-toolbar">
+                        <button class="range-btn" onclick="sysLoadNetwork()">Refresh</button>
+                    </div>
+                    <div class="sys-net-section">
+                        <h3>Network Interfaces</h3>
+                        <div class="sys-table-scroll">
+                            <table class="sysmon-table">
+                                <thead>
+                                    <tr>
+                                        <th>Interface</th>
+                                        <th>Status</th>
+                                        <th>IP Addresses</th>
+                                        <th>MAC</th>
+                                        <th>Speed</th>
+                                        <th>TX</th>
+                                        <th>RX</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sys-interfaces-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="sys-net-section">
+                        <h3>Listening Ports</h3>
+                        <div class="sys-table-scroll">
+                            <table class="sysmon-table">
+                                <thead>
+                                    <tr>
+                                        <th>Proto</th>
+                                        <th>Address</th>
+                                        <th>Port</th>
+                                        <th>PID</th>
+                                        <th>Process</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sys-ports-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
+    </div>
+
+    <!-- System Monitor Logs Modal -->
+    <div id="sys-logs-modal" class="sys-logs-modal" style="display:none;" onclick="if(event.target===this)sysCloseLogsModal()">
+        <div class="sys-logs-modal-content">
+            <div class="sys-logs-modal-header">
+                <h3 id="sys-logs-modal-title">Service Logs</h3>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <select id="sys-logs-lines" onchange="sysReloadLogs()" style="padding:0.25rem 0.5rem;background:var(--input-bg);border:1px solid var(--input-border);border-radius:6px;color:var(--text-primary);font-size:0.8rem;">
+                        <option value="50">50 lines</option>
+                        <option value="100">100 lines</option>
+                        <option value="200">200 lines</option>
+                        <option value="500">500 lines</option>
+                    </select>
+                    <button class="range-btn" onclick="sysCloseLogsModal()">Close</button>
+                </div>
+            </div>
+            <div class="sys-logs-modal-body">
+                <pre id="sys-logs-content"></pre>
+            </div>
+        </div>
     </div>
 
     <script src="/static/js/portal.js?v=22"></script>
@@ -912,6 +1209,7 @@
                 case 'shodan': loadShodanConfig(); break;
                 case 'connections': loadActiveConnections(); break;
                 case 'settings': loadSettingsTab(); break;
+                case 'system': sysLoadProcesses(); break;
             }
         }
 
@@ -2581,6 +2879,229 @@
             } catch (error) {
                 Portal.showToast('Failed: ' + error.message, 'error');
             }
+        }
+
+        // ===== SYSTEM MONITOR =====
+
+        let sysAllProcesses = [];
+        let sysAllServices = [];
+        let sysAutoRefreshTimer = null;
+        let sysCurrentLogService = '';
+
+        function showSysSubTab(tab) {
+            document.querySelectorAll('.sys-sub-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.sys-sub-tab').forEach(el => el.classList.remove('active'));
+            document.getElementById('sys-sub-' + tab).classList.add('active');
+            event.target.classList.add('active');
+
+            switch(tab) {
+                case 'processes': sysLoadProcesses(); break;
+                case 'sysservices': sysLoadServices(); break;
+                case 'network': sysLoadNetwork(); break;
+            }
+        }
+
+        async function sysLoadProcesses() {
+            const sort = document.getElementById('sys-proc-sort').value;
+            try {
+                const res = await fetch(`/api/sysmon/processes?sort=${sort}&limit=200`, { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                sysAllProcesses = await res.json();
+                sysFilterProcesses();
+            } catch (e) {
+                console.error('Failed to load processes:', e);
+            }
+        }
+
+        function sysFilterProcesses() {
+            const query = document.getElementById('sys-proc-search').value.toLowerCase();
+            const filtered = query
+                ? sysAllProcesses.filter(p => p.name.toLowerCase().includes(query) || p.cmdline.toLowerCase().includes(query) || String(p.pid).includes(query) || p.username.toLowerCase().includes(query))
+                : sysAllProcesses;
+
+            document.getElementById('sys-process-body').innerHTML = filtered.map(p => `
+                <tr>
+                    <td>${p.pid}</td>
+                    <td><strong>${Portal.escapeHtml(p.name)}</strong></td>
+                    <td>${Portal.escapeHtml(p.username)}</td>
+                    <td>${p.cpu_percent.toFixed(1)}</td>
+                    <td>${p.memory_percent.toFixed(1)}</td>
+                    <td>${formatBytes(p.memory_rss)}</td>
+                    <td>${p.status}</td>
+                    <td class="cmdline" title="${Portal.escapeHtml(p.cmdline)}">${Portal.escapeHtml(p.cmdline)}</td>
+                    <td><button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysKillProcess(${p.pid}, '${Portal.escapeHtml(p.name)}')">Kill</button></td>
+                </tr>
+            `).join('');
+        }
+
+        async function sysKillProcess(pid, name) {
+            if (!confirm(`Kill process ${name} (PID ${pid})?`)) return;
+            try {
+                const res = await fetch(`/api/sysmon/processes/${pid}/kill`, {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ signal: 'SIGTERM' })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    Portal.showToast(data.message, 'success');
+                    setTimeout(sysLoadProcesses, 500);
+                } else {
+                    Portal.showToast(data.message || data.error, 'error');
+                }
+            } catch (e) {
+                Portal.showToast('Failed to kill process', 'error');
+            }
+        }
+
+        function sysToggleAutoRefresh() {
+            if (document.getElementById('sys-proc-auto-refresh').checked) {
+                sysAutoRefreshTimer = setInterval(sysLoadProcesses, 5000);
+            } else {
+                clearInterval(sysAutoRefreshTimer);
+                sysAutoRefreshTimer = null;
+            }
+        }
+
+        async function sysLoadServices() {
+            const filter = document.getElementById('sys-svc-filter').value;
+            try {
+                const url = filter ? `/api/sysmon/services?filter=${filter}` : '/api/sysmon/services';
+                const res = await fetch(url, { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                sysAllServices = await res.json();
+                sysFilterServices();
+            } catch (e) {
+                console.error('Failed to load services:', e);
+            }
+        }
+
+        function sysFilterServices() {
+            const query = document.getElementById('sys-svc-search').value.toLowerCase();
+            const filtered = query
+                ? sysAllServices.filter(s => s.name.toLowerCase().includes(query) || s.description.toLowerCase().includes(query))
+                : sysAllServices;
+
+            document.getElementById('sys-service-body').innerHTML = filtered.map(s => {
+                let badge = 'badge-stopped';
+                if (s.sub_state === 'running') badge = 'badge-running';
+                else if (s.active_state === 'failed') badge = 'badge-failed';
+                const isRunning = s.sub_state === 'running';
+                return `
+                <tr>
+                    <td><strong>${Portal.escapeHtml(s.name)}</strong></td>
+                    <td><span class="${badge}">${s.sub_state}</span></td>
+                    <td>${s.active_state}</td>
+                    <td>${Portal.escapeHtml(s.description)}</td>
+                    <td style="display:flex;gap:0.25rem;flex-wrap:wrap;">
+                        ${isRunning
+                            ? `<button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysControlService('${Portal.escapeHtml(s.name)}','stop')">Stop</button>
+                               <button class="range-btn" style="border-color:#f59e0b;color:#f59e0b;" onclick="sysControlService('${Portal.escapeHtml(s.name)}','restart')">Restart</button>`
+                            : `<button class="range-btn" style="border-color:#10b981;color:#10b981;" onclick="sysControlService('${Portal.escapeHtml(s.name)}','start')">Start</button>`
+                        }
+                        <button class="range-btn" onclick="sysShowServiceLogs('${Portal.escapeHtml(s.name)}')">Logs</button>
+                    </td>
+                </tr>
+                `;
+            }).join('');
+        }
+
+        async function sysControlService(name, action) {
+            if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} service "${name}"?`)) return;
+            try {
+                const res = await fetch(`/api/sysmon/services/${encodeURIComponent(name)}/control`, {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    Portal.showToast(data.message, 'success');
+                    setTimeout(sysLoadServices, 1000);
+                } else {
+                    Portal.showToast(data.message || data.error, 'error');
+                }
+            } catch (e) {
+                Portal.showToast('Failed to control service', 'error');
+            }
+        }
+
+        async function sysShowServiceLogs(name) {
+            sysCurrentLogService = name;
+            document.getElementById('sys-logs-modal-title').textContent = `Logs: ${name}`;
+            document.getElementById('sys-logs-content').textContent = 'Loading...';
+            document.getElementById('sys-logs-modal').style.display = 'flex';
+            await sysReloadLogs();
+        }
+
+        async function sysReloadLogs() {
+            const lines = document.getElementById('sys-logs-lines').value;
+            try {
+                const res = await fetch(`/api/sysmon/services/${encodeURIComponent(sysCurrentLogService)}/logs?lines=${lines}`, { credentials: 'include' });
+                const data = await res.json();
+                document.getElementById('sys-logs-content').textContent = data.logs || 'No logs available';
+            } catch (e) {
+                document.getElementById('sys-logs-content').textContent = 'Failed to load logs';
+            }
+        }
+
+        function sysCloseLogsModal() {
+            document.getElementById('sys-logs-modal').style.display = 'none';
+            sysCurrentLogService = '';
+        }
+
+        async function sysLoadNetwork() {
+            try {
+                const [ifRes, portRes] = await Promise.all([
+                    fetch('/api/sysmon/network', { credentials: 'include' }),
+                    fetch('/api/sysmon/ports', { credentials: 'include' })
+                ]);
+                if (ifRes.status === 401) { window.location.href = '/login'; return; }
+
+                const interfaces = await ifRes.json();
+                const ports = await portRes.json();
+
+                document.getElementById('sys-interfaces-body').innerHTML = interfaces.map(iface => {
+                    const ips = iface.addresses.map(a => `${a.address}${a.netmask ? '/' + a.netmask : ''}`).join('<br>');
+                    return `
+                    <tr>
+                        <td><strong>${Portal.escapeHtml(iface.name)}</strong></td>
+                        <td><span class="${iface.is_up ? 'badge-running' : 'badge-stopped'}">${iface.is_up ? 'UP' : 'DOWN'}</span></td>
+                        <td style="white-space:normal;font-size:0.8rem;">${ips || '-'}</td>
+                        <td>${iface.mac || '-'}</td>
+                        <td>${iface.speed ? iface.speed + ' Mbps' : '-'}</td>
+                        <td>${formatBytes(iface.bytes_sent)}</td>
+                        <td>${formatBytes(iface.bytes_recv)}</td>
+                    </tr>
+                    `;
+                }).join('');
+
+                document.getElementById('sys-ports-body').innerHTML = ports.map(p => `
+                    <tr>
+                        <td>${p.proto.toUpperCase()}</td>
+                        <td>${Portal.escapeHtml(p.address)}</td>
+                        <td><strong>${p.port}</strong></td>
+                        <td>${p.pid || '-'}</td>
+                        <td>${Portal.escapeHtml(p.process) || '-'}</td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load network info:', e);
+            }
+        }
+
+        // Escape key closes modals
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') sysCloseLogsModal();
+        });
+
+        // Handle #system hash for direct linking
+        if (window.location.hash === '#system') {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('tab-system').classList.add('active');
+            document.querySelector('.tab-btn[onclick*="system"]').classList.add('active');
+            sysLoadProcesses();
         }
 
         // Initialize

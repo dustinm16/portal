@@ -13,6 +13,7 @@ from typing import Optional
 
 from . import register_service
 from .base import ManagedService, ServiceInfo
+from config import Config
 
 
 @register_service("mediamtx")
@@ -186,7 +187,7 @@ class MediaMTXService(ManagedService):
 
         # Portal API URL for authentication hooks
         # Uses the hostname for proper TLS certificate validation
-        portal_url = cfg.get('portal_url', 'https://portal.dddvm.xyz')
+        portal_url = cfg.get('portal_url', f'https://{Config.HOSTNAME}')
 
         # RTMP plain (non-TLS) support for temporary token auth
         rtmp_plain_enabled = cfg.get('rtmp_plain_enabled', False)
@@ -389,7 +390,7 @@ paths:
         except Exception:
             return None
 
-    def get_stream_urls(self, stream_path: str, portal_host: str = "portal.dddvm.xyz") -> dict:
+    def get_stream_urls(self, stream_path: str, portal_host: str = None) -> dict:
         """Get URLs for accessing a stream via Open Relay Portal (port 443).
 
         All external access goes through Portal on port 443.
@@ -403,6 +404,8 @@ paths:
             Dict with playback and publish URLs via Portal
         """
         # External URLs go through Portal on 443
+        if not portal_host:
+            portal_host = Config.HOSTNAME
         base_url = f"https://{portal_host}"
 
         return {

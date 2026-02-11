@@ -583,22 +583,22 @@ User streams allow broadcasting from OBS or other streaming software. **All stre
 - **Public key (`pub_xxx`)**: Read-only viewing access. Safe to share with viewers.
 
 **Publishing Options (requires private key `live_xxx`):**
-1. **RTMPS** (Recommended for OBS): `rtmps://stream.dddvm.xyz:1936/live` + private stream key
-   - Direct connection to server (bypasses Cloudflare)
+1. **RTMPS** (Recommended for OBS): `rtmps://<STREAM_HOSTNAME>:1936/live` + private stream key
+   - Direct connection to server (bypasses CDN if applicable)
    - Uses Let's Encrypt certificate (auto-renewed)
-2. **WebRTC WHIP** (OBS 30.0+): `https://portal.dddvm.xyz/api/stream/{stream_key}/webrtc/whip`
+2. **WebRTC WHIP** (OBS 30.0+): `https://<HOSTNAME>/api/stream/{stream_key}/webrtc/whip`
 
-**Playback URLs (accepts either key type, via port 443, Cloudflare proxied):**
-- HLS: `https://portal.dddvm.xyz/api/stream/{key}/hls/index.m3u8`
-- WebRTC: `https://portal.dddvm.xyz/api/stream/{key}/webrtc/whep`
+**Playback URLs (accepts either key type, via port 443):**
+- HLS: `https://<HOSTNAME>/api/stream/{key}/hls/index.m3u8`
+- WebRTC: `https://<HOSTNAME>/api/stream/{key}/webrtc/whep`
 
 For public streams, share the `public_key` for playback URLs instead of the private key.
 
 **Network Architecture:**
 | Service | Host | Port | Access |
 |---------|------|------|--------|
-| RTMPS Publishing | stream.dddvm.xyz | 1936 | External (direct) |
-| HLS/WebRTC | portal.dddvm.xyz | 443 | External (Cloudflare) |
+| RTMPS Publishing | STREAM_HOSTNAME | 1936 | External (direct) |
+| HLS/WebRTC | HOSTNAME | 443 | External (via CDN or direct) |
 | MediaMTX Internal | 127.0.0.1 | 8888,8889 | Localhost only |
 
 ### Managed Services (Server Processes)

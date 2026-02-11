@@ -608,6 +608,7 @@ function onConnectionTypeChange() {
     // Otherwise, generate dynamic fields from schema
     switch (type) {
         case 'ssh':
+        case 'sftp':
             document.getElementById('connection-ssh-fields').style.display = 'block';
             if (!portInput.value) portInput.value = '22';
             onSSHAuthChange();

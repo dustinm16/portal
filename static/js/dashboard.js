@@ -45,6 +45,8 @@ async function loadUserInfo() {
                 adminBadge.textContent = role === 'superadmin' ? 'Super Admin' : 'Admin';
             }
             if (terminalBtn) terminalBtn.style.display = 'flex';
+            const quickAdd = document.getElementById('quick-add-bar');
+            if (quickAdd) quickAdd.style.display = '';
         }
 
         // Show admin section for moderator+ roles

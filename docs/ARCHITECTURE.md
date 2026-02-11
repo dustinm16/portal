@@ -485,10 +485,10 @@ GET  /api/services/:id/logs     - Get managed service logs
 ### Streaming
 
 Publishing is available via two methods:
-- **RTMPS** (port 1936) - Primary method, encrypted, always available: `rtmps://stream.dddvm.xyz:1936/live`
+- **RTMPS** (port 1936) - Primary method, encrypted, always available: `rtmps://<STREAM_HOSTNAME>:1936/live`
 - **RTMP** (port 1935) - Optional plain RTMP ingress using temporary tokens for security; enabled per-stream via `rtmp_enabled` flag
 
-Playback is proxied through Cloudflare: `https://portal.dddvm.xyz/api/stream/{key}/hls/...`
+Playback is proxied through the portal: `https://<HOSTNAME>/api/stream/{key}/hls/...`
 
 ```
 GET  /api/streams               - List user's streams
