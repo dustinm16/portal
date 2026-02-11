@@ -340,7 +340,7 @@ MIGRATIONS = [
         level TEXT DEFAULT 'info',
         message TEXT NOT NULL,
         timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_service_logs_service ON service_logs(service_id)",
     "CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp)",
@@ -691,6 +691,9 @@ class Database:
                 # Column likely already exists
                 pass
 
+        # Fix service_logs FK to reference services instead of managed_services
+        await self._migrate_service_logs_fk()
+
         # Generate public keys for any streams that don't have one
         await self._populate_stream_public_keys()
 
@@ -699,6 +702,45 @@ class Database:
 
         # Encrypt any plaintext stream keys (one-time migration)
         await self._migrate_encrypt_stream_keys()
+
+    async def _migrate_service_logs_fk(self) -> None:
+        """Fix service_logs FK: managed_services(id) -> services(id)."""
+        try:
+            # Check if the FK still points to managed_services
+            cursor = await self._connection.execute("PRAGMA foreign_key_list(service_logs)")
+            rows = await cursor.fetchall()
+            needs_fix = any(row["table"] == "managed_services" for row in rows)
+            if not needs_fix:
+                return
+            # Must disable FK checks to recreate table
+            await self._connection.execute("PRAGMA foreign_keys = OFF")
+            await self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS service_logs_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service_id INTEGER NOT NULL,
+                    level TEXT DEFAULT 'info',
+                    message TEXT NOT NULL,
+                    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+                )
+            """)
+            await self._connection.execute(
+                "INSERT INTO service_logs_new SELECT * FROM service_logs"
+            )
+            await self._connection.execute("DROP TABLE service_logs")
+            await self._connection.execute(
+                "ALTER TABLE service_logs_new RENAME TO service_logs"
+            )
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_service_logs_service ON service_logs(service_id)"
+            )
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_service_logs_timestamp ON service_logs(timestamp)"
+            )
+            await self._connection.commit()
+            await self._connection.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            await self._connection.execute("PRAGMA foreign_keys = ON")
 
     async def _populate_stream_public_keys(self) -> None:
         """Generate public keys for streams that don't have one."""
