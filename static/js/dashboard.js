@@ -97,11 +97,26 @@ async function loadServices() {
 }
 
 /**
- * Refresh services list
+ * Refresh all dashboard resources (connections, streams, stats, services)
+ */
+async function refreshResources() {
+    const promises = [
+        loadInlineConnections(),
+        loadInlineStreams(),
+        loadDashboardStats()
+    ];
+    if (typeof loadServices === 'function') {
+        promises.push(loadServices());
+    }
+    await Promise.all(promises);
+    Portal.toast('Resources refreshed');
+}
+
+/**
+ * Refresh services list (legacy alias)
  */
 async function refreshServices() {
-    await loadServices();
-    Portal.toast('Services refreshed');
+    await refreshResources();
 }
 
 /**

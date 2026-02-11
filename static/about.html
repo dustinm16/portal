@@ -400,6 +400,15 @@
                 <h3>Activity Feed</h3>
                 <p>The sidebar shows recent portal activity (stream events, user logins, etc.) with live-updating timestamps and fade effects for older entries.</p>
 
+                <h3>Quick Actions</h3>
+                <p>The sidebar includes Quick Actions for fast access to common tasks:</p>
+                <ul>
+                    <li><strong>Refresh Resources</strong> &mdash; One-click refresh of all dashboard data: connections, streams, stats, and services</li>
+                    <li><strong>File Manager</strong> &mdash; Quick link to the File Manager interface (admin: server files, all users: remote SFTP)</li>
+                    <li><strong>System Monitor</strong> &mdash; Direct access to process and service monitoring (admin only)</li>
+                    <li><strong>Admin Panel</strong> &mdash; Jump to admin settings and management (admin only)</li>
+                </ul>
+
                 <!-- User Connections -->
                 <h2 id="connections">User Connections</h2>
                 <p>Connections are personal remote access points to your servers, databases, and network services. Each user manages their own connections independently.</p>
@@ -930,6 +939,70 @@
                     <li>Optionally installs, enables, and starts the service</li>
                     <li>Works for both fresh installs and reconfiguration of existing setups</li>
                 </ul>
+
+                <h3>Data Retention</h3>
+                <p>Configure automatic cleanup policies for old data to keep the database lean. Settings are available in the Admin Panel Settings tab:</p>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Data Type</th>
+                            <th>Default Retention</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Chat Messages</strong></td>
+                            <td>90 days</td>
+                            <td>Public channel messages older than this are deleted</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Direct Messages</strong></td>
+                            <td>90 days</td>
+                            <td>Private conversations older than this are deleted</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Notifications</strong></td>
+                            <td>30 days</td>
+                            <td>User notifications older than this are deleted</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Activity Logs</strong></td>
+                            <td>30 days</td>
+                            <td>User activity events older than this are deleted</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Service Logs</strong></td>
+                            <td>7 days</td>
+                            <td>Managed service logs older than this are deleted</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Expired Tokens</strong></td>
+                            <td>30 days</td>
+                            <td>Expired JWT tokens and API keys older than this are deleted</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <ul>
+                    <li><strong>Automatic Cleanup</strong> &mdash; Task runs on a configurable interval (default: daily at 03:00)</li>
+                    <li><strong>Manual Trigger</strong> &mdash; Force cleanup immediately from the Settings tab</li>
+                    <li><strong>VACUUM Support</strong> &mdash; Optionally compact the SQLite database after cleanup to reclaim disk space</li>
+                    <li><strong>Disable Per-Type</strong> &mdash; Set retention days to 0 to disable cleanup for that data type</li>
+                </ul>
+                <div class="alert alert-warning">
+                    <strong>Important:</strong> Deleted messages, logs, and notifications cannot be recovered. Adjust retention policies based on your compliance and storage requirements.
+                </div>
+
+                <h3>Admin Panel Files Tab</h3>
+                <p>The Admin Panel now includes a dedicated Files tab for quick server file management without leaving the admin interface:</p>
+                <ul>
+                    <li><strong>Integrated File Browser</strong> &mdash; Full file manager UI embedded directly in the Admin Panel</li>
+                    <li><strong>Drag-and-Drop Upload</strong> &mdash; Drag files from your desktop to upload instantly</li>
+                    <li><strong>Quick Edit</strong> &mdash; Edit server configuration files on-the-fly with syntax highlighting</li>
+                    <li><strong>Path Navigation</strong> &mdash; Breadcrumb bar for fast directory traversal</li>
+                    <li><strong>Security</strong> &mdash; Same protections as standalone File Manager (path traversal prevention, blocked sensitive files)</li>
+                </ul>
+                <p>The Files tab is admin-only and provides the same functionality as the standalone File Manager page, but more conveniently accessible from the Admin Panel sidebar.</p>
                 </div>
 
                 <!-- System Monitor -->

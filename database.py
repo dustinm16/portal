@@ -2420,6 +2420,18 @@ class Database:
     async def cleanup_old_chat_messages(self, days: int = 7) -> int:
         """Delete chat messages older than specified days. Returns count deleted."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        # Get IDs for FTS cleanup before deleting
+        cursor = await self.conn.execute(
+            "SELECT id FROM chat_messages WHERE created_at < ?", (cutoff,)
+        )
+        old_ids = [row["id"] for row in await cursor.fetchall()]
+        if old_ids:
+            # Clean FTS entries
+            for msg_id in old_ids:
+                try:
+                    await self.remove_message_from_search(msg_id, "channel")
+                except Exception:
+                    pass
         cursor = await self.conn.execute(
             "DELETE FROM chat_messages WHERE created_at < ?",
             (cutoff,)
@@ -3590,6 +3602,130 @@ class Database:
                 last_id = row["id"]
 
         return counts
+
+    # =========================================================================
+    # Data Retention / Cleanup
+    # =========================================================================
+
+    _RETENTION_DEFAULTS = {
+        "retention_chat_days": "7",
+        "retention_dm_days": "30",
+        "retention_notifications_days": "30",
+        "retention_activity_max": "500",
+        "retention_service_logs_max": "1000",
+        "cleanup_interval_hours": "6",
+        "auto_vacuum": "true",
+    }
+
+    async def get_retention_config(self) -> dict[str, str]:
+        """Get all retention settings with defaults for missing keys."""
+        config = dict(self._RETENTION_DEFAULTS)
+        for key in self._RETENTION_DEFAULTS:
+            val = await self.get_setting(key)
+            if val is not None:
+                config[key] = val
+        return config
+
+    async def set_retention_config(self, config: dict) -> None:
+        """Validate and save retention settings."""
+        valid_keys = set(self._RETENTION_DEFAULTS.keys())
+        for key, value in config.items():
+            if key not in valid_keys:
+                continue
+            # Validate numeric fields
+            if key == "auto_vacuum":
+                value = "true" if value in ("true", True, "1") else "false"
+            else:
+                try:
+                    int_val = int(value)
+                    if int_val < 0:
+                        continue
+                    value = str(int_val)
+                except (ValueError, TypeError):
+                    continue
+            await self.set_setting(key, value)
+
+    async def cleanup_old_dm_messages(self, days: int = 30) -> int:
+        """Delete DM messages older than specified days. Returns count deleted."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        # Clean FTS entries first
+        cursor = await self.conn.execute(
+            "SELECT id FROM dm_messages WHERE created_at < ?", (cutoff,)
+        )
+        old_ids = [row["id"] for row in await cursor.fetchall()]
+        if old_ids:
+            for msg_id in old_ids:
+                try:
+                    await self.remove_message_from_search(msg_id, "dm")
+                except Exception:
+                    pass
+        # Delete reactions for old messages
+        if old_ids:
+            placeholders = ",".join("?" * len(old_ids))
+            await self.conn.execute(
+                f"DELETE FROM dm_reactions WHERE message_id IN ({placeholders})",
+                old_ids
+            )
+        cursor = await self.conn.execute(
+            "DELETE FROM dm_messages WHERE created_at < ?", (cutoff,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def cleanup_old_notifications(self, days: int = 30) -> int:
+        """Delete notifications older than specified days. Returns count deleted."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM notifications WHERE created_at < ?", (cutoff,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def cleanup_expired_tokens(self) -> int:
+        """Delete expired or revoked tokens. Returns count deleted."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM tokens WHERE (expires_at IS NOT NULL AND expires_at < ?) OR revoked = 1",
+            (now,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def cleanup_expired_api_keys(self) -> int:
+        """Delete expired or revoked API keys. Returns count deleted."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM api_keys WHERE (expires_at IS NOT NULL AND expires_at < ?) OR revoked = 1",
+            (now,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def cleanup_old_activity_log(self, keep: int = 500) -> int:
+        """Trim activity log to keep only the most recent N entries. Returns count deleted."""
+        cursor = await self.conn.execute(
+            "SELECT id FROM activity_log ORDER BY id DESC LIMIT 1 OFFSET ?",
+            (keep,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0
+        threshold_id = row[0]
+        cursor = await self.conn.execute(
+            "DELETE FROM activity_log WHERE id <= ?", (threshold_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def vacuum_database(self) -> None:
+        """Run VACUUM to reclaim disk space."""
+        await self.conn.execute("VACUUM")
+
+    async def get_all_service_ids(self) -> list[int]:
+        """Get all service IDs for bulk cleanup."""
+        cursor = await self.conn.execute("SELECT id FROM services")
+        rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
 
 
 # Global database instance

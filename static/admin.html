@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=33">
+    <link rel="stylesheet" href="/static/css/portal.css?v=36">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     <script>
         if (typeof Chart === 'undefined') {
@@ -413,6 +413,11 @@
         .sys-sub-content { display: none; }
         .sys-sub-content.active { display: block; }
         .sys-table-scroll { overflow-x: auto; max-height: calc(100vh - 340px); overflow-y: auto; }
+        .files-upload-zone { padding: 2rem; text-align: center; border: 2px dashed var(--card-border); border-radius: 8px; color: var(--text-muted); margin-bottom: 0.75rem; }
+        .breadcrumb { display: flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; }
+        .breadcrumb a { color: var(--accent-blue); text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+        .breadcrumb span { color: var(--text-muted); }
         /* Modal styles */
         .modal {
             position: fixed;
@@ -539,6 +544,7 @@
                 <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
                 <button class="tab-btn" onclick="showTab('settings')">Settings</button>
                 <button class="tab-btn" onclick="showTab('system')">System</button>
+                <button class="tab-btn" onclick="showTab('files')">Files</button>
             </div>
 
             <!-- Overview Tab -->
@@ -1049,6 +1055,19 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Data Retention Card -->
+                    <div class="admin-card" style="grid-column: span 2;">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            Data Retention
+                        </h3>
+                        <div id="retention-config">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1167,6 +1186,52 @@
                 </div>
             </div>
 
+            <!-- Files Tab -->
+            <div id="tab-files" class="tab-content">
+                <div class="sysmon-toolbar">
+                    <div class="breadcrumb" id="files-breadcrumb" style="flex:1;"></div>
+                    <button class="range-btn" onclick="filesNewFolder()">New Folder</button>
+                    <button class="range-btn" onclick="document.getElementById('files-upload-input').click()">Upload</button>
+                    <button class="range-btn" onclick="filesLoadDirectory(filesCurrentPath)">Refresh</button>
+                    <input type="file" id="files-upload-input" multiple onchange="filesUploadFiles(this.files)" style="display:none;">
+                </div>
+                <div id="files-upload-zone" class="files-upload-zone" style="display:none;">
+                    Drop files here to upload
+                </div>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Size</th>
+                                <th>Modified</th>
+                                <th>Permissions</th>
+                                <th>Owner</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="files-file-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Files Edit Modal -->
+            <div id="files-edit-modal" class="sys-logs-modal" style="display:none;" onclick="if(event.target===this)filesCloseEditModal()">
+                <div class="sys-logs-modal-content" style="max-width:900px;">
+                    <div class="sys-logs-modal-header">
+                        <h3 id="files-edit-modal-title">Edit File</h3>
+                        <button onclick="filesCloseEditModal()" style="background:none;border:none;color:var(--text-secondary);font-size:1.2rem;cursor:pointer;">&times;</button>
+                    </div>
+                    <div class="sys-logs-modal-body" style="padding:1rem;">
+                        <textarea id="files-edit-textarea" style="width:100%;height:500px;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);font-family:monospace;font-size:0.8rem;padding:0.75rem;resize:vertical;box-sizing:border-box;tab-size:4;"></textarea>
+                        <div style="display:flex;gap:0.5rem;margin-top:0.75rem;justify-content:flex-end;">
+                            <button class="range-btn" onclick="filesCloseEditModal()">Cancel</button>
+                            <button class="btn btn-primary" onclick="filesSaveEdited()">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
     </div>
 
@@ -1191,7 +1256,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=23"></script>
+    <script src="/static/js/portal.js?v=25"></script>
     <script>
         // Tab switching
         function showTab(tabName) {
@@ -1210,6 +1275,7 @@
                 case 'connections': loadActiveConnections(); break;
                 case 'settings': loadSettingsTab(); break;
                 case 'system': sysLoadProcesses(); break;
+                case 'files': filesLoadDirectory(filesCurrentPath || '/'); break;
             }
         }
 
@@ -2609,7 +2675,7 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadRetentionConfig()]);
         }
 
         async function loadCertInfo() {
@@ -3095,14 +3161,353 @@
             if (e.key === 'Escape') sysCloseLogsModal();
         });
 
-        // Handle #system hash for direct linking
-        if (window.location.hash === '#system') {
+        // Handle hash for direct tab linking
+        const hashTab = window.location.hash.replace('#', '');
+        if (hashTab === 'system' || hashTab === 'files') {
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById('tab-system').classList.add('active');
-            document.querySelector('.tab-btn[onclick*="system"]').classList.add('active');
-            sysLoadProcesses();
+            document.getElementById('tab-' + hashTab).classList.add('active');
+            document.querySelector('.tab-btn[onclick*="' + hashTab + '"]').classList.add('active');
+            if (hashTab === 'system') sysLoadProcesses();
+            else if (hashTab === 'files') filesLoadDirectory('/');
         }
+
+        // ===== DATA RETENTION =====
+
+        let retentionConfig = {};
+
+        async function loadRetentionConfig() {
+            const el = document.getElementById('retention-config');
+            try {
+                const res = await fetch('/api/admin/retention', { credentials: 'include' });
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Failed to load retention config</p>'; return; }
+                retentionConfig = await res.json();
+                renderRetentionConfig();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Failed to load retention config</p>';
+            }
+        }
+
+        function renderRetentionConfig() {
+            const c = retentionConfig;
+            const el = document.getElementById('retention-config');
+            el.innerHTML = `
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;">
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Chat Message Retention (days)</label>
+                        <input type="number" id="ret-chat-days" value="${c.retention_chat_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">DM Message Retention (days)</label>
+                        <input type="number" id="ret-dm-days" value="${c.retention_dm_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Notification Retention (days)</label>
+                        <input type="number" id="ret-notif-days" value="${c.retention_notifications_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Activity Log Max Entries</label>
+                        <input type="number" id="ret-activity-max" value="${c.retention_activity_max}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Service Logs Max per Service</label>
+                        <input type="number" id="ret-svc-logs" value="${c.retention_service_logs_max}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Cleanup Interval (hours)</label>
+                        <input type="number" id="ret-interval" value="${c.cleanup_interval_hours}" min="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                    </div>
+                </div>
+                <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">
+                        <input type="checkbox" id="ret-vacuum" ${c.auto_vacuum === 'true' ? 'checked' : ''}>
+                        Auto-VACUUM database after cleanup
+                    </label>
+                </div>
+                <div style="margin-top:1.25rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
+                    <button class="btn btn-primary" onclick="saveRetentionConfig()">Save Settings</button>
+                    <button class="range-btn" onclick="runCleanupNow()" id="ret-run-btn">Run Cleanup Now</button>
+                </div>
+                <div id="ret-status" style="margin-top:0.75rem;font-size:0.8rem;"></div>
+            `;
+        }
+
+        async function saveRetentionConfig() {
+            const data = {
+                retention_chat_days: document.getElementById('ret-chat-days').value,
+                retention_dm_days: document.getElementById('ret-dm-days').value,
+                retention_notifications_days: document.getElementById('ret-notif-days').value,
+                retention_activity_max: document.getElementById('ret-activity-max').value,
+                retention_service_logs_max: document.getElementById('ret-svc-logs').value,
+                cleanup_interval_hours: document.getElementById('ret-interval').value,
+                auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
+            };
+            try {
+                const res = await fetch('/api/admin/retention', {
+                    method: 'PUT', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                if (res.ok) {
+                    const result = await res.json();
+                    retentionConfig = result.config;
+                    Portal.toast('Retention settings saved');
+                } else {
+                    const err = await res.json();
+                    Portal.toast(err.error || 'Failed to save', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Failed to save settings', 'error');
+            }
+        }
+
+        async function runCleanupNow() {
+            const btn = document.getElementById('ret-run-btn');
+            const status = document.getElementById('ret-status');
+            btn.disabled = true;
+            btn.textContent = 'Running...';
+            status.innerHTML = '<span style="color:var(--text-muted);">Cleanup in progress...</span>';
+            try {
+                const res = await fetch('/api/admin/retention/run', {
+                    method: 'POST', credentials: 'include'
+                });
+                if (res.ok) {
+                    const result = await res.json();
+                    const d = result.deleted;
+                    const parts = [];
+                    if (d.chat_messages) parts.push(`${d.chat_messages} chat msgs`);
+                    if (d.dm_messages) parts.push(`${d.dm_messages} DM msgs`);
+                    if (d.notifications) parts.push(`${d.notifications} notifications`);
+                    if (d.activity_log) parts.push(`${d.activity_log} activity entries`);
+                    if (d.expired_tokens) parts.push(`${d.expired_tokens} tokens`);
+                    if (d.expired_api_keys) parts.push(`${d.expired_api_keys} API keys`);
+                    if (d.service_logs) parts.push(`${d.service_logs} service logs`);
+                    const summary = parts.length ? parts.join(', ') : 'Nothing to clean up';
+                    status.innerHTML = `<span style="color:var(--accent-green);">Cleanup complete: ${summary}${d.vacuumed ? ' (DB vacuumed)' : ''}</span>`;
+                    Portal.toast('Cleanup complete');
+                } else {
+                    const err = await res.json();
+                    status.innerHTML = `<span style="color:var(--accent-red);">${err.error || 'Cleanup failed'}</span>`;
+                }
+            } catch (e) {
+                status.innerHTML = '<span style="color:var(--accent-red);">Cleanup failed</span>';
+            }
+            btn.disabled = false;
+            btn.textContent = 'Run Cleanup Now';
+        }
+
+        // ===== FILE MANAGER =====
+
+        let filesCurrentPath = '/';
+        let filesEditingFile = null;
+
+        function filesEscapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        function filesFormatDate(ts) {
+            if (!ts) return '-';
+            return new Date(ts * 1000).toLocaleString();
+        }
+
+        function filesFileIcon(type) {
+            if (type === 'directory') return '<span style="color:#f59e0b;">&#128193;</span>';
+            if (type === 'symlink') return '<span style="color:#8b5cf6;">&#128279;</span>';
+            return '<span style="color:#9ca3af;">&#128196;</span>';
+        }
+
+        function filesJoinPath(base, name) {
+            if (base === '/') return '/' + name;
+            return base.replace(/\/+$/, '') + '/' + name;
+        }
+
+        function filesBuildBreadcrumb(path) {
+            const el = document.getElementById('files-breadcrumb');
+            const parts = path.split('/').filter(Boolean);
+            let html = `<a href="#" onclick="filesLoadDirectory('/'); return false;">/</a>`;
+            let cumulative = '';
+            for (const part of parts) {
+                cumulative += '/' + part;
+                const p = cumulative;
+                html += `<span>/</span><a href="#" onclick="filesLoadDirectory('${p}'); return false;">${filesEscapeHtml(part)}</a>`;
+            }
+            el.innerHTML = html;
+        }
+
+        async function filesLoadDirectory(path) {
+            filesCurrentPath = path || '/';
+            filesBuildBreadcrumb(filesCurrentPath);
+            try {
+                const res = await fetch(`/api/files/list?path=${encodeURIComponent(filesCurrentPath)}`, { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) { const d = await res.json(); Portal.toast(d.error || 'Error', 'error'); return; }
+                const entries = await res.json();
+                filesRenderFiles(entries);
+            } catch (e) {
+                console.error('Failed to load directory:', e);
+            }
+        }
+
+        function filesRenderFiles(entries) {
+            const tbody = document.getElementById('files-file-body');
+            let html = '';
+            if (filesCurrentPath !== '/') {
+                const parent = filesCurrentPath.replace(/\/[^/]+\/?$/, '') || '/';
+                html += `<tr ondblclick="filesLoadDirectory('${parent}')">
+                    <td><strong>&#128193; ..</strong></td>
+                    <td>-</td><td>-</td><td>-</td><td>-</td><td></td>
+                </tr>`;
+            }
+            html += entries.map(e => {
+                const fullPath = filesJoinPath(filesCurrentPath, e.name);
+                const escapedPath = filesEscapeHtml(fullPath);
+                const dblClick = e.type === 'directory' ? `ondblclick="filesLoadDirectory('${escapedPath}')"` : '';
+                return `<tr ${dblClick}>
+                    <td>${filesFileIcon(e.type)} ${filesEscapeHtml(e.name)}</td>
+                    <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
+                    <td>${filesFormatDate(e.modified)}</td>
+                    <td style="font-family:monospace;font-size:0.8rem;">${filesEscapeHtml(e.permissions)}</td>
+                    <td>${filesEscapeHtml(e.owner)}</td>
+                    <td style="display:flex;gap:0.25rem;" onclick="event.stopPropagation()">
+                        ${e.type === 'file' ? `
+                            <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesEditFile('${escapedPath}')">Edit</button>
+                            <a class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;text-decoration:none;" href="/api/files/download?path=${encodeURIComponent(fullPath)}">DL</a>
+                        ` : ''}
+                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesRenameFile('${escapedPath}', '${filesEscapeHtml(e.name)}')">Rename</button>
+                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;color:var(--accent-red);" onclick="filesDeleteFile('${escapedPath}', '${filesEscapeHtml(e.name)}', '${e.type}')">Del</button>
+                    </td>
+                </tr>`;
+            }).join('');
+            tbody.innerHTML = html;
+        }
+
+        async function filesEditFile(path) {
+            try {
+                const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`, { credentials: 'include' });
+                if (!res.ok) { const d = await res.json(); Portal.toast(d.error || 'Cannot read file', 'error'); return; }
+                const data = await res.json();
+                filesEditingFile = { path };
+                document.getElementById('files-edit-modal-title').textContent = 'Edit: ' + path.split('/').pop();
+                document.getElementById('files-edit-textarea').value = data.content;
+                document.getElementById('files-edit-modal').style.display = 'flex';
+            } catch (e) {
+                Portal.toast('Failed to read file', 'error');
+            }
+        }
+
+        async function filesDeleteFile(path, name, type) {
+            if (!confirm(`Delete "${name}"?`)) return;
+            try {
+                const res = await fetch(`/api/files/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE', credentials: 'include' });
+                const data = await res.json();
+                if (res.ok) { Portal.toast('Deleted ' + name, 'success'); filesLoadDirectory(filesCurrentPath); }
+                else Portal.toast(data.error, 'error');
+            } catch (e) { Portal.toast('Delete failed', 'error'); }
+        }
+
+        async function filesRenameFile(path, oldName) {
+            const newName = prompt('New name:', oldName);
+            if (!newName || newName === oldName) return;
+            const dir = path.replace(/\/[^/]+$/, '') || '/';
+            const newPath = filesJoinPath(dir, newName);
+            try {
+                const res = await fetch('/api/files/rename', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_path: path, new_path: newPath })
+                });
+                const data = await res.json();
+                if (res.ok) { Portal.toast('Renamed', 'success'); filesLoadDirectory(filesCurrentPath); }
+                else Portal.toast(data.error, 'error');
+            } catch (e) { Portal.toast('Rename failed', 'error'); }
+        }
+
+        async function filesNewFolder() {
+            const name = prompt('Folder name:');
+            if (!name) return;
+            const path = filesJoinPath(filesCurrentPath, name);
+            try {
+                const res = await fetch('/api/files/mkdir', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+                const data = await res.json();
+                if (res.ok) { Portal.toast('Folder created', 'success'); filesLoadDirectory(filesCurrentPath); }
+                else Portal.toast(data.error, 'error');
+            } catch (e) { Portal.toast('Failed to create folder', 'error'); }
+        }
+
+        async function filesUploadFiles(files) {
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('path', filesCurrentPath);
+                formData.append('file', file);
+                try {
+                    const res = await fetch('/api/files/upload', { method: 'POST', credentials: 'include', body: formData });
+                    const data = await res.json();
+                    if (!res.ok) Portal.toast(`Upload ${file.name}: ${data.error}`, 'error');
+                } catch (e) { Portal.toast(`Upload ${file.name} failed`, 'error'); }
+            }
+            Portal.toast('Upload complete', 'success');
+            filesLoadDirectory(filesCurrentPath);
+            document.getElementById('files-upload-input').value = '';
+        }
+
+        async function filesSaveEdited() {
+            if (!filesEditingFile) return;
+            const content = document.getElementById('files-edit-textarea').value;
+            try {
+                const res = await fetch('/api/files/write', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: filesEditingFile.path, content })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    Portal.toast('File saved', 'success');
+                    filesCloseEditModal();
+                    filesLoadDirectory(filesCurrentPath);
+                } else {
+                    Portal.toast(data.error || 'Save failed', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Save failed', 'error');
+            }
+        }
+
+        function filesCloseEditModal() {
+            document.getElementById('files-edit-modal').style.display = 'none';
+            filesEditingFile = null;
+        }
+
+        function filesSetupDragDrop() {
+            const zone = document.getElementById('files-upload-zone');
+            if (!zone) return;
+            const tabEl = document.getElementById('tab-files');
+            tabEl.addEventListener('dragover', e => { e.preventDefault(); zone.style.display = ''; });
+            tabEl.addEventListener('dragleave', e => {
+                if (!tabEl.contains(e.relatedTarget)) zone.style.display = 'none';
+            });
+            zone.addEventListener('dragover', e => e.preventDefault());
+            zone.addEventListener('drop', e => {
+                e.preventDefault();
+                zone.style.display = 'none';
+                if (e.dataTransfer.files.length) filesUploadFiles(e.dataTransfer.files);
+            });
+        }
+
+        // Setup drag-drop and escape key for files
+        filesSetupDragDrop();
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && document.getElementById('files-edit-modal').style.display !== 'none') {
+                filesCloseEditModal();
+            }
+        });
 
         // Initialize
         init();

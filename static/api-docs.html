@@ -329,6 +329,7 @@
                         <li><a href="#metrics">Metrics</a></li>
                         <li><a href="#logs">Logs</a></li>
                         <li><a href="#vulnerability">Vulnerability Scanner</a></li>
+                        <li><a href="#data-retention">Data Retention</a></li>
                     </ul>
                 </div>
             </nav>
@@ -4004,6 +4005,110 @@ ws.send(JSON.stringify({
                         <span class="method delete">DELETE</span>
                         <code>/api/sftp/:conn_id/delete?path=/file.txt</code>
                         <p>Delete remote file or empty directory.</p>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2 id="data-retention">Data Retention <span class="badge-admin">ADMIN</span></h2>
+                <p>Configure automatic cleanup policies for chat messages, notifications, activity logs, and service logs. Protects against database bloat while preserving recent data.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/retention</span>
+                        <span class="endpoint-desc">Get current retention configuration</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the current data retention settings.</p>
+                        <h4>Response Example</h4>
+                        <div class="code-block">
+<pre>{
+  "retention_chat_days": 7,
+  "retention_dm_days": 30,
+  "retention_notifications_days": 30,
+  "retention_activity_max": 500,
+  "retention_service_logs_max": 1000,
+  "cleanup_interval_hours": 6,
+  "auto_vacuum": true
+}</pre>
+                        </div>
+                        <h4>Settings Description</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><code>retention_chat_days</code></td><td>int</td><td>Days to keep chat messages (0 = disabled, default: 7)</td></tr>
+                            <tr><td><code>retention_dm_days</code></td><td>int</td><td>Days to keep direct messages (0 = disabled, default: 30)</td></tr>
+                            <tr><td><code>retention_notifications_days</code></td><td>int</td><td>Days to keep notifications (0 = disabled, default: 30)</td></tr>
+                            <tr><td><code>retention_activity_max</code></td><td>int</td><td>Maximum activity log entries to keep (0 = disabled, default: 500)</td></tr>
+                            <tr><td><code>retention_service_logs_max</code></td><td>int</td><td>Maximum service log entries per service (0 = disabled, default: 1000)</td></tr>
+                            <tr><td><code>cleanup_interval_hours</code></td><td>int</td><td>Hours between automatic cleanup runs (default: 6)</td></tr>
+                            <tr><td><code>auto_vacuum</code></td><td>bool</td><td>Run VACUUM after cleanup to reclaim space (default: true)</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/retention</span>
+                        <span class="endpoint-desc">Update retention settings (Superadmin only)</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update data retention configuration. All fields are optional; only provided fields will be updated.</p>
+                        <div class="alert alert-warning">
+                            <strong>Superadmin Only:</strong> This endpoint requires superadmin role. Regular admins can view settings but not modify them.
+                        </div>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><code>retention_chat_days</code></td><td>int</td><td>Days to keep chat messages (0-365)</td></tr>
+                            <tr><td><code>retention_dm_days</code></td><td>int</td><td>Days to keep direct messages (0-365)</td></tr>
+                            <tr><td><code>retention_notifications_days</code></td><td>int</td><td>Days to keep notifications (0-365)</td></tr>
+                            <tr><td><code>retention_activity_max</code></td><td>int</td><td>Max activity log entries (0-10000)</td></tr>
+                            <tr><td><code>retention_service_logs_max</code></td><td>int</td><td>Max service log entries per service (0-10000)</td></tr>
+                            <tr><td><code>cleanup_interval_hours</code></td><td>int</td><td>Hours between cleanup runs (1-168)</td></tr>
+                            <tr><td><code>auto_vacuum</code></td><td>bool</td><td>Enable automatic VACUUM after cleanup</td></tr>
+                        </table>
+                        <h4>Example Request</h4>
+                        <div class="code-block">
+<pre>{
+  "retention_chat_days": 14,
+  "retention_dm_days": 60,
+  "auto_vacuum": true
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/retention/run</span>
+                        <span class="endpoint-desc">Run cleanup immediately (Superadmin only)</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Manually trigger a cleanup operation using current retention settings. Returns the number of records deleted in each category.</p>
+                        <div class="alert alert-warning">
+                            <strong>Superadmin Only:</strong> This operation is irreversible and requires superadmin role.
+                        </div>
+                        <h4>Response Example</h4>
+                        <div class="code-block">
+<pre>{
+  "success": true,
+  "deleted": {
+    "chat_messages": 1523,
+    "direct_messages": 42,
+    "notifications": 89,
+    "activity": 150,
+    "service_logs": 2341
+  },
+  "vacuum_run": true
+}</pre>
+                        </div>
+                        <p>The <code>deleted</code> object shows the count of records removed from each category. If <code>vacuum_run</code> is true, the database was optimized after cleanup to reclaim disk space.</p>
                     </div>
                 </div>
 

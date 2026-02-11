@@ -9151,6 +9151,81 @@ async def http_rebuild_search_index(request: web.Request) -> web.Response:
     return web.json_response({"rebuilt": True, "indexed": counts})
 
 
+# =========================================================================
+# Data Retention / Cleanup API
+# =========================================================================
+
+async def http_get_retention_config(request: web.Request) -> web.Response:
+    """Get data retention configuration. Admin only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user or not (user.get("is_admin") or user.get("role") in ("superadmin", "admin")):
+        return web.json_response({"error": "Admin required"}, status=403)
+    config = await db.get_retention_config()
+    return web.json_response(config)
+
+
+async def http_set_retention_config(request: web.Request) -> web.Response:
+    """Update data retention configuration. Superadmin only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user or user.get("role") != "superadmin":
+        return web.json_response({"error": "Superadmin required"}, status=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    await db.set_retention_config(data)
+    config = await db.get_retention_config()
+    return web.json_response({"updated": True, "config": config})
+
+
+async def http_run_cleanup_now(request: web.Request) -> web.Response:
+    """Run data cleanup immediately. Superadmin only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user or user.get("role") != "superadmin":
+        return web.json_response({"error": "Superadmin required"}, status=403)
+    config = await db.get_retention_config()
+    results = {}
+    # Chat messages
+    chat_days = int(config.get("retention_chat_days", 7))
+    if chat_days > 0:
+        results["chat_messages"] = await db.cleanup_old_chat_messages(days=chat_days)
+    # DM messages
+    dm_days = int(config.get("retention_dm_days", 30))
+    if dm_days > 0:
+        results["dm_messages"] = await db.cleanup_old_dm_messages(days=dm_days)
+    # Notifications
+    notif_days = int(config.get("retention_notifications_days", 30))
+    if notif_days > 0:
+        results["notifications"] = await db.cleanup_old_notifications(days=notif_days)
+    # Activity log
+    activity_max = int(config.get("retention_activity_max", 500))
+    results["activity_log"] = await db.cleanup_old_activity_log(keep=activity_max)
+    # Expired tokens
+    results["expired_tokens"] = await db.cleanup_expired_tokens()
+    results["expired_api_keys"] = await db.cleanup_expired_api_keys()
+    # Service logs
+    logs_max = int(config.get("retention_service_logs_max", 1000))
+    service_ids = await db.get_all_service_ids()
+    svc_total = 0
+    for sid in service_ids:
+        svc_total += await db.clear_service_logs(sid, keep_recent=logs_max)
+    results["service_logs"] = svc_total
+    # VACUUM
+    if config.get("auto_vacuum", "true") == "true":
+        await db.vacuum_database()
+        results["vacuumed"] = True
+    return web.json_response({"cleanup_complete": True, "deleted": results})
+
+
 async def _broadcast_to_dm(conversation_id: int, message: dict, exclude_user_id: int = None):
     """Broadcast a message to all online participants of a DM conversation."""
     try:
@@ -10311,6 +10386,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/chat/search", http_search_messages)
     app.router.add_post("/api/chat/search/rebuild", http_rebuild_search_index)
 
+    # Data Retention
+    app.router.add_get("/api/admin/retention", http_get_retention_config)
+    app.router.add_put("/api/admin/retention", http_set_retention_config)
+    app.router.add_post("/api/admin/retention/run", http_run_cleanup_now)
+
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)
     # Chat WebSocket (before catch-all)
@@ -10373,8 +10453,8 @@ class PortalServer:
             await start_metrics_recorder()
             logger.info("Traffic metrics recorder started")
 
-        # Start chat message cleanup task (runs every 6 hours)
-        asyncio.create_task(self._chat_cleanup_task())
+        # Start unified data retention cleanup task
+        asyncio.create_task(self._data_cleanup_task())
 
         # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
         asyncio.create_task(self._viewer_sync_task())
@@ -10442,18 +10522,72 @@ class PortalServer:
             except Exception as e:
                 logger.error(f"RTMP token cleanup error: {e}")
 
-    async def _chat_cleanup_task(self) -> None:
-        """Background task to clean up old chat messages (runs every 6 hours)."""
+    async def _data_cleanup_task(self) -> None:
+        """Unified data retention cleanup — interval configurable via settings."""
         while True:
             try:
-                await asyncio.sleep(6 * 60 * 60)  # 6 hours
-                deleted = await db.cleanup_old_chat_messages(days=7)
-                if deleted > 0:
-                    logger.info(f"[Chat] Cleaned up {deleted} messages older than 7 days")
+                config = await db.get_retention_config()
+                interval = max(1, int(config.get("cleanup_interval_hours", 6)))
+                await asyncio.sleep(interval * 60 * 60)
+
+                config = await db.get_retention_config()
+                total = 0
+
+                # Chat messages
+                chat_days = int(config.get("retention_chat_days", 7))
+                if chat_days > 0:
+                    d = await db.cleanup_old_chat_messages(days=chat_days)
+                    if d > 0:
+                        logger.info(f"[Retention] Cleaned {d} chat messages older than {chat_days} days")
+                    total += d
+
+                # DM messages
+                dm_days = int(config.get("retention_dm_days", 30))
+                if dm_days > 0:
+                    d = await db.cleanup_old_dm_messages(days=dm_days)
+                    if d > 0:
+                        logger.info(f"[Retention] Cleaned {d} DM messages older than {dm_days} days")
+                    total += d
+
+                # Notifications
+                notif_days = int(config.get("retention_notifications_days", 30))
+                if notif_days > 0:
+                    d = await db.cleanup_old_notifications(days=notif_days)
+                    if d > 0:
+                        logger.info(f"[Retention] Cleaned {d} notifications older than {notif_days} days")
+                    total += d
+
+                # Activity log
+                activity_max = int(config.get("retention_activity_max", 500))
+                d = await db.cleanup_old_activity_log(keep=activity_max)
+                if d > 0:
+                    logger.info(f"[Retention] Trimmed {d} activity log entries (keeping {activity_max})")
+                total += d
+
+                # Expired tokens & API keys
+                d = await db.cleanup_expired_tokens()
+                total += d
+                d = await db.cleanup_expired_api_keys()
+                total += d
+
+                # Service logs
+                logs_max = int(config.get("retention_service_logs_max", 1000))
+                service_ids = await db.get_all_service_ids()
+                for sid in service_ids:
+                    d = await db.clear_service_logs(sid, keep_recent=logs_max)
+                    total += d
+
+                # VACUUM
+                if config.get("auto_vacuum", "true") == "true":
+                    await db.vacuum_database()
+
+                if total > 0:
+                    logger.info(f"[Retention] Cleanup complete: {total} total items removed")
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[Chat] Cleanup error: {e}")
+                logger.error(f"[Retention] Cleanup error: {e}")
 
     async def _viewer_sync_task(self) -> None:
         """Background task to sync viewer counts from MediaMTX (runs every 10 seconds)."""

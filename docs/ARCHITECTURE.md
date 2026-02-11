@@ -732,6 +732,27 @@ POST   /api/files/rename             - Rename/move (JSON)
 DELETE /api/files/delete             - Delete file/directory (?path=)
 ```
 
+Server file management is also integrated into the Admin Panel as a "Files" tab for quick access without leaving the admin interface.
+
+### Data Retention (Admin)
+
+```
+GET  /api/admin/retention            - Get retention config (Admin+)
+PUT  /api/admin/retention            - Update retention config (Superadmin)
+POST /api/admin/retention/run        - Run cleanup now (Superadmin)
+```
+
+Configurable retention policies:
+- **retention_chat_days** (default 7) — Channel message retention
+- **retention_dm_days** (default 30) — DM message retention
+- **retention_notifications_days** (default 30) — Notification retention
+- **retention_activity_max** (default 500) — Max activity log entries
+- **retention_service_logs_max** (default 1000) — Max service log entries per service
+- **cleanup_interval_hours** (default 6) — Auto-cleanup interval
+- **auto_vacuum** (default true) — VACUUM database after cleanup
+
+Setting any value to `0` disables cleanup for that category. A unified background task runs on the configured interval, cleaning up: old chat messages, DM messages, notifications, activity log entries, expired JWT tokens, expired API keys, and service logs. The `/run` endpoint triggers an immediate cleanup cycle.
+
 ### SFTP Browser (Per-User)
 
 ```

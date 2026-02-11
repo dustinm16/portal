@@ -50,8 +50,11 @@ Browse and edit files on the server or on remote machines via SFTP. Upload, down
 ### System Monitoring
 Process manager, systemd service control, network interfaces, listening ports — integrated directly into the Admin Panel as a tab. Manage your server without opening a terminal.
 
+### Data Retention
+Admin-configurable retention policies for chat messages, DMs, notifications, activity logs, service logs, and expired tokens. Automatic cleanup runs on a configurable interval (default 6 hours) with optional database VACUUM. Run cleanup on demand from the Admin Panel.
+
 ### Administration
-User management with role hierarchy (Super Admin / Admin / Moderator / User), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning. Unified role checking across all pages with consistent role labels in profile and UI.
+User management with role hierarchy (Super Admin / Admin / Moderator / User), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning. Server file management and data retention settings integrated directly into the Admin Panel. Unified role checking across all pages with consistent role labels in profile and UI.
 
 ## Screenshots
 
@@ -137,7 +140,8 @@ Python/aiohttp backend ──── SQLite database (FTS5 search)
        ├── Message search ───── FTS5 full-text index
        ├── Voice signaling ──── WebRTC P2P (no server-side audio)
        ├── File manager ─────── Local + remote SFTP
-       └── System monitor ───── psutil + systemd
+       ├── System monitor ───── psutil + systemd
+       └── Data retention ───── Configurable auto-cleanup
 ```
 
 Single binary. No Docker required. No microservices. No external databases. One Python process, one SQLite file, one `.env` config.

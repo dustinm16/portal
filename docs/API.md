@@ -2887,6 +2887,92 @@ Update the server hostname in the configuration.
 
 ---
 
+### Data Retention (Admin)
+
+Data retention settings control automatic cleanup of old chat messages, DMs, notifications, activity logs, and service logs.
+
+#### GET /api/admin/retention
+Get data retention configuration settings.
+
+**Auth**: Admin or higher
+
+**Response (200)**:
+```json
+{
+  "retention_chat_days": "7",
+  "retention_dm_days": "30",
+  "retention_notifications_days": "30",
+  "retention_activity_max": "500",
+  "retention_service_logs_max": "1000",
+  "cleanup_interval_hours": "6",
+  "auto_vacuum": "true"
+}
+```
+
+---
+
+#### PUT /api/admin/retention
+Update data retention settings.
+
+**Auth**: Superadmin only
+
+**Request**:
+```json
+{
+  "retention_chat_days": "14",
+  "retention_dm_days": "60",
+  "retention_notifications_days": "30",
+  "retention_activity_max": "500",
+  "retention_service_logs_max": "1000",
+  "cleanup_interval_hours": "6",
+  "auto_vacuum": "true"
+}
+```
+
+Setting any value to `0` disables cleanup for that category (keeps forever).
+
+**Response (200)**:
+```json
+{
+  "updated": true,
+  "config": {
+    "retention_chat_days": "14",
+    "retention_dm_days": "60",
+    "retention_notifications_days": "30",
+    "retention_activity_max": "500",
+    "retention_service_logs_max": "1000",
+    "cleanup_interval_hours": "6",
+    "auto_vacuum": "true"
+  }
+}
+```
+
+---
+
+#### POST /api/admin/retention/run
+Trigger immediate data cleanup cycle.
+
+**Auth**: Superadmin only
+
+**Response (200)**:
+```json
+{
+  "cleanup_complete": true,
+  "deleted": {
+    "chat_messages": 0,
+    "dm_messages": 0,
+    "notifications": 0,
+    "activity_log": 0,
+    "expired_tokens": 59,
+    "expired_api_keys": 0,
+    "service_logs": 4998,
+    "vacuumed": true
+  }
+}
+```
+
+---
+
 ### System Monitor (Admin)
 
 #### GET /api/sysmon/processes
