@@ -225,7 +225,7 @@ const Portal = {
             bottom: 20px;
             right: 20px;
             padding: 12px 20px;
-            background: ${type === 'error' ? 'rgba(239, 68, 68, 0.9)' : 'rgba(96, 165, 250, 0.9)'};
+            background: ${type === 'error' ? 'rgba(239, 68, 68, 0.9)' : type === 'success' ? 'rgba(34, 197, 94, 0.9)' : 'rgba(96, 165, 250, 0.9)'};
             color: white;
             border-radius: 8px;
             font-size: 14px;
@@ -316,10 +316,458 @@ const Portal = {
         sessionExpired() {
             window.location.href = '/login?expired=1';
         }
+    },
+
+    /**
+     * Set button loading state with inline spinner
+     */
+    setButtonLoading(btn, loading) {
+        if (!btn) return;
+        if (loading) {
+            btn.disabled = true;
+            btn._originalHTML = btn.innerHTML;
+            const text = btn.textContent.trim();
+            btn.innerHTML = `<span class="btn-spinner"></span> ${text}`;
+        } else {
+            btn.disabled = false;
+            if (btn._originalHTML !== undefined) {
+                btn.innerHTML = btn._originalHTML;
+                delete btn._originalHTML;
+            }
+        }
+    },
+
+    /**
+     * Flash success checkmark on button
+     */
+    flashButtonSuccess(btn) {
+        if (!btn) return;
+        const origHTML = btn.innerHTML;
+        const origBg = btn.style.background;
+        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16" style="vertical-align:middle"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Done`;
+        btn.style.background = 'var(--accent-green)';
+        setTimeout(() => {
+            btn.innerHTML = origHTML;
+            btn.style.background = origBg;
+        }, 800);
+    },
+
+    /**
+     * Set or clear inline field validation error
+     */
+    setFieldError(input, errorMsg) {
+        if (!input) return;
+        input.classList.remove('field-error');
+        const existing = input.parentElement.querySelector('.field-error-msg');
+        if (existing) existing.remove();
+        if (errorMsg) {
+            input.classList.add('field-error');
+            const msg = document.createElement('div');
+            msg.className = 'field-error-msg';
+            msg.textContent = errorMsg;
+            input.parentElement.appendChild(msg);
+        }
+    },
+
+    /**
+     * Validate port number (1-65535), returns error string or null
+     */
+    validatePort(value) {
+        if (value === '' || value === null || value === undefined) return null;
+        const port = parseInt(value);
+        if (isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+        return null;
+    },
+
+    /**
+     * Validate required field, returns error string or null
+     */
+    validateRequired(value, fieldName) {
+        if (!value || !value.trim()) return `${fieldName} is required`;
+        return null;
+    },
+
+    /**
+     * Keyboard shortcuts overlay
+     */
+    shortcuts: {
+        _visible: false,
+        SHORTCUTS: [
+            { keys: '?', desc: 'Show keyboard shortcuts' },
+            { keys: 'Ctrl+K', desc: 'Open command palette' },
+            { keys: 'Esc', desc: 'Close modal or panel' },
+            { keys: 'Enter', desc: 'Send message (in chat)' },
+        ],
+        init() {
+            document.addEventListener('keydown', (e) => {
+                const tag = e.target.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+                if (e.target.isContentEditable) return;
+                if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    e.preventDefault();
+                    this._visible ? this.hide() : this.show();
+                }
+            });
+        },
+        show() {
+            if (this._visible) return;
+            this._visible = true;
+            const overlay = document.createElement('div');
+            overlay.id = 'shortcuts-modal';
+            overlay.className = 'modal';
+            overlay.style.display = 'flex';
+            overlay.innerHTML = `
+                <div class="modal-backdrop" onclick="Portal.shortcuts.hide()"></div>
+                <div class="modal-content" style="max-width: 420px;">
+                    <div class="modal-header">
+                        <h3>Keyboard Shortcuts</h3>
+                        <button class="modal-close" onclick="Portal.shortcuts.hide()">&times;</button>
+                    </div>
+                    <div style="padding: 1rem 1.5rem;">
+                        <div class="shortcuts-list">
+                            ${this.SHORTCUTS.map(s => `
+                                <div class="shortcut-row">
+                                    <span class="shortcut-keys">${s.keys.split('/').map(k => `<kbd>${k.trim()}</kbd>`).join(' / ')}</span>
+                                    <span class="shortcut-desc">${s.desc}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            document.body.style.overflow = 'hidden';
+        },
+        hide() {
+            this._visible = false;
+            const modal = document.getElementById('shortcuts-modal');
+            if (modal) modal.remove();
+            document.body.style.overflow = '';
+        }
+    },
+
+    /**
+     * Command palette (Ctrl+K)
+     */
+    commandPalette: {
+        _visible: false,
+        _items: [],
+        _filteredItems: [],
+        _selectedIndex: 0,
+
+        STATIC_PAGES: [
+            { type: 'page', name: 'Dashboard', url: '/', icon: 'grid' },
+            { type: 'page', name: 'Chat', url: '/chat', icon: 'chat' },
+            { type: 'page', name: 'Streams', url: '/streams', icon: 'video' },
+            { type: 'page', name: 'File Manager', url: '/files', icon: 'folder' },
+            { type: 'page', name: 'API Docs', url: '/api-docs', icon: 'doc' },
+            { type: 'page', name: 'About', url: '/about', icon: 'info' },
+        ],
+        STATIC_ADMIN: [
+            { type: 'page', name: 'Admin Panel', url: '/admin', icon: 'admin' },
+        ],
+        STATIC_ACTIONS: [
+            { type: 'action', name: 'Add Connection', action: 'add-connection', icon: 'plus' },
+            { type: 'action', name: 'Create Stream', action: 'create-stream', icon: 'plus' },
+        ],
+
+        init() {
+            document.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                    e.preventDefault();
+                    this._visible ? this.hide() : this.show();
+                }
+                if (e.key === 'Escape' && this._visible) {
+                    e.preventDefault();
+                    this.hide();
+                }
+            });
+        },
+
+        async show() {
+            if (this._visible) return;
+            this._visible = true;
+            this._selectedIndex = 0;
+            this._items = [...this.STATIC_PAGES, ...this.STATIC_ACTIONS];
+
+            // Add admin pages if admin badge visible
+            const adminBadge = document.getElementById('admin-badge');
+            if (adminBadge && adminBadge.style.display !== 'none') {
+                this._items.push(...this.STATIC_ADMIN);
+            }
+
+            const overlay = document.createElement('div');
+            overlay.id = 'command-palette';
+            overlay.className = 'cmd-palette-overlay';
+            overlay.innerHTML = `
+                <div class="cmd-palette-backdrop" onclick="Portal.commandPalette.hide()"></div>
+                <div class="cmd-palette">
+                    <div class="cmd-palette-input-wrap">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                        <input type="text" id="cmd-palette-input" placeholder="Search pages, connections, streams..."
+                               autocomplete="off" spellcheck="false">
+                        <kbd>Esc</kbd>
+                    </div>
+                    <div class="cmd-palette-results" id="cmd-palette-results"></div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            const input = document.getElementById('cmd-palette-input');
+            input.focus();
+            input.addEventListener('input', () => this._onInput(input.value));
+            input.addEventListener('keydown', (e) => this._onKeydown(e));
+
+            this._filteredItems = [...this._items];
+            this._render();
+            this._loadDynamic();
+        },
+
+        hide() {
+            this._visible = false;
+            const el = document.getElementById('command-palette');
+            if (el) el.remove();
+        },
+
+        async _loadDynamic() {
+            try {
+                const [connRes, streamRes, chanRes] = await Promise.allSettled([
+                    Portal.fetchJSON('/api/connections'),
+                    Portal.fetchJSON('/api/streams'),
+                    Portal.fetchJSON('/api/chat/channels'),
+                ]);
+                if (connRes.status === 'fulfilled') {
+                    (connRes.value.connections || []).forEach(c => {
+                        this._items.push({
+                            type: 'connection', name: c.name,
+                            detail: `${c.host || ''}${c.port ? ':' + c.port : ''} (${c.type})`,
+                            id: c.id, icon: 'connection'
+                        });
+                    });
+                }
+                if (streamRes.status === 'fulfilled') {
+                    (streamRes.value.streams || []).forEach(s => {
+                        this._items.push({
+                            type: 'stream', name: s.name,
+                            detail: s.is_live ? 'LIVE' : 'Offline',
+                            publicKey: s.public_key, icon: 'video'
+                        });
+                    });
+                }
+                if (chanRes.status === 'fulfilled') {
+                    (chanRes.value.channels || []).forEach(ch => {
+                        this._items.push({
+                            type: 'channel', name: '#' + ch.name,
+                            detail: ch.description || '',
+                            channelName: ch.name, icon: 'chat'
+                        });
+                    });
+                }
+                const input = document.getElementById('cmd-palette-input');
+                if (input) this._onInput(input.value);
+            } catch (e) { /* ignore */ }
+        },
+
+        _onInput(query) {
+            const q = query.toLowerCase().trim();
+            if (!q) {
+                this._filteredItems = [...this._items];
+            } else {
+                this._filteredItems = this._items.filter(item =>
+                    this._fuzzy(q, item.name.toLowerCase()) ||
+                    this._fuzzy(q, (item.detail || '').toLowerCase())
+                );
+            }
+            this._selectedIndex = 0;
+            this._render();
+        },
+
+        _fuzzy(query, text) {
+            let qi = 0;
+            for (let i = 0; i < text.length && qi < query.length; i++) {
+                if (text[i] === query[qi]) qi++;
+            }
+            return qi === query.length;
+        },
+
+        _onKeydown(e) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                this._selectedIndex = Math.min(this._selectedIndex + 1, this._filteredItems.length - 1);
+                this._render();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                this._selectedIndex = Math.max(this._selectedIndex - 1, 0);
+                this._render();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const item = this._filteredItems[this._selectedIndex];
+                if (item) this._select(item);
+            }
+        },
+
+        _select(item) {
+            this.hide();
+            switch (item.type) {
+                case 'page':
+                    window.location.href = item.url;
+                    break;
+                case 'connection':
+                    if (typeof connectTo === 'function') connectTo(item.id);
+                    else window.location.href = '/';
+                    break;
+                case 'stream':
+                    window.location.href = '/watch/' + item.publicKey;
+                    break;
+                case 'channel':
+                    window.location.href = '/chat#channel-' + item.channelName;
+                    break;
+                case 'action':
+                    if (item.action === 'add-connection') {
+                        if (typeof showAddConnectionModal === 'function') showAddConnectionModal();
+                        else window.location.href = '/';
+                    } else if (item.action === 'create-stream') {
+                        if (typeof showModal === 'function') showModal('create-stream-modal');
+                        else window.location.href = '/';
+                    }
+                    break;
+            }
+        },
+
+        _categoryLabel(type) {
+            return { page: 'Pages', action: 'Actions', connection: 'Connections', stream: 'Streams', channel: 'Channels' }[type] || type;
+        },
+
+        _esc(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        },
+
+        _render() {
+            const results = document.getElementById('cmd-palette-results');
+            if (!results) return;
+            if (!this._filteredItems.length) {
+                results.innerHTML = '<div class="cmd-palette-empty">No results found</div>';
+                return;
+            }
+            let html = '', lastType = '';
+            this._filteredItems.forEach((item, idx) => {
+                if (item.type !== lastType) {
+                    lastType = item.type;
+                    html += `<div class="cmd-palette-category">${this._categoryLabel(item.type)}</div>`;
+                }
+                const active = idx === this._selectedIndex ? ' cmd-palette-item-active' : '';
+                const detail = item.detail ? `<span class="cmd-palette-item-detail">${this._esc(item.detail)}</span>` : '';
+                html += `<div class="cmd-palette-item${active}" data-index="${idx}"
+                    onmouseenter="Portal.commandPalette._selectedIndex=${idx};Portal.commandPalette._render()"
+                    onclick="Portal.commandPalette._select(Portal.commandPalette._filteredItems[${idx}])">
+                    <span class="cmd-palette-item-name">${this._esc(item.name)}</span>${detail}
+                </div>`;
+            });
+            results.innerHTML = html;
+            const active = results.querySelector('.cmd-palette-item-active');
+            if (active) active.scrollIntoView({ block: 'nearest' });
+        }
+    },
+
+    /**
+     * Welcome tour for first-time users
+     */
+    welcomeTour: {
+        STORAGE_KEY: 'portal_welcome_dismissed',
+
+        init() {
+            if (!document.querySelector('.dashboard')) return;
+            if (localStorage.getItem(this.STORAGE_KEY)) return;
+            this.show();
+        },
+
+        show() {
+            const overlay = document.createElement('div');
+            overlay.id = 'welcome-tour-modal';
+            overlay.className = 'modal';
+            overlay.style.display = 'flex';
+            overlay.innerHTML = `
+                <div class="modal-backdrop" onclick="Portal.welcomeTour.dismiss()"></div>
+                <div class="modal-content" style="max-width: 560px;">
+                    <div class="modal-header">
+                        <h3>Welcome to Open Relay Portal</h3>
+                        <button class="modal-close" onclick="Portal.welcomeTour.dismiss()">&times;</button>
+                    </div>
+                    <div style="padding: 1.5rem;">
+                        <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+                            Your secure gateway for remote access, streaming, and encrypted communication.
+                        </p>
+                        <div class="welcome-features">
+                            <div class="welcome-feature-card">
+                                <div class="welcome-feature-icon">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="32" height="32">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                    </svg>
+                                </div>
+                                <h4>Chat</h4>
+                                <p>Encrypted messaging with channels, DMs, voice, reactions, and threads</p>
+                            </div>
+                            <div class="welcome-feature-card">
+                                <div class="welcome-feature-icon">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="32" height="32">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                    </svg>
+                                </div>
+                                <h4>Streams</h4>
+                                <p>Go live with RTMPS, manage VODs, and share with the community</p>
+                            </div>
+                            <div class="welcome-feature-card">
+                                <div class="welcome-feature-icon">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="32" height="32">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
+                                    </svg>
+                                </div>
+                                <h4>Connections</h4>
+                                <p>SSH, VNC, RDP, databases &mdash; access remote services securely</p>
+                            </div>
+                            <div class="welcome-feature-card">
+                                <div class="welcome-feature-icon">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="32" height="32">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                                    </svg>
+                                </div>
+                                <h4>Files</h4>
+                                <p>Dual-pane SFTP file manager with drag-and-drop transfers</p>
+                            </div>
+                        </div>
+                        <div style="margin-top: 1.25rem; display: flex; align-items: center; justify-content: space-between;">
+                            <label style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-muted); font-size: 0.8125rem; cursor: pointer;">
+                                <input type="checkbox" id="welcome-dont-show" checked> Don't show again
+                            </label>
+                            <button class="btn btn-primary" onclick="Portal.welcomeTour.dismiss()">Get Started</button>
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.75rem; text-align: center;">
+                            Press <kbd>?</kbd> for keyboard shortcuts &bull; <kbd>Ctrl+K</kbd> to search
+                        </p>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            document.body.style.overflow = 'hidden';
+        },
+
+        dismiss() {
+            const dontShow = document.getElementById('welcome-dont-show');
+            if (dontShow && dontShow.checked) {
+                localStorage.setItem(this.STORAGE_KEY, '1');
+            }
+            const modal = document.getElementById('welcome-tour-modal');
+            if (modal) modal.remove();
+            document.body.style.overflow = '';
+        }
     }
 };
 
-// Navbar hamburger toggle
+// Navbar hamburger toggle + global feature init
 document.addEventListener('DOMContentLoaded', () => {
     const toggle = document.querySelector('.navbar-toggle');
     const menu = document.querySelector('.navbar-menu');
@@ -336,6 +784,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // Init global features
+    Portal.shortcuts.init();
+    Portal.commandPalette.init();
+    Portal.welcomeTour.init();
 });
 
 // Add CSS animations for toast

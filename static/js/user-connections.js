@@ -791,6 +791,7 @@ function onSSHAuthChange() {
 async function submitConnection(event) {
     event.preventDefault();
 
+    const submitBtn = document.getElementById('connection-submit-btn');
     const connectionId = document.getElementById('connection-id').value;
     const isEdit = !!connectionId;
 
@@ -802,14 +803,18 @@ async function submitConnection(event) {
 
     if (!name) {
         Portal.toast('Connection name is required', 'error');
+        Portal.setFieldError(document.getElementById('connection-name'), 'Connection name is required');
         document.getElementById('connection-name').focus();
         return;
     }
     if (!host) {
         Portal.toast('Host address is required (e.g., 192.168.1.100)', 'error');
+        Portal.setFieldError(document.getElementById('connection-host'), 'Host address is required');
         document.getElementById('connection-host').focus();
         return;
     }
+
+    Portal.setButtonLoading(submitBtn, true);
 
     // Build config based on type
     let config = {};
@@ -881,12 +886,12 @@ async function submitConnection(event) {
         }
 
         console.log('[Connections] Connection saved');
-        Portal.toast(isEdit ? 'Connection updated' : 'Connection added');
-        closeModal('add-connection-modal');
+        Portal.flashButtonSuccess(submitBtn);
+        Portal.toast(isEdit ? 'Connection updated' : 'Connection added', 'success');
+        setTimeout(() => closeModal('add-connection-modal'), 800);
         await loadConnections();
     } catch (error) {
         console.error('[Connections] Error saving:', error);
-        // Provide more helpful error messages
         let msg = error.message || 'Failed to save connection';
         if (msg.includes('UNIQUE constraint')) {
             msg = 'A connection with this name already exists. Please choose a different name.';
@@ -896,6 +901,8 @@ async function submitConnection(event) {
             msg = 'Port must be between 1 and 65535.';
         }
         Portal.toast(msg, 'error');
+    } finally {
+        Portal.setButtonLoading(submitBtn, false);
     }
 }
 
@@ -1147,3 +1154,28 @@ if (typeof escapeHtml !== 'function') {
         return div.innerHTML;
     }
 }
+
+// Inline validation for connection form fields
+document.addEventListener('DOMContentLoaded', () => {
+    const fields = [
+        { id: 'connection-name', label: 'Connection name', type: 'required' },
+        { id: 'connection-host', label: 'Host address', type: 'required' },
+        { id: 'connection-port', label: null, type: 'port' },
+    ];
+    fields.forEach(({ id, label, type }) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('blur', () => {
+            const err = type === 'port' ? Portal.validatePort(input.value)
+                : Portal.validateRequired(input.value, label);
+            Portal.setFieldError(input, err);
+        });
+        input.addEventListener('input', () => {
+            if (input.classList.contains('field-error')) {
+                const err = type === 'port' ? Portal.validatePort(input.value)
+                    : Portal.validateRequired(input.value, label);
+                if (!err) Portal.setFieldError(input, null);
+            }
+        });
+    });
+});

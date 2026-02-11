@@ -196,12 +196,14 @@ async function createStream(event) {
     const name = document.getElementById('stream-name').value.trim();
     const description = document.getElementById('stream-description').value.trim();
     const isPublic = document.getElementById('stream-public').checked;
+    const submitBtn = event.target.querySelector('button[type="submit"]');
 
     if (!name) {
-        alert('Stream name is required');
+        Portal.toast('Stream name is required', 'error');
         return;
     }
 
+    Portal.setButtonLoading(submitBtn, true);
     try {
         const response = await Portal.postJSON('/api/streams', {
             name,
@@ -210,18 +212,21 @@ async function createStream(event) {
         });
 
         if (response.ok) {
-            closeModal('create-stream-modal');
+            Portal.flashButtonSuccess(submitBtn);
+            Portal.toast('Stream created', 'success');
+            setTimeout(() => closeModal('create-stream-modal'), 800);
             loadUserStreams();
             const data = await response.json();
-            // Show the stream key
             showStreamDetails(data.stream.id);
         } else {
             const error = await response.json();
-            alert(error.error || 'Failed to create stream');
+            Portal.toast(error.error || 'Failed to create stream', 'error');
         }
     } catch (error) {
         console.error('Failed to create stream:', error);
-        alert('Failed to create stream');
+        Portal.toast('Failed to create stream', 'error');
+    } finally {
+        Portal.setButtonLoading(submitBtn, false);
     }
 }
 

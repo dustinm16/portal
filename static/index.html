@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=34">
+    <link rel="stylesheet" href="/static/css/portal.css?v=37">
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
@@ -1251,7 +1251,7 @@
 
                 <div class="form-group">
                     <label for="connection-name">Connection Name <span style="color: var(--accent-red);">*</span></label>
-                    <input type="text" id="connection-name" required placeholder="My Server" aria-required="true">
+                    <input type="text" id="connection-name" required placeholder="My Server" aria-required="true" title="A friendly name to identify this connection in your dashboard">
                 </div>
 
                 <div class="form-row">
@@ -1312,12 +1312,12 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label for="connection-host">Host <span style="color: var(--accent-red);">*</span></label>
-                        <input type="text" id="connection-host" required placeholder="192.168.1.100 or hostname" aria-required="true">
+                        <input type="text" id="connection-host" required placeholder="192.168.1.100 or hostname" aria-required="true" title="IP address or hostname of the remote server. Localhost addresses are blocked for security.">
                         <small style="color: var(--text-muted);">Note: localhost/127.0.0.1 blocked for security</small>
                     </div>
                     <div class="form-group">
                         <label for="connection-port">Port</label>
-                        <input type="number" id="connection-port" min="1" max="65535" placeholder="Auto (uses default)">
+                        <input type="number" id="connection-port" min="1" max="65535" placeholder="Auto (uses default)" title="TCP port (1-65535). Leave empty to use the default for the selected type.">
                     </div>
                 </div>
 
@@ -1334,7 +1334,7 @@
                         </div>
                         <div class="form-group">
                             <label for="connection-ssh-auth">Authentication</label>
-                            <select id="connection-ssh-auth" onchange="onSSHAuthChange()">
+                            <select id="connection-ssh-auth" onchange="onSSHAuthChange()" title="Password prompts at connect time; private key uses PEM format for key-based auth">
                                 <option value="password">Password (enter when connecting)</option>
                                 <option value="key">Private Key</option>
                             </select>
@@ -1343,7 +1343,7 @@
                     <div id="connection-ssh-key-fields" style="display: none;">
                         <div class="form-group">
                             <label for="connection-ssh-private-key">Private Key (PEM format)</label>
-                            <textarea id="connection-ssh-private-key" rows="6" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" style="font-family: monospace; font-size: 0.75rem;"></textarea>
+                            <textarea id="connection-ssh-private-key" rows="6" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" style="font-family: monospace; font-size: 0.75rem;" title="Paste your PEM-format private key. It is encrypted at rest on the server."></textarea>
                             <small style="color: var(--text-muted);">Paste your private key here.</small>
                         </div>
                     </div>
@@ -1550,11 +1550,11 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=23"></script>
+    <script src="/static/js/portal.js?v=26"></script>
     <script src="/static/js/dashboard.js?v=29"></script>
-    <script src="/static/js/admin.js?v=22"></script>
+    <script src="/static/js/admin.js?v=23"></script>
     <script src="/static/js/ssh-keys.js?v=21"></script>
-    <script src="/static/js/user-connections.js?v=23"></script>
+    <script src="/static/js/user-connections.js?v=24"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>
@@ -1621,7 +1621,7 @@
         </div>
     </div>
 
-    <script src="/static/js/streams.js?v=28"></script>
+    <script src="/static/js/streams.js?v=29"></script>
     <script src="/static/js/vods.js?v=3"></script>
     <script>
         function openLocalTerminal() {

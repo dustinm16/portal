@@ -464,6 +464,7 @@ function collectPluginConfig() {
 async function submitAddService(event) {
     event.preventDefault();
 
+    const submitBtn = event.target.querySelector('button[type="submit"]');
     const name = document.getElementById('service-name').value;
     const path = document.getElementById('service-path').value;
     const plugin = document.getElementById('service-plugin').value;
@@ -471,12 +472,10 @@ async function submitAddService(event) {
     const port = document.getElementById('service-port').value;
     const scopes = document.getElementById('service-scopes').value || '*';
 
-    // Collect plugin-specific config
     const config = collectPluginConfig();
-
-    // Ensure path starts with /
     const normalizedPath = path.startsWith('/') ? path : '/' + path;
 
+    Portal.setButtonLoading(submitBtn, true);
     try {
         const response = await Portal.fetch('/api/services', {
             method: 'POST',
@@ -493,8 +492,9 @@ async function submitAddService(event) {
         });
 
         if (response.ok) {
-            Portal.toast('Service added successfully');
-            closeModal('add-service-modal');
+            Portal.flashButtonSuccess(submitBtn);
+            Portal.toast('Service added successfully', 'success');
+            setTimeout(() => closeModal('add-service-modal'), 800);
             await loadServices();
         } else {
             const data = await response.json();
@@ -503,6 +503,8 @@ async function submitAddService(event) {
     } catch (error) {
         Portal.toast('Failed to add service', 'error');
         console.error('Add service error:', error);
+    } finally {
+        Portal.setButtonLoading(submitBtn, false);
     }
 }
 
