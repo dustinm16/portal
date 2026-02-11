@@ -1,6 +1,12 @@
 # Open Relay Portal
 
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://python.org)
+[![Release](https://img.shields.io/github/v/release/dustinm16/portal)](https://github.com/dustinm16/portal/releases)
+
 A self-hosted, encrypted communication and infrastructure gateway. One server gives you everything — live streaming, encrypted chat, voice calls, remote access, and file management — all under your control, on your hardware, with zero third-party dependencies.
+
+> **A self-hosted alternative to Discord + Twitch + TeamViewer.** No accounts on someone else's server. No content moderation you didn't choose. No subscription fees. Just your hardware, your rules.
 
 ## Why This Exists
 
@@ -55,6 +61,22 @@ Admin-configurable retention policies for chat messages, DMs, notifications, act
 
 ### Administration
 User management with role hierarchy (Super Admin / Admin / Moderator / User), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning. Server file management and data retention settings integrated directly into the Admin Panel. Unified role checking across all pages with consistent role labels in profile and UI.
+
+## Feature Comparison
+
+| Feature | Open Relay Portal | Discord | Twitch | TeamViewer |
+|---------|:-:|:-:|:-:|:-:|
+| Encrypted chat (at rest) | Yes | No | No | No |
+| Live streaming (RTMPS/HLS) | Yes | Go Live only | Yes | No |
+| VOD recording (self-hosted) | Yes | No | Yes (platform) | No |
+| Voice chat (E2E encrypted) | Yes | No | No | No |
+| SSH/VNC/RDP remote access | Yes | No | No | Yes |
+| File management (SFTP) | Yes | No | No | Yes |
+| Self-hosted / on-premise | Yes | No | No | Partial |
+| No vendor lock-in | Yes | No | No | No |
+| No subscription required | Yes | No | No | No |
+| Open source (AGPL-3.0) | Yes | No | No | No |
+| Single binary deployment | Yes | N/A | N/A | N/A |
 
 ## Screenshots
 
@@ -191,6 +213,16 @@ Contributions welcome. The codebase is vanilla Python and vanilla JS — no fram
 pip install flake8
 flake8 server.py database.py auth.py --max-line-length=120
 ```
+
+## Related Projects
+
+If you're looking for self-hosted alternatives in specific categories:
+
+- **Chat**: [Matrix/Element](https://matrix.org), [Rocket.Chat](https://rocket.chat), [Mattermost](https://mattermost.com)
+- **Streaming**: [Owncast](https://owncast.online), [Peertube](https://joinpeertube.org)
+- **Remote Access**: [Guacamole](https://guacamole.apache.org), [Rustdesk](https://rustdesk.com)
+
+Open Relay Portal combines all three into a single server with unified authentication, encrypted storage, and zero external dependencies.
 
 ## License
 
