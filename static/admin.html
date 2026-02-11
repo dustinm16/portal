@@ -536,15 +536,15 @@
     <div class="dashboard">
         <main class="main-content" style="max-width: 1400px; margin: 0 auto;">
             <div class="tab-nav">
-                <button class="tab-btn active" onclick="showTab('overview')">Overview</button>
-                <button class="tab-btn" onclick="showTab('services')">Managed Services</button>
-                <button class="tab-btn" onclick="showTab('metrics')">Traffic Metrics</button>
-                <button class="tab-btn" onclick="showTab('vuln')">CVE Analysis</button>
-                <button class="tab-btn" onclick="showTab('shodan')">Shodan Scanner</button>
-                <button class="tab-btn" onclick="showTab('connections')">Active Connections</button>
-                <button class="tab-btn" onclick="showTab('settings')">Settings</button>
-                <button class="tab-btn" onclick="showTab('system')">System</button>
-                <button class="tab-btn" onclick="showTab('files')">Files</button>
+                <button class="tab-btn active" onclick="showTab('overview', event)">Overview</button>
+                <button class="tab-btn" onclick="showTab('services', event)">Managed Services</button>
+                <button class="tab-btn" onclick="showTab('metrics', event)">Traffic Metrics</button>
+                <button class="tab-btn" onclick="showTab('vuln', event)">CVE Analysis</button>
+                <button class="tab-btn" onclick="showTab('shodan', event)">Shodan Scanner</button>
+                <button class="tab-btn" onclick="showTab('connections', event)">Active Connections</button>
+                <button class="tab-btn" onclick="showTab('settings', event)">Settings</button>
+                <button class="tab-btn" onclick="showTab('system', event)">System</button>
+                <button class="tab-btn" onclick="showTab('files', event)">Files</button>
             </div>
 
             <!-- Overview Tab -->
@@ -1074,9 +1074,9 @@
             <!-- System Monitor Tab -->
             <div id="tab-system" class="tab-content">
                 <div class="sys-sub-tabs">
-                    <button class="sys-sub-tab active" onclick="showSysSubTab('processes')">Processes</button>
-                    <button class="sys-sub-tab" onclick="showSysSubTab('sysservices')">Services</button>
-                    <button class="sys-sub-tab" onclick="showSysSubTab('network')">Network</button>
+                    <button class="sys-sub-tab active" onclick="showSysSubTab('processes', event)">Processes</button>
+                    <button class="sys-sub-tab" onclick="showSysSubTab('sysservices', event)">Services</button>
+                    <button class="sys-sub-tab" onclick="showSysSubTab('network', event)">Network</button>
                 </div>
 
                 <!-- Processes Sub-tab -->
@@ -1259,11 +1259,12 @@
     <script src="/static/js/portal.js?v=25"></script>
     <script>
         // Tab switching
-        function showTab(tabName) {
+        function showTab(tabName, evt) {
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('tab-' + tabName).classList.add('active');
-            event.target.classList.add('active');
+            const btn = (evt && evt.target) || document.querySelector(`.tab-btn[onclick*="'${tabName}'"]`);
+            if (btn) btn.classList.add('active');
 
             // Load data for the tab
             switch(tabName) {
@@ -2947,11 +2948,12 @@
         let sysAutoRefreshTimer = null;
         let sysCurrentLogService = '';
 
-        function showSysSubTab(tab) {
+        function showSysSubTab(tab, evt) {
             document.querySelectorAll('.sys-sub-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.sys-sub-tab').forEach(el => el.classList.remove('active'));
             document.getElementById('sys-sub-' + tab).classList.add('active');
-            event.target.classList.add('active');
+            const btn = (evt && evt.target) || document.querySelector(`.sys-sub-tab[onclick*="'${tab}'"]`);
+            if (btn) btn.classList.add('active');
 
             switch(tab) {
                 case 'processes': sysLoadProcesses(); break;
@@ -3216,7 +3218,7 @@
                 </div>
                 <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
                     <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">
-                        <input type="checkbox" id="ret-vacuum" ${c.auto_vacuum === 'true' ? 'checked' : ''}>
+                        <input type="checkbox" id="ret-vacuum" ${(c.auto_vacuum === 'true' || c.auto_vacuum === true) ? 'checked' : ''}>
                         Auto-VACUUM database after cleanup
                     </label>
                 </div>

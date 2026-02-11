@@ -2426,30 +2426,31 @@ class Database:
     async def cleanup_old_chat_messages(self, days: int = 7) -> int:
         """Delete chat messages older than specified days. Returns count deleted."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        # Get IDs for FTS cleanup before deleting
-        cursor = await self.conn.execute(
-            "SELECT id FROM chat_messages WHERE created_at < ?", (cutoff,)
-        )
-        old_ids = [row["id"] for row in await cursor.fetchall()]
-        if old_ids:
-            # Clean FTS entries
-            for msg_id in old_ids:
+        total_deleted = 0
+        batch_size = 500
+        while True:
+            cursor = await self.conn.execute(
+                "SELECT id FROM chat_messages WHERE created_at < ? LIMIT ?",
+                (cutoff, batch_size)
+            )
+            batch = [row["id"] for row in await cursor.fetchall()]
+            if not batch:
+                break
+            for msg_id in batch:
                 try:
                     await self.remove_message_from_search(msg_id, "channel")
                 except Exception:
                     pass
-            # Clean reactions for old messages
-            placeholders = ",".join("?" * len(old_ids))
+            placeholders = ",".join("?" * len(batch))
             await self.conn.execute(
-                f"DELETE FROM chat_reactions WHERE message_id IN ({placeholders})",
-                old_ids
+                f"DELETE FROM chat_reactions WHERE message_id IN ({placeholders})", batch
             )
-        cursor = await self.conn.execute(
-            "DELETE FROM chat_messages WHERE created_at < ?",
-            (cutoff,)
-        )
-        await self.conn.commit()
-        return cursor.rowcount
+            await self.conn.execute(
+                f"DELETE FROM chat_messages WHERE id IN ({placeholders})", batch
+            )
+            await self.conn.commit()
+            total_deleted += len(batch)
+        return total_deleted
 
     async def clear_channel_messages(self, channel_id: int) -> int:
         """Delete all messages in a channel. Returns count deleted."""
@@ -2979,6 +2980,8 @@ class Database:
 
     async def find_dm_conversation(self, user_id_a: int, user_id_b: int) -> Optional[dict]:
         """Find an existing 1:1 DM conversation between two users."""
+        if user_id_a == user_id_b:
+            return None  # Self-DM not supported
         cursor = await self.conn.execute(
             """SELECT dc.* FROM dm_conversations dc
                JOIN dm_participants dp1 ON dp1.conversation_id = dc.id AND dp1.user_id = ? AND dp1.left_at IS NULL
@@ -3056,10 +3059,25 @@ class Database:
         )
         rows = await cursor.fetchall()
         unread = await self.get_dm_unread_counts(user_id)
+        conv_ids = [row["id"] for row in rows]
+        # Batch fetch all participants for returned conversations (avoids N+1)
+        participants_map: dict[int, list[dict]] = {cid: [] for cid in conv_ids}
+        if conv_ids:
+            placeholders = ",".join("?" * len(conv_ids))
+            pcursor = await self.conn.execute(
+                f"""SELECT dp.conversation_id, dp.user_id, dp.joined_at, dp.muted,
+                           u.username, u.nickname, u.avatar, u.role, u.status, u.status_message
+                    FROM dm_participants dp
+                    JOIN users u ON u.id = dp.user_id
+                    WHERE dp.conversation_id IN ({placeholders}) AND dp.left_at IS NULL""",
+                conv_ids
+            )
+            for prow in await pcursor.fetchall():
+                participants_map[prow["conversation_id"]].append(dict(prow))
         convs = []
         for row in rows:
             conv = dict(row)
-            conv["participants"] = await self._get_dm_participants(conv["id"])
+            conv["participants"] = participants_map.get(conv["id"], [])
             if conv.get("last_msg"):
                 conv["last_msg"] = decrypt_message(conv["last_msg"])
                 if len(conv["last_msg"]) > 100:
@@ -3102,7 +3120,7 @@ class Database:
     async def update_dm_mute(self, conversation_id: int, user_id: int, muted: bool) -> bool:
         """Toggle mute for a DM conversation participant."""
         cursor = await self.conn.execute(
-            "UPDATE dm_participants SET muted = ? WHERE conversation_id = ? AND user_id = ?",
+            "UPDATE dm_participants SET muted = ? WHERE conversation_id = ? AND user_id = ? AND left_at IS NULL",
             (int(muted), conversation_id, user_id)
         )
         await self.conn.commit()
@@ -3362,26 +3380,24 @@ class Database:
             pass
 
     async def remove_message_from_search(self, message_id: int, source: str) -> None:
-        """Remove a message from the search index."""
+        """Remove a message from the search index.
+
+        For contentless FTS5 tables (content=''), the 'delete' command requires
+        the original indexed content. Since we only store encrypted text in the
+        message tables, we delete the map entry instead. Orphaned FTS rows are
+        harmless — they never appear in results because _search_fts JOINs through
+        the map table, and any message_id misses are filtered by the msg_row check.
+        Periodic rebuild_search_index() cleans up orphans.
+        """
         try:
             if source == "channel":
-                fts_table, map_table = "chat_messages_fts", "chat_fts_map"
+                map_table = "chat_fts_map"
             else:
-                fts_table, map_table = "dm_messages_fts", "dm_fts_map"
-            cursor = await self.conn.execute(
-                f"SELECT rowid FROM {map_table} WHERE message_id = ?", (message_id,)
+                map_table = "dm_fts_map"
+            await self.conn.execute(
+                f"DELETE FROM {map_table} WHERE message_id = ?", (message_id,)
             )
-            row = await cursor.fetchone()
-            if row:
-                fts_rowid = row["rowid"]
-                await self.conn.execute(
-                    f"INSERT INTO {fts_table}({fts_table}, rowid, message) VALUES('delete', ?, ?)",
-                    (fts_rowid, "")
-                )
-                await self.conn.execute(
-                    f"DELETE FROM {map_table} WHERE rowid = ?", (fts_rowid,)
-                )
-                await self.conn.commit()
+            await self.conn.commit()
         except Exception:
             pass
 
@@ -3459,11 +3475,16 @@ class Database:
                 limit=offset + limit if scope == "all" else limit,
                 offset=offset if scope == "channels" else 0
             )
-            # Enrich with channel name
+            # Batch fetch channel names (avoids N+1)
+            ch_ids = list({r.get("source_id") for r in ch_results if r.get("source_id")})
+            ch_names = {}
+            if ch_ids:
+                ph = ",".join("?" * len(ch_ids))
+                cur = await self.conn.execute(f"SELECT id, name FROM chat_channels WHERE id IN ({ph})", ch_ids)
+                ch_names = {row["id"]: row["name"] for row in await cur.fetchall()}
             for r in ch_results:
                 r["source"] = "channel"
-                ch = await self.get_chat_channel(r.get("source_id"))
-                r["source_name"] = f"#{ch['name']}" if ch else "#unknown"
+                r["source_name"] = f"#{ch_names.get(r.get('source_id'), 'unknown')}"
             results.extend(ch_results)
             total += ch_total
 
@@ -3477,12 +3498,32 @@ class Database:
                 offset=offset if scope == "dms" else 0,
                 dm_user_id=user_id
             )
+            # Batch fetch DM conversation info (avoids N+1)
+            dm_conv_ids = list({r.get("source_id") for r in dm_results if r.get("source_id")})
+            dm_conv_map = {}
+            if dm_conv_ids:
+                ph = ",".join("?" * len(dm_conv_ids))
+                cur = await self.conn.execute(f"SELECT id, name FROM dm_conversations WHERE id IN ({ph})", dm_conv_ids)
+                dm_conv_map = {row["id"]: row["name"] for row in await cur.fetchall()}
+                # Batch fetch participants for DM conversations
+                pcur = await self.conn.execute(
+                    f"""SELECT dp.conversation_id, u.username, u.nickname
+                        FROM dm_participants dp JOIN users u ON u.id = dp.user_id
+                        WHERE dp.conversation_id IN ({ph}) AND dp.left_at IS NULL""",
+                    dm_conv_ids
+                )
+                dm_parts: dict[int, list[dict]] = {cid: [] for cid in dm_conv_ids}
+                for prow in await pcur.fetchall():
+                    dm_parts[prow["conversation_id"]].append(dict(prow))
             for r in dm_results:
                 r["source"] = "dm"
-                conv = await self.get_dm_conversation(r.get("source_id"))
-                if conv:
-                    others = [p["nickname"] or p["username"] for p in conv["participants"] if p["user_id"] != user_id]
-                    r["source_name"] = conv.get("name") or ", ".join(others) or "DM"
+                cid = r.get("source_id")
+                conv_name = dm_conv_map.get(cid)
+                if conv_name:
+                    r["source_name"] = conv_name
+                elif cid in dm_parts:
+                    others = [p["nickname"] or p["username"] for p in dm_parts[cid] if p.get("user_id") != user_id]
+                    r["source_name"] = ", ".join(others) or "DM"
                 else:
                     r["source_name"] = "DM"
             results.extend(dm_results)
@@ -3555,15 +3596,21 @@ class Database:
             cursor = await self.conn.execute(search_sql, params_with_pag)
             rows = await cursor.fetchall()
 
+            # Batch fetch message content (avoids N+1)
+            msg_ids = [row["message_id"] for row in rows]
+            msg_map = {}
+            if msg_ids:
+                ph = ",".join("?" * len(msg_ids))
+                msg_cursor = await self.conn.execute(
+                    f"SELECT id, message, image_url FROM {msg_table} WHERE id IN ({ph})", msg_ids
+                )
+                for mrow in await msg_cursor.fetchall():
+                    msg_map[mrow["id"]] = mrow
+
             results = []
             for row in rows:
                 row = dict(row)
-                # Fetch and decrypt the actual message
-                msg_cursor = await self.conn.execute(
-                    f"SELECT message, image_url FROM {msg_table} WHERE id = ?",
-                    (row["message_id"],)
-                )
-                msg_row = await msg_cursor.fetchone()
+                msg_row = msg_map.get(row["message_id"])
                 if msg_row:
                     row["message"] = decrypt_message(msg_row["message"])
                     row["has_image"] = 1 if msg_row["image_url"] else 0
@@ -3679,6 +3726,15 @@ class Database:
                     int_val = int(value)
                     if int_val < 0:
                         continue
+                    # Enforce reasonable upper bounds
+                    max_vals = {
+                        "retention_chat_days": 3650, "retention_dm_days": 3650,
+                        "retention_notifications_days": 3650,
+                        "retention_activity_max": 100000, "retention_service_logs_max": 100000,
+                        "cleanup_interval_hours": 168,  # max 1 week
+                    }
+                    if key in max_vals and int_val > max_vals[key]:
+                        int_val = max_vals[key]
                     value = str(int_val)
                 except (ValueError, TypeError):
                     continue
@@ -3687,29 +3743,31 @@ class Database:
     async def cleanup_old_dm_messages(self, days: int = 30) -> int:
         """Delete DM messages older than specified days. Returns count deleted."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        # Clean FTS entries first
-        cursor = await self.conn.execute(
-            "SELECT id FROM dm_messages WHERE created_at < ?", (cutoff,)
-        )
-        old_ids = [row["id"] for row in await cursor.fetchall()]
-        if old_ids:
-            for msg_id in old_ids:
+        total_deleted = 0
+        batch_size = 500
+        while True:
+            cursor = await self.conn.execute(
+                "SELECT id FROM dm_messages WHERE created_at < ? LIMIT ?",
+                (cutoff, batch_size)
+            )
+            batch = [row["id"] for row in await cursor.fetchall()]
+            if not batch:
+                break
+            for msg_id in batch:
                 try:
                     await self.remove_message_from_search(msg_id, "dm")
                 except Exception:
                     pass
-        # Delete reactions for old messages
-        if old_ids:
-            placeholders = ",".join("?" * len(old_ids))
+            placeholders = ",".join("?" * len(batch))
             await self.conn.execute(
-                f"DELETE FROM dm_reactions WHERE message_id IN ({placeholders})",
-                old_ids
+                f"DELETE FROM dm_reactions WHERE message_id IN ({placeholders})", batch
             )
-        cursor = await self.conn.execute(
-            "DELETE FROM dm_messages WHERE created_at < ?", (cutoff,)
-        )
-        await self.conn.commit()
-        return cursor.rowcount
+            await self.conn.execute(
+                f"DELETE FROM dm_messages WHERE id IN ({placeholders})", batch
+            )
+            await self.conn.commit()
+            total_deleted += len(batch)
+        return total_deleted
 
     async def cleanup_old_notifications(self, days: int = 30) -> int:
         """Delete notifications older than specified days. Returns count deleted."""

@@ -399,7 +399,7 @@ async function loadDashboardStats() {
 }
 
 /**
- * Periodically refresh public stats (every 30 seconds)
+ * Periodically refresh public stats (every 10 seconds)
  */
 setInterval(async () => {
     try {
