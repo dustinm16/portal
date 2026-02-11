@@ -396,6 +396,40 @@ CREATE TABLE channel_read_positions (
     updated_at TEXT,
     PRIMARY KEY (user_id, channel_id)
 );
+
+-- DM conversations (1:1 or group, max 10 participants)
+CREATE TABLE dm_conversations (
+    id INTEGER PRIMARY KEY,
+    type TEXT NOT NULL DEFAULT '1on1',  -- '1on1' or 'group'
+    name TEXT,
+    created_by INTEGER NOT NULL,
+    created_at TEXT, updated_at TEXT,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE dm_participants (
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    joined_at TEXT, left_at TEXT, muted INTEGER DEFAULT 0,
+    PRIMARY KEY (conversation_id, user_id)
+);
+
+-- DM messages (encrypted at rest, same Fernet scheme as chat_messages)
+CREATE TABLE dm_messages (
+    id INTEGER PRIMARY KEY,
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    message TEXT NOT NULL,        -- Encrypted via encrypt_message()
+    message_type TEXT DEFAULT 'message',
+    reply_to INTEGER, image_url TEXT,
+    reply_preview_username TEXT, reply_preview_text TEXT,
+    edited_at TEXT, created_at TEXT
+);
+
+-- FTS5 full-text search (contentless indexes alongside encrypted data)
+CREATE VIRTUAL TABLE chat_messages_fts USING fts5(message, content='', tokenize='porter unicode61');
+CREATE VIRTUAL TABLE dm_messages_fts USING fts5(message, content='', tokenize='porter unicode61');
 ```
 
 ---
@@ -562,6 +596,29 @@ WS   /ws/chat                        - Chat WebSocket (text + voice signaling)
 ```
 
 Chat features: emoji reactions (toggle per-message), message editing (5-min window), pinned messages (mod/admin), unread tracking (per-channel badges), @mention autocomplete, link previews (OpenGraph), thread expansion (reply chain panel).
+
+### Direct Messages
+
+```
+GET  /api/dm/conversations              - List DM conversations (with unread counts)
+POST /api/dm/conversations              - Create DM (1:1 or group)
+GET  /api/dm/conversations/:id          - Get conversation with participants
+GET  /api/dm/conversations/:id/messages - Get messages (cursor pagination)
+POST /api/dm/conversations/:id/mute     - Toggle mute
+POST /api/dm/conversations/:id/leave    - Leave group DM
+POST /api/dm/conversations/:id/participants - Add to group DM (max 10)
+```
+
+Private 1:1 and group DMs. All messages encrypted at rest (Fernet). Participant-only access enforced on every endpoint. Full feature parity with channel chat: reactions, replies, editing (5-min window), deletion, typing indicators, unread badges. WebSocket message types prefixed `dm_` (dm_message, dm_typing, dm_react, dm_edit, dm_delete, dm_mark_read, dm_history). Offline users receive persistent notifications.
+
+### Message Search
+
+```
+GET  /api/chat/search                   - Full-text search (FTS5)
+POST /api/chat/search/rebuild           - Rebuild search index (superadmin)
+```
+
+FTS5 full-text search across channels and DMs. Contentless index tables store plaintext alongside encrypted message data. Filters: scope (all/channels/dms), from (username), has (image), before/after (date), channel_id, conversation_id. DM results restricted to user's own conversations. Rate limited: 10 searches/min/user.
 
 ### Voice Chat
 

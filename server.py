@@ -7295,6 +7295,9 @@ voice_state: dict[str, dict[int, dict]] = {}
 # Rate-limit speaking broadcasts: (channel, user_id) -> last_broadcast_time
 _voice_speaking_last: dict[tuple, float] = {}
 
+# DM WebSocket tracking: user_id -> set of ws connections for DM delivery
+dm_user_connections: dict[int, set] = {}
+
 
 async def http_get_chat_channels(request: web.Request) -> web.Response:
     """Get all chat channels."""
@@ -7772,8 +7775,25 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         notification_subscribers[user_id] = set()
     notification_subscribers[user_id].add(raw_ws)
 
+    # Register for DM delivery
+    if user_id not in dm_user_connections:
+        dm_user_connections[user_id] = set()
+    dm_user_connections[user_id].add(raw_ws)
+
+    # Send DM conversations list on connect
     try:
-        async for msg in chat_mws:
+        dm_convs = await db.get_dm_conversations(user_id)
+        dm_unread = await db.get_dm_unread_counts(user_id)
+        await ws.send_json({
+            "type": "dm_conversations_list",
+            "conversations": dm_convs,
+            "unread_counts": dm_unread
+        })
+    except Exception:
+        pass
+
+    try:
+        async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
@@ -8545,6 +8565,248 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "speaking": speaking
                             })
 
+                    # ==============================================
+                    # Direct Message handlers
+                    # ==============================================
+
+                    elif msg_type == "dm_open":
+                        # Open/create a 1:1 DM conversation
+                        target_user_id = data.get("user_id")
+                        conv_id = data.get("conversation_id")
+                        conv = None
+                        if target_user_id:
+                            try:
+                                target_user_id = int(target_user_id)
+                            except (ValueError, TypeError):
+                                continue
+                            if target_user_id == user_id:
+                                await ws.send_json({"type": "error", "message": "Cannot DM yourself"})
+                                continue
+                            conv = await db.create_dm_conversation(user_id, [target_user_id], conv_type="1on1")
+                        elif conv_id:
+                            try:
+                                conv_id = int(conv_id)
+                            except (ValueError, TypeError):
+                                continue
+                            if not await db.is_dm_participant(conv_id, user_id):
+                                continue
+                            conv = await db.get_dm_conversation(conv_id)
+                        if conv:
+                            messages = await db.get_dm_messages(conv["id"], limit=50)
+                            msg_ids = [m["id"] for m in messages]
+                            reactions = await db.get_bulk_dm_reactions(msg_ids) if msg_ids else {}
+                            for m in messages:
+                                m["reactions"] = reactions.get(m["id"], [])
+                            await ws.send_json({
+                                "type": "dm_conversation_opened",
+                                "conversation": conv,
+                                "messages": messages
+                            })
+
+                    elif msg_type == "dm_create_group":
+                        # Create a group DM
+                        try:
+                            target_ids = [int(uid) for uid in data.get("user_ids", [])]
+                        except (ValueError, TypeError):
+                            continue
+                        if user_id in target_ids:
+                            target_ids.remove(user_id)
+                        if not target_ids or len(target_ids) > 9:
+                            await ws.send_json({"type": "error", "message": "Need 1-9 other participants"})
+                            continue
+                        name = data.get("name", "").strip() or None
+                        conv = await db.create_dm_conversation(user_id, target_ids, name=name, conv_type="group")
+                        await ws.send_json({
+                            "type": "dm_conversation_opened",
+                            "conversation": conv,
+                            "messages": []
+                        })
+                        # Notify other participants
+                        for uid in target_ids:
+                            await _send_dm_to_user(uid, {
+                                "type": "dm_conversations_list",
+                                "conversations": await db.get_dm_conversations(uid),
+                                "unread_counts": await db.get_dm_unread_counts(uid)
+                            })
+
+                    elif msg_type == "dm_message":
+                        # Send a DM message
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        text = data.get("message", "").strip()
+                        image_url = data.get("image_url")
+                        if image_url and not image_url.startswith("/static/uploads/chat/"):
+                            image_url = None
+                        if not text and not image_url:
+                            continue
+                        if text and len(text) > 4000:
+                            text = text[:4000]
+                        # Rate limit (shared with channel chat)
+                        now_mono = monotonic()
+                        chat_msg_times[:] = [t for t in chat_msg_times if now_mono - t < chat_rate_window]
+                        if len(chat_msg_times) >= chat_rate_limit:
+                            await ws.send_json({"type": "error", "message": "Rate limit exceeded"})
+                            continue
+                        chat_msg_times.append(now_mono)
+
+                        reply_to = data.get("reply_to")
+                        reply_preview_username = None
+                        reply_preview_text = None
+                        if reply_to:
+                            try:
+                                reply_to = int(reply_to)
+                                orig = await db.get_dm_message(reply_to)
+                                if orig:
+                                    reply_preview_username = orig.get("username", "")
+                                    reply_preview_text = orig.get("message", "")[:100]
+                            except (ValueError, TypeError):
+                                reply_to = None
+
+                        display_name = "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username)
+                        msg_id = await db.create_dm_message(
+                            conv_id, user_id, username, text,
+                            reply_to=reply_to, image_url=image_url,
+                            reply_preview_username=reply_preview_username,
+                            reply_preview_text=reply_preview_text
+                        )
+                        payload = {
+                            "type": "dm_message",
+                            "conversation_id": conv_id,
+                            "id": msg_id,
+                            "user_id": user_id,
+                            "username": display_name,
+                            "message": text,
+                            "image_url": image_url,
+                            "reply_to": reply_to,
+                            "reply_preview_username": reply_preview_username,
+                            "reply_preview_text": reply_preview_text,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "reactions": []
+                        }
+                        await _broadcast_to_dm(conv_id, payload)
+                        # Send notification to offline participants
+                        participants = await db.get_dm_participant_ids(conv_id)
+                        for pid in participants:
+                            if pid != user_id and pid not in dm_user_connections:
+                                preview = text[:80] + "..." if len(text) > 80 else text
+                                await send_notification(
+                                    pid, "dm_message",
+                                    f"Message from {display_name}",
+                                    preview,
+                                    {"conversation_id": conv_id, "message_id": msg_id}
+                                )
+
+                    elif msg_type == "dm_typing":
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        display_name = "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username)
+                        await _broadcast_to_dm(conv_id, {
+                            "type": "dm_typing",
+                            "conversation_id": conv_id,
+                            "user_id": user_id,
+                            "username": display_name
+                        }, exclude_user_id=user_id)
+
+                    elif msg_type == "dm_delete":
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                            message_id = int(data.get("message_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        deleted = await db.delete_dm_message(message_id, user_id)
+                        if deleted:
+                            await _broadcast_to_dm(conv_id, {
+                                "type": "dm_message_deleted",
+                                "conversation_id": conv_id,
+                                "message_id": message_id
+                            })
+
+                    elif msg_type == "dm_react":
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                            message_id = int(data.get("message_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        emoji = data.get("emoji", "")
+                        if not emoji or len(emoji) > 10:
+                            continue
+                        if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        added, count = await db.toggle_dm_reaction(message_id, user_id, emoji)
+                        await _broadcast_to_dm(conv_id, {
+                            "type": "dm_reaction_update",
+                            "conversation_id": conv_id,
+                            "message_id": message_id,
+                            "emoji": emoji,
+                            "added": added,
+                            "count": count,
+                            "user_id": user_id
+                        })
+
+                    elif msg_type == "dm_edit":
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                            message_id = int(data.get("message_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        new_text = data.get("message", "").strip()
+                        if not new_text or len(new_text) > 4000:
+                            continue
+                        if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        updated = await db.edit_dm_message(message_id, user_id, new_text)
+                        if updated:
+                            await _broadcast_to_dm(conv_id, {
+                                "type": "dm_message_edited",
+                                "conversation_id": conv_id,
+                                "message_id": message_id,
+                                "message": new_text,
+                                "edited_at": updated["edited_at"]
+                            })
+
+                    elif msg_type == "dm_mark_read":
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                            message_id = int(data.get("message_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        if await db.is_dm_participant(conv_id, user_id):
+                            await db.update_dm_read_position(user_id, conv_id, message_id)
+
+                    elif msg_type == "dm_history":
+                        try:
+                            conv_id = int(data.get("conversation_id", 0))
+                        except (ValueError, TypeError):
+                            continue
+                        if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        before_id = data.get("before_id")
+                        if before_id:
+                            try:
+                                before_id = int(before_id)
+                            except (ValueError, TypeError):
+                                before_id = None
+                        messages = await db.get_dm_messages(conv_id, limit=50, before_id=before_id)
+                        msg_ids = [m["id"] for m in messages]
+                        reactions = await db.get_bulk_dm_reactions(msg_ids) if msg_ids else {}
+                        for m in messages:
+                            m["reactions"] = reactions.get(m["id"], [])
+                        await ws.send_json({
+                            "type": "dm_history",
+                            "conversation_id": conv_id,
+                            "messages": messages
+                        })
+
                 except json.JSONDecodeError:
                     await ws.send_json({"type": "error", "message": "Invalid JSON"})
 
@@ -8617,6 +8879,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             if not notification_subscribers[user_id]:
                 del notification_subscribers[user_id]
 
+        # Unregister from DM delivery
+        if user_id in dm_user_connections:
+            dm_user_connections[user_id].discard(raw_ws)
+            if not dm_user_connections[user_id]:
+                del dm_user_connections[user_id]
+
         logger.info(f"[Chat] User {username} disconnected")
 
     return raw_ws
@@ -8642,6 +8910,282 @@ async def http_voice_ice_servers(request: web.Request) -> web.Response:
         ice_servers.append(turn_entry)
 
     return web.json_response({"ice_servers": ice_servers})
+
+
+# =========================================================================
+# Direct Messages — REST Endpoints
+# =========================================================================
+
+async def http_get_dm_conversations(request: web.Request) -> web.Response:
+    """Get all DM conversations for the current user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        limit = min(int(request.query.get("limit", "50")), 100)
+        offset = max(int(request.query.get("offset", "0")), 0)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit or offset"}, status=400)
+    convs = await db.get_dm_conversations(token.user_id, limit=limit, offset=offset)
+    return web.json_response({"conversations": convs})
+
+
+async def http_create_dm_conversation(request: web.Request) -> web.Response:
+    """Create or find a DM conversation."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    # 1:1 DM
+    if "user_id" in data:
+        try:
+            target_id = int(data["user_id"])
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid user_id"}, status=400)
+        if target_id == token.user_id:
+            return web.json_response({"error": "Cannot DM yourself"}, status=400)
+        target = await db.get_user_by_id(target_id)
+        if not target:
+            return web.json_response({"error": "User not found"}, status=404)
+        conv = await db.create_dm_conversation(token.user_id, [target_id], conv_type="1on1")
+        return web.json_response({"conversation": conv})
+
+    # Group DM
+    if "user_ids" in data:
+        try:
+            user_ids = [int(uid) for uid in data["user_ids"]]
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid user_ids"}, status=400)
+        if token.user_id in user_ids:
+            user_ids.remove(token.user_id)
+        if not user_ids:
+            return web.json_response({"error": "Need at least one other participant"}, status=400)
+        if len(user_ids) > 9:
+            return web.json_response({"error": "Max 10 participants (including you)"}, status=400)
+        name = data.get("name", "").strip() or None
+        conv = await db.create_dm_conversation(token.user_id, user_ids, name=name, conv_type="group")
+        return web.json_response({"conversation": conv})
+
+    return web.json_response({"error": "Provide user_id or user_ids"}, status=400)
+
+
+async def http_get_dm_conversation(request: web.Request) -> web.Response:
+    """Get a DM conversation with participants."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        conv_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid conversation ID"}, status=400)
+    if not await db.is_dm_participant(conv_id, token.user_id):
+        return web.json_response({"error": "Not a participant"}, status=403)
+    conv = await db.get_dm_conversation(conv_id)
+    if not conv:
+        return web.json_response({"error": "Conversation not found"}, status=404)
+    return web.json_response({"conversation": conv})
+
+
+async def http_get_dm_messages(request: web.Request) -> web.Response:
+    """Get messages for a DM conversation."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        conv_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid conversation ID"}, status=400)
+    if not await db.is_dm_participant(conv_id, token.user_id):
+        return web.json_response({"error": "Not a participant"}, status=403)
+    try:
+        limit = min(int(request.query.get("limit", "100")), 200)
+        before_id = int(request.query["before_id"]) if "before_id" in request.query else None
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid parameters"}, status=400)
+    messages = await db.get_dm_messages(conv_id, limit=limit, before_id=before_id)
+    # Enrich with reactions
+    msg_ids = [m["id"] for m in messages]
+    reactions = await db.get_bulk_dm_reactions(msg_ids) if msg_ids else {}
+    for m in messages:
+        m["reactions"] = reactions.get(m["id"], [])
+    return web.json_response({"messages": messages})
+
+
+async def http_toggle_dm_mute(request: web.Request) -> web.Response:
+    """Toggle mute for a DM conversation."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        conv_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid conversation ID"}, status=400)
+    if not await db.is_dm_participant(conv_id, token.user_id):
+        return web.json_response({"error": "Not a participant"}, status=403)
+    try:
+        data = await request.json()
+        muted = bool(data.get("muted", False))
+    except (json.JSONDecodeError, Exception):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    await db.update_dm_mute(conv_id, token.user_id, muted)
+    return web.json_response({"muted": muted})
+
+
+async def http_leave_dm_conversation(request: web.Request) -> web.Response:
+    """Leave a group DM conversation."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        conv_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid conversation ID"}, status=400)
+    conv = await db.get_dm_conversation(conv_id)
+    if not conv:
+        return web.json_response({"error": "Conversation not found"}, status=404)
+    if conv["type"] != "group":
+        return web.json_response({"error": "Cannot leave a 1:1 DM"}, status=400)
+    if not await db.is_dm_participant(conv_id, token.user_id):
+        return web.json_response({"error": "Not a participant"}, status=403)
+    await db.leave_dm_conversation(conv_id, token.user_id)
+    return web.json_response({"left": True})
+
+
+async def http_add_dm_participants(request: web.Request) -> web.Response:
+    """Add participants to a group DM."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        conv_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid conversation ID"}, status=400)
+    conv = await db.get_dm_conversation(conv_id)
+    if not conv:
+        return web.json_response({"error": "Conversation not found"}, status=404)
+    if conv["type"] != "group":
+        return web.json_response({"error": "Cannot add participants to a 1:1 DM"}, status=400)
+    if not await db.is_dm_participant(conv_id, token.user_id):
+        return web.json_response({"error": "Not a participant"}, status=403)
+    try:
+        data = await request.json()
+        user_ids = [int(uid) for uid in data.get("user_ids", [])]
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return web.json_response({"error": "Invalid JSON or user_ids"}, status=400)
+    if not user_ids:
+        return web.json_response({"error": "No user_ids provided"}, status=400)
+    added = await db.add_dm_participants(conv_id, user_ids)
+    if not added and user_ids:
+        return web.json_response({"error": "Max 10 participants reached"}, status=400)
+    return web.json_response({"added": added})
+
+
+# =========================================================================
+# Message Search — REST Endpoints
+# =========================================================================
+
+# Rate limiting for search: user_id -> list of timestamps
+_search_rate_limits: dict[int, list[float]] = {}
+
+async def http_search_messages(request: web.Request) -> web.Response:
+    """Search messages across channels and DMs."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    query = request.query.get("q", "").strip()
+    if len(query) < 2:
+        return web.json_response({"error": "Query must be at least 2 characters"}, status=400)
+    if len(query) > 200:
+        return web.json_response({"error": "Query too long (max 200 chars)"}, status=400)
+
+    # Rate limit: 10 searches per minute
+    import time as _time
+    now = _time.time()
+    user_times = _search_rate_limits.setdefault(token.user_id, [])
+    user_times[:] = [t for t in user_times if now - t < 60]
+    if len(user_times) >= 10:
+        return web.json_response({"error": "Rate limit exceeded (10 searches/min)"}, status=429)
+    user_times.append(now)
+
+    scope = request.query.get("scope", "all")
+    if scope not in ("all", "channels", "dms"):
+        scope = "all"
+
+    try:
+        channel_id = int(request.query["channel_id"]) if "channel_id" in request.query else None
+        conversation_id = int(request.query["conversation_id"]) if "conversation_id" in request.query else None
+        limit = min(int(request.query.get("limit", "25")), 50)
+        offset = max(int(request.query.get("offset", "0")), 0)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid parameters"}, status=400)
+
+    from_user = request.query.get("from", None)
+    has_image = request.query.get("has") == "image"
+    before = request.query.get("before", None)
+    after = request.query.get("after", None)
+
+    results = await db.search_messages(
+        query=query, user_id=token.user_id, scope=scope,
+        channel_id=channel_id, conversation_id=conversation_id,
+        from_user=from_user, has_image=has_image if has_image else None,
+        before=before, after=after, limit=limit, offset=offset
+    )
+    results["query"] = query
+    return web.json_response(results)
+
+
+async def http_rebuild_search_index(request: web.Request) -> web.Response:
+    """Rebuild FTS search indexes. Superadmin only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user or user.get("role") != "superadmin":
+        return web.json_response({"error": "Superadmin required"}, status=403)
+    counts = await db.rebuild_search_index()
+    return web.json_response({"rebuilt": True, "indexed": counts})
+
+
+async def _broadcast_to_dm(conversation_id: int, message: dict, exclude_user_id: int = None):
+    """Broadcast a message to all online participants of a DM conversation."""
+    try:
+        participants = await db.get_dm_participant_ids(conversation_id)
+    except Exception:
+        return
+    for uid in participants:
+        if uid == exclude_user_id:
+            continue
+        dead = set()
+        for raw in dm_user_connections.get(uid, set()).copy():
+            try:
+                if not raw.closed:
+                    await raw.send_json(message)
+                else:
+                    dead.add(raw)
+            except Exception:
+                dead.add(raw)
+        if dead and uid in dm_user_connections:
+            dm_user_connections[uid] -= dead
+
+
+async def _send_dm_to_user(user_id: int, message: dict):
+    """Send a message to all WebSocket connections for a specific user."""
+    dead = set()
+    for raw in dm_user_connections.get(user_id, set()).copy():
+        try:
+            if not raw.closed:
+                await raw.send_json(message)
+            else:
+                dead.add(raw)
+        except Exception:
+            dead.add(raw)
+    if dead and user_id in dm_user_connections:
+        dm_user_connections[user_id] -= dead
 
 
 async def broadcast_users_list(channel: str):
@@ -9753,6 +10297,19 @@ def create_app() -> web.Application:
 
     # Voice chat
     app.router.add_get("/api/voice/ice-servers", http_voice_ice_servers)
+
+    # Direct Messages
+    app.router.add_get("/api/dm/conversations", http_get_dm_conversations)
+    app.router.add_post("/api/dm/conversations", http_create_dm_conversation)
+    app.router.add_get("/api/dm/conversations/{id}", http_get_dm_conversation)
+    app.router.add_get("/api/dm/conversations/{id}/messages", http_get_dm_messages)
+    app.router.add_post("/api/dm/conversations/{id}/mute", http_toggle_dm_mute)
+    app.router.add_post("/api/dm/conversations/{id}/leave", http_leave_dm_conversation)
+    app.router.add_post("/api/dm/conversations/{id}/participants", http_add_dm_participants)
+
+    # Message Search
+    app.router.add_get("/api/chat/search", http_search_messages)
+    app.router.add_post("/api/chat/search/rebuild", http_rebuild_search_index)
 
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)

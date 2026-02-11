@@ -523,6 +523,99 @@ MIGRATIONS = [
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
     )""",
+    # --- Direct Messages ---
+    # DM conversations (1:1 or group)
+    """CREATE TABLE IF NOT EXISTS dm_conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL DEFAULT '1on1',
+        name TEXT,
+        created_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    # DM participants
+    """CREATE TABLE IF NOT EXISTS dm_participants (
+        conversation_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        left_at TEXT,
+        muted INTEGER DEFAULT 0,
+        PRIMARY KEY (conversation_id, user_id),
+        FOREIGN KEY (conversation_id) REFERENCES dm_conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_dm_participants_user ON dm_participants(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dm_participants_conv ON dm_participants(conversation_id)",
+    # DM messages (encrypted at rest like chat_messages)
+    """CREATE TABLE IF NOT EXISTS dm_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        message TEXT NOT NULL,
+        message_type TEXT DEFAULT 'message',
+        reply_to INTEGER,
+        image_url TEXT,
+        reply_preview_username TEXT,
+        reply_preview_text TEXT,
+        edited_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (conversation_id) REFERENCES dm_conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_dm_messages_conv ON dm_messages(conversation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dm_messages_created ON dm_messages(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_dm_messages_user ON dm_messages(user_id)",
+    # DM reactions
+    """CREATE TABLE IF NOT EXISTS dm_reactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        emoji TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (message_id) REFERENCES dm_messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(message_id, user_id, emoji)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_dm_reactions_message ON dm_reactions(message_id)",
+    # DM read positions
+    """CREATE TABLE IF NOT EXISTS dm_read_positions (
+        user_id INTEGER NOT NULL,
+        conversation_id INTEGER NOT NULL,
+        last_read_message_id INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, conversation_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (conversation_id) REFERENCES dm_conversations(id) ON DELETE CASCADE
+    )""",
+    # --- Full-Text Search (FTS5) ---
+    # Contentless FTS5 indexes for channel and DM messages
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(message, content='', tokenize='porter unicode61')",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS dm_messages_fts USING fts5(message, content='', tokenize='porter unicode61')",
+    # FTS mapping tables (link FTS rowid to message metadata for filtering)
+    """CREATE TABLE IF NOT EXISTS chat_fts_map (
+        rowid INTEGER PRIMARY KEY,
+        message_id INTEGER NOT NULL UNIQUE,
+        channel_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        has_image INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_fts_map_msg ON chat_fts_map(message_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_fts_map_channel ON chat_fts_map(channel_id)",
+    """CREATE TABLE IF NOT EXISTS dm_fts_map (
+        rowid INTEGER PRIMARY KEY,
+        message_id INTEGER NOT NULL UNIQUE,
+        conversation_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        has_image INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_dm_fts_map_msg ON dm_fts_map(message_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dm_fts_map_conv ON dm_fts_map(conversation_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2246,6 +2339,7 @@ class Database:
         reply_preview_text: str = None
     ) -> int:
         """Create a new chat message (encrypted)."""
+        plaintext = message
         encrypted_message = encrypt_message(message)
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
@@ -2254,8 +2348,14 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url, reply_preview_username, reply_preview_text)
         )
+        msg_id = cursor.lastrowid
         await self.conn.commit()
-        return cursor.lastrowid
+        # Index for full-text search
+        await self.index_message_for_search(
+            msg_id, plaintext, "channel", channel_id, user_id, username,
+            1 if image_url else 0, created_at
+        )
+        return msg_id
 
     async def get_chat_messages(
         self,
@@ -2312,7 +2412,10 @@ class Database:
                 (message_id,)
             )
         await self.conn.commit()
-        return cursor.rowcount > 0
+        if cursor.rowcount > 0:
+            await self.remove_message_from_search(message_id, "channel")
+            return True
+        return False
 
     async def cleanup_old_chat_messages(self, days: int = 7) -> int:
         """Delete chat messages older than specified days. Returns count deleted."""
@@ -2414,6 +2517,8 @@ class Database:
             (encrypted, edited_at, message_id, user_id)
         )
         await self.conn.commit()
+        # Update FTS index
+        await self.update_search_index(message_id, new_message, "channel")
         msg["message"] = new_message
         msg["edited_at"] = edited_at
         return msg
@@ -2826,6 +2931,665 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount
+
+    # =========================================================================
+    # Direct Messages — Conversations
+    # =========================================================================
+
+    async def find_dm_conversation(self, user_id_a: int, user_id_b: int) -> Optional[dict]:
+        """Find an existing 1:1 DM conversation between two users."""
+        cursor = await self.conn.execute(
+            """SELECT dc.* FROM dm_conversations dc
+               JOIN dm_participants dp1 ON dp1.conversation_id = dc.id AND dp1.user_id = ? AND dp1.left_at IS NULL
+               JOIN dm_participants dp2 ON dp2.conversation_id = dc.id AND dp2.user_id = ? AND dp2.left_at IS NULL
+               WHERE dc.type = '1on1'
+               LIMIT 1""",
+            (user_id_a, user_id_b)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def create_dm_conversation(
+        self, creator_id: int, participant_ids: list[int],
+        name: str = None, conv_type: str = "1on1"
+    ) -> dict:
+        """Create a DM conversation. For 1:1, returns existing if found."""
+        if conv_type == "1on1" and len(participant_ids) == 1:
+            existing = await self.find_dm_conversation(creator_id, participant_ids[0])
+            if existing:
+                existing["participants"] = await self._get_dm_participants(existing["id"])
+                return existing
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "INSERT INTO dm_conversations (type, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (conv_type, name, creator_id, now, now)
+        )
+        conv_id = cursor.lastrowid
+        all_ids = set(participant_ids) | {creator_id}
+        for uid in all_ids:
+            await self.conn.execute(
+                "INSERT INTO dm_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+                (conv_id, uid, now)
+            )
+        await self.conn.commit()
+        conv = {"id": conv_id, "type": conv_type, "name": name, "created_by": creator_id,
+                "created_at": now, "updated_at": now}
+        conv["participants"] = await self._get_dm_participants(conv_id)
+        return conv
+
+    async def _get_dm_participants(self, conversation_id: int) -> list[dict]:
+        """Get active participants with user info."""
+        cursor = await self.conn.execute(
+            """SELECT dp.user_id, dp.joined_at, dp.muted, u.username, u.nickname,
+                      u.avatar, u.role, u.status, u.status_message
+               FROM dm_participants dp
+               JOIN users u ON u.id = dp.user_id
+               WHERE dp.conversation_id = ? AND dp.left_at IS NULL""",
+            (conversation_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_dm_participant_ids(self, conversation_id: int) -> list[int]:
+        """Get active participant user IDs for a conversation."""
+        cursor = await self.conn.execute(
+            "SELECT user_id FROM dm_participants WHERE conversation_id = ? AND left_at IS NULL",
+            (conversation_id,)
+        )
+        rows = await cursor.fetchall()
+        return [r["user_id"] for r in rows]
+
+    async def get_dm_conversations(self, user_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Get all DM conversations for a user with last message and unread counts."""
+        cursor = await self.conn.execute(
+            """SELECT dc.*, dm_last.id as last_msg_id, dm_last.message as last_msg,
+                      dm_last.username as last_msg_user, dm_last.created_at as last_msg_at
+               FROM dm_conversations dc
+               JOIN dm_participants dp ON dp.conversation_id = dc.id AND dp.user_id = ? AND dp.left_at IS NULL
+               LEFT JOIN dm_messages dm_last ON dm_last.id = (
+                   SELECT MAX(id) FROM dm_messages WHERE conversation_id = dc.id
+               )
+               ORDER BY dc.updated_at DESC
+               LIMIT ? OFFSET ?""",
+            (user_id, limit, offset)
+        )
+        rows = await cursor.fetchall()
+        unread = await self.get_dm_unread_counts(user_id)
+        convs = []
+        for row in rows:
+            conv = dict(row)
+            conv["participants"] = await self._get_dm_participants(conv["id"])
+            if conv.get("last_msg"):
+                conv["last_msg"] = decrypt_message(conv["last_msg"])
+                if len(conv["last_msg"]) > 100:
+                    conv["last_msg"] = conv["last_msg"][:100] + "..."
+            conv["unread_count"] = unread.get(conv["id"], 0)
+            convs.append(conv)
+        return convs
+
+    async def get_dm_conversation(self, conversation_id: int) -> Optional[dict]:
+        """Get a single DM conversation with participants."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM dm_conversations WHERE id = ?", (conversation_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        conv = dict(row)
+        conv["participants"] = await self._get_dm_participants(conversation_id)
+        return conv
+
+    async def is_dm_participant(self, conversation_id: int, user_id: int) -> bool:
+        """Check if a user is an active participant in a DM conversation."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM dm_participants WHERE conversation_id = ? AND user_id = ? AND left_at IS NULL",
+            (conversation_id, user_id)
+        )
+        return await cursor.fetchone() is not None
+
+    async def leave_dm_conversation(self, conversation_id: int, user_id: int) -> bool:
+        """Leave a group DM (sets left_at timestamp)."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """UPDATE dm_participants SET left_at = ?
+               WHERE conversation_id = ? AND user_id = ? AND left_at IS NULL""",
+            (now, conversation_id, user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_dm_mute(self, conversation_id: int, user_id: int, muted: bool) -> bool:
+        """Toggle mute for a DM conversation participant."""
+        cursor = await self.conn.execute(
+            "UPDATE dm_participants SET muted = ? WHERE conversation_id = ? AND user_id = ?",
+            (int(muted), conversation_id, user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def add_dm_participants(self, conversation_id: int, user_ids: list[int]) -> list[int]:
+        """Add participants to a group DM. Max 10 enforced. Returns added user IDs."""
+        current = await self.get_dm_participant_ids(conversation_id)
+        if len(current) + len(user_ids) > 10:
+            return []
+        now = datetime.now(timezone.utc).isoformat()
+        added = []
+        for uid in user_ids:
+            if uid not in current:
+                try:
+                    await self.conn.execute(
+                        "INSERT INTO dm_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+                        (conversation_id, uid, now)
+                    )
+                    added.append(uid)
+                except Exception:
+                    pass
+        if added:
+            await self.conn.commit()
+        return added
+
+    # =========================================================================
+    # Direct Messages — Messages
+    # =========================================================================
+
+    async def create_dm_message(
+        self, conversation_id: int, user_id: int, username: str, message: str,
+        reply_to: int = None, image_url: str = None,
+        reply_preview_username: str = None, reply_preview_text: str = None
+    ) -> int:
+        """Create a new DM message (encrypted). Returns message_id."""
+        plaintext = message
+        encrypted_message = encrypt_message(message)
+        created_at = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """INSERT INTO dm_messages (conversation_id, user_id, username, message, created_at,
+                                        reply_to, image_url, reply_preview_username, reply_preview_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (conversation_id, user_id, username, encrypted_message, created_at,
+             reply_to, image_url, reply_preview_username, reply_preview_text)
+        )
+        msg_id = cursor.lastrowid
+        await self.conn.execute(
+            "UPDATE dm_conversations SET updated_at = ? WHERE id = ?",
+            (created_at, conversation_id)
+        )
+        await self.conn.commit()
+        # Index for full-text search
+        await self.index_message_for_search(
+            msg_id, plaintext, "dm", conversation_id, user_id, username,
+            1 if image_url else 0, created_at
+        )
+        return msg_id
+
+    async def get_dm_messages(self, conversation_id: int, limit: int = 100, before_id: int = None) -> list[dict]:
+        """Get DM messages for a conversation (decrypted)."""
+        if before_id:
+            cursor = await self.conn.execute(
+                """SELECT * FROM dm_messages WHERE conversation_id = ? AND id < ?
+                   ORDER BY id DESC LIMIT ?""",
+                (conversation_id, before_id, limit)
+            )
+        else:
+            cursor = await self.conn.execute(
+                """SELECT * FROM dm_messages WHERE conversation_id = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (conversation_id, limit)
+            )
+        rows = await cursor.fetchall()
+        messages = []
+        for row in reversed(rows):
+            msg = dict(row)
+            msg["message"] = decrypt_message(msg.get("message", ""))
+            messages.append(msg)
+        return messages
+
+    async def get_dm_message(self, message_id: int) -> Optional[dict]:
+        """Get a single DM message by ID (decrypted)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM dm_messages WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            msg = dict(row)
+            msg["message"] = decrypt_message(msg.get("message", ""))
+            return msg
+        return None
+
+    async def edit_dm_message(self, message_id: int, user_id: int, new_message: str, max_age_seconds: int = 300) -> Optional[dict]:
+        """Edit a DM message within time window. Returns updated message or None."""
+        msg = await self.get_dm_message(message_id)
+        if not msg or msg["user_id"] != user_id:
+            return None
+        created = datetime.fromisoformat(msg["created_at"])
+        now = datetime.now(timezone.utc)
+        if (now - created).total_seconds() > max_age_seconds:
+            return None
+        encrypted = encrypt_message(new_message)
+        edited_at = now.isoformat()
+        await self.conn.execute(
+            "UPDATE dm_messages SET message = ?, edited_at = ? WHERE id = ? AND user_id = ?",
+            (encrypted, edited_at, message_id, user_id)
+        )
+        await self.conn.commit()
+        # Update FTS index
+        await self.update_search_index(message_id, new_message, "dm")
+        msg["message"] = new_message
+        msg["edited_at"] = edited_at
+        return msg
+
+    async def delete_dm_message(self, message_id: int, user_id: int = None) -> bool:
+        """Delete a DM message (optionally verify ownership)."""
+        if user_id:
+            cursor = await self.conn.execute(
+                "DELETE FROM dm_messages WHERE id = ? AND user_id = ?",
+                (message_id, user_id)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "DELETE FROM dm_messages WHERE id = ?", (message_id,)
+            )
+        await self.conn.commit()
+        if cursor.rowcount > 0:
+            await self.remove_message_from_search(message_id, "dm")
+            return True
+        return False
+
+    # =========================================================================
+    # Direct Messages — Reactions
+    # =========================================================================
+
+    async def toggle_dm_reaction(self, message_id: int, user_id: int, emoji: str) -> tuple[bool, int]:
+        """Toggle a reaction on a DM message. Returns (added, new_count)."""
+        try:
+            await self.conn.execute(
+                "INSERT INTO dm_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)",
+                (message_id, user_id, emoji)
+            )
+            await self.conn.commit()
+            added = True
+        except Exception:
+            await self.conn.execute(
+                "DELETE FROM dm_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+                (message_id, user_id, emoji)
+            )
+            await self.conn.commit()
+            added = False
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM dm_reactions WHERE message_id = ? AND emoji = ?",
+            (message_id, emoji)
+        )
+        row = await cursor.fetchone()
+        count = row[0] if row else 0
+        return added, count
+
+    async def get_bulk_dm_reactions(self, message_ids: list[int]) -> dict[int, list[dict]]:
+        """Get reactions for multiple DM messages, grouped by message and emoji."""
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" * len(message_ids))
+        cursor = await self.conn.execute(
+            f"SELECT message_id, emoji, user_id FROM dm_reactions WHERE message_id IN ({placeholders}) ORDER BY created_at",
+            message_ids
+        )
+        rows = await cursor.fetchall()
+        result: dict[int, dict[str, list[int]]] = {}
+        for row in rows:
+            mid = row["message_id"]
+            emoji = row["emoji"]
+            uid = row["user_id"]
+            if mid not in result:
+                result[mid] = {}
+            if emoji not in result[mid]:
+                result[mid][emoji] = []
+            result[mid][emoji].append(uid)
+        output = {}
+        for mid, emojis in result.items():
+            output[mid] = [
+                {"emoji": emoji, "count": len(uids), "user_ids": uids}
+                for emoji, uids in emojis.items()
+            ]
+        return output
+
+    # =========================================================================
+    # Direct Messages — Read Tracking
+    # =========================================================================
+
+    async def update_dm_read_position(self, user_id: int, conversation_id: int, message_id: int) -> None:
+        """Update the last read message position for a user in a DM conversation."""
+        await self.conn.execute(
+            """INSERT INTO dm_read_positions (user_id, conversation_id, last_read_message_id, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id, conversation_id) DO UPDATE
+               SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id),
+                   updated_at = CURRENT_TIMESTAMP""",
+            (user_id, conversation_id, message_id)
+        )
+        await self.conn.commit()
+
+    async def get_dm_unread_counts(self, user_id: int) -> dict[int, int]:
+        """Get unread DM message counts per conversation for a user."""
+        cursor = await self.conn.execute(
+            """SELECT dc.id, COUNT(dm.id) as unread
+               FROM dm_conversations dc
+               JOIN dm_participants dp ON dp.conversation_id = dc.id AND dp.user_id = ? AND dp.left_at IS NULL
+               LEFT JOIN dm_read_positions rp ON rp.conversation_id = dc.id AND rp.user_id = ?
+               INNER JOIN dm_messages dm ON dm.conversation_id = dc.id AND dm.id > COALESCE(rp.last_read_message_id, 0)
+               GROUP BY dc.id
+               HAVING unread > 0""",
+            (user_id, user_id)
+        )
+        rows = await cursor.fetchall()
+        return {row["id"]: row["unread"] for row in rows}
+
+    # =========================================================================
+    # Full-Text Search (FTS5)
+    # =========================================================================
+
+    async def index_message_for_search(
+        self, message_id: int, plaintext: str, source: str, source_id: int,
+        user_id: int, username: str, has_image: int, created_at: str
+    ) -> None:
+        """Index a message for full-text search. source='channel' or 'dm'."""
+        if not plaintext or not plaintext.strip():
+            return
+        try:
+            if source == "channel":
+                fts_table, map_table = "chat_messages_fts", "chat_fts_map"
+                id_col = "channel_id"
+            else:
+                fts_table, map_table = "dm_messages_fts", "dm_fts_map"
+                id_col = "conversation_id"
+            cursor = await self.conn.execute(
+                f"INSERT INTO {fts_table}(message) VALUES (?)", (plaintext,)
+            )
+            fts_rowid = cursor.lastrowid
+            await self.conn.execute(
+                f"""INSERT INTO {map_table} (rowid, message_id, {id_col}, user_id, username, has_image, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (fts_rowid, message_id, source_id, user_id, username, has_image, created_at)
+            )
+            await self.conn.commit()
+        except Exception:
+            pass
+
+    async def remove_message_from_search(self, message_id: int, source: str) -> None:
+        """Remove a message from the search index."""
+        try:
+            if source == "channel":
+                fts_table, map_table = "chat_messages_fts", "chat_fts_map"
+            else:
+                fts_table, map_table = "dm_messages_fts", "dm_fts_map"
+            cursor = await self.conn.execute(
+                f"SELECT rowid FROM {map_table} WHERE message_id = ?", (message_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                fts_rowid = row["rowid"]
+                await self.conn.execute(
+                    f"INSERT INTO {fts_table}({fts_table}, rowid, message) VALUES('delete', ?, ?)",
+                    (fts_rowid, "")
+                )
+                await self.conn.execute(
+                    f"DELETE FROM {map_table} WHERE rowid = ?", (fts_rowid,)
+                )
+                await self.conn.commit()
+        except Exception:
+            pass
+
+    async def update_search_index(self, message_id: int, new_plaintext: str, source: str) -> None:
+        """Update the FTS index for an edited message."""
+        await self.remove_message_from_search(message_id, source)
+        if not new_plaintext or not new_plaintext.strip():
+            return
+        try:
+            if source == "channel":
+                fts_table, map_table = "chat_messages_fts", "chat_fts_map"
+                # Fetch channel_id from original message
+                cursor = await self.conn.execute(
+                    "SELECT channel_id, user_id, username, image_url, created_at FROM chat_messages WHERE id = ?",
+                    (message_id,)
+                )
+            else:
+                fts_table, map_table = "dm_messages_fts", "dm_fts_map"
+                cursor = await self.conn.execute(
+                    "SELECT conversation_id, user_id, username, image_url, created_at FROM dm_messages WHERE id = ?",
+                    (message_id,)
+                )
+            row = await cursor.fetchone()
+            if not row:
+                return
+            row = dict(row)
+            source_id = row.get("channel_id") or row.get("conversation_id")
+            id_col = "channel_id" if source == "channel" else "conversation_id"
+            cur = await self.conn.execute(
+                f"INSERT INTO {fts_table}(message) VALUES (?)", (new_plaintext,)
+            )
+            fts_rowid = cur.lastrowid
+            await self.conn.execute(
+                f"""INSERT INTO {map_table} (rowid, message_id, {id_col}, user_id, username, has_image, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (fts_rowid, message_id, source_id, row["user_id"], row["username"],
+                 1 if row.get("image_url") else 0, row["created_at"])
+            )
+            await self.conn.commit()
+        except Exception:
+            pass
+
+    async def search_messages(
+        self, query: str, user_id: int, scope: str = "all",
+        channel_id: int = None, conversation_id: int = None,
+        from_user: str = None, has_image: bool = None,
+        before: str = None, after: str = None,
+        limit: int = 25, offset: int = 0
+    ) -> dict:
+        """Search messages across channels and/or DMs. Returns {results, total}."""
+        results = []
+        total = 0
+        fts_query = query.strip()
+        if not fts_query:
+            return {"results": [], "total": 0}
+        # Escape FTS5 special chars to prevent syntax errors
+        safe_query = ""
+        for ch in fts_query:
+            if ch in '"*():-^':
+                safe_query += " "
+            else:
+                safe_query += ch
+        # Split into words and rejoin for FTS prefix matching
+        words = safe_query.split()
+        if not words:
+            return {"results": [], "total": 0}
+        fts_expr = " ".join(f'"{w}"' for w in words if w)
+
+        # Search channel messages
+        if scope in ("all", "channels"):
+            ch_results, ch_total = await self._search_fts(
+                "chat_messages_fts", "chat_fts_map", "chat_messages", "channel_id",
+                fts_expr, channel_id=channel_id, from_user=from_user,
+                has_image=has_image, before=before, after=after,
+                limit=limit, offset=offset if scope == "channels" else 0
+            )
+            # Enrich with channel name
+            for r in ch_results:
+                r["source"] = "channel"
+                ch = await self.get_chat_channel(r.get("source_id"))
+                r["source_name"] = f"#{ch['name']}" if ch else "#unknown"
+            results.extend(ch_results)
+            total += ch_total
+
+        # Search DM messages (only user's own conversations)
+        if scope in ("all", "dms"):
+            dm_results, dm_total = await self._search_fts(
+                "dm_messages_fts", "dm_fts_map", "dm_messages", "conversation_id",
+                fts_expr, conversation_id=conversation_id, from_user=from_user,
+                has_image=has_image, before=before, after=after,
+                limit=limit, offset=offset if scope == "dms" else 0,
+                dm_user_id=user_id
+            )
+            for r in dm_results:
+                r["source"] = "dm"
+                conv = await self.get_dm_conversation(r.get("source_id"))
+                if conv:
+                    others = [p["nickname"] or p["username"] for p in conv["participants"] if p["user_id"] != user_id]
+                    r["source_name"] = conv.get("name") or ", ".join(others) or "DM"
+                else:
+                    r["source_name"] = "DM"
+            results.extend(dm_results)
+            total += dm_total
+
+        # Sort combined results by date descending, apply limit
+        results.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        if scope == "all":
+            results = results[offset:offset + limit]
+        return {"results": results, "total": total}
+
+    async def _search_fts(
+        self, fts_table: str, map_table: str, msg_table: str, id_col: str,
+        fts_expr: str, channel_id: int = None, conversation_id: int = None,
+        from_user: str = None, has_image: bool = None,
+        before: str = None, after: str = None,
+        limit: int = 25, offset: int = 0, dm_user_id: int = None
+    ) -> tuple[list[dict], int]:
+        """Run FTS5 search against a specific table pair. Returns (results, total)."""
+        try:
+            conditions = [f"{fts_table} MATCH ?"]
+            params = [fts_expr]
+
+            if channel_id:
+                conditions.append(f"m.{id_col} = ?")
+                params.append(channel_id)
+            if conversation_id:
+                conditions.append(f"m.{id_col} = ?")
+                params.append(conversation_id)
+            if from_user:
+                conditions.append("m.username = ?")
+                params.append(from_user)
+            if has_image:
+                conditions.append("m.has_image = 1")
+            if before:
+                conditions.append("m.created_at < ?")
+                params.append(before)
+            if after:
+                conditions.append("m.created_at > ?")
+                params.append(after)
+            # DM security: only search user's conversations
+            if dm_user_id:
+                conditions.append(
+                    f"m.{id_col} IN (SELECT conversation_id FROM dm_participants WHERE user_id = ? AND left_at IS NULL)"
+                )
+                params.append(dm_user_id)
+
+            where = " AND ".join(conditions)
+
+            # Get total count
+            count_sql = f"""SELECT COUNT(*) FROM {fts_table}
+                           JOIN {map_table} m ON m.rowid = {fts_table}.rowid
+                           WHERE {where}"""
+            cursor = await self.conn.execute(count_sql, params)
+            row = await cursor.fetchone()
+            total = row[0] if row else 0
+
+            if total == 0:
+                return [], 0
+
+            # Get results
+            search_sql = f"""SELECT m.message_id, m.{id_col} as source_id, m.user_id, m.username,
+                                    m.has_image, m.created_at, rank
+                             FROM {fts_table}
+                             JOIN {map_table} m ON m.rowid = {fts_table}.rowid
+                             WHERE {where}
+                             ORDER BY rank
+                             LIMIT ? OFFSET ?"""
+            params_with_pag = params + [limit, offset]
+            cursor = await self.conn.execute(search_sql, params_with_pag)
+            rows = await cursor.fetchall()
+
+            results = []
+            for row in rows:
+                row = dict(row)
+                # Fetch and decrypt the actual message
+                msg_cursor = await self.conn.execute(
+                    f"SELECT message, image_url FROM {msg_table} WHERE id = ?",
+                    (row["message_id"],)
+                )
+                msg_row = await msg_cursor.fetchone()
+                if msg_row:
+                    row["message"] = decrypt_message(msg_row["message"])
+                    row["has_image"] = 1 if msg_row["image_url"] else 0
+                else:
+                    row["message"] = ""
+                row["id"] = row.pop("message_id")
+                results.append(row)
+            return results, total
+        except Exception:
+            return [], 0
+
+    async def rebuild_search_index(self) -> dict:
+        """Rebuild all FTS indexes from encrypted messages. Returns counts."""
+        counts = {"channel": 0, "dm": 0}
+        # Clear existing FTS data
+        try:
+            await self.conn.execute("DELETE FROM chat_fts_map")
+            await self.conn.execute("DELETE FROM dm_fts_map")
+            # Rebuild contentless FTS by dropping and recreating
+            await self.conn.execute("DROP TABLE IF EXISTS chat_messages_fts")
+            await self.conn.execute("DROP TABLE IF EXISTS dm_messages_fts")
+            await self.conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(message, content='', tokenize='porter unicode61')"
+            )
+            await self.conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS dm_messages_fts USING fts5(message, content='', tokenize='porter unicode61')"
+            )
+            await self.conn.commit()
+        except Exception:
+            pass
+
+        # Reindex channel messages in batches
+        batch_size = 500
+        last_id = 0
+        while True:
+            cursor = await self.conn.execute(
+                "SELECT id, channel_id, user_id, username, message, image_url, created_at FROM chat_messages WHERE id > ? ORDER BY id LIMIT ?",
+                (last_id, batch_size)
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                break
+            for row in rows:
+                row = dict(row)
+                plaintext = decrypt_message(row["message"])
+                if plaintext and plaintext.strip():
+                    await self.index_message_for_search(
+                        row["id"], plaintext, "channel", row["channel_id"],
+                        row["user_id"], row["username"],
+                        1 if row.get("image_url") else 0, row["created_at"]
+                    )
+                    counts["channel"] += 1
+                last_id = row["id"]
+
+        # Reindex DM messages in batches
+        last_id = 0
+        while True:
+            cursor = await self.conn.execute(
+                "SELECT id, conversation_id, user_id, username, message, image_url, created_at FROM dm_messages WHERE id > ? ORDER BY id LIMIT ?",
+                (last_id, batch_size)
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                break
+            for row in rows:
+                row = dict(row)
+                plaintext = decrypt_message(row["message"])
+                if plaintext and plaintext.strip():
+                    await self.index_message_for_search(
+                        row["id"], plaintext, "dm", row["conversation_id"],
+                        row["user_id"], row["username"],
+                        1 if row.get("image_url") else 0, row["created_at"]
+                    )
+                    counts["dm"] += 1
+                last_id = row["id"]
+
+        return counts
 
 
 # Global database instance

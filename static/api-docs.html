@@ -314,6 +314,8 @@
                 <ul>
                     <li><a href="#chat">Chat/Forum</a></li>
                     <li><a href="#voice-chat">Voice Chat</a></li>
+                    <li><a href="#direct-messages">Direct Messages</a></li>
+                    <li><a href="#message-search">Message Search</a></li>
                     <li><a href="#notifications">Notifications</a></li>
                 </ul>
                 <div class="admin-only">
@@ -3198,6 +3200,391 @@ ws.send(JSON.stringify({
                     <li><strong>VAD (Voice Activity Detection)</strong> &mdash; Automatically detects speech using AudioContext analysis with configurable dBFS threshold</li>
                     <li><strong>PTT (Push-to-Talk)</strong> &mdash; Transmit only while holding a configurable key (default: Space)</li>
                 </ul>
+
+                <!-- Direct Messages -->
+                <h2 id="direct-messages">Direct Messages</h2>
+                <p>Private messaging between users with support for 1:1 conversations and group DMs (up to 10 participants). All DM messages are encrypted at rest using AES-256 (Fernet), the same encryption used for channel messages.</p>
+
+                <div class="alert alert-info">
+                    <strong>Security:</strong> All DM messages are encrypted at rest (Fernet). Only conversation participants can access messages. Search results are filtered to the user's own DM conversations. An FTS5 search index (plaintext) is maintained alongside encrypted storage for search functionality.
+                </div>
+
+                <h3>REST API</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/dm/conversations</span>
+                        <span class="endpoint-desc">List conversations</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all DM conversations for the authenticated user, ordered by most recent activity. Includes the last message preview and unread count for each conversation.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"conversations"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"type"</span>: <span class="string">"direct"</span>,
+      <span class="string">"name"</span>: <span class="keyword">null</span>,
+      <span class="string">"participants"</span>: [
+        {<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>},
+        {<span class="string">"user_id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
+      ],
+      <span class="string">"last_message"</span>: {
+        <span class="string">"message"</span>: <span class="string">"Hey, are you around?"</span>,
+        <span class="string">"username"</span>: <span class="string">"alice"</span>,
+        <span class="string">"created_at"</span>: <span class="string">"2026-02-11T14:30:00"</span>
+      },
+      <span class="string">"unread_count"</span>: <span class="number">2</span>,
+      <span class="string">"muted"</span>: <span class="keyword">false</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T10:00:00"</span>
+    },
+    {
+      <span class="string">"id"</span>: <span class="number">2</span>,
+      <span class="string">"type"</span>: <span class="string">"group"</span>,
+      <span class="string">"name"</span>: <span class="string">"Project Team"</span>,
+      <span class="string">"participants"</span>: [
+        {<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>},
+        {<span class="string">"user_id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>},
+        {<span class="string">"user_id"</span>: <span class="number">3</span>, <span class="string">"username"</span>: <span class="string">"charlie"</span>}
+      ],
+      <span class="string">"last_message"</span>: {
+        <span class="string">"message"</span>: <span class="string">"Meeting at 3pm"</span>,
+        <span class="string">"username"</span>: <span class="string">"charlie"</span>,
+        <span class="string">"created_at"</span>: <span class="string">"2026-02-11T13:00:00"</span>
+      },
+      <span class="string">"unread_count"</span>: <span class="number">0</span>,
+      <span class="string">"muted"</span>: <span class="keyword">false</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-10T09:00:00"</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/dm/conversations</span>
+                        <span class="endpoint-desc">Create conversation</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create a new DM conversation. For 1:1 conversations, provide <code>user_id</code>. For group DMs, provide <code>user_ids</code> array and an optional <code>name</code>. If a 1:1 conversation already exists with the given user, the existing conversation is returned.</p>
+                        <h4>Request Body (1:1)</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">user_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Target user ID <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                        <h4>Request Body (Group)</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">user_ids</span></td>
+                                <td><span class="param-type">array</span></td>
+                                <td>Array of user IDs to include (max 10 total participants) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Group conversation name <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">3</span>,
+  <span class="string">"type"</span>: <span class="string">"direct"</span>,
+  <span class="string">"name"</span>: <span class="keyword">null</span>,
+  <span class="string">"participants"</span>: [
+    {<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>},
+    {<span class="string">"user_id"</span>: <span class="number">4</span>, <span class="string">"username"</span>: <span class="string">"dave"</span>}
+  ],
+  <span class="string">"created_at"</span>: <span class="string">"2026-02-11T15:00:00"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/dm/conversations/{id}</span>
+                        <span class="endpoint-desc">Get conversation details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns details for a specific DM conversation. Only accessible by conversation participants.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"id"</span>: <span class="number">1</span>,
+  <span class="string">"type"</span>: <span class="string">"direct"</span>,
+  <span class="string">"name"</span>: <span class="keyword">null</span>,
+  <span class="string">"participants"</span>: [
+    {<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#3b82f6"</span>, <span class="string">"emoji"</span>: <span class="string">"🚀"</span>}},
+    {<span class="string">"user_id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"nickname"</span>: <span class="keyword">null</span>, <span class="string">"role"</span>: <span class="string">"admin"</span>, <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#ef4444"</span>, <span class="string">"emoji"</span>: <span class="string">"🔥"</span>}}
+  ],
+  <span class="string">"muted"</span>: <span class="keyword">false</span>,
+  <span class="string">"created_at"</span>: <span class="string">"2026-02-11T10:00:00"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/dm/conversations/{id}/messages</span>
+                        <span class="endpoint-desc">Get conversation messages</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns messages for a DM conversation with pagination support. Messages are returned in reverse chronological order (newest first). Only accessible by conversation participants.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">limit</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Number of messages to return (default: 100)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">before_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Return messages before this message ID (for pagination)</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"messages"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">150</span>,
+      <span class="string">"user_id"</span>: <span class="number">1</span>,
+      <span class="string">"username"</span>: <span class="string">"alice"</span>,
+      <span class="string">"nickname"</span>: <span class="string">"Ali"</span>,
+      <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#3b82f6"</span>, <span class="string">"emoji"</span>: <span class="string">"🚀"</span>},
+      <span class="string">"message"</span>: <span class="string">"Hey, are you around?"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T14:30:00"</span>
+    },
+    {
+      <span class="string">"id"</span>: <span class="number">149</span>,
+      <span class="string">"user_id"</span>: <span class="number">2</span>,
+      <span class="string">"username"</span>: <span class="string">"bob"</span>,
+      <span class="string">"nickname"</span>: <span class="keyword">null</span>,
+      <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#ef4444"</span>, <span class="string">"emoji"</span>: <span class="string">"🔥"</span>},
+      <span class="string">"message"</span>: <span class="string">"Sure, what's up?"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T14:29:00"</span>
+    }
+  ],
+  <span class="string">"has_more"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/dm/conversations/{id}/mute</span>
+                        <span class="endpoint-desc">Toggle conversation mute</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Mute or unmute a DM conversation. Muted conversations do not generate notifications. Only accessible by conversation participants.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">muted</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Set to <code>true</code> to mute, <code>false</code> to unmute <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"muted"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/dm/conversations/{id}/leave</span>
+                        <span class="endpoint-desc">Leave group conversation</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Leave a group DM conversation. Only available for group conversations (not 1:1). The conversation remains for other participants. Only accessible by conversation participants.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/dm/conversations/{id}/participants</span>
+                        <span class="endpoint-desc">Add participants to group</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Add users to an existing group DM conversation. Only available for group conversations. Total participants cannot exceed 10. Only accessible by existing conversation participants.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">user_ids</span></td>
+                                <td><span class="param-type">array</span></td>
+                                <td>Array of user IDs to add (max 10 total participants) <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"participants"</span>: [
+    {<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>},
+    {<span class="string">"user_id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>},
+    {<span class="string">"user_id"</span>: <span class="number">3</span>, <span class="string">"username"</span>: <span class="string">"charlie"</span>},
+    {<span class="string">"user_id"</span>: <span class="number">5</span>, <span class="string">"username"</span>: <span class="string">"eve"</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Message Search -->
+                <h2 id="message-search">Message Search</h2>
+                <p>Full-text search across chat channel messages and DM conversations. Powered by SQLite FTS5 for fast, ranked results. Search respects access control &mdash; users can only find messages in channels they have access to and DM conversations they participate in.</p>
+
+                <div class="alert alert-warning">
+                    <strong>Privacy Note:</strong> An FTS5 plaintext search index is maintained alongside the encrypted message storage to enable search functionality. The search index contains message text in plaintext for indexing purposes. Search results are always filtered to the authenticated user's accessible messages.
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/search</span>
+                        <span class="endpoint-desc">Search messages</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">q</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Search query (2-200 characters) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">scope</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Search scope: <code>all</code> (default), <code>channels</code>, or <code>dms</code></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">channel_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Limit search to a specific channel</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">conversation_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Limit search to a specific DM conversation</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">from</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Filter by sender username</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">has</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Filter by content type: <code>image</code></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">before</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Filter messages before this date (ISO 8601)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">after</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Filter messages after this date (ISO 8601)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">limit</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Results per page (default: 25, max: 50)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">offset</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Pagination offset (default: 0)</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"results"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">42</span>,
+      <span class="string">"source"</span>: <span class="string">"channel"</span>,
+      <span class="string">"channel_id"</span>: <span class="number">1</span>,
+      <span class="string">"channel_name"</span>: <span class="string">"general"</span>,
+      <span class="string">"user_id"</span>: <span class="number">1</span>,
+      <span class="string">"username"</span>: <span class="string">"alice"</span>,
+      <span class="string">"message"</span>: <span class="string">"Has anyone tried the new deployment script?"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T12:00:00"</span>
+    },
+    {
+      <span class="string">"id"</span>: <span class="number">88</span>,
+      <span class="string">"source"</span>: <span class="string">"dm"</span>,
+      <span class="string">"conversation_id"</span>: <span class="number">3</span>,
+      <span class="string">"conversation_name"</span>: <span class="string">"bob"</span>,
+      <span class="string">"user_id"</span>: <span class="number">2</span>,
+      <span class="string">"username"</span>: <span class="string">"bob"</span>,
+      <span class="string">"message"</span>: <span class="string">"I deployed it yesterday, works great"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T12:05:00"</span>
+    }
+  ],
+  <span class="string">"total"</span>: <span class="number">2</span>,
+  <span class="string">"limit"</span>: <span class="number">25</span>,
+  <span class="string">"offset"</span>: <span class="number">0</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="admin-only">
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/chat/search/rebuild</span>
+                        <span class="endpoint-desc">Rebuild search index <span class="badge-admin">SUPERADMIN</span></span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Rebuilds the FTS5 search index from scratch. This decrypts all stored messages and re-indexes them. Use this if the search index becomes corrupted or out of sync. <strong>Superadmin only.</strong></p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"indexed_messages"</span>: <span class="number">1523</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+                </div>
 
                 <!-- Notifications -->
                 <h2 id="notifications">Notifications</h2>

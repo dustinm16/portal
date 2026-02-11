@@ -2,9 +2,15 @@
 
 ## Overview
 
-Open Relay Portal is a modular, secure gateway for accessing home infrastructure resources remotely. It provides authenticated access to various services through a unified interface with support for multiple protocols.
+Open Relay Portal is a secure, authenticated gateway for home infrastructure that provides:
+
+1. **Unified Services** - Both proxy routes to external backends AND managed server processes (MediaMTX, TURN, etc.)
+2. **User Connections** - Personal authenticated access to external resources (SSH, VNC, Proxmox, etc.)
+3. **Community Features** - Chat, user management, and collaboration tools
 
 **Public Endpoint:** `https://portal.example.com`
+
+---
 
 ## System Architecture
 
@@ -17,49 +23,48 @@ Open Relay Portal is a modular, secure gateway for accessing home infrastructure
                            └────────┬────────┘
                                     │
                                     ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                           Open Relay Portal                                   │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                         Core Services                                │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐    │  │
-│  │  │   Auth   │  │  Router  │  │ Registry │  │  Session Manager │    │  │
-│  │  │  (JWT)   │  │          │  │          │  │                  │    │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘    │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                    │                                      │
-│  ┌─────────────────────────────────┴───────────────────────────────────┐  │
-│  │                        Protocol Handlers                             │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│  │  │WebSocket │  │   HTTP   │  │   TCP    │  │   UDP    │            │  │
-│  │  │  Relay   │  │  Proxy   │  │  Tunnel  │  │  Relay   │            │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                    │                                      │
-│  ┌─────────────────────────────────┴───────────────────────────────────┐  │
-│  │                     Service Plugins (11 total)                       │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│  │  │ Terminal │  │   VNC    │  │  SPICE   │  │   SSH    │            │  │
-│  │  │ (pty)    │  │ (noVNC)  │  │          │  │          │            │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│  │  │ Proxmox  │  │  GitHub  │  │ MediaMTX │  │   HTTP   │            │  │
-│  │  │          │  │          │  │          │  │  Proxy   │            │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                          │  │
-│  │  │TCP Tunnel│  │  Secure  │  │   VPN    │                          │  │
-│  │  │          │  │  Tunnel  │  │  Tunnel  │                          │  │
-│  │  └──────────┘  └──────────┘  └──────────┘                          │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                         Web Dashboard                                │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│  │  │ Service  │  │ Terminal │  │  VNC     │  │  Status  │            │  │
-│  │  │ Launcher │  │ Emulator │  │  Viewer  │  │  Monitor │            │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                            Open Relay Portal                                      │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                          Core Services                                   │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐    │  │
+│  │  │   Auth   │  │  Router  │  │ Database │  │   Service Manager    │    │  │
+│  │  │  (JWT)   │  │          │  │ (SQLite) │  │  (Process Control)   │    │  │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────────────────┘    │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                          │
+│  ┌────────────────────────────────┬┴┬─────────────────────────────────────┐  │
+│  │                                │ │                                      │  │
+│  │    MANAGED SERVICES            │ │      REMOTE CONNECTIONS              │  │
+│  │    (Portal runs these)         │ │      (Portal proxies to these)       │  │
+│  │                                │ │                                      │  │
+│  │  ┌──────────────────────┐     │ │     ┌──────────────────────┐        │  │
+│  │  │  MediaMTX Relay      │     │ │     │  SSH Tunnels         │        │  │
+│  │  │  (RTSP/WebRTC/HLS)   │     │ │     │  (asyncssh)          │        │  │
+│  │  └──────────────────────┘     │ │     └──────────────────────┘        │  │
+│  │  ┌──────────────────────┐     │ │     ┌──────────────────────┐        │  │
+│  │  │  TURN/STUN Server    │     │ │     │  VNC/RDP Proxy       │        │  │
+│  │  │  (WebRTC relay)      │     │ │     │  (noVNC)             │        │  │
+│  │  └──────────────────────┘     │ │     └──────────────────────┘        │  │
+│  │  ┌──────────────────────┐     │ │     ┌──────────────────────┐        │  │
+│  │  │  Local Terminal      │     │ │     │  Proxmox API         │        │  │
+│  │  │  (PTY shell)         │     │ │     │  (VM management)     │        │  │
+│  │  └──────────────────────┘     │ │     └──────────────────────┘        │  │
+│  │                                │ │     ┌──────────────────────┐        │  │
+│  │                                │ │     │  HTTP Proxy          │        │  │
+│  │                                │ │     │  (Web UIs)           │        │  │
+│  │                                │ │     └──────────────────────┘        │  │
+│  └────────────────────────────────┴─┴─────────────────────────────────────┘  │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                          Web Dashboard                                   │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │  │
+│  │  │Dashboard │  │  Admin   │  │ Terminal │  │  VNC     │  │   Chat   │  │  │
+│  │  │          │  │  Panel   │  │ Emulator │  │  Viewer  │  │          │  │  │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────────┘
                                     │
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
@@ -67,1083 +72,946 @@ Open Relay Portal is a modular, secure gateway for accessing home infrastructure
             │  Linux PC   │ │  Proxmox    │ │  TrueNAS    │
             │  (SSH/VNC)  │ │  (API/VNC)  │ │  (API/SSH)  │
             └─────────────┘ └─────────────┘ └─────────────┘
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-            ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-            │    Plex     │ │  Seedbox    │ │  AI Asst    │
-            │   (HTTP)    │ │  (SSH/HTTP) │ │    (WS)     │
-            └─────────────┘ └─────────────┘ └─────────────┘
 ```
+
+---
+
+## Key Concepts
+
+### 1. Unified Services Model
+
+Services are stored in a single `services` table with a `service_type` field:
+
+| Aspect | Proxy Services | Managed Services | User Connections |
+|--------|----------------|------------------|------------------|
+| **service_type** | `proxy` | `managed` | N/A (separate table) |
+| **Definition** | Proxy routing to external backend | Server process Portal runs | Personal remote connections |
+| **Lifecycle** | Static configuration | Start/stop/restart by Portal | Static configuration |
+| **Examples** | "Proxy /ssh to 192.168.1.10:22" | MediaMTX server, TURN server | "My home server SSH" |
+| **Storage** | `services` table | `services` table | `user_connections` table |
+| **Ownership** | System-wide (admin only) | System-wide (admin only) | Per-user (private) |
+| **Process** | No process (just routing) | Runs on Portal server | No process (just routing) |
+| **UI Location** | Dashboard > Services (admin) | Dashboard > Services (admin) | Dashboard > My Connections (Quick Add bar) |
+| **API** | `/api/services` | `/api/services` + `/start`, `/stop`, `/restart` | `/api/connections` |
+
+**Unified API:**
+- `GET /api/services` - List all services (use `?type=proxy` or `?type=managed` to filter)
+- `POST /api/services/{id}/start` - Start a managed service
+- `POST /api/services/{id}/stop` - Stop a managed service
+- `POST /api/services/{id}/restart` - Restart a managed service
+- `GET /api/services/{id}/logs` - Get logs for a managed service
+
+### 2. Authentication Model
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Authentication Methods                    │
+├─────────────────────────────────────────────────────────────┤
+│  1. Session Cookie    - Web dashboard login                 │
+│  2. JWT Bearer Token  - API access                          │
+│  3. API Key           - Programmatic access (portal_xxx)    │
+│  4. Stream Key        - Publish (live_xxx) / View (pub_xxx) │
+│  5. WebSocket Auth    - Token in query/header               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 3. Role-Based Permissions
+
+```
+Permission Hierarchy:
+  superadmin (Level 4) ─┬─ All permissions
+                        ├─ Manage all users
+                        ├─ Delete users
+                        ├─ Manage services
+                        └─ System configuration
+
+  admin (Level 3) ──────┬─ Manage moderators/users
+                        ├─ Reset passwords
+                        └─ View all connections
+
+  moderator (Level 2) ──┬─ View users
+                        ├─ Chat moderation
+                        └─ Limited user management
+
+  user (Level 1) ───────┬─ Own connections only
+                        ├─ Chat participation
+                        └─ Profile management
+```
+
+---
 
 ## Directory Structure
 
 ```
 /opt/portal/
-├── server.py              # Main entry point
-├── config.py              # Configuration management
-├── database.py            # SQLite database layer
-├── auth.py                # JWT authentication
-├── ssh_keys.py            # SSH key management (secure)
+├── server.py              # Main aiohttp server (~8100 lines)
+├── database.py            # SQLite async database layer (~2500 lines)
+├── auth.py                # JWT/API key authentication (~450 lines)
+├── config.py              # Environment configuration
 ├── logger.py              # Logging with rotation
-├── router.py              # Request routing
-├── registry.py            # Plugin registry
-├── shodan_integration.py  # Shodan API integration
-├── traffic_metrics.py     # Traffic metrics tracking
-├── vulnerability_scanner.py # CVE analysis and port scanning
+├── ssh_keys.py            # SSH key generation/management
+├── shodan_integration.py  # Shodan API for recon
+├── traffic_metrics.py     # Connection metrics, time series, Chart.js data
+├── vulnerability_scanner.py # CVE/port scanning
+├── cert_manager.py        # TLS certificate lifecycle (self-signed, Let's Encrypt, custom)
+├── setup.py               # Interactive setup wizard
+├── system_monitor.py      # Process, systemd service, and network monitoring
+├── file_manager.py        # Local filesystem operations (admin)
+├── sftp_browser.py        # Remote SFTP file browsing (per-user)
 │
-├── protocols/             # Protocol handlers
-│   ├── __init__.py
-│   ├── base.py            # Base protocol class
-│   ├── websocket.py       # WebSocket relay
-│   ├── http.py            # HTTP reverse proxy
-│   ├── tcp.py             # TCP tunnel over WebSocket
-│   └── udp.py             # UDP relay (for gaming)
-│
-├── plugins/               # Service plugins (11 plugins)
-│   ├── __init__.py        # Plugin registry and loader
-│   ├── base.py            # Base plugin class
-│   ├── terminal.py        # Web terminal (PTY)
+├── plugins/               # Connection plugins
+│   ├── __init__.py        # Plugin registry
+│   ├── base.py            # PluginBase, PluginInfo, ServiceTarget
+│   ├── terminal.py        # Web PTY terminal
 │   ├── ssh.py             # SSH over WebSocket
-│   ├── vnc.py             # VNC proxy (noVNC)
-│   ├── spice.py           # SPICE proxy
-│   ├── proxmox.py         # Proxmox VE integration
-│   ├── github.py          # GitHub repository management
-│   ├── mediamtx.py        # MediaMTX streaming (WebRTC/HLS)
+│   ├── vnc.py             # VNC via noVNC
+│   ├── spice.py           # SPICE console
+│   ├── proxmox.py         # Proxmox VE API
+│   ├── github.py          # GitHub integration
+│   ├── mediamtx.py        # MediaMTX streaming
 │   ├── tcp_tunnel.py      # Generic TCP tunnel
-│   ├── secure_tunnel.py   # Encrypted tunnel with rate limiting
-│   ├── vpn_tunnel.py      # VPN bridge (TUN/TAP/SOCKS)
+│   ├── secure_tunnel.py   # Encrypted multiplex tunnel
+│   ├── vpn_tunnel.py      # VPN bridge
 │   └── http_proxy.py      # HTTP reverse proxy
 │
-├── services/              # Managed service implementations
-│   ├── __init__.py        # Service registry
-│   ├── base.py            # Base managed service class
-│   └── mediamtx.py        # MediaMTX media server service
+├── services/              # Managed service controllers
+│   ├── __init__.py        # ServiceManager, registration system
+│   ├── base.py            # ManagedService base class, ServiceInfo
+│   └── mediamtx.py        # MediaMTX process manager
 │
-├── static/                # Web assets
-│   ├── index.html         # Dashboard with tabs
-│   ├── login.html         # Login page with security features
-│   ├── admin.html         # Admin panel (services, users, logs)
-│   ├── chat.html          # Community chat page
-│   ├── streams.html       # Community streams page
-│   ├── terminal.html      # Terminal UI (xterm.js)
-│   ├── vnc.html           # VNC viewer (noVNC)
+├── static/                # 16 HTML pages, 8 JS modules, 1 CSS file
+│   ├── index.html         # Dashboard
+│   ├── login.html         # Login page
+│   ├── admin.html         # Admin panel
+│   ├── chat.html          # Community chat (mobile sidebar toggle)
+│   ├── streams.html       # Community streams
+│   ├── live.html          # Public live streams (unauthenticated)
+│   ├── watch.html         # Stream viewer (HLS playback)
+│   ├── terminal.html      # Terminal UI
+│   ├── vnc.html           # VNC viewer
 │   ├── spice.html         # SPICE viewer
-│   ├── proxmox.html       # Proxmox management UI
-│   ├── github.html        # GitHub repository browser
-│   ├── media.html         # MediaMTX streaming player
-│   ├── api-docs.html      # API documentation
+│   ├── proxmox.html       # Proxmox dashboard
+│   ├── mediamtx.html      # MediaMTX management
+│   ├── github.html        # GitHub browser
+│   ├── api-docs.html      # Interactive API documentation
+│   ├── about.html         # Feature guide & docs
+│   ├── files.html         # File manager (admin local + user SFTP)
+│   ├── sysmon.html        # System monitor (processes, services, network)
 │   ├── unauthorized.html  # Auth error page
-│   ├── css/portal.css     # Shared dark theme styles
+│   ├── css/portal.css     # Shared styles (~3100 lines, 6 responsive breakpoints)
+│   ├── uploads/           # User-uploaded content (gitignored)
+│   │   └── chat/          # Chat image uploads
 │   └── js/
 │       ├── portal.js      # Core utilities, Portal.isAdmin(), Portal.getRoleLabel()
-│       ├── dashboard.js   # Service grid and categories
-│       ├── admin.js       # Admin panel (services, users)
+│       ├── dashboard.js   # Dashboard logic
+│       ├── admin.js       # Admin panel
+│       ├── user-connections.js # Connection CRUD, edit, type schemas
 │       ├── ssh-keys.js    # SSH key management
-│       ├── user-connections.js  # User connections
-│       └── streams.js     # User streams management
+│       ├── streams.js     # Stream management
+│       ├── vods.js        # VOD file manager
+│       └── terminal.js    # Terminal WebSocket client
 │
 ├── docs/                  # Documentation
+│   ├── ARCHITECTURE.md    # This file
 │   ├── API.md             # API reference
-│   └── ARCHITECTURE.md    # Architecture docs
+│   └── SERVICES_PLAN.md   # Service implementation plan
 │
-├── templates/             # HTML templates
 ├── certs/                 # SSL certificates
-├── portal.db              # SQLite database
-├── portal.service         # Systemd service
-└── requirements.txt       # Dependencies
+└── portal.db              # SQLite database
 ```
-
-## Plugin System
-
-### Base Plugin Interface
-
-```python
-class PluginBase:
-    name: str                    # Plugin identifier
-    display_name: str            # Human-readable name
-    description: str             # Plugin description
-    version: str                 # Plugin version
-    protocols: list[str]         # Supported protocols: ws, http, tcp, udp
-    icon: str                    # Icon identifier
-
-    async def initialize(self) -> None:
-        """Called when plugin is loaded."""
-
-    async def handle_connection(self, request, target) -> Response:
-        """Handle incoming connection."""
-
-    async def health_check(self, target) -> bool:
-        """Check if target service is healthy."""
-
-    def get_config_schema(self) -> dict:
-        """Return JSON schema for target configuration."""
-```
-
-### Plugin Registration
-
-Plugins auto-register on import via decorator:
-
-```python
-@register_plugin
-class TerminalPlugin(PluginBase):
-    name = "terminal"
-    display_name = "Web Terminal"
-    protocols = ["websocket"]
-```
-
-## Service Configuration
-
-Services are stored in the database with plugin-specific configuration:
-
-```json
-{
-  "id": 1,
-  "name": "Home PC",
-  "plugin": "terminal",
-  "path": "/pc",
-  "enabled": true,
-  "config": {
-    "host": "192.168.1.100",
-    "port": 22,
-    "username": "admin",
-    "auth_method": "key"
-  },
-  "required_scopes": ["access:pc"],
-  "icon": "computer",
-  "category": "computers"
-}
-```
-
-## User Connections vs Admin Services
-
-Open Relay Portal provides two complementary access models:
-
-### Admin Services (Shared Infrastructure)
-- Created by administrators through the Admin panel
-- Visible to all users with matching scopes
-- Intended for **shared infrastructure** used by many users
-- **Can target localhost** (for local terminals, PTY, etc.)
-- Full plugin access including local PTY terminal
-- Configurable access scopes
-
-**Examples:**
-- Community forum for all users
-- Video streaming relay (Twitch/Kick/YouTube alternative)
-- Shared file storage server
-- Company-wide development tools
-
-### User Connections (Personal Remote Access)
-- Created by individual users through the Connections modal
-- **Private to the creating user** (not shared)
-- Intended for **personal remote resources** the user owns
-- **Cannot target localhost** (security restriction - returns 403)
-- Uses same plugin system as services
-- No scope configuration needed (user owns it)
-
-**Examples:**
-- My home SSH server
-- My NAS at home
-- My personal database server
-- My Proxmox cluster
-
-### Security: Localhost Blocking
-
-User Connections block access to local addresses for security:
-
-| Blocked Pattern | Reason |
-|-----------------|--------|
-| `localhost` | Local loopback |
-| `127.0.0.1` | IPv4 loopback |
-| `127.*.*.*` | All IPv4 loopback range |
-| `::1` | IPv6 loopback |
-| `::ffff:127.*` | IPv4-mapped IPv6 loopback |
-| `0.0.0.0` | All interfaces |
-| `host.docker.internal` | Docker host access |
-| `kubernetes.default` | Kubernetes internal |
-
-Attempting to create a User Connection to a blocked host returns HTTP 403.
-
-### Connection Types to Plugin Mapping
-
-User Connections support all remote-access plugins:
-
-| Connection Type | Plugin | Default Port | Use Case |
-|-----------------|--------|--------------|----------|
-| ssh | ssh | 22 | Remote shell access |
-| vnc | vnc | 5900 | Remote desktop (VNC) |
-| rdp | vnc | 3389 | Windows remote desktop |
-| spice | spice | 5930 | VM console (SPICE) |
-| mediamtx | mediamtx | 8554 | Media streaming |
-| proxmox | proxmox | 8006 | Proxmox VE management |
-| github | github | 443 | GitHub integration |
-| tcp_tunnel | tcp_tunnel | - | Generic TCP forwarding |
-| secure_tunnel | secure_tunnel | - | Encrypted tunnel |
-| http_proxy | http_proxy | 80 | HTTP reverse proxy |
-| database | tcp_tunnel | 3306 | Database access |
-| redis | tcp_tunnel | 6379 | Redis access |
-| custom | tcp_tunnel | - | Custom TCP service |
-
-### API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/connections` | List user's connections |
-| POST | `/api/connections` | Create connection |
-| GET | `/api/connections/{id}` | Get connection details |
-| PUT | `/api/connections/{id}` | Update connection |
-| DELETE | `/api/connections/{id}` | Delete connection |
-| GET | `/api/connections/{id}/connect` | Get connect info |
-| GET | `/api/connections/types` | List types with schemas |
-
-### WebSocket Endpoints
-
-| Path | Description |
-|------|-------------|
-| `/ws/connection/{id}` | Connect to user connection |
 
 ---
 
-## Supported Plugins
-
-### Terminal (terminal.py)
-Web-based terminal using xterm.js and PTY.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket |
-| Backend | Local PTY or SSH |
-| Frontend | xterm.js |
-| Auth | JWT + optional SSH key |
-
-### SSH Relay (ssh.py)
-SSH over WebSocket for browser-based SSH clients.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket |
-| Backend | SSH connection |
-| Frontend | xterm.js |
-| Auth | JWT + SSH credentials |
-
-### VNC (vnc.py)
-VNC access via noVNC HTML5 client.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket |
-| Backend | VNC server |
-| Frontend | noVNC |
-| Auth | JWT + VNC password |
-
-### SPICE (spice.py)
-SPICE protocol for VM consoles (Proxmox, oVirt).
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket |
-| Backend | SPICE server |
-| Frontend | spice-html5 |
-| Auth | JWT + SPICE ticket |
-
-### Proxmox (proxmox.py)
-Proxmox VE integration with console access.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket + HTTP |
-| Backend | Proxmox API |
-| Features | VM list, console, start/stop |
-| Auth | JWT + Proxmox API token |
-
-### GitHub (github.py)
-GitHub repository management and CI/CD integration.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket + HTTP |
-| Backend | GitHub API |
-| Features | Repos, branches, PRs, Actions workflows |
-| Auth | JWT + OAuth App or Personal Access Token |
-
-Configuration options:
-- `client_id`: GitHub OAuth App Client ID
-- `client_secret`: GitHub OAuth App Client Secret
-- `personal_token`: Personal Access Token (alternative to OAuth)
-- `default_org`: Default organization to show
-- `webhook_secret`: Secret for validating webhooks
-- `allowed_repos`: Restrict access to specific repos
-
-### VPN Tunnel (vpn_tunnel.py)
-VPN bridge for TUN/TAP/SOCKS connections.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket (binary) |
-| Backend | VPN server |
-| Modes | TUN, TAP, SOCKS proxy |
-| Auth | JWT |
-
-Configuration options:
-- `mode`: Connection mode (tun, tap, socks)
-- `mtu`: Maximum transmission unit
-- `dns`: DNS server addresses
-
-### HTTP Proxy (http_proxy.py)
-HTTP reverse proxy for web applications.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | HTTP/HTTPS |
-| Backend | Any HTTP service |
-| Features | Header rewriting, path mapping |
-| Auth | JWT |
-
-Configuration options:
-- `target_url`: Backend URL to proxy to
-- `rewrite_host`: Rewrite Host header
-- `preserve_host`: Keep original Host header
-
-### Secure Tunnel (secure_tunnel.py)
-Multiplexed secure TCP tunneling with advanced features.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket (binary frames) |
-| Backend | Any TCP service |
-| Features | Connection pooling, bandwidth limiting, statistics |
-| Auth | JWT |
-| Multiplexing | Multiple connections per WebSocket |
-| Rate Limiting | Token bucket algorithm for bandwidth control |
-
-Configuration options:
-- `bandwidth_limit`: Bytes per second (0 = unlimited)
-- `max_connections`: Maximum concurrent connections per session
-- `connection_timeout`: Timeout for new connections
-- `idle_timeout`: Idle session timeout
-
-### TCP Tunnel (tcp_tunnel.py)
-Generic TCP over WebSocket for any TCP protocol.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket (binary) |
-| Backend | Any TCP service |
-| Features | VNC, RDP, database, Redis support |
-| Statistics | Per-connection bytes sent/received |
-| Auth | JWT |
-
-### MediaMTX (mediamtx.py)
-Live video streaming via MediaMTX server.
-
-| Feature | Description |
-|---------|-------------|
-| Protocol | WebSocket (signaling) + WebRTC |
-| Backend | MediaMTX server |
-| Playback | WebRTC (low latency), HLS (compatibility) |
-| Auth | JWT + stream-level access control |
-| Features | Stream listing, multi-stream, live stats |
-
-Configuration options (all traffic encrypted - mandatory):
-- `api_url`: MediaMTX API endpoint (default: https://127.0.0.1:9997)
-- `webrtc_url`: WebRTC WHEP endpoint (default: https://127.0.0.1:8889)
-- `hls_url`: HLS streaming endpoint (default: https://127.0.0.1:8888)
-- `default_stream`: Stream to auto-play on connect
-- `allowed_streams`: Restrict access to specific streams
-
-**Security**: Encryption is mandatory and cannot be disabled. Self-signed certificates are auto-generated for internal services. All API endpoints require valid authentication tokens.
-
-## API Reference
-
-### Core Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/favicon.ico` | Browser favicon (returns 204) |
-| GET | `/api/stats` | Server statistics (admin) |
-| GET | `/api/plugins` | List available plugins |
-| GET | `/api/tunnels` | View active tunnel sessions (admin) |
-| POST | `/api/token` | Create access token |
-| GET | `/api/tokens` | List user tokens |
-| POST | `/api/token/revoke` | Revoke token |
-
-### Service Management
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/services` | List all services |
-| POST | `/api/services` | Create service (admin) |
-| GET | `/api/services/{id}` | Get service details |
-| PUT | `/api/services/{id}` | Update service (admin) |
-| DELETE | `/api/services/{id}` | Delete service (admin) |
-| GET | `/api/services/{id}/health` | Check service health |
-
-### Plugin Management
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/plugins` | List available plugins |
-| GET | `/api/plugins/{name}` | Get plugin info |
-| GET | `/api/plugins/{name}/schema` | Get config schema |
-
-### Categories
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/categories` | List categories |
-| POST | `/api/categories` | Create category |
-
-### SSH Keys
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/ssh-keys` | List user's SSH keys |
-| POST | `/api/ssh-keys` | Generate new SSH key pair |
-| GET | `/api/ssh-keys/{id}` | Get key details (incl. public key) |
-| DELETE | `/api/ssh-keys/{id}` | Delete SSH key |
-| GET | `/api/ssh-keys/all` | List all keys (admin only) |
-| GET | `/api/ssh-keys/authorized` | Get authorized_keys format |
-
-**Security:** Private keys are returned only once during creation and are never stored. Users must save their private key immediately.
-
-### User Management
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/users` | List all users (admin only) |
-| POST | `/api/users` | Create user (admin only) |
-| PUT | `/api/users/{id}/admin` | Update admin status |
-| DELETE | `/api/users/{id}` | Delete user (admin only) |
-| GET | `/api/me` | Get current user info |
-| POST | `/api/me/password` | Change current user's password |
-| POST | `/api/register` | Register with invite code |
-| GET | `/api/invite-code` | Get invite code (admin only) |
-
-### Logging (Admin)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/logs` | Get log file contents |
-| GET | `/api/logs/files` | List log files |
-| GET | `/api/logs/settings` | Get log settings |
-| PUT | `/api/logs/settings` | Update log settings |
-
-### Chat System
-
-Real-time encrypted messaging system for authenticated users.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/chat/channels` | List chat channels |
-| POST | `/api/chat/channels` | Create channel (admin) |
-| PUT | `/api/chat/channels/{id}` | Update channel (admin) |
-| DELETE | `/api/chat/channels/{id}` | Delete channel (admin) |
-
-**Features:**
-- Real-time WebSocket messaging (`/ws/chat`)
-- Multiple channels (general, random, help)
-- Message encryption using Fernet (AES)
-- Admin-only channel management
-- User presence tracking (connect/disconnect events)
-- Message history with pagination
-
-### User Streams (OBS/RTMP Broadcasting)
-
-User streams allow broadcasting from OBS or other streaming software. **All stream traffic routes through Portal on port 443** - MediaMTX services are bound to localhost only.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/streams` | List user's streams |
-| POST | `/api/streams` | Create new stream |
-| GET | `/api/streams/public` | List public (community) streams |
-| GET | `/api/streams/{id}` | Get stream details |
-| PUT | `/api/streams/{id}` | Update stream settings |
-| DELETE | `/api/streams/{id}` | Delete stream |
-| POST | `/api/streams/{id}/regenerate-key` | Regenerate stream key |
-| POST | `/api/stream/auth` | MediaMTX auth hook (internal) |
-
-**Stream Proxy API (port 443):**
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/stream/{stream_key}/info` | Stream info and URLs |
-| GET | `/api/stream/{stream_key}/hls/{path}` | HLS playback proxy |
-| POST | `/api/stream/{stream_key}/webrtc/whep` | WebRTC playback |
-| POST | `/api/stream/{stream_key}/webrtc/whip` | WebRTC publishing |
-
-**Features:**
-- Stream key generation for authentication
-- Public/private stream visibility toggle
-- Integrated chat channels for public streams
-- Viewer count and total views tracking
-- HLS and WebRTC playback via port 443
-- WebRTC WHIP publishing via port 443 (OBS 30.0+)
-
-**Stream Key Types:**
-- **Private key (`live_xxx`)**: Used for publishing (OBS) and API access. Never share.
-- **Public key (`pub_xxx`)**: Read-only viewing access. Safe to share with viewers.
-
-**Publishing Options (requires private key `live_xxx`):**
-1. **RTMPS** (Recommended for OBS): `rtmps://<STREAM_HOSTNAME>:1936/live` + private stream key
-   - Direct connection to server (bypasses CDN if applicable)
-   - Uses Let's Encrypt certificate (auto-renewed)
-2. **WebRTC WHIP** (OBS 30.0+): `https://<HOSTNAME>/api/stream/{stream_key}/webrtc/whip`
-
-**Playback URLs (accepts either key type, via port 443):**
-- HLS: `https://<HOSTNAME>/api/stream/{key}/hls/index.m3u8`
-- WebRTC: `https://<HOSTNAME>/api/stream/{key}/webrtc/whep`
-
-For public streams, share the `public_key` for playback URLs instead of the private key.
-
-**Network Architecture:**
-| Service | Host | Port | Access |
-|---------|------|------|--------|
-| RTMPS Publishing | STREAM_HOSTNAME | 1936 | External (direct) |
-| HLS/WebRTC | HOSTNAME | 443 | External (via CDN or direct) |
-| MediaMTX Internal | 127.0.0.1 | 8888,8889 | Localhost only |
-
-### Managed Services (Server Processes)
-
-Managed services are background server processes that Portal runs and monitors.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/managed-services/types` | List available service types |
-| GET | `/api/managed-services` | List all managed services |
-| POST | `/api/managed-services` | Create service (admin) |
-| GET | `/api/managed-services/{id}` | Get service details |
-| PUT | `/api/managed-services/{id}` | Update service (admin) |
-| DELETE | `/api/managed-services/{id}` | Delete service (admin) |
-| POST | `/api/managed-services/{id}/start` | Start service (admin) |
-| POST | `/api/managed-services/{id}/stop` | Stop service (admin) |
-| POST | `/api/managed-services/{id}/restart` | Restart service (admin) |
-| GET | `/api/managed-services/{id}/status` | Get service status |
-| GET | `/api/managed-services/{id}/logs` | Get service logs |
-
-**Features:**
-- Automatic process management with health monitoring
-- Config file generation for each service type
-- Automatic restart on failure
-- Log capture and viewing
-- TLS certificate auto-generation
-
-**Available Service Types:**
-- `mediamtx` - MediaMTX media streaming server (RTSP/RTMP/HLS/WebRTC)
-
-### WebSocket Endpoints
-
-| Path | Description |
-|------|-------------|
-| `/ws` | General WebSocket (ping/pong) |
-| `/ws/terminal/{service_id}` | Terminal session |
-| `/ws/ssh/{service_id}` | SSH session |
-| `/ws/vnc/{service_id}` | VNC session |
-| `/ws/spice/{service_id}` | SPICE session |
-| `/ws/proxmox/{service_id}` | Proxmox console |
-| `/ws/github/{service_id}` | GitHub operations |
-| `/ws/mediamtx/{service_id}` | MediaMTX signaling |
-| `/ws/tunnel/{service_id}` | TCP/Secure tunnel |
-| `/ws/chat` | Real-time chat messaging |
-
-### Web UI Routes
-
-| Path | Description |
-|------|-------------|
-| `/login` | Login page |
-| `/logout` | Logout (clears session) |
-| `/dashboard` | Main dashboard with tabs |
-| `/admin` | Admin panel (metrics, services, users) |
-| `/terminal/{service_id}` | Terminal UI |
-| `/vnc/{service_id}` | VNC viewer |
-| `/spice/{service_id}` | SPICE viewer |
-| `/proxmox/{service_id}` | Proxmox management |
-| `/github/{service_id}` | GitHub browser |
-| `/media/{service_id}` | Media player |
-| `/chat` | Community chat system |
-| `/streams` | Community streams viewer |
-| `/docs` | API documentation |
-
-## Connection Quick Add
-
-The My Connections tab includes a Quick Add bar with preset buttons for common connection types. Clicking a button opens the Add Connection modal pre-filled with that type's defaults. Uses `quickAddConnection()`.
-
-| Preset | Type | Default Port |
-|--------|------|-------------|
-| SSH | ssh | 22 |
-| VNC | vnc | 5900 |
-| RDP | rdp | 3389 |
-| MySQL | database | 3306 |
-| PostgreSQL | database | 5432 |
-| Proxmox | proxmox | 8006 |
-| HTTP Proxy | http_proxy | 80 |
-
 ## Database Schema
 
-### services (updated)
+### Core Tables
+
 ```sql
-CREATE TABLE services (
+-- Users with role-based permissions
+CREATE TABLE users (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    plugin TEXT NOT NULL,
-    path TEXT UNIQUE NOT NULL,
-    config TEXT NOT NULL,  -- JSON
-    required_scopes TEXT,
-    icon TEXT,
-    category_id INTEGER,
-    enabled INTEGER DEFAULT 1,
-    sort_order INTEGER DEFAULT 0,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER DEFAULT 0,
+    role TEXT DEFAULT 'user',        -- superadmin, admin, moderator, user
+    nickname TEXT,
+    status TEXT DEFAULT 'online',
+    avatar TEXT DEFAULT '{}',
+    chat_anonymous INTEGER DEFAULT 0,
+    totp_secret TEXT,
+    totp_enabled INTEGER DEFAULT 0,
+    registration_ip TEXT,            -- IP at registration (rate limit: 1/IP/24h)
     created_at TEXT,
-    updated_at TEXT,
-    FOREIGN KEY (category_id) REFERENCES categories(id)
+    updated_at TEXT
 );
-```
 
-### categories
-```sql
-CREATE TABLE categories (
-    id INTEGER PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    icon TEXT,
-    sort_order INTEGER DEFAULT 0
-);
-```
-
-### sessions
-```sql
-CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    service_id INTEGER NOT NULL,
-    started_at TEXT NOT NULL,
-    ended_at TEXT,
-    client_ip TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (service_id) REFERENCES services(id)
-);
-```
-
-### user_connections
-```sql
+-- User's remote connections (private)
 CREATE TABLE user_connections (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    type TEXT NOT NULL,
+    type TEXT NOT NULL,              -- ssh, vnc, rdp, proxmox, etc.
     host TEXT NOT NULL,
     port INTEGER,
+    config TEXT,                     -- JSON plugin config
+    ssh_key_id INTEGER,
     icon TEXT,
-    config TEXT,  -- JSON with plugin-specific settings
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, name)
+);
+
+-- Managed services (system-wide, admin controlled)
+CREATE TABLE managed_services (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    type TEXT NOT NULL,              -- mediamtx, turn, etc.
+    display_name TEXT,
+    description TEXT,
+    enabled INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'stopped',   -- running, stopped, error
+    pid INTEGER,                     -- Process ID when running
+    config TEXT DEFAULT '{}',        -- JSON configuration
+    port INTEGER,                    -- Primary listening port
+    ports TEXT DEFAULT '[]',         -- Additional ports (JSON array)
+    binary_path TEXT,                -- Custom binary path
+    config_path TEXT,                -- Config file path
+    working_dir TEXT,                -- Working directory
+    last_health_check TEXT,
+    health_status TEXT DEFAULT 'unknown',
+    restart_count INTEGER DEFAULT 0,
+    last_started_at TEXT,
+    last_stopped_at TEXT,
+    error_message TEXT,
+    icon TEXT DEFAULT 'server',
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- Service logs for monitoring
+CREATE TABLE service_logs (
+    id INTEGER PRIMARY KEY,
+    service_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    level TEXT DEFAULT 'info',       -- debug, info, warn, error
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+);
+
+-- Temporary RTMP publish tokens (single-use, short-lived)
+CREATE TABLE rtmp_tokens (
+    id INTEGER PRIMARY KEY,
+    stream_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL,        -- SHA-256 hash of rtmp_ prefixed token
+    expires_at TEXT NOT NULL,
+    used INTEGER DEFAULT 0,
+    used_at TEXT,
+    created_at TEXT,
+    FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- user_streams table also includes:
+--   rtmp_enabled INTEGER DEFAULT 0   -- Per-stream toggle for plain RTMP ingress
+
+-- VOD remote storage config (per-user SFTP)
+CREATE TABLE vod_storage (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT 'My VOD Storage',
+    host TEXT NOT NULL,
+    port INTEGER DEFAULT 22,
+    username TEXT NOT NULL,
+    auth_method TEXT NOT NULL DEFAULT 'password',
+    remote_path TEXT NOT NULL DEFAULT '/home/user/vods',
+    config TEXT DEFAULT '{}',              -- JSON: password or private_key
     created_at TEXT,
     updated_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-```
 
-**Note:** User connections are private to each user. The `type` maps to a plugin via `CONNECTION_TYPES` in server.py. The `config` field stores plugin-specific settings as JSON.
-
-### ssh_keys
-```sql
-CREATE TABLE ssh_keys (
+-- API keys for programmatic access
+CREATE TABLE api_keys (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    key_type TEXT NOT NULL DEFAULT 'ed25519',
-    public_key TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    created_at TEXT,
+    key_hash TEXT NOT NULL,
+    key_prefix TEXT NOT NULL,        -- portal_XX for lookup
+    scopes TEXT DEFAULT '*',
+    expires_at TEXT,
+    revoked INTEGER DEFAULT 0,
     last_used_at TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    UNIQUE(user_id, name)
-);
-```
-
-**Security Note:** Only public keys are stored in the database. Private keys are generated in-memory and returned to the user exactly once during key creation. They are never persisted, ensuring that even a database breach cannot expose private keys.
-
-### recordings
-```sql
-CREATE TABLE recordings (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    service_id INTEGER NOT NULL,
-    filename TEXT NOT NULL,
-    format TEXT NOT NULL DEFAULT 'asciicast',
-    size INTEGER DEFAULT 0,
-    duration REAL DEFAULT 0,
     created_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+    UNIQUE(user_id, name)
 );
-```
 
-### settings
-```sql
-CREATE TABLE settings (
-    key TEXT PRIMARY KEY NOT NULL,
-    value TEXT,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-Persistent configuration storage for admin-configurable settings that survive service restarts:
-- `shodan_api_key` - Shodan API key
-- `nvd_api_key` - NVD API key for vulnerability scanning
-- `log_settings` - JSON with log level, max_size_mb, backup_count
-
-### chat_channels
-```sql
+-- Chat channels
 CREATE TABLE chat_channels (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT UNIQUE NOT NULL,
     description TEXT,
     topic TEXT,
     is_default INTEGER DEFAULT 0,
-    created_by INTEGER,
-    created_at TEXT,
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    created_at TEXT
 );
-```
 
-### chat_messages
-```sql
+-- Chat messages (encrypted)
 CREATE TABLE chat_messages (
     id INTEGER PRIMARY KEY,
     channel_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     username TEXT NOT NULL,
-    message TEXT NOT NULL,  -- Encrypted with Fernet
+    message TEXT NOT NULL,           -- Fernet encrypted
     message_type TEXT DEFAULT 'message',
     created_at TEXT,
-    FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    anonymous INTEGER DEFAULT 0,    -- Per-message anonymous flag (preserves anonymity in history)
+    reply_to INTEGER,              -- References chat_messages(id) for reply threading
+    image_url TEXT,                -- URL to uploaded chat image (/static/uploads/chat/...)
+    edited_at TEXT,                -- ISO timestamp if message was edited (5-min window)
+    is_pinned INTEGER DEFAULT 0,   -- 1 if pinned by a moderator
+    pinned_by INTEGER,             -- User ID who pinned it
+    pinned_at TEXT,                -- ISO timestamp of pin
+    FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE
 );
-```
 
-**Note:** Chat messages are encrypted at rest using Fernet (AES-128-CBC) derived from JWT_SECRET via PBKDF2.
-
-### managed_services
-```sql
-CREATE TABLE managed_services (
+-- Chat reactions (emoji reactions on messages)
+CREATE TABLE chat_reactions (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL,
-    display_name TEXT,
-    description TEXT,
-    config TEXT,  -- JSON configuration
-    enabled INTEGER DEFAULT 1,
-    status TEXT DEFAULT 'stopped',
-    pid INTEGER,
-    port INTEGER,
-    working_dir TEXT,
-    last_health_check TEXT,
-    health_status TEXT DEFAULT 'unknown',
-    restart_count INTEGER DEFAULT 0,
-    last_started_at TEXT,
-    error_message TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-**Note:** Managed services are background processes Portal runs and monitors. The `config` field contains service-specific settings as JSON.
-
-### user_streams
-```sql
-CREATE TABLE user_streams (
-    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    stream_key TEXT NOT NULL UNIQUE,    -- Private key for publishing (live_xxx)
-    public_key TEXT UNIQUE,              -- Public key for viewing (pub_xxx)
-    description TEXT,
-    is_public INTEGER DEFAULT 0,
-    is_live INTEGER DEFAULT 0,
-    viewer_count INTEGER DEFAULT 0,
-    chat_channel_id INTEGER,
-    total_views INTEGER DEFAULT 0,
-    thumbnail_url TEXT,
-    started_at TEXT,
-    ended_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    emoji TEXT NOT NULL,
+    created_at TEXT,
+    UNIQUE(message_id, user_id, emoji),
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+
+-- Unread tracking per channel per user
+CREATE TABLE channel_read_positions (
+    user_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    last_read_message_id INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (chat_channel_id) REFERENCES chat_channels(id) ON DELETE SET NULL,
-    UNIQUE(user_id, name)
+    PRIMARY KEY (user_id, channel_id)
 );
-```
 
-**Stream Key Types:**
-| Key | Format | Purpose | Visibility |
-|-----|--------|---------|------------|
-| `stream_key` | `live_xxx...` | Publishing (OBS/RTMP), API access, management | Owner only |
-| `public_key` | `pub_xxx...` | Read-only playback access (HLS/WebRTC) | Viewers of public streams |
-
-**Note:** User streams enable OBS broadcasting. The private `stream_key` is used for RTMP authentication and should never be shared. The `public_key` is safe to share with viewers for playback access. All streams automatically create an associated chat channel.
-
-### service_logs
-```sql
-CREATE TABLE service_logs (
+-- DM conversations (1:1 or group, max 10 participants)
+CREATE TABLE dm_conversations (
     id INTEGER PRIMARY KEY,
-    service_id INTEGER NOT NULL,
-    level TEXT DEFAULT 'info',
-    message TEXT NOT NULL,
-    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+    type TEXT NOT NULL DEFAULT '1on1',  -- '1on1' or 'group'
+    name TEXT,
+    created_by INTEGER NOT NULL,
+    created_at TEXT, updated_at TEXT,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE dm_participants (
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    joined_at TEXT, left_at TEXT, muted INTEGER DEFAULT 0,
+    PRIMARY KEY (conversation_id, user_id)
+);
+
+-- DM messages (encrypted at rest, same Fernet scheme as chat_messages)
+CREATE TABLE dm_messages (
+    id INTEGER PRIMARY KEY,
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    message TEXT NOT NULL,        -- Encrypted via encrypt_message()
+    message_type TEXT DEFAULT 'message',
+    reply_to INTEGER, image_url TEXT,
+    reply_preview_username TEXT, reply_preview_text TEXT,
+    edited_at TEXT, created_at TEXT
+);
+
+-- FTS5 full-text search (contentless indexes alongside encrypted data)
+CREATE VIRTUAL TABLE chat_messages_fts USING fts5(message, content='', tokenize='porter unicode61');
+CREATE VIRTUAL TABLE dm_messages_fts USING fts5(message, content='', tokenize='porter unicode61');
 ```
 
-## Database Usage
+---
 
-The database module (`database.py`) provides a singleton instance for all database operations:
+## API Reference
+
+### Authentication & Registration
+
+```
+POST /login              - Session login (form)
+GET  /logout             - End session
+POST /api/register       - Register new account (requires invite code)
+POST /api/token          - Create JWT token
+GET  /api/tokens         - List active tokens
+POST /api/token/revoke   - Revoke a token
+POST /api/api-keys       - Create API key
+GET  /api/api-keys       - List API keys
+DELETE /api/api-keys/:id - Delete API key
+GET  /api/invite-code    - Get daily invite code (admin)
+```
+
+### User Management
+
+```
+GET  /api/me                    - Current user info
+POST /api/me/password           - Change password
+PUT  /api/me/status             - Update chat status
+PUT  /api/me/nickname           - Update nickname
+PUT  /api/me/avatar             - Update avatar
+PUT  /api/me/anonymous          - Toggle anonymous mode
+GET  /api/users                 - List users (admin)
+POST /api/users                 - Create user (admin)
+PUT  /api/users/:id/role        - Change user role (admin)
+POST /api/users/:id/reset-password - Reset password (admin)
+DELETE /api/users/:id           - Delete user (superadmin)
+```
+
+### Two-Factor Authentication
+
+```
+GET  /api/2fa/status     - Check 2FA status
+POST /api/2fa/setup      - Generate TOTP secret and URI
+POST /api/2fa/verify     - Verify code and enable 2FA
+POST /api/2fa/disable    - Disable 2FA (requires password)
+```
+
+### SSH Keys
+
+```
+POST /api/ssh-keys              - Generate key pair
+GET  /api/ssh-keys              - List keys
+GET  /api/ssh-keys/:id          - Get key details
+DELETE /api/ssh-keys/:id        - Delete key
+GET  /api/ssh-keys/authorized   - Get authorized_keys format
+GET  /api/ssh-keys/all          - All keys (admin)
+```
+
+### User Connections (Personal)
+
+```
+GET  /api/connections           - List user's connections
+POST /api/connections           - Create connection
+GET  /api/connections/:id       - Get connection details
+PUT  /api/connections/:id       - Update connection
+DELETE /api/connections/:id     - Delete connection
+GET  /api/connections/:id/connect - Get connection info + WS URL
+GET  /api/connections/types     - Available connection types
+```
+
+### Services (Admin) - Unified API
+
+All services (proxy routes and managed processes) use a single API endpoint.
+
+```
+GET  /api/services              - List all services (?type=proxy|managed)
+POST /api/services              - Create service
+GET  /api/services/:id          - Get service details
+PUT  /api/services/:id          - Update service
+DELETE /api/services/:id        - Delete service
+GET  /api/services/types        - Available managed service types
+POST /api/services/:id/start    - Start managed service
+POST /api/services/:id/stop     - Stop managed service
+POST /api/services/:id/restart  - Restart managed service
+GET  /api/services/:id/logs     - Get managed service logs
+```
+
+### Streaming
+
+Publishing is available via two methods:
+- **RTMPS** (port 1936) - Primary method, encrypted, always available: `rtmps://<STREAM_HOSTNAME>:1936/live`
+- **RTMP** (port 1935) - Optional plain RTMP ingress using temporary tokens for security; enabled per-stream via `rtmp_enabled` flag
+
+Playback is proxied through the portal: `https://<HOSTNAME>/api/stream/{key}/hls/...`
+
+```
+GET  /api/streams               - List user's streams
+POST /api/streams               - Create stream config
+GET  /api/streams/:id           - Get stream details
+PUT  /api/streams/:id           - Update stream
+DELETE /api/streams/:id         - Delete stream
+GET  /api/streams/public        - List public streams
+GET  /api/streams/open          - List currently live public streams
+POST /api/streams/:id/thumbnail - Upload custom thumbnail
+DELETE /api/streams/:id/thumbnail - Delete custom thumbnail
+POST /api/streams/:id/rtmp-token - Generate temporary RTMP publish token
+GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
+GET  /api/stream/:key/hls/...   - HLS playback proxy
+POST /api/stream/event          - MediaMTX webhook (live/encoding/offline)
+```
+
+#### MediaMTX Configuration
+
+The MediaMTX managed service configuration is generated dynamically by Portal. Key streaming settings:
+
+- **RTMPS** (port 1936) - Always enabled with TLS encryption (`rtmpEncryption: strict`)
+- **RTMP** (port 1935) - Conditionally enabled based on `rtmp_plain_enabled` config; when enabled, `rtmpEncryption: optional` is set to allow both plain and encrypted connections on the RTMPS port
+- **Publish auth** - All publish requests validated via MediaMTX external auth webhook back to Portal
+- **Playback** - Read/playback auth handled by Portal's HLS proxy, not MediaMTX
+- **RTMP path mapping** - When publishing via `rtmp_` token, MediaMTX creates the path using the token instead of the `live_` key (i.e., `live/rtmp_xxx` not `live/live_xxx`). Portal maintains an internal mapping (`_rtmp_stream_paths`) so HLS proxy, thumbnails, and VOD recording resolve to the correct MediaMTX path.
+
+### Stream Moderation
+
+```
+GET  /api/streams/:id/bans      - List banned users
+POST /api/streams/:id/ban       - Ban user from stream chat
+DELETE /api/streams/:id/ban/:uid - Unban user
+```
+
+### VOD Storage (Personal)
+
+VODs are automatically recorded during live broadcasts as 5-minute MKV chunks (lossless remux via ffmpeg segment muxer). Chunks are continuously uploaded to the user's SFTP storage in an organized directory structure: `{StreamName}/{YYYY-MM-DD}/chunk_NNN.mkv`.
+
+**Stream Lifecycle:** When a stream stops broadcasting, it transitions to an **Encoding** state (`is_live=2`) while ffmpeg finishes writing the current chunk and all remaining chunks are uploaded to SFTP. The stream only goes **Offline** (`is_live=0`) after all VOD data has been fully offloaded. This prevents incomplete VODs caused by premature ffmpeg termination.
+
+| State | `is_live` | Description |
+|-------|-----------|-------------|
+| Live | `1` | Actively broadcasting |
+| Encoding | `2` | Broadcast ended, VOD chunks finalizing and uploading |
+| Offline | `0` | All VOD data offloaded, stream fully stopped |
+
+```
+GET  /api/vods/storage               - Get storage config
+POST /api/vods/storage               - Save storage config
+DELETE /api/vods/storage              - Remove storage config
+POST /api/vods/storage/test          - Test SFTP connection
+GET  /api/vods                       - List MKV files (recursive)
+GET  /api/vods/download/{filename}   - Download single VOD file
+POST /api/vods/download-archive      - Download multiple files as zip
+DELETE /api/vods/{filename}          - Delete VOD file
+```
+
+### Chat
+
+```
+GET  /api/chat/channels              - List channels (with unread counts)
+POST /api/chat/channels              - Create channel
+PUT  /api/chat/channels/:id          - Update channel
+DELETE /api/chat/channels/:id        - Delete channel
+POST /api/chat/channels/:id/clear    - Clear history (superadmin)
+POST /api/chat/upload                - Upload chat image
+GET  /api/chat/link-preview          - Fetch OpenGraph metadata for URL
+GET  /api/chat/thread/:id            - Get reply chain for a message
+WS   /ws/chat                        - Chat WebSocket (text + voice signaling)
+```
+
+Chat features: emoji reactions (toggle per-message), message editing (5-min window), pinned messages (mod/admin), unread tracking (per-channel badges), @mention autocomplete, link previews (OpenGraph), thread expansion (reply chain panel).
+
+### Direct Messages
+
+```
+GET  /api/dm/conversations              - List DM conversations (with unread counts)
+POST /api/dm/conversations              - Create DM (1:1 or group)
+GET  /api/dm/conversations/:id          - Get conversation with participants
+GET  /api/dm/conversations/:id/messages - Get messages (cursor pagination)
+POST /api/dm/conversations/:id/mute     - Toggle mute
+POST /api/dm/conversations/:id/leave    - Leave group DM
+POST /api/dm/conversations/:id/participants - Add to group DM (max 10)
+```
+
+Private 1:1 and group DMs. All messages encrypted at rest (Fernet). Participant-only access enforced on every endpoint. Full feature parity with channel chat: reactions, replies, editing (5-min window), deletion, typing indicators, unread badges. WebSocket message types prefixed `dm_` (dm_message, dm_typing, dm_react, dm_edit, dm_delete, dm_mark_read, dm_history). Offline users receive persistent notifications.
+
+### Message Search
+
+```
+GET  /api/chat/search                   - Full-text search (FTS5)
+POST /api/chat/search/rebuild           - Rebuild search index (superadmin)
+```
+
+FTS5 full-text search across channels and DMs. Contentless index tables store plaintext alongside encrypted message data. Filters: scope (all/channels/dms), from (username), has (image), before/after (date), channel_id, conversation_id. DM results restricted to user's own conversations. Rate limited: 10 searches/min/user.
+
+### Voice Chat
+
+```
+GET  /api/voice/ice-servers          - ICE server config (STUN/TURN)
+WS   /ws/chat                        - Voice signaling (piggybacks on chat WS)
+```
+
+Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively.
+
+### System Info
+
+```
+GET  /api/shells                     - Available shells (admin)
+GET  /api/plugins                    - Available plugins with schemas
+```
+
+### Public Stats
+
+```
+GET  /api/stats/public               - Live streams + online user count
+```
+
+Online user count is tracked globally via a ref-counted dict (`_online_users`) that increments on WebSocket connect (both service and chat handlers) and decrements on disconnect. Dashboard polls every 10 seconds.
+
+### Traffic Metrics (Admin)
+
+```
+GET  /api/metrics                    - Summary metrics (uptime, connections, bandwidth, users)
+GET  /api/metrics/services           - Per-service metrics
+GET  /api/metrics/active             - Active connections (WebSocket + chat)
+GET  /api/metrics/timeseries         - Time-series data (?hours=1-24, per-minute bandwidth deltas)
+GET  /api/metrics/top                - Top services and users (?limit=1-50)
+```
+
+The admin panel visualizes time-series data with Chart.js: a dual-axis line chart (connections + active users) and a stacked bar chart (bandwidth sent/received per minute). Time range selectors allow 1H/6H/12H/24H views. Data is recorded every 60 seconds by a background task and retained for 24 hours.
+
+### Server Logs (Admin)
+
+```
+GET  /api/logs                       - Recent log entries
+GET  /api/logs/files                 - List log files
+GET  /api/logs/settings              - Get log settings
+PUT  /api/logs/settings              - Update log settings
+```
+
+### Shodan Integration (Admin)
+
+```
+GET  /api/shodan/info                - API key info and credits
+POST /api/shodan/api-key             - Set Shodan API key
+GET  /api/shodan/lookup/:ip          - Lookup IP
+GET  /api/shodan/search              - Search query
+```
+
+### Vulnerability Scanner (Admin)
+
+```
+GET  /api/vuln/status                - Scanner status (nmap, NVD)
+GET  /api/vuln/scan/:host            - Scan host ports
+GET  /api/vuln/scan-service/:id      - Scan a service
+GET  /api/vuln/cve/:id               - CVE details
+GET  /api/vuln/mitigations/:cve      - Mitigation advice
+GET  /api/vuln/known-cves            - All known CVEs
+GET  /api/vuln/search                - Search CVEs
+POST /api/vuln/nvd-api-key           - Set NVD API key
+```
+
+### Certificate Management (Admin)
+
+```
+GET  /api/certs/info                 - Certificate details (subject, issuer, SANs, expiry)
+POST /api/certs/upload               - Upload custom PEM cert+key
+POST /api/certs/self-signed          - Generate self-signed certificate
+POST /api/certs/letsencrypt          - Request Let's Encrypt certificate
+POST /api/certs/apply                - Restart server to apply new certs
+```
+
+### Server Settings (Admin)
+
+```
+GET  /api/settings/hostname          - Get hostname and port
+PUT  /api/settings/hostname          - Update hostname
+```
+
+### System Monitor (Admin)
+
+```
+GET  /api/sysmon/processes           - List processes (sort, limit)
+GET  /api/sysmon/processes/:pid      - Process details
+POST /api/sysmon/processes/:pid/kill - Kill process (signal)
+GET  /api/sysmon/services            - List systemd services (filter)
+GET  /api/sysmon/services/:name      - Service status
+GET  /api/sysmon/services/:name/logs - Service journal logs (lines)
+POST /api/sysmon/services/:name/control - Control service (action)
+GET  /api/sysmon/network             - Network interfaces
+GET  /api/sysmon/ports               - Listening ports
+```
+
+### File Manager (Admin)
+
+```
+GET    /api/files/list               - List directory (?path=)
+GET    /api/files/info               - File stat (?path=)
+GET    /api/files/read               - Read text file (?path=)
+GET    /api/files/download           - Download file (?path=)
+POST   /api/files/upload             - Upload file (multipart)
+POST   /api/files/write              - Write text file (JSON)
+POST   /api/files/mkdir              - Create directory (JSON)
+POST   /api/files/rename             - Rename/move (JSON)
+DELETE /api/files/delete             - Delete file/directory (?path=)
+```
+
+### SFTP Browser (Per-User)
+
+```
+GET    /api/sftp/:conn_id/list       - List remote directory (?path=)
+GET    /api/sftp/:conn_id/read       - Read remote text file (?path=)
+GET    /api/sftp/:conn_id/download   - Download remote file (?path=)
+POST   /api/sftp/:conn_id/upload     - Upload to remote (multipart)
+POST   /api/sftp/:conn_id/write      - Write remote text file (JSON)
+POST   /api/sftp/:conn_id/mkdir      - Create remote directory (JSON)
+POST   /api/sftp/:conn_id/rename     - Rename/move remote path (JSON)
+DELETE /api/sftp/:conn_id/delete     - Delete remote path (?path=)
+```
+
+### WebSocket Endpoints
+
+```
+WS /ws/chat                     - Chat real-time + voice signaling
+WS /ws/terminal/local           - Local terminal (admin, ?shell= for shell selection)
+WS /ws/terminal/:id             - Terminal session (falls back to user-connection if no service)
+WS /ws/vnc/:id                  - VNC connection
+WS /ws/spice/:id                - SPICE connection
+WS /ws/user-connection/:id      - User connection relay (?shell= override for SSH)
+WS /ws/{path}                   - Service relay (catch-all)
+```
+
+### Web Pages
+
+```
+GET /                    - Redirect to /dashboard
+GET /dashboard           - Main dashboard
+GET /login               - Login page
+GET /admin               - Admin panel (metrics charts, managed services, security)
+GET /chat                - Community chat
+GET /streams             - Community streams
+GET /terminal            - Terminal UI
+GET /vnc                 - VNC viewer
+GET /spice               - SPICE viewer
+GET /proxmox             - Proxmox dashboard
+GET /watch/:id           - Stream viewer (HLS)
+GET /api-docs            - Interactive API documentation
+GET /about               - About page (feature guide)
+GET /files               - File manager (admin local + user SFTP)
+GET /sysmon              - System monitor (admin only)
+GET /live                - Public live streams (unauthenticated)
+```
+
+---
+
+## Plugin System
+
+### Plugin Interface
 
 ```python
-from database import db
+class PluginBase:
+    """Base class for connection plugins."""
 
-# Must connect before any operations
-await db.connect()
+    @classmethod
+    def get_info(cls) -> PluginInfo:
+        """Return plugin metadata."""
 
-# Use high-level methods when available
-user = await db.get_user_by_username("admin")
-services = await db.get_all_services()
+    async def handle_websocket(
+        self,
+        ws: WebSocketResponse,
+        target: ServiceTarget,
+        user_id: int
+    ) -> None:
+        """Handle WebSocket connection to target."""
 
-# For custom queries, use db.conn after connect()
-async with db.conn.execute("SELECT * FROM users") as cursor:
-    rows = await cursor.fetchall()
+    async def health_check(self, target: ServiceTarget) -> bool:
+        """Check if target is reachable."""
 
-# Always close when done (handled by server lifecycle)
-await db.close()
+    def validate_config(self, config: dict) -> bool:
+        """Validate plugin configuration."""
 ```
 
-**Important:**
-- Always call `db.connect()` before using database operations
-- The `db.conn` property raises `RuntimeError` if not connected
-- Use provided methods (`get_user_by_id`, `create_service`, etc.) for common operations
-- Direct SQL via `db.conn` is available for complex queries
+### Available Plugins
 
-## Scopes
+| Plugin | Description | Default Port |
+|--------|-------------|--------------|
+| terminal | Web PTY terminal (DA1/DA2/DSR compat) | - |
+| ssh | SSH over WebSocket (xterm.js-native DA1/DA2/DSR) | 22 |
+| vnc | VNC via noVNC | 5900 |
+| spice | SPICE console | 5930 |
+| proxmox | Proxmox VE API | 8006 |
+| github | GitHub integration | 443 |
+| mediamtx | Media streaming | 8554 |
+| tcp_tunnel | Generic TCP | - |
+| secure_tunnel | Encrypted tunnel | - |
+| vpn_tunnel | VPN bridge | - |
+| http_proxy | HTTP reverse proxy | 80 |
 
-| Scope | Access |
-|-------|--------|
-| `*` | Full access |
-| `admin` | Admin endpoints |
-| `services:read` | View services |
-| `services:write` | Manage services |
-| `access:{service}` | Access specific service |
-| `access:*` | Access all services |
-| `category:{name}` | Access category |
+---
+
+## Security Model
+
+### Request Flow
+
+```
+Client Request
+     │
+     ▼
+┌──────────────────┐
+│ Security Headers │ ─── HSTS, X-Frame-Options, Server suppression
+│   (middleware)    │     Applied to ALL responses (incl. redirects/errors)
+└───────┬──────────┘
+        │
+        ▼
+┌────────────────┐
+│ Rate Limiting  │ ─── Too many requests? → 429 Too Many Requests
+└───────┬────────┘
+        │
+        ▼
+┌────────────────┐
+│ Authentication │ ─── No valid token? → 401 Unauthorized
+└───────┬────────┘
+        │
+        ▼
+┌────────────────┐
+│ Authorization  │ ─── Insufficient role? → 403 Forbidden
+└───────┬────────┘
+        │
+        ▼
+┌────────────────┐
+│Input Validation│ ─── Invalid params? → 400 Bad Request
+└───────┬────────┘
+        │
+        ▼
+┌────────────────┐
+│ Localhost Check│ ─── User connection to localhost? → 403 Blocked
+└───────┬────────┘
+        │
+        ▼
+    Handler
+```
+
+### Security Features
+
+Open Relay Portal is designed with privacy and security as core principles:
+
+1. **Password Security** - Argon2id hashing with secure defaults
+2. **JWT Tokens** - Short-lived, scoped access tokens
+3. **API Keys** - Prefix-based lookup, hashed storage
+4. **2FA Support** - TOTP with encrypted backup codes
+5. **Rate Limiting** - Per-IP request throttling, 1 registration per IP per 24 hours
+6. **Localhost Blocking** - User connections cannot target localhost
+7. **Chat Encryption** - Messages encrypted at rest (Fernet)
+8. **Config Encryption** - Connection, service, and VOD configs encrypted at rest (Fernet, `enc:` prefix, separate PBKDF2 key from chat)
+9. **Stream Key Encryption** - Stream keys encrypted at rest (Fernet); SHA-256 hashes stored for indexed lookups
+10. **API Credential Redaction** - GET endpoints never return passwords/keys; replaced with `has_<field>` flags
+11. **HTTPS/WSS Only** - All traffic encrypted via TLS, HSTS with preload
+12. **Security Headers** - Applied to all response types (including redirects and errors) via middleware; server version suppressed
+13. **Input Validation** - All user-supplied `int()` and `json.loads()` conversions protected with try/except; path params, query params, WebSocket fields, and database configs all guarded
+14. **Shell Whitelist** - SSH and terminal shell overrides validated against `ALLOWED_SHELLS` constant
+15. **Stream Auth** - Default-deny for unmatched actions; read/playback auth handled by Portal's HLS proxy
+16. **No Session Recording** - Privacy-first design, no session logging
+17. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
+18. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving)
+19. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
+20. **Stream Hash Redaction** - Internal `stream_key_hash` and `public_key_hash` stripped from all API responses (open, public, non-owner individual stream endpoints)
+21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
+22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
+23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; single-use with a configurable grace period for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
+24. **Certificate Management** - Admin-only cert operations (upload, generation, Let's Encrypt); private keys never exposed via API; cert/key pair validation before activation; file permissions 0o600 on private keys
+25. **File Manager Security** - Path traversal prevention via `Path.resolve()` + root check; blocked files list (`.env`, credentials); symlinks resolved and checked; configurable root directory; upload size limits enforced server-side
+26. **SFTP Browser Security** - Per-user connection ownership enforced on every request; only SSH/SFTP connection types eligible; SFTP connections are ephemeral (opened per-request, closed after); no path traversal possible (remote filesystem)
+27. **System Monitor Safety** - Process kill refuses PID 1, kernel threads, and portal process; systemd service control limited to start/stop/restart/enable/disable (no mask/daemon-reload); all subprocess calls use list args (no shell=True); service names validated with regex
+
+---
+
+## Frontend Responsiveness
+
+The portal uses a mobile-first enhancement strategy with progressive breakpoints:
+
+| Breakpoint | Target | Key Changes |
+|-----------|--------|-------------|
+| `pointer: coarse` | Touch devices | 44px min touch targets, 16px form font (prevents iOS zoom), tap highlight |
+| `900px` | Tablets | Stream viewer stacks, chat sidebars become overlay panels |
+| `768px` | Small tablets | Dashboard stacks, hamburger nav, sidebar below content, modals resize |
+| `600px` | Large phones | Form rows stack, grids single-column, VOD metadata hidden |
+| `480px` | Phones | Compact cards/modals/navbar, log pre-wrap |
+| `360px` | Small phones | Stats single-column, tabs wrap, brand text hidden (icon only) |
+
+Additional mobile features:
+- **Chat mobile sidebar**: Channels/Users toggle buttons appear at <900px with overlay dismiss
+- **Notification dropdown**: Responsive width `min(320px, calc(100vw - 1rem))`
+- **Table scroll**: `.table-responsive` wrapper and `overflow-x: auto` on docs content
+- **Z-index stacking**: Modals (10001) > Notification dropdown (10002) > Session banner (10000)
+
+---
 
 ## Configuration
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `JWT_SECRET` | Token signing key | Required |
-| `HOST` | Bind address | 0.0.0.0 |
-| `PORT` | Listen port | 443 |
-| `HOSTNAME` | Public hostname | portal.example.com |
-| `SSL_CERT` | Certificate path | - |
-| `SSL_KEY` | Private key path | - |
-| `DATABASE_PATH` | SQLite path | portal.db |
-| `PLUGIN_DIR` | Plugin directory | plugins/ |
-| `STATIC_DIR` | Static files | static/ |
+```bash
+# Server
+PORTAL_HOST=0.0.0.0
+PORTAL_PORT=443
+PORTAL_DOMAIN=portal.example.com
 
-## Admin Panel (`/admin`)
+# Security
+JWT_SECRET=<random-secret>
+INVITE_CODE_SEED=<random-seed>
 
-The admin panel provides system monitoring and security scanning capabilities.
+# Database
+DATABASE_PATH=/opt/portal/portal.db
 
-### Traffic Metrics
-- Real-time connection monitoring
-- Per-service bandwidth tracking
-- Connection history and statistics
-- Active user monitoring
-- Time series data (24-hour retention)
+# SSL
+SSL_CERT=/path/to/cert.pem
+SSL_KEY=/path/to/key.pem
 
-### Shodan Integration
-- IP lookup for exposure assessment
-- Risk scoring based on open ports and CVEs
-- Vulnerability tracking
-- Service discovery
-- API key management (persisted to database)
+# Optional integrations
+SHODAN_API_KEY=<key>
+NVD_API_KEY=<key>
 
-### CVE Analysis & Vulnerability Scanner
-- **Nmap Integration**: Full nmap support with multiple scan types
-  - Basic: Quick port scan (`-sS -T4`)
-  - Version: Service version detection (`-sV -sC -T4`)
-  - Vulnerability: NSE scripts (`--script=vuln,vulners,vulscan`)
-  - Full: Comprehensive scan (`-A` + vuln scripts)
-- **Dynamic CVE Database**: Real-time CVE fetching from multiple sources
-  - NVD (NIST National Vulnerability Database) API
-  - CIRCL CVE database (fallback)
-  - Local curated CVE database with mitigations
-  - File and memory caching with configurable TTL
-- **CPE-based Matching**: Accurate vulnerability detection using Common Platform Enumeration
-- **CVE Search**: Search NVD by keyword (product, vendor, etc.)
-- Automated risk scoring (0-100) and severity levels
-- Mitigation recommendations for each vulnerability
-- OS detection and service fingerprinting
+# Plain RTMP ingress (optional)
+RTMP_PLAIN_ENABLED=false          # Enable plain RTMP ingress (default: false)
+RTMP_PLAIN_PORT=1935              # Plain RTMP port (default: 1935)
+RTMP_TOKEN_EXPIRY_MINUTES=15      # Token expiry time in minutes (default: 15)
+RTMP_TOKEN_GRACE_SECONDS=30       # Grace period for reconnects (default: 30)
 
-#### API Endpoints
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/vuln/scan/{host}` | Scan host (query: ports, scan_type, use_nmap) |
-| GET | `/api/vuln/scan-service/{id}` | Scan Portal service |
-| GET | `/api/vuln/cve/{cve_id}` | Lookup CVE details |
-| GET | `/api/vuln/mitigations/{cve_id}` | Get mitigation steps |
-| GET | `/api/vuln/known-cves` | List local CVE database |
-| GET | `/api/vuln/search?q={keyword}` | Search NVD by keyword |
-| GET | `/api/vuln/status` | Scanner status (nmap, NVD API) |
-| POST | `/api/vuln/nvd-api-key` | Set NVD API key (persisted) |
+# Certificate Management
+CERT_METHOD=                      # letsencrypt, selfsigned, or custom
+CERT_EMAIL=                       # Email for Let's Encrypt renewal notifications
 
-#### Known CVE Coverage
-| CVE ID | Service | Severity | Description |
-|--------|---------|----------|-------------|
-| CVE-2024-6387 | SSH | Critical | RegreSSHion remote code execution |
-| CVE-2023-38408 | SSH | Critical | PKCS#11 remote code execution |
-| CVE-2021-44228 | Java | Critical | Log4Shell RCE |
-| CVE-2023-44487 | HTTP | High | HTTP/2 Rapid Reset attack |
-| CVE-2024-21626 | Docker | Critical | runc container escape |
-| CVE-2022-0543 | Redis | Critical | Lua sandbox escape |
-| CVE-GENERIC-* | Various | High | Telnet, FTP, SMB, RDP exposure |
+# File Manager
+FILE_MANAGER_ROOT=/               # Root directory for admin file browser
+FILE_MANAGER_MAX_UPLOAD_MB=100    # Max upload size in MB
+```
 
-### Session Recording
-- Terminal session recording in asciicast v2 format
-- Automatic recording when enabled per-service
-- Admin panel for viewing and downloading recordings
-- Playback with `asciinema play recording.cast`
+---
 
-### Configuration
+## Deployment
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SHODAN_API_KEY` | Shodan API key (also settable via Admin UI) | - |
-| `METRICS_ENABLED` | Enable metrics | true |
-| `METRICS_RETENTION_HOURS` | Data retention | 24 |
-| `NVD_API_KEY` | NVD API key (also settable via Admin UI) | - |
-| `NMAP_PATH` | Path to nmap binary | /usr/bin/nmap |
-| `CVE_CACHE_TTL` | CVE cache duration in seconds | 3600 |
-| `VULN_SCAN_TIMEOUT` | Vulnerability scan timeout | 300 |
-| `TOTP_ISSUER` | 2FA issuer name | Open Relay Portal |
-| `RECORDINGS_DIR` | Session recordings directory | ./recordings |
-| `RECORDING_ENABLED` | Enable session recording | true |
+### Setup Wizard
 
-**Note:** API keys (Shodan, NVD) can be configured via environment variables or through the Admin UI. Keys set via the Admin UI are persisted to the database and survive service restarts.
+The fastest way to deploy from a fresh clone:
 
-## Security
+```bash
+python server.py setup
+```
 
-### Network Security
-- **HTTPS Only**: All connections use port 443 with TLS encryption
-- **No HTTP**: Plain HTTP is not supported - all traffic is encrypted
-- **TLS 1.2+**: Minimum TLS version enforced with modern cipher suites
-- **HSTS**: HTTP Strict Transport Security header (1 year, includeSubDomains, preload)
-- **WSS Only**: All WebSocket connections use WSS (WebSocket Secure)
+The wizard walks through: hostname, port, TLS certificate method (self-signed / Let's Encrypt / custom), JWT secret generation, admin user creation, virtual environment + dependencies, and systemd service installation. Supports both fresh installs and reconfiguration of existing setups.
 
-### Authentication & Authorization
-1. **Authentication**: JWT tokens with configurable expiry
-2. **Authorization**: Scope-based access control per service
-3. **API Keys**: Prefixed keys (portal_xxx) with hash-only storage
-4. **Session Cookies**: Secure, HttpOnly, SameSite=Lax
+### Systemd Service
 
-### Data Protection
-4. **Rate Limiting**: Per-IP request limits (100/min default)
-5. **Session Tracking**: Audit log of connections
-6. **Credential Storage**: Encrypted service credentials (Argon2id)
-7. **SSH Key Security**:
-   - Private keys are NEVER stored in the database
-   - Keys are generated in-memory and returned to user only once
-   - Only public keys and fingerprints are persisted
-   - Database breach cannot expose private keys
-   - Supports Ed25519 (recommended) and RSA 4096-bit keys
+The setup wizard auto-generates a service file with correct paths. Manual template:
 
-### Security Headers
-All responses include:
-- **Strict-Transport-Security**: max-age=31536000; includeSubDomains; preload
-- **X-Frame-Options**: SAMEORIGIN
-- **X-Content-Type-Options**: nosniff
-- **X-XSS-Protection**: 1; mode=block
-- **Content-Security-Policy**: Restricts sources, WSS-only WebSockets
-- **Referrer-Policy**: strict-origin-when-cross-origin
-- **Permissions-Policy**: Disables geolocation, microphone, camera, payment
+```ini
+[Unit]
+Description=Open Relay Portal
+After=network.target
 
-### Login Security
-- Password visibility toggle
-- Password strength indicator
-- Session timeout warnings
-- Remember me option (30 days)
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/portal
+ExecStart=/opt/portal/venv/bin/python server.py serve
+Restart=always
+RestartSec=5
+PrivateTmp=true
 
-### Two-Factor Authentication (TOTP)
-- Time-based One-Time Password support
-- QR code setup with authenticator apps
-- 10 backup codes for recovery
-- Secure secret storage with Argon2
+[Install]
+WantedBy=multi-user.target
+```
 
-### Logging Security
-- Sensitive data (passwords, tokens, keys) automatically redacted from logs
-- Admin credentials written to secure file (chmod 600) instead of stdout
-- Structured JSON logging option available
-- Audit log for security events
+### Commands
 
-## Roadmap
+```bash
+# Setup/reconfigure
+python server.py setup
 
-### Phase 1: Core Infrastructure ✓
-- [x] JWT authentication
-- [x] WebSocket relay
-- [x] Service management API
-- [x] Rate limiting
-- [x] Cloudflare integration
+# Start/stop/restart
+sudo systemctl start portal
+sudo systemctl stop portal
+sudo systemctl restart portal
 
-### Phase 2: Plugin System ✓
-- [x] Plugin base classes
-- [x] Plugin registry
-- [x] Dynamic plugin loading
-- [x] Terminal plugin (PTY)
-- [x] SSH plugin
+# View logs
+sudo journalctl -u portal -f
 
-### Phase 3: Remote Desktop (Current)
-- [x] VNC plugin (noVNC)
-- [x] SPICE plugin (spice-html5)
-- [ ] RDP plugin (future)
-
-### Phase 4: Infrastructure Integration
-- [x] Proxmox plugin
-- [x] GitHub plugin (repos, PRs, Actions)
-- [ ] TrueNAS plugin
-- [ ] Network device plugin
-
-### Phase 5: Media & Gaming
-- [x] MediaMTX plugin (WebRTC/HLS streaming)
-- [ ] Plex plugin
-- [ ] Moonlight/Sunshine plugin
-
-### Phase 6: Dashboard ✓
-- [x] Web dashboard UI
-- [x] Service launcher with plugin icons
-- [x] Admin panel (users, services, logs)
-- [x] Connection Quick Add bar with presets
-- [x] Edit Service modal
-- [x] Daily invite code system
-- [x] Mobile-friendly design
-
-### Phase 7: Advanced Features ✓
-- [x] Two-factor authentication (TOTP with QR codes and backup codes)
-- [x] SSH key management (secure, no private key storage)
-- [x] Session recording (asciicast v2 format)
-- [x] Bandwidth monitoring and limiting
-- [x] Connection statistics tracking
-- [x] Secure tunnel with multiplexing
-- [x] VPN tunnel (TUN/TAP/SOCKS)
-- [x] HTTP reverse proxy
-- [x] Shodan API integration (with database persistence)
-- [x] Traffic metrics dashboard
-- [x] Admin panel with monitoring
-- [x] Security headers middleware
-- [x] Enhanced login page (password strength, visibility toggle)
-- [x] CVE analysis and vulnerability scanner
-- [x] Nmap integration for advanced scanning
-- [x] Dynamic CVE fetching from NVD/CIRCL
-- [x] CPE-based vulnerability matching
-- [x] Known CVE database with mitigations
-- [x] Host port scanning with risk scoring
-- [x] NVD API integration for CVE lookups
-- [x] Persistent settings storage (Shodan/NVD keys, log settings)
-- [x] Real-time chat system (encrypted, multi-channel)
-- [x] API documentation page (`/docs`)
-- [x] User connections (personal remote access)
-- [x] Favicon handler (eliminates 404 noise)
+# Check status
+sudo systemctl status portal
+```

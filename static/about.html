@@ -252,6 +252,8 @@
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#streaming">Streaming</a></li>
                     <li><a href="#chat">Community Chat</a></li>
+                    <li><a href="#direct-messages">Direct Messages</a></li>
+                    <li><a href="#message-search">Message Search</a></li>
                     <li><a href="#notifications">Notifications</a></li>
                     <li><a href="#ssh-keys">SSH Keys</a></li>
                     <li><a href="#api-keys">API Keys & Auth</a></li>
@@ -646,6 +648,99 @@
                     <li><strong>Speaking Indicators</strong> &mdash; Users in voice show a green highlight when speaking, with mute/deafen icons in the user list.</li>
                     <li><strong>Watch Page</strong> &mdash; Voice chat is also available in the stream watch page sidebar for coordinated viewing.</li>
                 </ul>
+
+                <!-- Direct Messages -->
+                <h2 id="direct-messages">Direct Messages</h2>
+                <p>Private conversations outside of public channels. Start a 1:1 chat or create a group DM with up to 10 participants.</p>
+
+                <h3>Getting Started</h3>
+                <p>Open a new conversation from the chat sidebar by clicking <strong>New Message</strong>, then search for users by username or nickname. Select one user for a 1:1 DM, or select multiple users (up to 10) for a group conversation.</p>
+
+                <h3>DM Features</h3>
+                <ul>
+                    <li><strong>Encrypted at Rest</strong> &mdash; All DM messages are encrypted with Fernet, same as channel messages. Content is never stored in plaintext.</li>
+                    <li><strong>Real-Time Delivery</strong> &mdash; Messages arrive instantly via WebSocket. No polling or page refresh needed.</li>
+                    <li><strong>Reactions</strong> &mdash; React to messages with emoji, just like in channels.</li>
+                    <li><strong>Replies</strong> &mdash; Reply to a specific message to maintain context in a conversation.</li>
+                    <li><strong>Editing</strong> &mdash; Edit your own messages within 5 minutes of sending. Edited messages show an <em>(edited)</em> indicator.</li>
+                    <li><strong>Deletion</strong> &mdash; Delete your own messages. Admins can delete any message.</li>
+                    <li><strong>Typing Indicators</strong> &mdash; See when other participants are typing in real time.</li>
+                    <li><strong>Unread Badges</strong> &mdash; DM conversations with unread messages display a badge count in the sidebar, updating in real time.</li>
+                    <li><strong>Mute Conversations</strong> &mdash; Mute noisy conversations to suppress notification badges without leaving the conversation.</li>
+                    <li><strong>Offline Notifications</strong> &mdash; Missed messages are queued and surfaced via the notification bell when you come back online.</li>
+                </ul>
+
+                <h3>Group DMs</h3>
+                <p>Group DMs support 2 to 10 participants. All members can add new participants to an existing group. The conversation name defaults to a comma-separated list of member names but can be renamed by any participant.</p>
+
+                <div class="alert alert-info">
+                    <strong>Privacy:</strong> DM conversations are visible only to their participants. Admins cannot read DM content &mdash; messages are encrypted at rest and decrypted only for participants.
+                </div>
+
+                <!-- Message Search -->
+                <h2 id="message-search">Message Search</h2>
+                <p>Full-text search across all your channels and direct messages, powered by SQLite FTS5 for fast, relevant results.</p>
+
+                <h3>Using Search</h3>
+                <p>Open the search bar with <kbd>Ctrl+K</kbd> (or <kbd>Cmd+K</kbd> on macOS), or click the search icon in the chat header. Type your query and press Enter to see results.</p>
+
+                <h3>Search Filters</h3>
+                <table class="param-table">
+                    <thead>
+                        <tr>
+                            <th>Filter</th>
+                            <th>Syntax</th>
+                            <th>Example</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>From user</strong></td>
+                            <td><code>from:username</code></td>
+                            <td><code>from:dustin deploy</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>In channel</strong></td>
+                            <td><code>in:channel</code></td>
+                            <td><code>in:general meeting notes</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Has image</strong></td>
+                            <td><code>has:image</code></td>
+                            <td><code>has:image screenshot</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Before date</strong></td>
+                            <td><code>before:YYYY-MM-DD</code></td>
+                            <td><code>before:2026-02-10 bug fix</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>After date</strong></td>
+                            <td><code>after:YYYY-MM-DD</code></td>
+                            <td><code>after:2026-02-01 migration</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>Filters can be combined freely. For example: <code>from:dustin in:general has:image after:2026-02-01</code></p>
+
+                <h3>Scope</h3>
+                <p>By default, search covers all channels and DMs you have access to. Use the scope selector to narrow results:</p>
+                <ul>
+                    <li><strong>All</strong> &mdash; Search across all channels and DMs</li>
+                    <li><strong>Channels</strong> &mdash; Only search public channel messages</li>
+                    <li><strong>Direct Messages</strong> &mdash; Only search your private conversations</li>
+                </ul>
+
+                <h3>Navigating Results</h3>
+                <p>Search results display the message text, author, channel or DM name, and timestamp. Click any result to jump directly to that message in its original context, with the message highlighted.</p>
+
+                <div class="alert alert-info">
+                    <strong>Security:</strong> Search results respect access controls. You will only see messages from channels you belong to and DM conversations you participate in. DM results are never visible to other users, including admins.
+                </div>
+
+                <div class="alert alert-warning">
+                    <strong>Rate limit:</strong> Search is limited to 10 queries per minute per user to prevent abuse.
+                </div>
 
                 <!-- Notifications -->
                 <h3 id="notifications">Notifications</h3>

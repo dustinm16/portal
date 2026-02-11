@@ -32,6 +32,12 @@ RTMPS ingress with HLS playback. Stream from OBS, use hardware encoding (NVENC/A
 ### Encrypted Chat
 Real-time messaging with Fernet encryption at rest. Channels, replies, threads, reactions, @mentions, image embeds, link previews, pinned messages. Everything Discord does, except you own the database.
 
+### Direct Messages
+Private 1:1 and group DMs (up to 10 participants), all encrypted at rest. Reactions, replies, editing, typing indicators, unread badges, mute — the same features as channel chat, delivered in real-time via WebSocket. Offline users get persistent notifications.
+
+### Message Search
+Full-text search across channels and DMs powered by FTS5. Filter by user, date range, content type. Search syntax: `from:user in:channel has:image before:date`. Keyboard shortcut: Ctrl+K. DM search results restricted to your own conversations.
+
 ### Voice Chat
 WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
 
@@ -122,11 +128,13 @@ python server.py serve
 ## Architecture
 
 ```
-Python/aiohttp backend ──── SQLite database
+Python/aiohttp backend ──── SQLite database (FTS5 search)
        │                         │
        ├── WebSocket relay ──── Plugins (SSH, VNC, RDP, SPICE, ...)
        ├── HLS streaming ────── MediaMTX (managed process)
        ├── Chat engine ──────── Fernet encryption at rest
+       ├── Direct messages ──── Encrypted 1:1 & group DMs
+       ├── Message search ───── FTS5 full-text index
        ├── Voice signaling ──── WebRTC P2P (no server-side audio)
        ├── File manager ─────── Local + remote SFTP
        └── System monitor ───── psutil + systemd

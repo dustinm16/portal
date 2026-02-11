@@ -1397,6 +1397,379 @@ Messages are returned in chronological order with user enrichment (nickname, ava
 
 ---
 
+### Direct Messages
+
+Private messaging between users, supporting both 1:1 and group conversations (up to 10 participants). All DM messages are encrypted at rest with Fernet (same key derivation as channel chat). Every endpoint verifies participant membership.
+
+#### GET /api/dm/conversations
+List the authenticated user's DM conversations with last message preview and unread counts.
+
+**Response:**
+```json
+{
+  "conversations": [
+    {
+      "id": 1,
+      "type": "direct",
+      "participants": [
+        {"user_id": 1, "username": "alice", "nickname": "Alice"},
+        {"user_id": 2, "username": "bob", "nickname": "Bob"}
+      ],
+      "last_message": {
+        "id": 50,
+        "user_id": 2,
+        "username": "bob",
+        "message": "Hey, are you around?",
+        "created_at": "2026-02-11T10:30:00Z"
+      },
+      "unread_count": 3,
+      "muted": false,
+      "created_at": "2026-02-10T08:00:00Z"
+    },
+    {
+      "id": 2,
+      "type": "group",
+      "name": "Project Team",
+      "participants": [
+        {"user_id": 1, "username": "alice"},
+        {"user_id": 3, "username": "charlie"},
+        {"user_id": 4, "username": "dana"}
+      ],
+      "last_message": null,
+      "unread_count": 0,
+      "muted": false,
+      "created_at": "2026-02-11T09:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/dm/conversations
+Create a new DM conversation.
+
+**Request (1:1):**
+```json
+{
+  "user_id": 2
+}
+```
+
+**Request (Group):**
+```json
+{
+  "user_ids": [2, 3, 4],
+  "name": "Project Team"
+}
+```
+
+**Response (201):**
+```json
+{
+  "conversation": {
+    "id": 2,
+    "type": "group",
+    "name": "Project Team",
+    "participants": [
+      {"user_id": 1, "username": "alice"},
+      {"user_id": 2, "username": "bob"},
+      {"user_id": 3, "username": "charlie"},
+      {"user_id": 4, "username": "dana"}
+    ],
+    "created_at": "2026-02-11T09:00:00Z"
+  }
+}
+```
+
+**Notes:**
+- For 1:1 DMs, if a conversation already exists between the two users, the existing conversation is returned instead of creating a duplicate.
+- Group DMs require at least 2 other participants (`user_ids`). Maximum 10 total participants.
+
+---
+
+#### GET /api/dm/conversations/{id}
+Get conversation details with participants. Requires the authenticated user to be a participant.
+
+**Response:**
+```json
+{
+  "conversation": {
+    "id": 1,
+    "type": "direct",
+    "participants": [
+      {"user_id": 1, "username": "alice", "nickname": "Alice", "avatar": {"color": "#3b82f6", "emoji": null}},
+      {"user_id": 2, "username": "bob", "nickname": "Bob", "avatar": {"color": "#ef4444", "emoji": null}}
+    ],
+    "muted": false,
+    "created_at": "2026-02-10T08:00:00Z"
+  }
+}
+```
+
+---
+
+#### GET /api/dm/conversations/{id}/messages
+Get messages in a conversation. Requires participant membership. Uses cursor-based pagination.
+
+**Query Parameters:**
+- `limit` (optional): Number of messages to return, 1-100 (default: `100`)
+- `before_id` (optional): Return messages with IDs less than this value (for loading older messages)
+
+**Response:**
+```json
+{
+  "messages": [
+    {
+      "id": 45,
+      "conversation_id": 1,
+      "user_id": 2,
+      "username": "bob",
+      "nickname": "Bob",
+      "message": "Hey, are you around?",
+      "reply_to": null,
+      "image_url": null,
+      "reactions": [],
+      "edited_at": null,
+      "created_at": "2026-02-11T10:30:00Z"
+    }
+  ],
+  "has_more": true
+}
+```
+
+---
+
+#### POST /api/dm/conversations/{id}/mute
+Toggle mute on a conversation. Muted conversations do not generate notifications.
+
+**Request:**
+```json
+{
+  "muted": true
+}
+```
+
+**Response:**
+```json
+{
+  "muted": true
+}
+```
+
+---
+
+#### POST /api/dm/conversations/{id}/leave
+Leave a group DM. Cannot leave a 1:1 conversation.
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+**Error (400):**
+```json
+{
+  "error": "Cannot leave a 1:1 conversation"
+}
+```
+
+---
+
+#### POST /api/dm/conversations/{id}/participants
+Add users to a group DM. Cannot add participants to a 1:1 conversation. Maximum 10 total participants.
+
+**Request:**
+```json
+{
+  "user_ids": [5, 6]
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "participants": [
+    {"user_id": 1, "username": "alice"},
+    {"user_id": 2, "username": "bob"},
+    {"user_id": 5, "username": "eve"},
+    {"user_id": 6, "username": "frank"}
+  ]
+}
+```
+
+**Error (400):**
+```json
+{
+  "error": "Cannot add participants to a 1:1 conversation"
+}
+```
+
+---
+
+#### DM WebSocket Messages (via /ws/chat)
+
+DM signaling piggybacks on the existing `/ws/chat` WebSocket connection. No separate WebSocket is needed.
+
+**Client -> Server:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `dm_open` | `user_id` or `conversation_id` | Open/create a 1:1 DM (by user_id) or open an existing conversation (by conversation_id) |
+| `dm_create_group` | `user_ids[]`, `name?` | Create a new group DM |
+| `dm_message` | `conversation_id`, `message`, `reply_to?`, `image_url?` | Send a DM message (encrypted at rest) |
+| `dm_typing` | `conversation_id` | Broadcast typing indicator to other participants |
+| `dm_delete` | `conversation_id`, `message_id` | Delete own message |
+| `dm_react` | `conversation_id`, `message_id`, `emoji` | Toggle a reaction on a message |
+| `dm_edit` | `conversation_id`, `message_id`, `message` | Edit own message (5-minute window) |
+| `dm_mark_read` | `conversation_id`, `message_id` | Update read position for unread tracking |
+| `dm_history` | `conversation_id`, `before_id?` | Load older messages (cursor pagination) |
+
+**Examples:**
+```json
+{"type": "dm_open", "user_id": 5}
+{"type": "dm_open", "conversation_id": 1}
+{"type": "dm_create_group", "user_ids": [2, 3], "name": "Team Chat"}
+{"type": "dm_message", "conversation_id": 1, "message": "Hello!"}
+{"type": "dm_message", "conversation_id": 1, "message": "Check this out", "image_url": "/static/uploads/chat/abc.jpg"}
+{"type": "dm_message", "conversation_id": 1, "message": "Agreed!", "reply_to": 45}
+{"type": "dm_typing", "conversation_id": 1}
+{"type": "dm_delete", "conversation_id": 1, "message_id": 50}
+{"type": "dm_react", "conversation_id": 1, "message_id": 45, "emoji": "👍"}
+{"type": "dm_edit", "conversation_id": 1, "message_id": 45, "message": "Updated text"}
+{"type": "dm_mark_read", "conversation_id": 1, "message_id": 50}
+{"type": "dm_history", "conversation_id": 1, "before_id": 40}
+```
+
+**Server -> Client:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `dm_conversations_list` | `conversations[]`, `unread_counts` | Sent on WebSocket connect with all user's conversations |
+| `dm_conversation_opened` | `conversation`, `messages[]` | Response to `dm_open` or `dm_create_group` |
+| `dm_message` | `conversation_id`, `id`, `user_id`, `username`, `message`, etc. | New DM message broadcast to participants |
+| `dm_typing` | `conversation_id`, `username` | Typing indicator broadcast |
+| `dm_message_deleted` | `conversation_id`, `message_id` | Message deleted broadcast |
+| `dm_reaction_update` | `conversation_id`, `message_id`, `emoji`, `added`, `count` | Reaction toggled broadcast |
+| `dm_message_edited` | `conversation_id`, `message_id`, `message`, `edited_at` | Message edited broadcast |
+| `dm_history` | `conversation_id`, `messages[]` | Response to `dm_history` request |
+| `dm_unread_update` | `conversation_id`, `unread_count` | Unread count changed (sent when another participant reads messages) |
+
+**Examples:**
+```json
+{"type": "dm_conversations_list", "conversations": [...], "unread_counts": {"1": 3, "2": 0}}
+{"type": "dm_conversation_opened", "conversation": {"id": 1, "type": "direct", "participants": [...]}, "messages": [...]}
+{"type": "dm_message", "conversation_id": 1, "id": 51, "user_id": 2, "username": "bob", "nickname": "Bob", "message": "Hey!", "created_at": "2026-02-11T10:35:00Z"}
+{"type": "dm_typing", "conversation_id": 1, "username": "bob"}
+{"type": "dm_message_deleted", "conversation_id": 1, "message_id": 50}
+{"type": "dm_reaction_update", "conversation_id": 1, "message_id": 45, "emoji": "👍", "added": true, "count": 2}
+{"type": "dm_message_edited", "conversation_id": 1, "message_id": 45, "message": "Updated text", "edited_at": "2026-02-11T10:36:00Z"}
+{"type": "dm_history", "conversation_id": 1, "messages": [...]}
+{"type": "dm_unread_update", "conversation_id": 1, "unread_count": 0}
+```
+
+**Security Notes:**
+- All DM messages are encrypted at rest with Fernet (same derivation as channel chat)
+- Every DM endpoint and WebSocket message type verifies participant membership
+- Users can only see conversations they are a participant in
+- Message edit window is 5 minutes (same as channel chat)
+
+---
+
+### Message Search
+
+Full-text search across chat messages (both channel messages and DMs). Uses SQLite FTS5 for efficient indexing. Search results are filtered by the user's access: channel messages from channels the user can see, and DM messages from conversations the user participates in.
+
+#### GET /api/chat/search
+Search messages across channels and/or DMs.
+
+**Rate Limit:** 10 requests per minute per user.
+
+**Query Parameters:**
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `q` | Yes | - | Search query (2-200 characters) |
+| `scope` | No | `all` | Search scope: `all`, `channels`, or `dms` |
+| `channel_id` | No | - | Restrict to a specific channel |
+| `conversation_id` | No | - | Restrict to a specific DM conversation |
+| `from` | No | - | Filter by sender username |
+| `has` | No | - | Filter by content type (`image`) |
+| `before` | No | - | Messages before this date (ISO 8601 or YYYY-MM-DD) |
+| `after` | No | - | Messages after this date (ISO 8601 or YYYY-MM-DD) |
+| `limit` | No | `25` | Results per page (max 50) |
+| `offset` | No | `0` | Pagination offset |
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "id": 123,
+      "source": "channel",
+      "channel_id": 1,
+      "channel_name": "general",
+      "user_id": 2,
+      "username": "bob",
+      "nickname": "Bob",
+      "message": "Has anyone tried the new deployment pipeline?",
+      "image_url": null,
+      "created_at": "2026-02-11T09:15:00Z",
+      "relevance": 1.5
+    },
+    {
+      "id": 456,
+      "source": "dm",
+      "conversation_id": 3,
+      "conversation_name": "alice, bob",
+      "user_id": 1,
+      "username": "alice",
+      "nickname": "Alice",
+      "message": "The pipeline is ready for testing",
+      "image_url": null,
+      "created_at": "2026-02-11T10:00:00Z",
+      "relevance": 1.2
+    }
+  ],
+  "total": 42,
+  "limit": 25,
+  "offset": 0
+}
+```
+
+**Notes:**
+- Results are ordered by relevance (FTS5 rank), then by recency.
+- The `source` field indicates whether the result is from a `channel` or a `dm`.
+- DM search results are filtered to conversations the authenticated user participates in.
+- Channel search results are filtered to channels the user has access to.
+- The `from` filter matches exact username.
+- The `has: "image"` filter returns only messages with an `image_url`.
+
+---
+
+#### POST /api/chat/search/rebuild
+Rebuild the FTS5 search index from encrypted messages. Decrypts all messages, tokenizes, and repopulates the full-text index. This is a potentially long-running operation on large databases.
+
+**Authentication:** Superadmin only.
+
+**Response:**
+```json
+{
+  "success": true,
+  "indexed": 15000,
+  "message": "Search index rebuilt: 15000 messages indexed"
+}
+```
+
+**Security Notes:**
+- FTS5 index stores plaintext tokens alongside encrypted message data (contentless tables — no raw message text stored in the index)
+- The rebuild endpoint is restricted to superadmin to prevent abuse
+- Search rate limiting (10/min/user) prevents index scanning attacks
+
+---
+
 ### Voice Chat
 
 Live voice chat uses WebRTC P2P mesh (2-10 users per channel). The server acts purely as a signaling relay — no audio is processed or stored server-side. Audio is encrypted via WebRTC DTLS-SRTP.
