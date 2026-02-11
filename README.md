@@ -64,19 +64,21 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 
 ## Feature Comparison
 
-| Feature | Open Relay Portal | Discord | Twitch | TeamViewer |
-|---------|:-:|:-:|:-:|:-:|
-| Encrypted chat (at rest) | Yes | No | No | No |
-| Live streaming (RTMPS/HLS) | Yes | Go Live only | Yes | No |
-| VOD recording (self-hosted) | Yes | No | Yes (platform) | No |
-| Voice chat (E2E encrypted) | Yes | No | No | No |
-| SSH/VNC/RDP remote access | Yes | No | No | Yes |
-| File management (SFTP) | Yes | No | No | Yes |
-| Self-hosted / on-premise | Yes | No | No | Partial |
-| No vendor lock-in | Yes | No | No | No |
-| No subscription required | Yes | No | No | No |
-| Open source (AGPL-3.0) | Yes | No | No | No |
-| Single binary deployment | Yes | N/A | N/A | N/A |
+| Feature | Open Relay Portal | Discord | Twitch | TeamViewer | Matrix/Element | Mastodon |
+|---------|:-:|:-:|:-:|:-:|:-:|:-:|
+| Encrypted chat (at rest) | Yes | No | No | No | E2EE opt-in | No |
+| Live streaming (RTMPS/HLS) | Yes | Go Live only | Yes | No | No | No |
+| VOD recording (self-hosted) | Yes | No | Yes (platform) | No | No | No |
+| Voice chat (E2E encrypted) | Yes | No | No | No | Yes | No |
+| SSH/VNC/RDP remote access | Yes | No | No | Yes | No | No |
+| File management (SFTP) | Yes | No | No | Yes | No | No |
+| Direct messages | Yes | Yes | Yes | No | Yes | Yes |
+| Full-text search | Yes | Yes | No | No | Partial | Yes |
+| Self-hosted / on-premise | Yes | No | No | Partial | Yes | Yes |
+| No vendor lock-in | Yes | No | No | No | Yes | Yes |
+| No subscription required | Yes | No | No | No | Yes | Yes |
+| Open source | AGPL-3.0 | No | No | No | Apache-2.0 | AGPL-3.0 |
+| Single binary deployment | Yes | N/A | N/A | N/A | No | No |
 
 ## Screenshots
 
