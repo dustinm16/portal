@@ -9119,13 +9119,15 @@ async def http_search_messages(request: web.Request) -> web.Response:
         return web.json_response({"error": "Query too long (max 200 chars)"}, status=400)
 
     # Rate limit: 10 searches per minute
-    import time as _time
-    now = _time.time()
+    now = monotonic()
     user_times = _search_rate_limits.setdefault(token.user_id, [])
     user_times[:] = [t for t in user_times if now - t < 60]
     if len(user_times) >= 10:
         return web.json_response({"error": "Rate limit exceeded (10 searches/min)"}, status=429)
     user_times.append(now)
+    # Prune stale entries for users who haven't searched recently
+    for uid in [k for k, v in _search_rate_limits.items() if not v]:
+        del _search_rate_limits[uid]
 
     scope = request.query.get("scope", "all")
     if scope not in ("all", "channels", "dms"):
@@ -9209,36 +9211,54 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
         return web.json_response({"error": "Superadmin required"}, status=403)
     config = await db.get_retention_config()
     results = {}
-    # Chat messages
-    chat_days = int(config.get("retention_chat_days", 7))
-    if chat_days > 0:
-        results["chat_messages"] = await db.cleanup_old_chat_messages(days=chat_days)
-    # DM messages
-    dm_days = int(config.get("retention_dm_days", 30))
-    if dm_days > 0:
-        results["dm_messages"] = await db.cleanup_old_dm_messages(days=dm_days)
-    # Notifications
-    notif_days = int(config.get("retention_notifications_days", 30))
-    if notif_days > 0:
-        results["notifications"] = await db.cleanup_old_notifications(days=notif_days)
-    # Activity log
-    activity_max = int(config.get("retention_activity_max", 500))
-    results["activity_log"] = await db.cleanup_old_activity_log(keep=activity_max)
-    # Expired tokens
-    results["expired_tokens"] = await db.cleanup_expired_tokens()
-    results["expired_api_keys"] = await db.cleanup_expired_api_keys()
-    # Service logs
-    logs_max = int(config.get("retention_service_logs_max", 1000))
-    service_ids = await db.get_all_service_ids()
-    svc_total = 0
-    for sid in service_ids:
-        svc_total += await db.clear_service_logs(sid, keep_recent=logs_max)
-    results["service_logs"] = svc_total
-    # VACUUM
-    if config.get("auto_vacuum", "true") == "true":
-        await db.vacuum_database()
-        results["vacuumed"] = True
-    return web.json_response({"cleanup_complete": True, "deleted": results})
+    errors = []
+    try:
+        chat_days = int(config.get("retention_chat_days", 7))
+        if chat_days > 0:
+            results["chat_messages"] = await db.cleanup_old_chat_messages(days=chat_days)
+    except Exception as e:
+        errors.append(f"chat: {e}")
+    try:
+        dm_days = int(config.get("retention_dm_days", 30))
+        if dm_days > 0:
+            results["dm_messages"] = await db.cleanup_old_dm_messages(days=dm_days)
+    except Exception as e:
+        errors.append(f"dm: {e}")
+    try:
+        notif_days = int(config.get("retention_notifications_days", 30))
+        if notif_days > 0:
+            results["notifications"] = await db.cleanup_old_notifications(days=notif_days)
+    except Exception as e:
+        errors.append(f"notifications: {e}")
+    try:
+        activity_max = int(config.get("retention_activity_max", 500))
+        results["activity_log"] = await db.cleanup_old_activity_log(keep=activity_max)
+    except Exception as e:
+        errors.append(f"activity: {e}")
+    try:
+        results["expired_tokens"] = await db.cleanup_expired_tokens()
+        results["expired_api_keys"] = await db.cleanup_expired_api_keys()
+    except Exception as e:
+        errors.append(f"tokens: {e}")
+    try:
+        logs_max = int(config.get("retention_service_logs_max", 1000))
+        service_ids = await db.get_all_service_ids()
+        svc_total = 0
+        for sid in service_ids:
+            svc_total += await db.clear_service_logs(sid, keep_recent=logs_max)
+        results["service_logs"] = svc_total
+    except Exception as e:
+        errors.append(f"service_logs: {e}")
+    try:
+        if config.get("auto_vacuum", "true") == "true":
+            await db.vacuum_database()
+            results["vacuumed"] = True
+    except Exception as e:
+        errors.append(f"vacuum: {e}")
+    resp = {"cleanup_complete": True, "deleted": results}
+    if errors:
+        resp["errors"] = errors
+    return web.json_response(resp)
 
 
 async def _broadcast_to_dm(conversation_id: int, message: dict, exclude_user_id: int = None):

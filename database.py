@@ -676,6 +676,7 @@ class Database:
         """Initialize database connection and schema."""
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
+        await self._connection.execute("PRAGMA foreign_keys = ON")
         await self._connection.executescript(SCHEMA)
         await self._connection.commit()
         await self._run_migrations()
@@ -2341,12 +2342,13 @@ class Database:
         """Create a new chat message (encrypted)."""
         plaintext = message
         encrypted_message = encrypt_message(message)
+        encrypted_preview = encrypt_message(reply_preview_text) if reply_preview_text else None
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url, reply_preview_username, reply_preview_text)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url, reply_preview_username, reply_preview_text)
+            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url, reply_preview_username, encrypted_preview)
         )
         msg_id = cursor.lastrowid
         await self.conn.commit()
@@ -2384,6 +2386,8 @@ class Database:
         for row in reversed(rows):
             msg = dict(row)
             msg["message"] = decrypt_message(msg.get("message", ""))
+            if msg.get("reply_preview_text"):
+                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
             messages.append(msg)
         return messages
 
@@ -2396,6 +2400,8 @@ class Database:
         if row:
             msg = dict(row)
             msg["message"] = decrypt_message(msg.get("message", ""))
+            if msg.get("reply_preview_text"):
+                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
             return msg
         return None
 
@@ -2447,6 +2453,21 @@ class Database:
 
     async def clear_channel_messages(self, channel_id: int) -> int:
         """Delete all messages in a channel. Returns count deleted."""
+        # Get IDs for FTS and reaction cleanup
+        cursor = await self.conn.execute(
+            "SELECT id FROM chat_messages WHERE channel_id = ?", (channel_id,)
+        )
+        msg_ids = [row["id"] for row in await cursor.fetchall()]
+        if msg_ids:
+            for msg_id in msg_ids:
+                try:
+                    await self.remove_message_from_search(msg_id, "channel")
+                except Exception:
+                    pass
+            placeholders = ",".join("?" * len(msg_ids))
+            await self.conn.execute(
+                f"DELETE FROM chat_reactions WHERE message_id IN ({placeholders})", msg_ids
+            )
         cursor = await self.conn.execute(
             "DELETE FROM chat_messages WHERE channel_id = ?",
             (channel_id,)
@@ -2581,6 +2602,8 @@ class Database:
         for row in rows:
             msg = dict(row)
             msg["message"] = decrypt_message(msg.get("message", ""))
+            if msg.get("reply_preview_text"):
+                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
             messages.append(msg)
         return messages
 
@@ -3096,7 +3119,10 @@ class Database:
             if uid not in current:
                 try:
                     await self.conn.execute(
-                        "INSERT INTO dm_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+                        """INSERT INTO dm_participants (conversation_id, user_id, joined_at)
+                           VALUES (?, ?, ?)
+                           ON CONFLICT(conversation_id, user_id)
+                           DO UPDATE SET left_at = NULL, joined_at = excluded.joined_at""",
                         (conversation_id, uid, now)
                     )
                     added.append(uid)
@@ -3118,13 +3144,14 @@ class Database:
         """Create a new DM message (encrypted). Returns message_id."""
         plaintext = message
         encrypted_message = encrypt_message(message)
+        encrypted_preview = encrypt_message(reply_preview_text) if reply_preview_text else None
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO dm_messages (conversation_id, user_id, username, message, created_at,
                                         reply_to, image_url, reply_preview_username, reply_preview_text)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (conversation_id, user_id, username, encrypted_message, created_at,
-             reply_to, image_url, reply_preview_username, reply_preview_text)
+             reply_to, image_url, reply_preview_username, encrypted_preview)
         )
         msg_id = cursor.lastrowid
         await self.conn.execute(
@@ -3158,6 +3185,8 @@ class Database:
         for row in reversed(rows):
             msg = dict(row)
             msg["message"] = decrypt_message(msg.get("message", ""))
+            if msg.get("reply_preview_text"):
+                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
             messages.append(msg)
         return messages
 
@@ -3170,6 +3199,8 @@ class Database:
         if row:
             msg = dict(row)
             msg["message"] = decrypt_message(msg.get("message", ""))
+            if msg.get("reply_preview_text"):
+                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
             return msg
         return None
 
@@ -3425,7 +3456,8 @@ class Database:
                 "chat_messages_fts", "chat_fts_map", "chat_messages", "channel_id",
                 fts_expr, channel_id=channel_id, from_user=from_user,
                 has_image=has_image, before=before, after=after,
-                limit=limit, offset=offset if scope == "channels" else 0
+                limit=offset + limit if scope == "all" else limit,
+                offset=offset if scope == "channels" else 0
             )
             # Enrich with channel name
             for r in ch_results:
@@ -3441,7 +3473,8 @@ class Database:
                 "dm_messages_fts", "dm_fts_map", "dm_messages", "conversation_id",
                 fts_expr, conversation_id=conversation_id, from_user=from_user,
                 has_image=has_image, before=before, after=after,
-                limit=limit, offset=offset if scope == "dms" else 0,
+                limit=offset + limit if scope == "all" else limit,
+                offset=offset if scope == "dms" else 0,
                 dm_user_id=user_id
             )
             for r in dm_results:

@@ -6,7 +6,7 @@
 
 A self-hosted, encrypted communication and infrastructure gateway. One server gives you everything — live streaming, encrypted chat, voice calls, remote access, and file management — all under your control, on your hardware, with zero third-party dependencies.
 
-> **A self-hosted alternative to Discord + Twitch + TeamViewer.** No accounts on someone else's server. No content moderation you didn't choose. No subscription fees. Just your hardware, your rules.
+> **A self-hosted alternative to Discord + Twitch + your VPN.** No accounts on someone else's server. No content moderation you didn't choose. No subscription fees. Just your hardware, your rules.
 
 ## Why This Exists
 
@@ -64,21 +64,22 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 
 ## Feature Comparison
 
-| Feature | Open Relay Portal | Discord | Twitch | TeamViewer | Matrix/Element | Mastodon |
+| Feature | Open Relay Portal | Discord | Twitch | Guacamole | Matrix/Element | Mastodon |
 |---------|:-:|:-:|:-:|:-:|:-:|:-:|
 | Encrypted chat (at rest) | Yes | No | No | No | E2EE opt-in | No |
 | Live streaming (RTMPS/HLS) | Yes | Go Live only | Yes | No | No | No |
 | VOD recording (self-hosted) | Yes | No | Yes (platform) | No | No | No |
 | Voice chat (E2E encrypted) | Yes | No | No | No | Yes | No |
 | SSH/VNC/RDP remote access | Yes | No | No | Yes | No | No |
-| File management (SFTP) | Yes | No | No | Yes | No | No |
+| HTTP reverse proxy | Yes | No | No | No | No | No |
+| File management (SFTP) | Yes | No | No | No | No | No |
 | Direct messages | Yes | Yes | Yes | No | Yes | Yes |
 | Full-text search | Yes | Yes | No | No | Partial | Yes |
-| Self-hosted / on-premise | Yes | No | No | Partial | Yes | Yes |
-| No vendor lock-in | Yes | No | No | No | Yes | Yes |
-| No subscription required | Yes | No | No | No | Yes | Yes |
-| Open source | AGPL-3.0 | No | No | No | Apache-2.0 | AGPL-3.0 |
-| Single binary deployment | Yes | N/A | N/A | N/A | No | No |
+| Self-hosted / on-premise | Yes | No | No | Yes | Yes | Yes |
+| No vendor lock-in | Yes | No | No | Yes | Yes | Yes |
+| No subscription required | Yes | No | No | Yes | Yes | Yes |
+| Open source | AGPL-3.0 | No | No | Apache-2.0 | Apache-2.0 | AGPL-3.0 |
+| Single binary deployment | Yes | N/A | N/A | No | No | No |
 
 ## Screenshots
 

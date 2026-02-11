@@ -1516,10 +1516,10 @@
             Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
         }
 
-        // Time range button handler
-        document.querySelectorAll('.range-btn').forEach(btn => {
+        // Time range button handler (scoped to chart range buttons only)
+        document.querySelectorAll('.chart-range-btns .range-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.chart-range-btns .range-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentHours = parseInt(btn.dataset.hours);
                 loadCharts();
@@ -1781,17 +1781,17 @@
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                                 </svg>
-                                ${result.ip}
+                                ${escapeHtml(result.ip)}
                             </h4>
-                            <span class="risk-badge ${risk.level}">${risk.level} risk (${risk.score}/100)</span>
+                            <span class="risk-badge ${escapeHtml(risk.level)}">${escapeHtml(risk.level)} risk (${parseInt(risk.score) || 0}/100)</span>
                         </div>
                         <div class="scan-body">
                             <div style="margin-bottom: 1rem;">
                                 <p style="color: var(--text-secondary); font-size: 0.875rem;">
-                                    <strong>Organization:</strong> ${result.org || 'Unknown'}<br>
-                                    <strong>ISP:</strong> ${result.isp || 'Unknown'}<br>
-                                    <strong>Location:</strong> ${result.city || 'Unknown'}, ${result.country || 'Unknown'}<br>
-                                    <strong>Hostnames:</strong> ${result.hostnames?.join(', ') || 'None'}
+                                    <strong>Organization:</strong> ${escapeHtml(result.org || 'Unknown')}<br>
+                                    <strong>ISP:</strong> ${escapeHtml(result.isp || 'Unknown')}<br>
+                                    <strong>Location:</strong> ${escapeHtml(result.city || 'Unknown')}, ${escapeHtml(result.country || 'Unknown')}<br>
+                                    <strong>Hostnames:</strong> ${escapeHtml(result.hostnames?.join(', ') || 'None')}
                                 </p>
                             </div>
 
@@ -1799,7 +1799,7 @@
                                 <div style="background: rgba(239, 68, 68, 0.1); padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem;">
                                     <p style="color: var(--accent-red); font-weight: 500; font-size: 0.875rem; margin-bottom: 0.5rem;">Risk Factors:</p>
                                     <ul style="color: var(--text-secondary); font-size: 0.75rem; margin: 0; padding-left: 1rem;">
-                                        ${risk.factors.map(f => `<li>${f}</li>`).join('')}
+                                        ${risk.factors.map(f => `<li>${escapeHtml(f)}</li>`).join('')}
                                     </ul>
                                 </div>
                             ` : ''}
@@ -2270,7 +2270,7 @@
                             <div style="margin-top: 1rem;">
                                 <p style="font-size: 0.875rem; font-weight: 500; margin-bottom: 0.5rem;">References:</p>
                                 <ul style="font-size: 0.75rem; color: var(--accent-blue); padding-left: 1rem;">
-                                    ${cve.references.map(r => `<li><a href="${r}" target="_blank" style="color: var(--accent-blue);">${r}</a></li>`).join('')}
+                                    ${cve.references.map(r => `<li><a href="${escapeHtml(r)}" target="_blank" style="color: var(--accent-blue);">${escapeHtml(r)}</a></li>`).join('')}
                                 </ul>
                             </div>
                         ` : ''}
@@ -2324,13 +2324,6 @@
                 console.error('Failed to load known CVEs:', error);
                 document.getElementById('known-cves').innerHTML = '<p style="color: var(--accent-red);">Failed to load CVE database.</p>';
             }
-        }
-
-        // Escape HTML
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
         }
 
         // =================================================================
@@ -3308,6 +3301,10 @@
             if (!str) return '';
             return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
+        function filesEscapeJs(str) {
+            if (!str) return '';
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        }
 
         function filesFormatDate(ts) {
             if (!ts) return '-';
@@ -3333,7 +3330,7 @@
             for (const part of parts) {
                 cumulative += '/' + part;
                 const p = cumulative;
-                html += `<span>/</span><a href="#" onclick="filesLoadDirectory('${p}'); return false;">${filesEscapeHtml(part)}</a>`;
+                html += `<span>/</span><a href="#" onclick="filesLoadDirectory('${filesEscapeJs(p)}'); return false;">${filesEscapeHtml(part)}</a>`;
             }
             el.innerHTML = html;
         }
@@ -3357,15 +3354,16 @@
             let html = '';
             if (filesCurrentPath !== '/') {
                 const parent = filesCurrentPath.replace(/\/[^/]+\/?$/, '') || '/';
-                html += `<tr ondblclick="filesLoadDirectory('${parent}')">
+                html += `<tr ondblclick="filesLoadDirectory('${filesEscapeJs(parent)}')">
                     <td><strong>&#128193; ..</strong></td>
                     <td>-</td><td>-</td><td>-</td><td>-</td><td></td>
                 </tr>`;
             }
             html += entries.map(e => {
                 const fullPath = filesJoinPath(filesCurrentPath, e.name);
-                const escapedPath = filesEscapeHtml(fullPath);
-                const dblClick = e.type === 'directory' ? `ondblclick="filesLoadDirectory('${escapedPath}')"` : '';
+                const jsPath = filesEscapeJs(fullPath);
+                const jsName = filesEscapeJs(e.name);
+                const dblClick = e.type === 'directory' ? `ondblclick="filesLoadDirectory('${jsPath}')"` : '';
                 return `<tr ${dblClick}>
                     <td>${filesFileIcon(e.type)} ${filesEscapeHtml(e.name)}</td>
                     <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
@@ -3374,11 +3372,11 @@
                     <td>${filesEscapeHtml(e.owner)}</td>
                     <td style="display:flex;gap:0.25rem;" onclick="event.stopPropagation()">
                         ${e.type === 'file' ? `
-                            <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesEditFile('${escapedPath}')">Edit</button>
+                            <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesEditFile('${jsPath}')">Edit</button>
                             <a class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;text-decoration:none;" href="/api/files/download?path=${encodeURIComponent(fullPath)}">DL</a>
                         ` : ''}
-                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesRenameFile('${escapedPath}', '${filesEscapeHtml(e.name)}')">Rename</button>
-                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;color:var(--accent-red);" onclick="filesDeleteFile('${escapedPath}', '${filesEscapeHtml(e.name)}', '${e.type}')">Del</button>
+                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesRenameFile('${jsPath}', '${jsName}')">Rename</button>
+                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;color:var(--accent-red);" onclick="filesDeleteFile('${jsPath}', '${jsName}', '${e.type}')">Del</button>
                     </td>
                 </tr>`;
             }).join('');

@@ -331,6 +331,10 @@
             if (!str) return '';
             return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
+        function escapeJs(str) {
+            if (!str) return '';
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        }
 
         function formatBytes(bytes) {
             if (!bytes || bytes === 0) return '-';
@@ -509,7 +513,7 @@
             let cum = '';
             for (const part of parts) {
                 cum += '/' + part;
-                bcHtml += `<span>/</span><a href="#" onclick="navigatePanel('${panel}','${cum}'); return false;">${escapeHtml(part)}</a>`;
+                bcHtml += `<span>/</span><a href="#" onclick="navigatePanel('${panel}','${escapeJs(cum)}'); return false;">${escapeHtml(part)}</a>`;
             }
             bcEl.innerHTML = bcHtml;
 
@@ -545,7 +549,7 @@
 
             if (p.path !== '/') {
                 const parent = p.path.replace(/\/[^/]+\/?$/, '') || '/';
-                html += `<tr ondblclick="navigatePanel('${panel}','${parent}')">
+                html += `<tr ondblclick="navigatePanel('${panel}','${escapeJs(parent)}')">
                     <td><span class="file-name">${fileIcon('directory')} <strong>..</strong></span></td>
                     <td>-</td><td>-</td>${isCompact ? '' : '<td>-</td>'}<td></td>
                 </tr>`;
@@ -553,18 +557,19 @@
 
             html += entries.map(e => {
                 const fullPath = joinPath(p.path, e.name);
-                const escapedPath = escapeHtml(fullPath);
-                const dblClick = e.type === 'directory' ? `ondblclick="navigatePanel('${panel}','${escapedPath}')"` : '';
+                const jsPath = escapeJs(fullPath);
+                const jsName = escapeJs(e.name);
+                const dblClick = e.type === 'directory' ? `ondblclick="navigatePanel('${panel}','${jsPath}')"` : '';
                 const base = sftpApiBase(connId);
                 const dlUrl = `${base}/download?path=${encodeURIComponent(fullPath)}`;
 
                 const actions = [];
                 if (e.type === 'file') {
-                    actions.push(`<button class="btn-sm" onclick="editPanelFile('${panel}','${escapedPath}')">Edit</button>`);
+                    actions.push(`<button class="btn-sm" onclick="editPanelFile('${panel}','${jsPath}')">Edit</button>`);
                     actions.push(`<a class="btn-sm" href="${dlUrl}" style="text-decoration:none;">DL</a>`);
                 }
-                actions.push(`<button class="btn-sm" onclick="renamePanelFile('${panel}','${escapedPath}','${escapeHtml(e.name)}')">Rename</button>`);
-                actions.push(`<button class="btn-sm btn-danger" onclick="deletePanelFile('${panel}','${escapedPath}','${escapeHtml(e.name)}')">Del</button>`);
+                actions.push(`<button class="btn-sm" onclick="renamePanelFile('${panel}','${jsPath}','${jsName}')">Rename</button>`);
+                actions.push(`<button class="btn-sm btn-danger" onclick="deletePanelFile('${panel}','${jsPath}','${jsName}')">Del</button>`);
 
                 return `<tr ${dblClick}>
                     <td><span class="file-name">${fileIcon(e.type)} ${escapeHtml(e.name)}</span></td>
