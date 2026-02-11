@@ -8074,15 +8074,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
 
                         # Rate limit: max N messages per window
-                        now = time()
-                        chat_msg_times = [t for t in chat_msg_times if now - t < chat_rate_window]
+                        now = monotonic()
+                        chat_msg_times[:] = [t for t in chat_msg_times if now - t < chat_rate_window]
                         if len(chat_msg_times) >= chat_rate_limit:
                             await ws.send_json({
                                 "type": "error",
                                 "message": "Slow down! You're sending messages too fast."
                             })
                             continue
-                        chat_msg_times.append(now)
+                        chat_msg_times.append(monotonic())
 
                         # Handle reply_to
                         reply_to_id = data.get("reply_to")
@@ -8582,6 +8582,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             if target_user_id == user_id:
                                 await ws.send_json({"type": "error", "message": "Cannot DM yourself"})
                                 continue
+                            target = await db.get_user_by_id(target_user_id)
+                            if not target:
+                                await ws.send_json({"type": "error", "message": "User not found"})
+                                continue
                             conv = await db.create_dm_conversation(user_id, [target_user_id], conv_type="1on1")
                         elif conv_id:
                             try:
@@ -8660,9 +8664,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             try:
                                 reply_to = int(reply_to)
                                 orig = await db.get_dm_message(reply_to)
-                                if orig:
+                                if orig and orig.get("conversation_id") == conv_id:
                                     reply_preview_username = orig.get("username", "")
                                     reply_preview_text = orig.get("message", "")[:100]
+                                else:
+                                    reply_to = None
                             except (ValueError, TypeError):
                                 reply_to = None
 
@@ -8723,6 +8729,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
+                        msg = await db.get_dm_message(message_id)
+                        if not msg or msg.get("conversation_id") != conv_id:
+                            continue
                         deleted = await db.delete_dm_message(message_id, user_id)
                         if deleted:
                             await _broadcast_to_dm(conv_id, {
@@ -8741,6 +8750,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not emoji or len(emoji) > 10:
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        react_msg = await db.get_dm_message(message_id)
+                        if not react_msg or react_msg.get("conversation_id") != conv_id:
                             continue
                         added, count = await db.toggle_dm_reaction(message_id, user_id, emoji)
                         await _broadcast_to_dm(conv_id, {
@@ -8763,6 +8775,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not new_text or len(new_text) > 4000:
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        edit_msg = await db.get_dm_message(message_id)
+                        if not edit_msg or edit_msg.get("conversation_id") != conv_id:
                             continue
                         updated = await db.edit_dm_message(message_id, user_id, new_text)
                         if updated:
@@ -9119,7 +9134,7 @@ async def http_search_messages(request: web.Request) -> web.Response:
     try:
         channel_id = int(request.query["channel_id"]) if "channel_id" in request.query else None
         conversation_id = int(request.query["conversation_id"]) if "conversation_id" in request.query else None
-        limit = min(int(request.query.get("limit", "25")), 50)
+        limit = max(1, min(int(request.query.get("limit", "25")), 50))
         offset = max(int(request.query.get("offset", "0")), 0)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid parameters"}, status=400)
@@ -10534,52 +10549,73 @@ class PortalServer:
                 total = 0
 
                 # Chat messages
-                chat_days = int(config.get("retention_chat_days", 7))
-                if chat_days > 0:
-                    d = await db.cleanup_old_chat_messages(days=chat_days)
-                    if d > 0:
-                        logger.info(f"[Retention] Cleaned {d} chat messages older than {chat_days} days")
-                    total += d
+                try:
+                    chat_days = int(config.get("retention_chat_days", 7))
+                    if chat_days > 0:
+                        d = await db.cleanup_old_chat_messages(days=chat_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Cleaned {d} chat messages older than {chat_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Chat cleanup failed: {e}")
 
                 # DM messages
-                dm_days = int(config.get("retention_dm_days", 30))
-                if dm_days > 0:
-                    d = await db.cleanup_old_dm_messages(days=dm_days)
-                    if d > 0:
-                        logger.info(f"[Retention] Cleaned {d} DM messages older than {dm_days} days")
-                    total += d
+                try:
+                    dm_days = int(config.get("retention_dm_days", 30))
+                    if dm_days > 0:
+                        d = await db.cleanup_old_dm_messages(days=dm_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Cleaned {d} DM messages older than {dm_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] DM cleanup failed: {e}")
 
                 # Notifications
-                notif_days = int(config.get("retention_notifications_days", 30))
-                if notif_days > 0:
-                    d = await db.cleanup_old_notifications(days=notif_days)
-                    if d > 0:
-                        logger.info(f"[Retention] Cleaned {d} notifications older than {notif_days} days")
-                    total += d
+                try:
+                    notif_days = int(config.get("retention_notifications_days", 30))
+                    if notif_days > 0:
+                        d = await db.cleanup_old_notifications(days=notif_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Cleaned {d} notifications older than {notif_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Notification cleanup failed: {e}")
 
                 # Activity log
-                activity_max = int(config.get("retention_activity_max", 500))
-                d = await db.cleanup_old_activity_log(keep=activity_max)
-                if d > 0:
-                    logger.info(f"[Retention] Trimmed {d} activity log entries (keeping {activity_max})")
-                total += d
+                try:
+                    activity_max = int(config.get("retention_activity_max", 500))
+                    d = await db.cleanup_old_activity_log(keep=activity_max)
+                    if d > 0:
+                        logger.info(f"[Retention] Trimmed {d} activity log entries (keeping {activity_max})")
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Activity log cleanup failed: {e}")
 
                 # Expired tokens & API keys
-                d = await db.cleanup_expired_tokens()
-                total += d
-                d = await db.cleanup_expired_api_keys()
-                total += d
+                try:
+                    d = await db.cleanup_expired_tokens()
+                    total += d
+                    d = await db.cleanup_expired_api_keys()
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Token cleanup failed: {e}")
 
                 # Service logs
-                logs_max = int(config.get("retention_service_logs_max", 1000))
-                service_ids = await db.get_all_service_ids()
-                for sid in service_ids:
-                    d = await db.clear_service_logs(sid, keep_recent=logs_max)
-                    total += d
+                try:
+                    logs_max = int(config.get("retention_service_logs_max", 1000))
+                    service_ids = await db.get_all_service_ids()
+                    for sid in service_ids:
+                        d = await db.clear_service_logs(sid, keep_recent=logs_max)
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Service log cleanup failed: {e}")
 
                 # VACUUM
-                if config.get("auto_vacuum", "true") == "true":
-                    await db.vacuum_database()
+                try:
+                    if config.get("auto_vacuum", "true") == "true":
+                        await db.vacuum_database()
+                except Exception as e:
+                    logger.error(f"[Retention] VACUUM failed: {e}")
 
                 if total > 0:
                     logger.info(f"[Retention] Cleanup complete: {total} total items removed")

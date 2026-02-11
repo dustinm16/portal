@@ -318,6 +318,10 @@
                     <li><a href="#message-search">Message Search</a></li>
                     <li><a href="#notifications">Notifications</a></li>
                 </ul>
+                <h4>Files &amp; System</h4>
+                <ul>
+                    <li><a href="#sftp-browser">SFTP Browser</a></li>
+                </ul>
                 <div class="admin-only">
                     <h4>Admin Only</h4>
                     <ul>
@@ -326,9 +330,15 @@
                         <li><a href="#managed-services">Managed Services</a></li>
                         <li><a href="#system-health">System Health</a></li>
                         <li><a href="#activity">Activity Feed</a></li>
+                        <li><a href="#certificates">Certificate Management</a></li>
+                        <li><a href="#server-settings">Server Settings</a></li>
                         <li><a href="#metrics">Metrics</a></li>
                         <li><a href="#logs">Logs</a></li>
+                        <li><a href="#shodan">Shodan Integration</a></li>
                         <li><a href="#vulnerability">Vulnerability Scanner</a></li>
+                        <li><a href="#sysmon">System Monitor</a></li>
+                        <li><a href="#file-manager">File Manager</a></li>
+                        <li><a href="#sftp-vod">SFTP VOD Storage</a></li>
                         <li><a href="#data-retention">Data Retention</a></li>
                     </ul>
                 </div>
@@ -2396,7 +2406,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/chat/thread/:id</span>
+                        <span class="endpoint-path">/api/chat/thread/{id}</span>
                         <span class="endpoint-desc">Get reply chain for a message</span>
                     </div>
                     <div class="endpoint-body">
@@ -2501,6 +2511,64 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Rate limit error (5 messages per 5 seconds)</span>
 {<span class="string">"type"</span>: <span class="string">"error"</span>, <span class="string">"message"</span>: <span class="string">"Slow down! You're sending messages too fast."</span>}</pre>
+                </div>
+
+                <h4>DM Client Messages (via /ws/chat)</h4>
+                <p>Direct message operations share the same WebSocket connection as channel chat.</p>
+                <div class="code-block">
+<pre><span class="comment">// Open/load a DM conversation</span>
+{<span class="string">"type"</span>: <span class="string">"dm_open"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>}
+
+<span class="comment">// Create a group DM</span>
+{<span class="string">"type"</span>: <span class="string">"dm_create_group"</span>, <span class="string">"user_ids"</span>: [<span class="number">2</span>, <span class="number">3</span>], <span class="string">"name"</span>: <span class="string">"Project Team"</span>}
+
+<span class="comment">// Send a DM</span>
+{<span class="string">"type"</span>: <span class="string">"dm_message"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
+
+<span class="comment">// Typing indicator in DM</span>
+{<span class="string">"type"</span>: <span class="string">"dm_typing"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>}
+
+<span class="comment">// Delete a DM message</span>
+{<span class="string">"type"</span>: <span class="string">"dm_delete"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
+
+<span class="comment">// React to a DM message</span>
+{<span class="string">"type"</span>: <span class="string">"dm_react"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"emoji"</span>: <span class="string">"👍"</span>}
+
+<span class="comment">// Edit a DM message (within 5-minute window)</span>
+{<span class="string">"type"</span>: <span class="string">"dm_edit"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"message"</span>: <span class="string">"Updated text"</span>}
+
+<span class="comment">// Mark DM conversation as read</span>
+{<span class="string">"type"</span>: <span class="string">"dm_mark_read"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>}
+
+<span class="comment">// Load DM history (pagination)</span>
+{<span class="string">"type"</span>: <span class="string">"dm_history"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"before_id"</span>: <span class="number">100</span>}</pre>
+                </div>
+
+                <h4>DM Server Messages</h4>
+                <div class="code-block">
+<pre><span class="comment">// Conversation opened (with participant details)</span>
+{<span class="string">"type"</span>: <span class="string">"dm_conversation_opened"</span>, <span class="string">"conversation"</span>: {...}}
+
+<span class="comment">// Conversations list (on connect or group creation)</span>
+{<span class="string">"type"</span>: <span class="string">"dm_conversations_list"</span>, <span class="string">"conversations"</span>: [...]}
+
+<span class="comment">// New DM message</span>
+{<span class="string">"type"</span>: <span class="string">"dm_message"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Hello!"</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>}
+
+<span class="comment">// DM typing indicator</span>
+{<span class="string">"type"</span>: <span class="string">"dm_typing"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>}
+
+<span class="comment">// DM message deleted</span>
+{<span class="string">"type"</span>: <span class="string">"dm_message_deleted"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
+
+<span class="comment">// DM reaction update</span>
+{<span class="string">"type"</span>: <span class="string">"dm_reaction_update"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"emoji"</span>: <span class="string">"👍"</span>, <span class="string">"action"</span>: <span class="string">"add"</span>}
+
+<span class="comment">// DM message edited</span>
+{<span class="string">"type"</span>: <span class="string">"dm_message_edited"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"new_text"</span>: <span class="string">"Updated"</span>, <span class="string">"edited_at"</span>: <span class="string">"..."</span>}
+
+<span class="comment">// DM message history (paginated)</span>
+{<span class="string">"type"</span>: <span class="string">"dm_history"</span>, <span class="string">"conversation_id"</span>: <span class="number">1</span>, <span class="string">"messages"</span>: [...], <span class="string">"has_more"</span>: <span class="keyword">true</span>}</pre>
                 </div>
 
                 <h4>JavaScript Example</h4>
@@ -2631,6 +2699,18 @@ ws.send(JSON.stringify({
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/types</span>
+                        <span class="endpoint-desc">List available service types</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the list of available managed service types that can be created (e.g., mediamtx).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/managed-services</span>
                         <span class="endpoint-desc">List all managed services</span>
                         <span class="badge-admin">ADMIN</span>
@@ -2658,9 +2738,29 @@ ws.send(JSON.stringify({
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services</span>
+                        <span class="endpoint-desc">Create managed service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create a new managed service instance.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">service_type</span></td><td><span class="param-type">string</span></td><td>Type of service (e.g., <code>mediamtx</code>) <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">display_name</span></td><td><span class="param-type">string</span></td><td>Display name <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">auto_start</span></td><td><span class="param-type">boolean</span></td><td>Start automatically on boot (default: false)</td></tr>
+                            <tr><td><span class="param-name">config</span></td><td><span class="param-type">object</span></td><td>Service-specific configuration</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services/{name}</span>
-                        <span class="endpoint-desc">Get service status</span>
+                        <span class="endpoint-path">/api/managed-services/{id}</span>
+                        <span class="endpoint-desc">Get managed service details</span>
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
@@ -2681,8 +2781,39 @@ ws.send(JSON.stringify({
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/managed-services/{id}</span>
+                        <span class="endpoint-desc">Update managed service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update a managed service's display name, auto-start setting, or configuration.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">display_name</span></td><td><span class="param-type">string</span></td><td>New display name</td></tr>
+                            <tr><td><span class="param-name">auto_start</span></td><td><span class="param-type">boolean</span></td><td>Auto-start on boot</td></tr>
+                            <tr><td><span class="param-name">config</span></td><td><span class="param-type">object</span></td><td>Service-specific configuration</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/managed-services/{id}</span>
+                        <span class="endpoint-desc">Delete managed service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a managed service. Stops the service if running before removal.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services/{name}/start</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/start</span>
                         <span class="endpoint-desc">Start a service</span>
                         <span class="badge-admin">ADMIN</span>
                     </div>
@@ -2701,7 +2832,7 @@ ws.send(JSON.stringify({
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services/{name}/stop</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/stop</span>
                         <span class="endpoint-desc">Stop a service</span>
                         <span class="badge-admin">ADMIN</span>
                     </div>
@@ -2713,7 +2844,7 @@ ws.send(JSON.stringify({
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services/{name}/restart</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/restart</span>
                         <span class="endpoint-desc">Restart a service</span>
                         <span class="badge-admin">ADMIN</span>
                     </div>
@@ -2725,7 +2856,19 @@ ws.send(JSON.stringify({
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services/{name}/logs</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/status</span>
+                        <span class="endpoint-desc">Get service runtime status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the current runtime status of a managed service including health check results.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/logs</span>
                         <span class="endpoint-desc">Get service logs</span>
                         <span class="badge-admin">ADMIN</span>
                     </div>
@@ -3856,156 +3999,569 @@ ws.send(JSON.stringify({
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
+                <div class="admin-only">
                 <h2 id="sysmon">System Monitor <span class="badge-admin">ADMIN</span></h2>
                 <p>Monitor and manage system processes, systemd services, and network interfaces.</p>
 
-                <div class="endpoint-group admin-section">
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/processes</code>
-                        <p>List running processes. Query params: <code>sort</code> (cpu|memory|pid|name), <code>limit</code> (default 100, max 500).</p>
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/processes</span>
+                        <span class="endpoint-desc">List running processes</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/processes/:pid</code>
-                        <p>Detailed info for a single process (threads, nice, cwd, exe, ppid).</p>
+                    <div class="endpoint-body">
+                        <p>Returns a list of running processes with CPU and memory usage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">sort</span></td><td><span class="param-type">string</span></td><td>Sort by: <code>cpu</code>, <code>memory</code>, <code>pid</code>, or <code>name</code></td></tr>
+                            <tr><td><span class="param-name">limit</span></td><td><span class="param-type">integer</span></td><td>Max results (default: 100, max: 500)</td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/sysmon/processes/:pid/kill</code>
-                        <p>Kill a process. Body: <code>{"signal": "SIGTERM"}</code>. Refuses PID 1, kernel threads, and the portal process.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/processes/{pid}</span>
+                        <span class="endpoint-desc">Get process details</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/services</code>
-                        <p>List systemd services. Query: <code>filter</code> (running|failed|search text).</p>
+                    <div class="endpoint-body">
+                        <p>Detailed info for a single process including threads, nice value, cwd, exe path, and parent PID.</p>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/services/:name</code>
-                        <p>Detailed service status (PID, memory, tasks, start time, enabled state).</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sysmon/processes/{pid}/kill</span>
+                        <span class="endpoint-desc">Kill a process</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/services/:name/logs</code>
-                        <p>Service journal logs. Query: <code>lines</code> (10-500, default 50).</p>
+                    <div class="endpoint-body">
+                        <p>Send a signal to a process. Refuses PID 1, kernel threads, and the portal process itself.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">signal</span></td><td><span class="param-type">string</span></td><td>Signal name, e.g. <code>SIGTERM</code>, <code>SIGKILL</code> (default: SIGTERM)</td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/sysmon/services/:name/control</code>
-                        <p>Control a service. Body: <code>{"action": "restart"}</code> (start|stop|restart|enable|disable).</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/services</span>
+                        <span class="endpoint-desc">List systemd services</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/network</code>
-                        <p>Network interfaces with IPs, MAC addresses, speed, TX/RX bytes.</p>
+                    <div class="endpoint-body">
+                        <p>List systemd services with their status.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">filter</span></td><td><span class="param-type">string</span></td><td>Filter by: <code>running</code>, <code>failed</code>, or search text</td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sysmon/ports</code>
-                        <p>Listening TCP ports with PID and process name.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/services/{name}</span>
+                        <span class="endpoint-desc">Get service status</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
+                    <div class="endpoint-body">
+                        <p>Detailed service status including PID, memory usage, tasks, start time, and enabled state.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/services/{name}/logs</span>
+                        <span class="endpoint-desc">Get service journal logs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">lines</span></td><td><span class="param-type">integer</span></td><td>Number of log lines (10-500, default: 50)</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sysmon/services/{name}/control</span>
+                        <span class="endpoint-desc">Control a systemd service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">action</span></td><td><span class="param-type">string</span></td><td>One of: <code>start</code>, <code>stop</code>, <code>restart</code>, <code>enable</code>, <code>disable</code> <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/network</span>
+                        <span class="endpoint-desc">Get network interfaces</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns network interfaces with IP addresses, MAC addresses, speed, and TX/RX byte counters.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sysmon/ports</span>
+                        <span class="endpoint-desc">Get listening ports</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns listening TCP ports with associated PID and process name.</p>
+                    </div>
+                </div>
                 </div>
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
+                <div class="admin-only">
                 <h2 id="file-manager">File Manager <span class="badge-admin">ADMIN</span></h2>
                 <p>Browse, edit, upload, and manage files on the server. Protected against path traversal and blocked files (.env, credentials).</p>
 
-                <div class="endpoint-group admin-section">
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/files/list?path=/home</code>
-                        <p>List directory contents (sorted: directories first, then files alphabetically).</p>
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/files/list</span>
+                        <span class="endpoint-desc">List directory contents</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/files/info?path=/home/file.txt</code>
-                        <p>File stat information (size, permissions, owner, MIME type).</p>
+                    <div class="endpoint-body">
+                        <p>List directory contents sorted by directories first, then files alphabetically.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Directory path to list <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/files/read?path=/home/file.txt</code>
-                        <p>Read text file content for editing (max 5MB).</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/files/info</span>
+                        <span class="endpoint-desc">Get file information</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/files/download?path=/home/file.txt</code>
-                        <p>Download file as streaming attachment.</p>
+                    <div class="endpoint-body">
+                        <p>Returns file stat information including size, permissions, owner, and MIME type.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>File path <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/files/upload</code>
-                        <p>Upload file. Multipart form with <code>path</code> and <code>file</code> fields. Max 100MB default.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/files/read</span>
+                        <span class="endpoint-desc">Read text file content</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/files/write</code>
-                        <p>Write/save text file. Body: <code>{"path": "...", "content": "..."}</code>.</p>
+                    <div class="endpoint-body">
+                        <p>Read text file content for editing. Maximum file size: 5MB.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>File path <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/files/mkdir</code>
-                        <p>Create directory. Body: <code>{"path": "/new/folder"}</code>.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/files/download</span>
+                        <span class="endpoint-desc">Download file</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/files/rename</code>
-                        <p>Rename/move. Body: <code>{"old_path": "...", "new_path": "..."}</code>.</p>
+                    <div class="endpoint-body">
+                        <p>Download file as a streaming attachment.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>File path <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method delete">DELETE</span>
-                        <code>/api/files/delete?path=/home/file.txt</code>
-                        <p>Delete file or empty directory.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/files/upload</span>
+                        <span class="endpoint-desc">Upload file</span>
+                        <span class="badge-admin">ADMIN</span>
                     </div>
+                    <div class="endpoint-body">
+                        <p>Upload a file via multipart form data. Maximum file size: 100MB (default).</p>
+                        <h4>Form Fields</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/files/write</span>
+                        <span class="endpoint-desc">Write text file</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>File path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/files/mkdir</span>
+                        <span class="endpoint-desc">Create directory</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Directory path to create <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/files/rename</span>
+                        <span class="endpoint-desc">Rename or move file</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/files/delete</span>
+                        <span class="endpoint-desc">Delete file or directory</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a file or empty directory.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Path to delete <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
                 </div>
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2 id="sftp-browser">SFTP Browser</h2>
-                <p>Browse and manage files on remote servers via your existing SSH/SFTP connections. Per-user access — only connections you own are accessible.</p>
+                <p>Browse and manage files on remote servers via your existing SSH/SFTP connections. Per-user access -- only connections you own are accessible. Ephemeral connections are opened per-request.</p>
 
-                <div class="endpoint-group">
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sftp/:conn_id/list?path=/</code>
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/list</span>
+                        <span class="endpoint-desc">List remote directory</span>
+                    </div>
+                    <div class="endpoint-body">
                         <p>List remote directory contents.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path (default: <code>/</code>)</td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sftp/:conn_id/read?path=/file.txt</code>
-                        <p>Read remote text file for editing (max 5MB).</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/read</span>
+                        <span class="endpoint-desc">Read remote text file</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/api/sftp/:conn_id/download?path=/file.txt</code>
-                        <p>Download remote file.</p>
+                    <div class="endpoint-body">
+                        <p>Read remote text file for editing. Maximum file size: 5MB.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/sftp/:conn_id/upload</code>
-                        <p>Upload to remote server. Multipart form with <code>path</code> and <code>file</code> fields.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/download</span>
+                        <span class="endpoint-desc">Download remote file</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/sftp/:conn_id/write</code>
-                        <p>Write remote text file. Body: <code>{"path": "...", "content": "..."}</code>.</p>
+                    <div class="endpoint-body">
+                        <p>Download a remote file as a streaming attachment.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/sftp/:conn_id/mkdir</code>
-                        <p>Create remote directory. Body: <code>{"path": "/new/folder"}</code>.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/upload</span>
+                        <span class="endpoint-desc">Upload to remote server</span>
                     </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/api/sftp/:conn_id/rename</code>
-                        <p>Rename/move remote path. Body: <code>{"old_path": "...", "new_path": "..."}</code>.</p>
+                    <div class="endpoint-body">
+                        <p>Upload a file to the remote server via multipart form data.</p>
+                        <h4>Form Fields</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
+                        </table>
                     </div>
-                    <div class="endpoint">
-                        <span class="method delete">DELETE</span>
-                        <code>/api/sftp/:conn_id/delete?path=/file.txt</code>
-                        <p>Delete remote file or empty directory.</p>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/write</span>
+                        <span class="endpoint-desc">Write remote text file</span>
                     </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/mkdir</span>
+                        <span class="endpoint-desc">Create remote directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path to create <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/rename</span>
+                        <span class="endpoint-desc">Rename or move remote path</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current remote path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New remote path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/delete</span>
+                        <span class="endpoint-desc">Delete remote file or directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a remote file or empty directory.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote path to delete <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <div class="admin-only">
+                <h2 id="sftp-vod">SFTP VOD Storage <span class="badge-admin">ADMIN</span></h2>
+                <p>Manage VOD files on the configured SFTP VOD storage server. These endpoints operate on the user's VOD storage connection (configured via the VOD Storage settings). Used internally by the VOD system for chunk uploads and available for administrative file management.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/vod/list</span>
+                        <span class="endpoint-desc">List VOD storage directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List contents of a directory on the VOD SFTP storage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path (default: <code>/</code>)</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/vod/read</span>
+                        <span class="endpoint-desc">Read VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Read a text file from VOD SFTP storage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/vod/download</span>
+                        <span class="endpoint-desc">Download VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Download a file from VOD SFTP storage as a streaming attachment.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/mkdir</span>
+                        <span class="endpoint-desc">Create VOD storage directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path to create <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/upload</span>
+                        <span class="endpoint-desc">Upload to VOD storage</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Upload a file to VOD SFTP storage via multipart form data.</p>
+                        <h4>Form Fields</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/write</span>
+                        <span class="endpoint-desc">Write file to VOD storage</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/rename</span>
+                        <span class="endpoint-desc">Rename VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current remote path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New remote path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/sftp/vod/delete</span>
+                        <span class="endpoint-desc">Delete VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a file or empty directory from VOD SFTP storage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote path to delete <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
                 </div>
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">

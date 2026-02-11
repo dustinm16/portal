@@ -2432,6 +2432,12 @@ class Database:
                     await self.remove_message_from_search(msg_id, "channel")
                 except Exception:
                     pass
+            # Clean reactions for old messages
+            placeholders = ",".join("?" * len(old_ids))
+            await self.conn.execute(
+                f"DELETE FROM chat_reactions WHERE message_id IN ({placeholders})",
+                old_ids
+            )
         cursor = await self.conn.execute(
             "DELETE FROM chat_messages WHERE created_at < ?",
             (cutoff,)
@@ -3285,10 +3291,10 @@ class Database:
                FROM dm_conversations dc
                JOIN dm_participants dp ON dp.conversation_id = dc.id AND dp.user_id = ? AND dp.left_at IS NULL
                LEFT JOIN dm_read_positions rp ON rp.conversation_id = dc.id AND rp.user_id = ?
-               INNER JOIN dm_messages dm ON dm.conversation_id = dc.id AND dm.id > COALESCE(rp.last_read_message_id, 0)
+               INNER JOIN dm_messages dm ON dm.conversation_id = dc.id AND dm.id > COALESCE(rp.last_read_message_id, 0) AND dm.user_id != ?
                GROUP BY dc.id
                HAVING unread > 0""",
-            (user_id, user_id)
+            (user_id, user_id, user_id)
         )
         rows = await cursor.fetchall()
         return {row["id"]: row["unread"] for row in rows}

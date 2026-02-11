@@ -262,8 +262,13 @@
                     <h4>Administration</h4>
                     <ul>
                         <li><a href="#admin-features">Admin Features</a></li>
+                        <li><a href="#system-monitor">System Monitor</a></li>
                     </ul>
                 </div>
+                <h4>Tools</h4>
+                <ul>
+                    <li><a href="#file-manager">File Manager</a></li>
+                </ul>
                 <h4>Security</h4>
                 <ul>
                     <li><a href="#security">Security Overview</a></li>
@@ -404,10 +409,9 @@
                 <p>The sidebar includes Quick Actions for fast access to common tasks:</p>
                 <ul>
                     <li><strong>Refresh Resources</strong> &mdash; One-click refresh of all dashboard data: connections, streams, stats, and services</li>
-                    <li><strong>File Manager</strong> &mdash; Quick link to the File Manager interface (admin: server files, all users: remote SFTP)</li>
-                    <li><strong>System Monitor</strong> &mdash; Direct access to process and service monitoring (admin only)</li>
-                    <li><strong>Admin Panel</strong> &mdash; Jump to admin settings and management (admin only)</li>
+                    <li><strong>File Manager</strong> &mdash; Quick link to the Remote Files (SFTP) interface for browsing files on your remote servers</li>
                 </ul>
+                <p>The <strong>Administration</strong> section (admin only) provides links to Manage Users, Invite Code, View Logs, and the Admin Panel.</p>
 
                 <!-- User Connections -->
                 <h2 id="connections">User Connections</h2>
@@ -437,6 +441,7 @@
                         <tr><td><code>rdp</code></td><td>Remote Desktop Protocol</td><td>3389</td><td>noVNC viewer</td></tr>
                         <tr><td><code>spice</code></td><td>SPICE remote display</td><td>5930</td><td>SPICE console</td></tr>
                         <tr><td><code>telnet</code></td><td>Telnet (legacy devices)</td><td>23</td><td>TCP tunnel</td></tr>
+                        <tr><td><code>sftp</code></td><td>SFTP file transfer</td><td>22</td><td>SFTP browser</td></tr>
                     </tbody>
                 </table>
 
@@ -945,21 +950,21 @@
                 <table class="param-table">
                     <thead>
                         <tr>
-                            <th>Data Type</th>
-                            <th>Default Retention</th>
+                            <th>Setting</th>
+                            <th>Default</th>
                             <th>Description</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
                             <td><strong>Chat Messages</strong></td>
-                            <td>90 days</td>
+                            <td>7 days</td>
                             <td>Public channel messages older than this are deleted</td>
                         </tr>
                         <tr>
                             <td><strong>Direct Messages</strong></td>
-                            <td>90 days</td>
-                            <td>Private conversations older than this are deleted</td>
+                            <td>30 days</td>
+                            <td>Private DM messages older than this are deleted</td>
                         </tr>
                         <tr>
                             <td><strong>Notifications</strong></td>
@@ -967,47 +972,51 @@
                             <td>User notifications older than this are deleted</td>
                         </tr>
                         <tr>
-                            <td><strong>Activity Logs</strong></td>
-                            <td>30 days</td>
-                            <td>User activity events older than this are deleted</td>
+                            <td><strong>Activity Log Max Entries</strong></td>
+                            <td>500</td>
+                            <td>Maximum number of activity log entries to keep (oldest trimmed first)</td>
                         </tr>
                         <tr>
-                            <td><strong>Service Logs</strong></td>
-                            <td>7 days</td>
-                            <td>Managed service logs older than this are deleted</td>
+                            <td><strong>Service Logs Max per Service</strong></td>
+                            <td>1000</td>
+                            <td>Maximum number of log entries to keep per managed service</td>
                         </tr>
                         <tr>
-                            <td><strong>Expired Tokens</strong></td>
-                            <td>30 days</td>
-                            <td>Expired JWT tokens and API keys older than this are deleted</td>
+                            <td><strong>Cleanup Interval</strong></td>
+                            <td>6 hours</td>
+                            <td>How often the automatic cleanup task runs</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Auto-VACUUM</strong></td>
+                            <td>Off</td>
+                            <td>Optionally compact the SQLite database after each cleanup to reclaim disk space</td>
                         </tr>
                     </tbody>
                 </table>
+                <p>Expired tokens and API keys are also cleaned up automatically during each run.</p>
                 <ul>
-                    <li><strong>Automatic Cleanup</strong> &mdash; Task runs on a configurable interval (default: daily at 03:00)</li>
+                    <li><strong>Automatic Cleanup</strong> &mdash; Task runs on the configurable interval (default: every 6 hours)</li>
                     <li><strong>Manual Trigger</strong> &mdash; Force cleanup immediately from the Settings tab</li>
-                    <li><strong>VACUUM Support</strong> &mdash; Optionally compact the SQLite database after cleanup to reclaim disk space</li>
-                    <li><strong>Disable Per-Type</strong> &mdash; Set retention days to 0 to disable cleanup for that data type</li>
+                    <li><strong>Disable Per-Type</strong> &mdash; Set days to 0 or max entries to 0 to disable cleanup for that data type</li>
                 </ul>
                 <div class="alert alert-warning">
                     <strong>Important:</strong> Deleted messages, logs, and notifications cannot be recovered. Adjust retention policies based on your compliance and storage requirements.
                 </div>
 
-                <h3>Admin Panel Files Tab</h3>
-                <p>The Admin Panel now includes a dedicated Files tab for quick server file management without leaving the admin interface:</p>
+                <h3>Server File Manager (Admin Panel &rarr; Files Tab)</h3>
+                <p>The Admin Panel includes a <strong>Files</strong> tab for managing local server files:</p>
                 <ul>
                     <li><strong>Integrated File Browser</strong> &mdash; Full file manager UI embedded directly in the Admin Panel</li>
                     <li><strong>Drag-and-Drop Upload</strong> &mdash; Drag files from your desktop to upload instantly</li>
                     <li><strong>Quick Edit</strong> &mdash; Edit server configuration files on-the-fly with syntax highlighting</li>
                     <li><strong>Path Navigation</strong> &mdash; Breadcrumb bar for fast directory traversal</li>
-                    <li><strong>Security</strong> &mdash; Same protections as standalone File Manager (path traversal prevention, blocked sensitive files)</li>
+                    <li><strong>Security</strong> &mdash; Path traversal prevention, blocked sensitive files (.env, credentials), configurable root directory</li>
                 </ul>
-                <p>The Files tab is admin-only and provides the same functionality as the standalone File Manager page, but more conveniently accessible from the Admin Panel sidebar.</p>
-                </div>
+                <p>Server file management is admin-only and available exclusively in the Admin Panel. The <a href="/files">File Manager page</a> (<code>/files</code>) provides Remote Files (SFTP) access for all users.</p>
 
                 <!-- System Monitor -->
-                <h2 id="system-monitor">System Monitor</h2>
-                <p>Real-time server monitoring and management tools for administrators.</p>
+                <h2 id="system-monitor">System Monitor (Admin Panel &rarr; System Tab)</h2>
+                <p>Real-time server monitoring and management tools, available in the Admin Panel as the <strong>System</strong> tab.</p>
 
                 <div class="feature-card">
                 <h3>Process Manager</h3>
@@ -1031,29 +1040,19 @@
                 <h3>Network Info</h3>
                 <p>View network interfaces (IPs, MAC, speed, TX/RX bytes) and all listening ports with associated processes.</p>
                 </div>
+                </div>
 
                 <!-- File Manager -->
                 <h2 id="file-manager">File Manager</h2>
-                <p>Browse and manage files through the web interface.</p>
+                <p>Browse and manage files through the web interface. The File Manager page (<code>/files</code>) provides Remote Files (SFTP) access for all users. Server file management is available in the Admin Panel Files tab (see <a href="#admin-features">Admin Features</a>).</p>
 
                 <div class="feature-card">
-                <h3>Server Files (Admin)</h3>
-                <p>Full-featured local file browser for administrators:</p>
-                <ul>
-                    <li>Navigate with breadcrumb path bar</li>
-                    <li>Edit text files in a monospace editor with save/cancel</li>
-                    <li>Upload files via button or drag-and-drop</li>
-                    <li>Create folders, rename, and delete files/directories</li>
-                    <li>Download any file as an attachment</li>
-                    <li>Security: path traversal protection, blocked sensitive files (.env, credentials), configurable root directory</li>
-                </ul>
-
                 <h3>Remote Files (SFTP)</h3>
                 <p>Browse files on remote servers using your existing SSH/SFTP connections:</p>
                 <ul>
                     <li>Select from your configured SSH/SFTP connections</li>
-                    <li>Full file browsing with the same UI as local files</li>
-                    <li>Edit, upload, download, create, rename, and delete remote files</li>
+                    <li>Full file browsing with breadcrumb navigation, upload, download, edit, create, rename, and delete</li>
+                    <li><strong>Commander-Style Dual Pane</strong> &mdash; When you have 2 or more SFTP connections, toggle split view for side-by-side file browsing</li>
                     <li>Per-user access &mdash; only your own connections are accessible</li>
                 </ul>
                 </div>

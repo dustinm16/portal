@@ -2817,7 +2817,7 @@
             const keyPem = document.getElementById('key-pem-input').value.trim();
 
             if (!certPem || !keyPem) {
-                Portal.showToast('Please provide both certificate and private key', 'error');
+                Portal.toast('Please provide both certificate and private key', 'error');
                 return;
             }
 
@@ -2830,14 +2830,14 @@
                 });
                 const data = await resp.json();
                 if (resp.ok) {
-                    Portal.showToast('Certificate uploaded successfully', 'success');
+                    Portal.toast('Certificate uploaded successfully', 'success');
                     document.getElementById('cert-apply-section').style.display = '';
                     await loadCertInfo();
                 } else {
-                    Portal.showToast(data.error || 'Upload failed', 'error');
+                    Portal.toast(data.error || 'Upload failed', 'error');
                 }
             } catch (error) {
-                Portal.showToast('Upload failed: ' + error.message, 'error');
+                Portal.toast('Upload failed: ' + error.message, 'error');
             }
         }
 
@@ -2846,7 +2846,7 @@
             const days = parseInt(document.getElementById('selfsigned-days').value) || 365;
 
             if (!hostname) {
-                Portal.showToast('Please enter a hostname', 'error');
+                Portal.toast('Please enter a hostname', 'error');
                 return;
             }
 
@@ -2859,14 +2859,14 @@
                 });
                 const data = await resp.json();
                 if (resp.ok) {
-                    Portal.showToast('Self-signed certificate generated', 'success');
+                    Portal.toast('Self-signed certificate generated', 'success');
                     document.getElementById('cert-apply-section').style.display = '';
                     await loadCertInfo();
                 } else {
-                    Portal.showToast(data.error || 'Generation failed', 'error');
+                    Portal.toast(data.error || 'Generation failed', 'error');
                 }
             } catch (error) {
-                Portal.showToast('Generation failed: ' + error.message, 'error');
+                Portal.toast('Generation failed: ' + error.message, 'error');
             }
         }
 
@@ -2875,7 +2875,7 @@
             const email = document.getElementById('le-email').value.trim();
 
             if (!hostname || !email) {
-                Portal.showToast('Please enter hostname and email', 'error');
+                Portal.toast('Please enter hostname and email', 'error');
                 return;
             }
 
@@ -2914,10 +2914,10 @@
                     credentials: 'include',
                     body: '{}'
                 });
-                Portal.showToast('Server restarting... Page will reload in 5 seconds.', 'success');
+                Portal.toast('Server restarting... Page will reload in 5 seconds.', 'success');
             } catch (e) {
                 // Expected — server is restarting
-                Portal.showToast('Server restarting... Page will reload in 5 seconds.', 'success');
+                Portal.toast('Server restarting... Page will reload in 5 seconds.', 'success');
             }
             setTimeout(() => window.location.reload(), 5000);
         }
@@ -2925,7 +2925,7 @@
         async function updateHostname() {
             const hostname = document.getElementById('settings-hostname').value.trim();
             if (!hostname) {
-                Portal.showToast('Hostname cannot be empty', 'error');
+                Portal.toast('Hostname cannot be empty', 'error');
                 return;
             }
 
@@ -2938,12 +2938,12 @@
                 });
                 const data = await resp.json();
                 if (resp.ok) {
-                    Portal.showToast('Hostname updated. Restart to take effect.', 'success');
+                    Portal.toast('Hostname updated. Restart to take effect.', 'success');
                 } else {
-                    Portal.showToast(data.error || 'Update failed', 'error');
+                    Portal.toast(data.error || 'Update failed', 'error');
                 }
             } catch (error) {
-                Portal.showToast('Failed: ' + error.message, 'error');
+                Portal.toast('Failed: ' + error.message, 'error');
             }
         }
 
@@ -3010,13 +3010,13 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    Portal.showToast(data.message, 'success');
+                    Portal.toast(data.message, 'success');
                     setTimeout(sysLoadProcesses, 500);
                 } else {
-                    Portal.showToast(data.message || data.error, 'error');
+                    Portal.toast(data.message || data.error, 'error');
                 }
             } catch (e) {
-                Portal.showToast('Failed to kill process', 'error');
+                Portal.toast('Failed to kill process', 'error');
             }
         }
 
@@ -3082,13 +3082,13 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    Portal.showToast(data.message, 'success');
+                    Portal.toast(data.message, 'success');
                     setTimeout(sysLoadServices, 1000);
                 } else {
-                    Portal.showToast(data.message || data.error, 'error');
+                    Portal.toast(data.message || data.error, 'error');
                 }
             } catch (e) {
-                Portal.showToast('Failed to control service', 'error');
+                Portal.toast('Failed to control service', 'error');
             }
         }
 
@@ -3237,12 +3237,12 @@
 
         async function saveRetentionConfig() {
             const data = {
-                retention_chat_days: document.getElementById('ret-chat-days').value,
-                retention_dm_days: document.getElementById('ret-dm-days').value,
-                retention_notifications_days: document.getElementById('ret-notif-days').value,
-                retention_activity_max: document.getElementById('ret-activity-max').value,
-                retention_service_logs_max: document.getElementById('ret-svc-logs').value,
-                cleanup_interval_hours: document.getElementById('ret-interval').value,
+                retention_chat_days: parseInt(document.getElementById('ret-chat-days').value) || 7,
+                retention_dm_days: parseInt(document.getElementById('ret-dm-days').value) || 30,
+                retention_notifications_days: parseInt(document.getElementById('ret-notif-days').value) || 30,
+                retention_activity_max: parseInt(document.getElementById('ret-activity-max').value) || 500,
+                retention_service_logs_max: parseInt(document.getElementById('ret-svc-logs').value) || 1000,
+                cleanup_interval_hours: parseInt(document.getElementById('ret-interval').value) || 6,
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
             };
             try {
