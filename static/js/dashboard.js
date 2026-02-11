@@ -36,7 +36,7 @@ async function loadUserInfo() {
         const role = currentUser.role || 'user';
         const canManageUsers = currentUser.permissions?.can_manage_users;
 
-        if (currentUser.is_admin || role === 'superadmin' || role === 'admin') {
+        if (Portal.isAdmin(currentUser)) {
             const adminBadge = document.getElementById('admin-badge');
             const terminalBtn = document.getElementById('terminal-btn');
 
@@ -45,8 +45,6 @@ async function loadUserInfo() {
                 adminBadge.textContent = role === 'superadmin' ? 'Super Admin' : 'Admin';
             }
             if (terminalBtn) terminalBtn.style.display = 'flex';
-            const quickAdd = document.getElementById('quick-add-bar');
-            if (quickAdd) quickAdd.style.display = '';
         }
 
         // Show admin section for moderator+ roles
@@ -56,7 +54,7 @@ async function loadUserInfo() {
         }
 
         // Hide Services tab for non-admin users and switch to My Connections
-        if (!currentUser.is_admin && role !== 'superadmin' && role !== 'admin') {
+        if (!Portal.isAdmin(currentUser)) {
             const servicesTab = document.getElementById('tab-btn-services');
             if (servicesTab) servicesTab.style.display = 'none';
             // Switch to My Connections as default tab for regular users
@@ -152,7 +150,7 @@ function createServiceCard(service) {
     const plugin = service.plugin || 'tcp_tunnel';
     const icon = Portal.getServiceIcon(plugin);
     const pluginName = Portal.getPluginDisplayName(plugin);
-    const isAdmin = currentUser && currentUser.is_admin;
+    const isAdmin = Portal.isAdmin(currentUser);
     const isManaged = service.service_type === 'managed';
 
     let adminBtns = '';
@@ -352,7 +350,7 @@ async function loadDashboardStats() {
         }
 
         // Show admin-only elements if user is admin
-        if (currentUser && currentUser.is_admin) {
+        if (Portal.isAdmin(currentUser)) {
             const adminServiceActions = document.getElementById('admin-service-actions');
             const adminPanelCard = document.getElementById('admin-panel-card');
             if (adminServiceActions) adminServiceActions.style.display = 'flex';
@@ -400,7 +398,7 @@ setInterval(async () => {
             statOnlineUsers.textContent = publicStats.online_users;
         }
         // Update admin stats if visible
-        if (currentUser && currentUser.is_admin) {
+        if (Portal.isAdmin(currentUser)) {
             const statTotalUsers = document.getElementById('stat-total-users');
             const statActiveConns = document.getElementById('stat-active-conns');
             const statTotalServices = document.getElementById('stat-total-services');

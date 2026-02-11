@@ -2054,7 +2054,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=22"></script>
+    <script src="/static/js/portal.js?v=23"></script>
     <script src="/static/js/voice.js?v=1"></script>
     <script>
         // Mobile sidebar toggle
@@ -2184,7 +2184,7 @@
                 }
                 currentUser = await response.json();
                 document.getElementById('username-display').textContent = currentUser.nickname || currentUser.username;
-                if (currentUser.is_admin) {
+                if (Portal.isAdmin(currentUser)) {
                     const termBtn = document.getElementById('terminal-btn');
                     const badge = document.getElementById('admin-badge');
                     if (termBtn) termBtn.style.display = '';

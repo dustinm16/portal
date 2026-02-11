@@ -120,6 +120,18 @@ function applyConnectionPreset() {
     Portal.toast(`Applied preset: ${preset.name}`);
 }
 
+/**
+ * Quick add connection - opens add connection modal with preset pre-selected
+ */
+function quickAddConnection(presetKey) {
+    showAddConnectionModal();
+    const presetSelect = document.getElementById('connection-preset');
+    if (presetSelect) {
+        presetSelect.value = presetKey;
+        applyConnectionPreset();
+    }
+}
+
 // =============================================================================
 // API Keys Management
 // =============================================================================

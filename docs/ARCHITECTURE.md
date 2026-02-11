@@ -91,7 +91,7 @@ Services are stored in a single `services` table with a `service_type` field:
 | **Storage** | `services` table | `services` table | `user_connections` table |
 | **Ownership** | System-wide (admin only) | System-wide (admin only) | Per-user (private) |
 | **Process** | No process (just routing) | Runs on Portal server | No process (just routing) |
-| **UI Location** | Dashboard > Services (admin) | Dashboard > Services (admin) | Dashboard > My Connections |
+| **UI Location** | Dashboard > Services (admin) | Dashboard > Services (admin) | Dashboard > My Connections (Quick Add bar) |
 | **API** | `/api/services` | `/api/services` + `/start`, `/stop`, `/restart` | `/api/connections` |
 
 **Unified API:**
@@ -202,7 +202,7 @@ Permission Hierarchy:
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
-│       ├── portal.js      # Core utilities
+│       ├── portal.js      # Core utilities, Portal.isAdmin(), Portal.getRoleLabel()
 │       ├── dashboard.js   # Dashboard logic
 │       ├── admin.js       # Admin panel
 │       ├── user-connections.js # Connection CRUD, edit, type schemas

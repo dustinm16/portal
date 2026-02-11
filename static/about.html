@@ -374,7 +374,7 @@
                         </tr>
                         <tr>
                             <td><strong>My Connections</strong></td>
-                            <td>Your personal remote connections. Create, edit, connect, and delete connections.</td>
+                            <td>Your personal remote connections. Includes a Quick Add bar with preset buttons (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy). Create, edit, connect, and delete connections.</td>
                             <td>All users</td>
                         </tr>
                         <tr>
@@ -403,7 +403,7 @@
                 <p>Connections are personal remote access points to your servers, databases, and network services. Each user manages their own connections independently.</p>
 
                 <h3>Creating a Connection</h3>
-                <p>From the <strong>My Connections</strong> tab, click <strong>Add Connection</strong> and fill in:</p>
+                <p>From the <strong>My Connections</strong> tab, use the <strong>Quick Add</strong> bar to create a connection from a preset (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy), or click <strong>Add Connection</strong> to fill in:</p>
                 <ul>
                     <li><strong>Name</strong> &mdash; A descriptive label (e.g., "Home Server SSH")</li>
                     <li><strong>Type</strong> &mdash; The protocol to use (see table below)</li>
@@ -951,7 +951,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=22"></script>
+    <script src="/static/js/portal.js?v=23"></script>
     <script>
         document.addEventListener('DOMContentLoaded', async () => {
             // Load user info for navbar and admin visibility
@@ -962,7 +962,7 @@
                     document.getElementById('username-display').textContent = user.nickname || user.username;
 
                     // Show admin-only sections if user is admin
-                    if (user.is_admin) {
+                    if (Portal.isAdmin(user)) {
                         document.querySelectorAll('.admin-only').forEach(el => {
                             el.classList.add('visible');
                         });

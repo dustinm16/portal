@@ -305,19 +305,6 @@
                 </div>
                 <p class="tab-description" style="margin-bottom: 1rem;">Backend services - both proxy routes to external backends and managed processes run by Portal.</p>
 
-                <div id="quick-add-bar" style="display: none; margin-bottom: 1rem;">
-                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-                        <span style="color: var(--text-muted); font-size: 0.8rem;">Quick Add:</span>
-                        <button class="btn btn-sm" onclick="quickAddService('local-shell')">Local Shell</button>
-                        <button class="btn btn-sm" onclick="quickAddService('ssh-server')">SSH</button>
-                        <button class="btn btn-sm" onclick="quickAddService('vnc-server')">VNC</button>
-                        <button class="btn btn-sm" onclick="quickAddService('rdp-server')">RDP</button>
-                        <button class="btn btn-sm" onclick="quickAddService('proxmox-cluster')">Proxmox</button>
-                        <button class="btn btn-sm" onclick="quickAddService('https-proxy')">HTTPS Proxy</button>
-                        <button class="btn btn-sm" onclick="quickAddService('github')">GitHub</button>
-                    </div>
-                </div>
-
                 <div id="loading" class="loading">
                     <div class="spinner"></div>
                     <span>Loading services...</span>
@@ -348,6 +335,19 @@
                     </div>
                 </div>
                 <p class="tab-description">Personal connections for SSH, RDP, databases, and other remote services. Private to your account.</p>
+
+                <div id="quick-add-bar" style="margin-bottom: 1rem;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                        <span style="color: var(--text-muted); font-size: 0.8rem;">Quick Add:</span>
+                        <button class="btn btn-sm" onclick="quickAddConnection('ssh-server')">SSH</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('vnc-server')">VNC</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('rdp-server')">RDP</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('mysql-db')">MySQL</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('postgres-db')">PostgreSQL</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('proxmox-ve')">Proxmox</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('http-proxy')">HTTP Proxy</button>
+                    </div>
+                </div>
 
                 <div id="inline-connections-loading" class="loading">
                     <div class="spinner"></div>
@@ -1558,11 +1558,11 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=22"></script>
-    <script src="/static/js/dashboard.js?v=26"></script>
-    <script src="/static/js/admin.js?v=21"></script>
+    <script src="/static/js/portal.js?v=23"></script>
+    <script src="/static/js/dashboard.js?v=27"></script>
+    <script src="/static/js/admin.js?v=22"></script>
     <script src="/static/js/ssh-keys.js?v=21"></script>
-    <script src="/static/js/user-connections.js?v=22"></script>
+    <script src="/static/js/user-connections.js?v=23"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

@@ -77,6 +77,22 @@ const Portal = {
     },
 
     /**
+     * Check if a user object has admin-level access (admin or superadmin)
+     */
+    isAdmin(user) {
+        if (!user) return false;
+        return user.is_admin || user.role === 'superadmin' || user.role === 'admin';
+    },
+
+    /**
+     * Get display label for a user role
+     */
+    getRoleLabel(role) {
+        const labels = { 'superadmin': 'Super Admin', 'admin': 'Admin', 'moderator': 'Moderator', 'user': 'User' };
+        return labels[role] || 'User';
+    },
+
+    /**
      * Get service icon SVG based on plugin type
      */
     getServiceIcon(plugin) {

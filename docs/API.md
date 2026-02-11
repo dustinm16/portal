@@ -2814,7 +2814,7 @@ Dashboard | Chat | Streams | API Docs | About | [username] | Logout
 | Tab | Visibility | Description |
 |-----|------------|-------------|
 | Services | Admin only | Backend services (proxy routes and managed processes) |
-| My Connections | All users | Personal SSH, VNC, RDP, database connections |
+| My Connections | All users | Personal SSH, VNC, RDP, database connections. Includes Quick Add bar with connection presets. |
 | My Streams | All users | Personal streaming configurations |
 | My VODs | All users | Remote VOD file management (SFTP) |
 | Quick Access | All users | Shortcuts to SSH Keys, API Keys, Profile |

@@ -135,7 +135,7 @@ Open Relay Portal is a modular, secure gateway for accessing home infrastructure
 │   ├── unauthorized.html  # Auth error page
 │   ├── css/portal.css     # Shared dark theme styles
 │   └── js/
-│       ├── portal.js      # Core utilities
+│       ├── portal.js      # Core utilities, Portal.isAdmin(), Portal.getRoleLabel()
 │       ├── dashboard.js   # Service grid and categories
 │       ├── admin.js       # Admin panel (services, users)
 │       ├── ssh-keys.js    # SSH key management
@@ -662,25 +662,19 @@ Managed services are background server processes that Portal runs and monitors.
 | `/streams` | Community streams viewer |
 | `/docs` | API documentation |
 
-## Service Presets
+## Connection Quick Add
 
-The Add Service modal includes quick-start presets for common configurations:
+The My Connections tab includes a Quick Add bar with preset buttons for common connection types. Clicking a button opens the Add Connection modal pre-filled with that type's defaults. Uses `quickAddConnection()`.
 
-| Preset | Plugin | Description |
-|--------|--------|-------------|
-| Local Shell | terminal | Local PTY terminal |
-| Local VNC | vnc | VNC on localhost:5900 |
-| SSH Server | ssh | Remote SSH connection |
-| VNC Server | vnc | Remote VNC connection |
-| MediaMTX RTSP | mediamtx | RTSP stream relay |
-| MediaMTX WebRTC | mediamtx | WebRTC low-latency stream |
-| Proxmox Cluster | proxmox | Proxmox VE management |
-| SPICE VM | spice | SPICE VM console |
-| GitHub | github | GitHub repository manager |
-| HTTP Proxy | http_proxy | HTTP reverse proxy |
-| TCP Tunnel | tcp_tunnel | Generic TCP tunnel |
-| Secure Tunnel | secure_tunnel | Encrypted tunnel |
-| VPN Bridge | vpn_tunnel | VPN TUN/TAP bridge |
+| Preset | Type | Default Port |
+|--------|------|-------------|
+| SSH | ssh | 22 |
+| VNC | vnc | 5900 |
+| RDP | rdp | 3389 |
+| MySQL | database | 3306 |
+| PostgreSQL | database | 5432 |
+| Proxmox | proxmox | 8006 |
+| HTTP Proxy | http_proxy | 80 |
 
 ## Database Schema
 
@@ -1122,7 +1116,7 @@ All responses include:
 - [x] Web dashboard UI
 - [x] Service launcher with plugin icons
 - [x] Admin panel (users, services, logs)
-- [x] Add Service modal with presets
+- [x] Connection Quick Add bar with presets
 - [x] Edit Service modal
 - [x] Daily invite code system
 - [x] Mobile-friendly design

@@ -3652,7 +3652,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=22"></script>
+    <script src="/static/js/portal.js?v=23"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');
@@ -3705,7 +3705,7 @@ X-RateLimit-Reset: 1704067200</pre>
                     document.getElementById('username-display').textContent = user.nickname || user.username;
 
                     // Show admin-only sections if user is admin
-                    if (user.is_admin) {
+                    if (Portal.isAdmin(user)) {
                         document.querySelectorAll('.admin-only').forEach(el => {
                             el.classList.add('visible');
                         });

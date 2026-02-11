@@ -1191,7 +1191,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=22"></script>
+    <script src="/static/js/portal.js?v=23"></script>
     <script>
         // Tab switching
         function showTab(tabName) {
@@ -2594,7 +2594,7 @@
         async function init() {
             try {
                 const user = await Portal.getCurrentUser();
-                if (!user.is_admin) {
+                if (!Portal.isAdmin(user)) {
                     window.location.href = '/dashboard';
                     return;
                 }
@@ -3126,7 +3126,7 @@
                 if (response.ok) {
                     const user = await response.json();
                     document.getElementById('username-display').textContent = user.nickname || user.username;
-                    if (user.is_admin) {
+                    if (Portal.isAdmin(user)) {
                         const termBtn = document.getElementById('terminal-btn');
                         const badge = document.getElementById('admin-badge');
                         if (termBtn) termBtn.style.display = '';

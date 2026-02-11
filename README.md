@@ -36,16 +36,16 @@ Real-time messaging with Fernet encryption at rest. Channels, replies, threads, 
 WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
 
 ### Remote Access
-SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 28 connection types supported. No VPN required.
+SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 29 connection types supported. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. No VPN required.
 
 ### File Management
-Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI.
+Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI. Commander-style dual-pane file manager when multiple SFTP connections exist, enabling drag-and-drop transfers between remote hosts.
 
 ### System Monitoring
-Process manager, systemd service control, network interfaces, listening ports. Manage your server without opening a terminal.
+Process manager, systemd service control, network interfaces, listening ports — integrated directly into the Admin Panel as a tab. Manage your server without opening a terminal.
 
 ### Administration
-User management with role hierarchy (superadmin/admin/moderator/user), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning.
+User management with role hierarchy (Super Admin / Admin / Moderator / User), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning. Unified role checking across all pages with consistent role labels in profile and UI.
 
 ## Screenshots
 
@@ -62,7 +62,7 @@ User management with role hierarchy (superadmin/admin/moderator/user), invite co
 *File Manager — Browse server files or remote SFTP connections*
 
 ![System Monitor](docs/screenshots/sysmon.png)
-*System Monitor — Processes, systemd services, network interfaces*
+*System Monitor — Processes, systemd services, network interfaces (Admin Panel tab)*
 
 ![Streams](docs/screenshots/streams.png)
 *Community Streams — Live streaming with HLS playback and VOD recording*
@@ -162,7 +162,7 @@ Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chun
 
 ## Connection Types
 
-SSH, VNC, RDP, SPICE, Proxmox, HTTP Proxy, TCP Tunnel, MongoDB, Elasticsearch, Redis, PostgreSQL, MySQL, Home Assistant, Portainer, TrueNAS, pfSense, Jupyter, Grafana, Prometheus, Telnet, Minecraft RCON, and more.
+SSH, VNC, RDP, SPICE, SFTP, Proxmox, HTTP Proxy, TCP Tunnel, MongoDB, Elasticsearch, Redis, PostgreSQL, MySQL, Home Assistant, Portainer, TrueNAS, pfSense, Jupyter, Grafana, Prometheus, Telnet, Minecraft RCON, and more.
 
 ## API
 
