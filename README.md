@@ -48,7 +48,7 @@ Full-text search across channels and DMs powered by FTS5. Filter by user, date r
 WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
 
 ### Remote Access
-SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 29 connection types supported. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. No VPN required.
+SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 75 connection types supported across 17 categories, with setup guides for each. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. No VPN required.
 
 ### File Management
 Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI. Commander-style dual-pane file manager when multiple SFTP connections exist, enabling drag-and-drop transfers between remote hosts.
@@ -107,6 +107,9 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 ![API Docs](docs/screenshots/api-docs.png)
 *API Documentation — Interactive endpoint reference*
 
+![Guides](docs/screenshots/guides.png)
+*Connection Setup Guides — Step-by-step documentation for all 75 connection types*
+
 <details>
 <summary>More screenshots</summary>
 
@@ -118,6 +121,9 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 
 ![System Services](docs/screenshots/sysmon-services.png)
 *Systemd service management*
+
+![Guide Detail](docs/screenshots/guides-detail.png)
+*Guide detail — Requirements, setup steps, and security best practices per type*
 
 </details>
 
@@ -202,7 +208,7 @@ Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chun
 
 ## Connection Types
 
-SSH, VNC, RDP, SPICE, SFTP, Proxmox, HTTP Proxy, TCP Tunnel, MongoDB, Elasticsearch, Redis, PostgreSQL, MySQL, Home Assistant, Portainer, TrueNAS, pfSense, Jupyter, Grafana, Prometheus, Telnet, Minecraft RCON, and more.
+75 types across 17 categories: Remote Access (SSH, VNC, RDP, SPICE, SFTP, Telnet), Media Servers, *arr Stack, Download Clients, Files & Photos, Virtualization, Home Automation, Security, Monitoring, Dashboards, Dev Tools, Databases, Networking, and more. Each type has a dedicated [setup guide](/guides) with requirements, configuration steps, and security best practices.
 
 ## API
 
