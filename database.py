@@ -7,6 +7,7 @@ import base64
 import hashlib
 import os
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 from config import Config
 
@@ -690,6 +691,10 @@ class Database:
 
     async def connect(self) -> None:
         """Initialize database connection and schema."""
+        # Ensure parent directory exists (SQLite won't create directories)
+        db_dir = Path(self.db_path).parent
+        db_dir.mkdir(parents=True, exist_ok=True)
+
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
         await self._connection.execute("PRAGMA foreign_keys = ON")
