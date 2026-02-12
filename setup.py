@@ -874,34 +874,15 @@ def _setup_venv_and_deps() -> str:
 
 
 def _setup_admin_user(venv_python: str) -> None:
-    """Set up the initial admin user."""
-    db_path = PROJECT_DIR / "portal.db"
-
-    if db_path.exists():
-        # Check if admin exists by trying to query
-        print("  Database exists. Checking for admin user...")
-        result = subprocess.run(
-            [venv_python, str(PROJECT_DIR / "server.py"), "list-users"],
-            capture_output=True, text=True, cwd=str(PROJECT_DIR),
-        )
-        if "admin" in result.stdout.lower():
-            print("  Admin user already exists.")
-            return
-
-    print("  Creating admin user...")
+    """Set up the initial admin user (creates or resets password)."""
+    print("  Initializing admin user...")
     result = subprocess.run(
         [venv_python, str(PROJECT_DIR / "server.py"), "init"],
         capture_output=True, text=True, cwd=str(PROJECT_DIR),
     )
-    if result.returncode == 0:
-        print(result.stdout.strip())
-    else:
-        # init command may print to stderr
-        output = result.stdout.strip() or result.stderr.strip()
-        if "already exists" in output.lower():
-            print("  Admin user already exists.")
-        else:
-            print(f"  {output}")
+    output = result.stdout.strip() or result.stderr.strip()
+    if output:
+        print(output)
 
 
 def _generate_systemd_service(venv_python: str) -> str:

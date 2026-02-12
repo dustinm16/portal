@@ -11016,23 +11016,35 @@ async def init_admin_user() -> None:
 
     await db.connect()
 
+    password = secrets.token_urlsafe(16)
+    creds_file = Path(__file__).parent / "admin_credentials.txt"
+
     admin = await db.get_user_by_username("admin")
     if not admin:
-        password = secrets.token_urlsafe(16)
         await create_user("admin", password, is_admin=True)
-        # Write to secure file instead of stdout for security
-        creds_file = Path(__file__).parent / "admin_credentials.txt"
-        creds_file.write_text(f"Username: admin\nPassword: {password}\n")
-        creds_file.chmod(0o600)  # Only owner can read
-        logger.warning(f"Initial admin user created. Credentials saved to: {creds_file}")
-        print(f"\n{'='*50}")
-        print("INITIAL ADMIN USER CREATED")
-        print(f"Username: admin")
-        print(f"Credentials saved to: {creds_file}")
-        print("IMPORTANT: Read and delete this file after noting the password!")
-        print(f"{'='*50}\n")
+        label = "INITIAL ADMIN USER CREATED"
     else:
-        logger.info("Admin user already exists.")
+        # Reset password so credentials file is always current
+        from argon2 import PasswordHasher
+        ph = PasswordHasher()
+        hashed = ph.hash(password)
+        async with db._connection.execute(
+            "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+            (hashed,),
+        ):
+            pass
+        await db._connection.commit()
+        label = "ADMIN PASSWORD RESET"
+
+    creds_file.write_text(f"Username: admin\nPassword: {password}\n")
+    creds_file.chmod(0o600)
+    logger.warning(f"{label}. Credentials saved to: {creds_file}")
+    print(f"\n{'='*50}")
+    print(label)
+    print(f"Username: admin")
+    print(f"Credentials saved to: {creds_file}")
+    print("IMPORTANT: Read and delete this file after noting the password!")
+    print(f"{'='*50}\n")
 
     # Create default services if none exist
     services = await db.get_all_services()
