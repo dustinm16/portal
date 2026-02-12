@@ -992,10 +992,32 @@ FILE_MANAGER_MAX_UPLOAD_MB=100    # Max upload size in MB
 The fastest way to deploy from a fresh clone:
 
 ```bash
-python server.py setup
+git clone https://github.com/dustinm16/portal.git
+cd portal
+sudo python3 server.py setup
 ```
 
-The wizard walks through: hostname, port, TLS certificate method (self-signed / Let's Encrypt / custom), JWT secret generation, admin user creation, virtual environment + dependencies, and systemd service installation. Supports both fresh installs and reconfiguration of existing setups.
+The wizard runs **before dependencies are installed** (early argv intercept bypasses third-party imports). It handles:
+1. Virtual environment creation and `pip install -r requirements.txt`
+2. Auto-generates a self-signed TLS certificate on fresh installs (openssl or Python cryptography)
+3. Hostname, port, and optional stream hostname configuration
+4. JWT secret generation and `.env` file creation
+5. Database initialization and admin user creation
+6. Systemd service file generation, installation, and startup
+
+On reconfiguration, existing settings are detected and preserved by default. The wizard validates the final configuration (cert files exist, key permissions, JWT secret set) before finishing.
+
+Port 443 requires root — the wizard and `serve` command both need `sudo`. Alternatively, set `PORT=8443` in `.env` to avoid root.
+
+### Let's Encrypt
+
+The setup wizard includes Let's Encrypt with pre-flight checks:
+- Verifies `certbot` is installed
+- Checks port 80 is available for HTTP-01 challenge
+- Validates hostname is a public domain (not localhost/IP)
+- Falls back to self-signed if issuance fails
+
+Switch from self-signed to Let's Encrypt at any time by re-running `sudo python3 server.py setup` or via the Admin Panel > Settings > Certificate Management.
 
 ### Systemd Service
 
@@ -1009,8 +1031,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/portal
-ExecStart=/opt/portal/venv/bin/python server.py serve
+WorkingDirectory=/path/to/portal
+ExecStart=/path/to/portal/venv/bin/python server.py serve
 Restart=always
 RestartSec=5
 PrivateTmp=true
@@ -1022,10 +1044,16 @@ WantedBy=multi-user.target
 ### Commands
 
 ```bash
-# Setup/reconfigure
-python server.py setup
+# Setup wizard (works on fresh clone, no venv needed)
+sudo python3 server.py setup
 
-# Start/stop/restart
+# Initialize admin user (if not using setup wizard)
+sudo venv/bin/python server.py init
+
+# Start server directly (port 443 requires root)
+sudo venv/bin/python server.py serve
+
+# Systemd service management (after setup installs the service)
 sudo systemctl start portal
 sudo systemctl stop portal
 sudo systemctl restart portal
@@ -1036,3 +1064,13 @@ sudo journalctl -u portal -f
 # Check status
 sudo systemctl status portal
 ```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "page took too long to respond" | TLS cert missing or server not running | `sudo journalctl -u portal -n 50` — check for SSL errors |
+| `ModuleNotFoundError: asyncssh` | Running `serve`/`init` without venv | `source venv/bin/activate` first, or use `sudo venv/bin/python server.py serve` |
+| `PermissionError: port 443` | Not running as root | `sudo python server.py serve` or set `PORT=8443` in `.env` |
+| `unable to open database file` | Database directory doesn't exist | Fixed automatically — `db.connect()` creates parent dirs |
+| Browser security warning | Self-signed certificate | Click "Advanced" > "Proceed", or switch to Let's Encrypt |

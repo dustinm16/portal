@@ -943,15 +943,23 @@
 
                 <h3>Setup Wizard</h3>
                 <p>One-command setup from fresh clone to running server:</p>
-                <div class="code-block" style="margin: 0.5rem 0;"><pre>python server.py setup</pre></div>
+                <div class="code-block" style="margin: 0.5rem 0;"><pre>sudo python3 server.py setup</pre></div>
+                <p>The setup wizard works immediately on a fresh <code>git clone</code> &mdash; no virtual environment or dependencies needed first. It handles everything:</p>
                 <ul>
-                    <li>Interactive prompts for hostname, port, and TLS certificate method</li>
-                    <li>Auto-generates JWT secret and <code>.env</code> configuration</li>
-                    <li>Creates virtual environment and installs dependencies</li>
+                    <li><strong>Auto-generates a self-signed TLS certificate</strong> on fresh installs so the server starts immediately</li>
+                    <li>Creates virtual environment and installs all Python dependencies</li>
+                    <li>Generates JWT secret and writes <code>.env</code> configuration</li>
+                    <li>Initializes the database and creates the admin user</li>
                     <li>Generates systemd service file with correct paths for any install location</li>
                     <li>Optionally installs, enables, and starts the service</li>
+                    <li>Validates the final configuration (cert files exist, permissions, JWT secret)</li>
                     <li>Works for both fresh installs and reconfiguration of existing setups</li>
+                    <li>Switch to Let's Encrypt or custom certs later via Admin Panel or re-running setup</li>
                 </ul>
+                <div class="alert alert-info" style="margin-top: 0.5rem;">
+                    <strong>Note:</strong> Port 443 requires root (hence <code>sudo</code>). To run without root, set <code>PORT=8443</code> in <code>.env</code>.
+                    Self-signed certificates cause a browser warning on first visit &mdash; click &ldquo;Advanced&rdquo; &gt; &ldquo;Proceed&rdquo; to continue.
+                </div>
 
                 <h3>Data Retention</h3>
                 <p>Configure automatic cleanup policies for old data to keep the database lean. Settings are available in the Admin Panel Settings tab:</p>

@@ -132,35 +132,44 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 ```bash
 git clone https://github.com/dustinm16/portal.git
 cd portal
-python server.py setup
+sudo python3 server.py setup
 ```
 
-The setup wizard walks you through everything: hostname, TLS certificates (self-signed, Let's Encrypt, or custom), admin account creation, and systemd service installation.
+That's it. The setup wizard handles everything automatically:
+1. Creates a virtual environment and installs all dependencies
+2. **Auto-generates a self-signed TLS certificate** (server starts immediately)
+3. Generates a JWT secret and writes `.env` configuration
+4. Creates the database and initial admin user
+5. Installs and starts a systemd service
+
+Open `https://your-hostname` in a browser. Self-signed certs show a warning — click "Advanced" > "Proceed" to continue. Switch to Let's Encrypt or a custom certificate later via the Admin Panel or by re-running setup.
 
 ### Manual Setup
 
 ```bash
-# Create virtual environment
+# Create virtual environment and install dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Configure
+# Configure (or copy .env.example and edit)
 cp .env.example .env
-# Edit .env with your settings (JWT_SECRET, hostname, SSL paths)
+# Edit .env: set JWT_SECRET, HOSTNAME, SSL_CERT, SSL_KEY
 
-# Initialize database and admin user
+# Generate a self-signed cert if you don't have one
+python -c "import cert_manager; cert_manager.generate_self_signed_cert('localhost', 'certs')"
+
+# Initialize database and create admin user
 python server.py init
 
-# Run
-python server.py serve
+# Run (port 443 requires root)
+sudo venv/bin/python server.py serve
 ```
 
 ### Requirements
 - Python 3.11+
 - Linux (systemd for service management features)
-- TLS certificate (self-signed works for testing)
-- Port 443 (HTTPS)
+- Port 443 (HTTPS) — requires root, or use a higher port in `.env`
 
 ## Architecture
 
