@@ -9492,6 +9492,10 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     except Exception as e:
         errors.append(f"service_logs: {e}")
     try:
+        results["invite_codes"] = await db.cleanup_old_invite_codes(days=30)
+    except Exception as e:
+        errors.append(f"invite_codes: {e}")
+    try:
         if config.get("auto_vacuum", "true") == "true":
             await db.vacuum_database()
             results["vacuumed"] = True
@@ -10904,6 +10908,15 @@ class PortalServer:
                         total += d
                 except Exception as e:
                     logger.error(f"[Retention] Service log cleanup failed: {e}")
+
+                # Revoked invite codes (purge after 30 days)
+                try:
+                    d = await db.cleanup_old_invite_codes(days=30)
+                    if d > 0:
+                        logger.info(f"[Retention] Purged {d} revoked invite codes older than 30 days")
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Invite code cleanup failed: {e}")
 
                 # VACUUM
                 try:

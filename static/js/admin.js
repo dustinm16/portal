@@ -1099,14 +1099,25 @@ async function loadInviteCodes() {
     if (!container) return;
     container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">Loading...</p>';
 
+    const filterEl = document.getElementById('invite-code-filter');
+    const filter = filterEl ? filterEl.value : 'active';
+
     try {
         const response = await Portal.fetch('/api/invite-code');
         if (!response.ok) throw new Error('Failed to load');
         const data = await response.json();
-        const codes = data.codes || [];
+        let codes = data.codes || [];
+
+        // Apply client-side filter
+        if (filter === 'active') {
+            codes = codes.filter(c => c.is_active);
+        } else if (filter === 'revoked') {
+            codes = codes.filter(c => !c.is_active);
+        }
 
         if (codes.length === 0) {
-            container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">No invite codes yet. Create one above.</p>';
+            const msg = filter === 'revoked' ? 'No revoked invite codes.' : 'No invite codes yet. Create one above.';
+            container.innerHTML = `<p style="color: var(--text-muted); text-align: center;">${msg}</p>`;
             return;
         }
 

@@ -4186,6 +4186,16 @@ class Database:
         )
         await self.conn.commit()
 
+    async def cleanup_old_invite_codes(self, days: int = 30) -> int:
+        """Delete revoked/inactive invite codes older than N days. Returns count deleted."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM invite_codes WHERE is_active = 0 AND created_at < ?",
+            (cutoff,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
     async def get_invite_code_registrations(self, code_id: int) -> list[dict]:
         """Get users who registered with a specific invite code."""
         cursor = await self.conn.execute(
