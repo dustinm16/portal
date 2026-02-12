@@ -18,29 +18,86 @@ const CONNECTION_PRESETS = {
     'telnet': { name: 'Telnet', type: 'telnet', port: 23, icon: 'terminal', config: {} },
 
     // Media & Streaming
+    'plex': { name: 'Plex', type: 'plex', port: 32400, icon: 'play', config: {} },
+    'jellyfin': { name: 'Jellyfin', type: 'jellyfin', port: 8096, icon: 'play', config: {} },
+    'emby': { name: 'Emby', type: 'emby', port: 8096, icon: 'play', config: {} },
+    'navidrome': { name: 'Navidrome', type: 'navidrome', port: 4533, icon: 'play', config: {} },
+    'audiobookshelf': { name: 'Audiobookshelf', type: 'audiobookshelf', port: 13378, icon: 'play', config: {} },
     'mediamtx-rtsp': { name: 'MediaMTX Stream', type: 'mediamtx', port: 8554, icon: 'play', config: {} },
     'ip-camera': { name: 'IP Camera', type: 'stream', port: 554, icon: 'play', config: { protocol: 'rtsp' } },
 
+    // Media Management (*arr stack)
+    'jellyseerr': { name: 'Jellyseerr', type: 'jellyseerr', port: 5055, icon: 'play', config: {} },
+    'overseerr': { name: 'Overseerr', type: 'overseerr', port: 5055, icon: 'play', config: {} },
+    'sonarr': { name: 'Sonarr', type: 'sonarr', port: 8989, icon: 'globe', config: {} },
+    'radarr': { name: 'Radarr', type: 'radarr', port: 7878, icon: 'globe', config: {} },
+    'lidarr': { name: 'Lidarr', type: 'lidarr', port: 8686, icon: 'globe', config: {} },
+    'readarr': { name: 'Readarr', type: 'readarr', port: 8787, icon: 'globe', config: {} },
+    'prowlarr': { name: 'Prowlarr', type: 'prowlarr', port: 9696, icon: 'globe', config: {} },
+    'bazarr': { name: 'Bazarr', type: 'bazarr', port: 6767, icon: 'globe', config: {} },
+    'tautulli': { name: 'Tautulli', type: 'tautulli', port: 8181, icon: 'play', config: {} },
+
+    // Downloads
+    'sabnzbd': { name: 'SABnzbd', type: 'sabnzbd', port: 8080, icon: 'globe', config: {} },
+    'qbittorrent': { name: 'qBittorrent', type: 'qbittorrent', port: 8080, icon: 'globe', config: {} },
+    'transmission': { name: 'Transmission', type: 'transmission', port: 9091, icon: 'globe', config: {} },
+
+    // Files, Photos & Docs
+    'nextcloud': { name: 'Nextcloud', type: 'nextcloud', port: 443, icon: 'globe', config: {} },
+    'immich': { name: 'Immich', type: 'immich', port: 2283, icon: 'globe', config: {} },
+    'photoprism': { name: 'PhotoPrism', type: 'photoprism', port: 2342, icon: 'globe', config: {} },
+    'syncthing': { name: 'Syncthing', type: 'syncthing', port: 8384, icon: 'globe', config: {} },
+    'paperless-ngx': { name: 'Paperless-ngx', type: 'paperless_ngx', port: 8000, icon: 'globe', config: {} },
+    'calibre-web': { name: 'Calibre-Web', type: 'calibre_web', port: 8083, icon: 'globe', config: {} },
+    'komga': { name: 'Komga', type: 'komga', port: 25600, icon: 'globe', config: {} },
+    'filebrowser': { name: 'File Browser', type: 'filebrowser', port: 8080, icon: 'globe', config: {} },
+
     // Virtualization & Infrastructure
     'proxmox-ve': { name: 'Proxmox VE', type: 'proxmox', port: 8006, icon: 'server', config: { verify_ssl: false } },
+    'cockpit': { name: 'Cockpit', type: 'cockpit', port: 9090, icon: 'server', config: {} },
 
-    // Web Panels
+    // Web Panels & Home Automation
     'home-assistant': { name: 'Home Assistant', type: 'home_assistant', port: 8123, icon: 'home', config: {} },
+    'node-red': { name: 'Node-RED', type: 'node_red', port: 1880, icon: 'globe', config: {} },
+    'n8n': { name: 'n8n', type: 'n8n', port: 5678, icon: 'globe', config: {} },
     'portainer': { name: 'Portainer', type: 'portainer', port: 9443, icon: 'server', config: {} },
     'truenas': { name: 'TrueNAS', type: 'truenas', port: 443, icon: 'server', config: {} },
     'pfsense': { name: 'pfSense', type: 'pfsense', port: 443, icon: 'lock', config: {} },
 
-    // Databases
-    'mysql-db': { name: 'MySQL Database', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' } },
-    'postgres-db': { name: 'PostgreSQL Database', type: 'database', port: 5432, icon: 'database', config: { db_type: 'postgresql' } },
-    'redis-db': { name: 'Redis', type: 'redis', port: 6379, icon: 'database', config: {} },
-    'mongodb': { name: 'MongoDB', type: 'mongodb', port: 27017, icon: 'database', config: {} },
-    'elasticsearch': { name: 'Elasticsearch', type: 'elasticsearch', port: 9200, icon: 'database', config: {} },
+    // Security & Auth
+    'vaultwarden': { name: 'Vaultwarden', type: 'vaultwarden', port: 80, icon: 'lock', config: {} },
+    'authelia': { name: 'Authelia', type: 'authelia', port: 9091, icon: 'lock', config: {} },
 
-    // Dev Tools & Monitoring
-    'jupyter': { name: 'Jupyter Notebook', type: 'jupyter', port: 8888, icon: 'globe', config: {} },
+    // Monitoring & Networking
+    'uptime-kuma': { name: 'Uptime Kuma', type: 'uptime_kuma', port: 3001, icon: 'globe', config: {} },
+    'pihole': { name: 'Pi-hole', type: 'pihole', port: 80, icon: 'lock', config: {} },
+    'adguard-home': { name: 'AdGuard Home', type: 'adguard_home', port: 3000, icon: 'lock', config: {} },
+    'nginx-proxy-manager': { name: 'Nginx Proxy Manager', type: 'nginx_proxy_manager', port: 81, icon: 'globe', config: {} },
+    'traefik': { name: 'Traefik', type: 'traefik', port: 8080, icon: 'globe', config: {} },
+    'netdata': { name: 'Netdata', type: 'netdata', port: 19999, icon: 'globe', config: {} },
+    'dozzle': { name: 'Dozzle', type: 'dozzle', port: 8080, icon: 'globe', config: {} },
+
+    // Dashboards
+    'homepage': { name: 'Homepage', type: 'homepage', port: 3000, icon: 'globe', config: {} },
+    'homarr': { name: 'Homarr', type: 'homarr', port: 7575, icon: 'globe', config: {} },
+    'organizr': { name: 'Organizr', type: 'organizr', port: 80, icon: 'globe', config: {} },
+
+    // Dev Tools
     'grafana': { name: 'Grafana', type: 'grafana', port: 3000, icon: 'globe', config: {} },
     'prometheus': { name: 'Prometheus', type: 'prometheus', port: 9090, icon: 'globe', config: {} },
+    'jupyter': { name: 'Jupyter Notebook', type: 'jupyter', port: 8888, icon: 'globe', config: {} },
+    'gitea': { name: 'Gitea', type: 'gitea', port: 3000, icon: 'globe', config: {} },
+    'gitlab': { name: 'GitLab', type: 'gitlab', port: 80, icon: 'globe', config: {} },
+    'code-server': { name: 'code-server', type: 'code_server', port: 8080, icon: 'globe', config: {} },
+
+    // Databases
+    'mysql-db': { name: 'MySQL', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' } },
+    'postgres-db': { name: 'PostgreSQL', type: 'postgresql', port: 5432, icon: 'database', config: {} },
+    'mariadb': { name: 'MariaDB', type: 'mariadb', port: 3306, icon: 'database', config: {} },
+    'redis-db': { name: 'Redis', type: 'redis', port: 6379, icon: 'database', config: {} },
+    'mongodb': { name: 'MongoDB', type: 'mongodb', port: 27017, icon: 'database', config: {} },
+    'influxdb': { name: 'InfluxDB', type: 'influxdb', port: 8086, icon: 'database', config: {} },
+    'elasticsearch': { name: 'Elasticsearch', type: 'elasticsearch', port: 9200, icon: 'database', config: {} },
 
     // Game Servers
     'minecraft-rcon': { name: 'Minecraft RCON', type: 'minecraft_rcon', port: 25575, icon: 'link', config: {} },
@@ -62,9 +119,88 @@ async function loadConnectionTypeSchemas() {
             const data = await response.json();
             connectionTypeSchemas = data.types || {};
             console.log('[Connections] Loaded type schemas:', Object.keys(connectionTypeSchemas));
+            populateConnectionTypeDropdown();
         }
     } catch (error) {
         console.error('[Connections] Error loading type schemas:', error);
+    }
+}
+
+/**
+ * Populate connection type dropdown from loaded schemas
+ */
+function populateConnectionTypeDropdown() {
+    const select = document.getElementById('connection-type');
+    if (!select || Object.keys(connectionTypeSchemas).length === 0) return;
+
+    // Define category groupings based on plugin/port patterns
+    const categories = {
+        'Remote Access': ['ssh', 'sftp', 'vnc', 'rdp', 'spice', 'telnet'],
+        'Media Servers': ['plex', 'jellyfin', 'emby', 'navidrome', 'audiobookshelf'],
+        'Media Management': ['sonarr', 'radarr', 'lidarr', 'readarr', 'prowlarr', 'bazarr', 'jellyseerr', 'overseerr', 'tautulli'],
+        'Download Clients': ['sabnzbd', 'qbittorrent', 'transmission'],
+        'Media & Streaming': ['mediamtx', 'stream'],
+        'Files, Photos & Docs': ['nextcloud', 'immich', 'photoprism', 'syncthing', 'paperless_ngx', 'calibre_web', 'komga', 'filebrowser'],
+        'Virtualization': ['proxmox', 'cockpit'],
+        'Home Automation': ['home_assistant', 'node_red', 'n8n'],
+        'Security & Auth': ['vaultwarden', 'authelia'],
+        'Monitoring & Networking': ['uptime_kuma', 'pihole', 'adguard_home', 'nginx_proxy_manager', 'traefik', 'netdata', 'dozzle', 'portainer'],
+        'Dashboards': ['homepage', 'homarr', 'organizr', 'truenas', 'pfsense'],
+        'Dev Tools': ['grafana', 'prometheus', 'jupyter', 'gitea', 'gitlab', 'code_server', 'github'],
+        'Databases': ['database', 'postgresql', 'mariadb', 'redis', 'mongodb', 'elasticsearch', 'influxdb'],
+        'Network & Tunneling': ['tcp_tunnel', 'http_proxy', 'secure_tunnel', 'vpn_tunnel'],
+        'Web Services': ['http', 'https'],
+        'Game Servers': ['minecraft_rcon'],
+        'Other': ['custom']
+    };
+
+    // Track which types are categorized
+    const categorized = new Set();
+    Object.values(categories).forEach(types => types.forEach(t => categorized.add(t)));
+
+    // Save current value
+    const currentValue = select.value;
+
+    // Clear and rebuild
+    select.innerHTML = '';
+
+    // Build optgroups
+    for (const [category, typeKeys] of Object.entries(categories)) {
+        const validTypes = typeKeys.filter(k => connectionTypeSchemas[k]);
+        if (validTypes.length === 0) continue;
+
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = category;
+
+        for (const key of validTypes) {
+            const info = connectionTypeSchemas[key];
+            const option = document.createElement('option');
+            option.value = key;
+            option.textContent = info.name;
+            optgroup.appendChild(option);
+        }
+
+        select.appendChild(optgroup);
+    }
+
+    // Add any uncategorized types
+    const uncategorized = Object.keys(connectionTypeSchemas).filter(k => !categorized.has(k));
+    if (uncategorized.length > 0) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = 'Other';
+        for (const key of uncategorized) {
+            const info = connectionTypeSchemas[key];
+            const option = document.createElement('option');
+            option.value = key;
+            option.textContent = info.name;
+            optgroup.appendChild(option);
+        }
+        select.appendChild(optgroup);
+    }
+
+    // Restore previous value if it still exists
+    if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
+        select.value = currentValue;
     }
 }
 

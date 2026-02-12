@@ -1053,7 +1053,8 @@ async def http_register(request: web.Request) -> web.Response:
         )
 
     # Validate invite code
-    if not validate_invite_code(invite_code):
+    is_valid, code_id = await validate_invite_code(invite_code, db)
+    if not is_valid:
         log_invite_code_usage(username, False, client_ip)
         logger.warning(f"Invalid invite code used for registration attempt: {username} from {client_ip}")
         return web.json_response(
@@ -1081,6 +1082,12 @@ async def http_register(request: web.Request) -> web.Response:
         log_invite_code_usage(username, True, client_ip)
         logger.info(f"User '{username}' registered with invite code from {client_ip}")
         await db.log_activity(user["id"], username, "register", "Account created", client_ip)
+
+        # Track invite code usage
+        if code_id:
+            await db.increment_invite_code_usage(code_id)
+            await db.set_user_invite_code(user["id"], code_id)
+
         return web.json_response({
             "id": user["id"],
             "username": user["username"],
@@ -1092,7 +1099,7 @@ async def http_register(request: web.Request) -> web.Response:
 
 
 async def http_get_invite_code(request: web.Request) -> web.Response:
-    """Get current invite code info (admin only)."""
+    """Get all invite codes (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1100,12 +1107,125 @@ async def http_get_invite_code(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    # For admin, return the full code
-    code = get_daily_invite_code()
-    info = get_invite_code_info()
-    info["code"] = code  # Full code for admins
+    # Get all codes from DB (active and inactive for history)
+    codes = await db.get_invite_codes(include_inactive=True)
 
-    return web.json_response(info)
+    # Also include legacy daily code info
+    legacy_code = get_daily_invite_code()
+
+    return web.json_response({
+        "codes": codes,
+        "legacy_daily_code": legacy_code
+    })
+
+
+async def http_create_invite_code(request: web.Request) -> web.Response:
+    """Create a new invite code (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    code_type = data.get("type", "single_use")
+    if code_type not in ("daily", "single_use", "timed"):
+        return web.json_response({"error": "Invalid type. Must be: daily, single_use, timed"}, status=400)
+
+    label = data.get("label", "").strip() or None
+
+    # Generate code
+    from auth import _generate_invite_code
+    code = _generate_invite_code()
+
+    expires_at = None
+    max_uses = None
+
+    if code_type == "single_use":
+        max_uses = 1
+        # Optional expiry in days
+        duration_days = data.get("duration_days")
+        if duration_days:
+            try:
+                days = int(duration_days)
+                if days < 1 or days > 365:
+                    return web.json_response({"error": "Duration must be 1-365 days"}, status=400)
+                from datetime import datetime, timezone, timedelta
+                expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+            except (ValueError, TypeError):
+                return web.json_response({"error": "Invalid duration_days"}, status=400)
+
+    elif code_type == "timed":
+        duration_days = data.get("duration_days", 30)
+        try:
+            days = int(duration_days)
+            if days < 1 or days > 365:
+                return web.json_response({"error": "Duration must be 1-365 days"}, status=400)
+            from datetime import datetime, timezone, timedelta
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid duration_days"}, status=400)
+        max_uses = None  # Unlimited uses
+
+    elif code_type == "daily":
+        # Daily codes are managed by ensure_daily_invite_code
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        expires_at = f"{today}T23:59:59"
+        max_uses = None
+
+    code_id = await db.create_invite_code(code, code_type, token.user_id, label, expires_at, max_uses)
+
+    logger.info(f"Invite code created: type={code_type} id={code_id} by user {token.user_id}")
+
+    return web.json_response({
+        "id": code_id,
+        "code": code,
+        "type": code_type,
+        "label": label,
+        "expires_at": expires_at,
+        "max_uses": max_uses
+    }, status=201)
+
+
+async def http_deactivate_invite_code(request: web.Request) -> web.Response:
+    """Deactivate an invite code (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        code_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid code ID"}, status=400)
+
+    await db.deactivate_invite_code(code_id)
+    logger.info(f"Invite code {code_id} deactivated by user {token.user_id}")
+
+    return web.json_response({"status": "deactivated"})
+
+
+async def http_get_invite_code_registrations(request: web.Request) -> web.Response:
+    """Get users who registered with a specific invite code (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        code_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid code ID"}, status=400)
+
+    users = await db.get_invite_code_registrations(code_id)
+    return web.json_response({"registrations": users})
 
 
 async def http_get_logs(request: web.Request) -> web.Response:
@@ -1575,6 +1695,64 @@ CONNECTION_TYPES = {
     "jupyter": {"name": "Jupyter Notebook", "icon": "globe", "default_port": 8888, "plugin": "http_proxy"},
     "grafana": {"name": "Grafana", "icon": "globe", "default_port": 3000, "plugin": "http_proxy"},
     "prometheus": {"name": "Prometheus", "icon": "globe", "default_port": 9090, "plugin": "http_proxy"},
+    "gitea": {"name": "Gitea", "icon": "globe", "default_port": 3000, "plugin": "http_proxy"},
+    "gitlab": {"name": "GitLab", "icon": "globe", "default_port": 80, "plugin": "http_proxy"},
+    "code_server": {"name": "code-server", "icon": "globe", "default_port": 8080, "plugin": "http_proxy"},
+
+    # Media & Self-Hosted Apps (via HTTP proxy)
+    "plex": {"name": "Plex", "icon": "play", "default_port": 32400, "plugin": "http_proxy"},
+    "jellyfin": {"name": "Jellyfin", "icon": "play", "default_port": 8096, "plugin": "http_proxy"},
+    "emby": {"name": "Emby", "icon": "play", "default_port": 8096, "plugin": "http_proxy"},
+    "navidrome": {"name": "Navidrome", "icon": "play", "default_port": 4533, "plugin": "http_proxy"},
+    "audiobookshelf": {"name": "Audiobookshelf", "icon": "play", "default_port": 13378, "plugin": "http_proxy"},
+    "jellyseerr": {"name": "Jellyseerr", "icon": "play", "default_port": 5055, "plugin": "http_proxy"},
+    "overseerr": {"name": "Overseerr", "icon": "play", "default_port": 5055, "plugin": "http_proxy"},
+    "tautulli": {"name": "Tautulli", "icon": "play", "default_port": 8181, "plugin": "http_proxy"},
+    "sonarr": {"name": "Sonarr", "icon": "globe", "default_port": 8989, "plugin": "http_proxy"},
+    "radarr": {"name": "Radarr", "icon": "globe", "default_port": 7878, "plugin": "http_proxy"},
+    "lidarr": {"name": "Lidarr", "icon": "globe", "default_port": 8686, "plugin": "http_proxy"},
+    "readarr": {"name": "Readarr", "icon": "globe", "default_port": 8787, "plugin": "http_proxy"},
+    "prowlarr": {"name": "Prowlarr", "icon": "globe", "default_port": 9696, "plugin": "http_proxy"},
+    "bazarr": {"name": "Bazarr", "icon": "globe", "default_port": 6767, "plugin": "http_proxy"},
+    "sabnzbd": {"name": "SABnzbd", "icon": "globe", "default_port": 8080, "plugin": "http_proxy"},
+    "qbittorrent": {"name": "qBittorrent", "icon": "globe", "default_port": 8080, "plugin": "http_proxy"},
+    "transmission": {"name": "Transmission", "icon": "globe", "default_port": 9091, "plugin": "http_proxy"},
+
+    # Files, Photos & Docs (via HTTP proxy)
+    "nextcloud": {"name": "Nextcloud", "icon": "globe", "default_port": 443, "plugin": "http_proxy"},
+    "immich": {"name": "Immich", "icon": "globe", "default_port": 2283, "plugin": "http_proxy"},
+    "photoprism": {"name": "PhotoPrism", "icon": "globe", "default_port": 2342, "plugin": "http_proxy"},
+    "syncthing": {"name": "Syncthing", "icon": "globe", "default_port": 8384, "plugin": "http_proxy"},
+    "paperless_ngx": {"name": "Paperless-ngx", "icon": "globe", "default_port": 8000, "plugin": "http_proxy"},
+    "calibre_web": {"name": "Calibre-Web", "icon": "globe", "default_port": 8083, "plugin": "http_proxy"},
+    "komga": {"name": "Komga", "icon": "globe", "default_port": 25600, "plugin": "http_proxy"},
+    "filebrowser": {"name": "File Browser", "icon": "globe", "default_port": 8080, "plugin": "http_proxy"},
+
+    # Security & Auth (via HTTP proxy)
+    "vaultwarden": {"name": "Vaultwarden", "icon": "lock", "default_port": 80, "plugin": "http_proxy"},
+    "authelia": {"name": "Authelia", "icon": "lock", "default_port": 9091, "plugin": "http_proxy"},
+
+    # Monitoring & Networking (via HTTP proxy)
+    "uptime_kuma": {"name": "Uptime Kuma", "icon": "globe", "default_port": 3001, "plugin": "http_proxy"},
+    "pihole": {"name": "Pi-hole", "icon": "lock", "default_port": 80, "plugin": "http_proxy"},
+    "adguard_home": {"name": "AdGuard Home", "icon": "lock", "default_port": 3000, "plugin": "http_proxy"},
+    "nginx_proxy_manager": {"name": "Nginx Proxy Manager", "icon": "globe", "default_port": 81, "plugin": "http_proxy"},
+    "traefik": {"name": "Traefik", "icon": "globe", "default_port": 8080, "plugin": "http_proxy"},
+    "cockpit": {"name": "Cockpit", "icon": "server", "default_port": 9090, "plugin": "http_proxy"},
+    "netdata": {"name": "Netdata", "icon": "globe", "default_port": 19999, "plugin": "http_proxy"},
+    "dozzle": {"name": "Dozzle", "icon": "globe", "default_port": 8080, "plugin": "http_proxy"},
+
+    # Automation & Dashboards (via HTTP proxy)
+    "n8n": {"name": "n8n", "icon": "globe", "default_port": 5678, "plugin": "http_proxy"},
+    "node_red": {"name": "Node-RED", "icon": "globe", "default_port": 1880, "plugin": "http_proxy"},
+    "homepage": {"name": "Homepage", "icon": "globe", "default_port": 3000, "plugin": "http_proxy"},
+    "homarr": {"name": "Homarr", "icon": "globe", "default_port": 7575, "plugin": "http_proxy"},
+    "organizr": {"name": "Organizr", "icon": "globe", "default_port": 80, "plugin": "http_proxy"},
+
+    # Databases (via TCP tunnel)
+    "postgresql": {"name": "PostgreSQL", "icon": "database", "default_port": 5432, "plugin": "tcp_tunnel"},
+    "mariadb": {"name": "MariaDB", "icon": "database", "default_port": 3306, "plugin": "tcp_tunnel"},
+    "influxdb": {"name": "InfluxDB", "icon": "database", "default_port": 8086, "plugin": "tcp_tunnel"},
 
     # Legacy / Game Servers (via TCP tunnel)
     "telnet": {"name": "Telnet", "icon": "terminal", "default_port": 23, "plugin": "tcp_tunnel"},
@@ -7227,6 +7405,16 @@ async def http_about_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def http_guides_page(request: web.Request) -> web.Response:
+    """Serve Guides page."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    html = load_static_file("guides.html")
+    return web.Response(text=html, content_type="text/html")
+
+
 async def http_files_page(request: web.Request) -> web.Response:
     """Serve file manager page (authenticated users - SFTP tab; admin - both tabs)."""
     token = await authenticate_request(request)
@@ -10226,6 +10414,11 @@ def create_app() -> web.Application:
     app.router.add_post("/api/register", http_register)
     app.router.add_get("/api/invite-code", http_get_invite_code)
 
+    # Invite code management (admin only)
+    app.router.add_post("/api/admin/invite-codes", http_create_invite_code)
+    app.router.add_delete("/api/admin/invite-codes/{id}", http_deactivate_invite_code)
+    app.router.add_get("/api/admin/invite-codes/{id}/registrations", http_get_invite_code_registrations)
+
     # Logging (admin only)
     app.router.add_get("/api/logs", http_get_logs)
     app.router.add_get("/api/logs/files", http_get_log_files)
@@ -10389,6 +10582,7 @@ def create_app() -> web.Application:
     app.router.add_get("/docs", http_api_docs_page)
     app.router.add_get("/api-docs", http_api_docs_page)  # Alias
     app.router.add_get("/about", http_about_page)
+    app.router.add_get("/guides", http_guides_page)
     app.router.add_get("/files", http_files_page)
     app.router.add_get("/sysmon", http_sysmon_page)
     app.router.add_get("/chat", http_chat_page)
@@ -10532,9 +10726,20 @@ class PortalServer:
         )
         await site.start()
 
-        # Generate/log daily invite code
-        invite_code = get_daily_invite_code()
-        logger.info(f"Daily invite code active: {invite_code}")
+        # Generate/log daily invite code (DB-backed + legacy file)
+        invite_code = get_daily_invite_code()  # Legacy file-based
+        # Seed daily code in DB (uses first admin user)
+        try:
+            cursor = await db.conn.execute(
+                "SELECT id FROM users WHERE is_admin = 1 OR role IN ('admin', 'superadmin') LIMIT 1"
+            )
+            admin_row = await cursor.fetchone()
+            if admin_row:
+                db_daily_code = await db.ensure_daily_invite_code(admin_row["id"])
+                logger.info(f"Daily invite code (DB): {db_daily_code}")
+        except Exception as e:
+            logger.warning(f"Failed to seed daily invite code in DB: {e}")
+        logger.info(f"Daily invite code (legacy): {invite_code}")
 
         logger.info(f"Open Relay Portal started on https://{Config.HOSTNAME}:{Config.PORT}")
         logger.info("Endpoints:")

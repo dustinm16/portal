@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=37">
+    <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
@@ -23,6 +23,7 @@
             <a href="/streams">Streams</a>
             <a href="/docs">API Docs</a>
             <a href="/about">About</a>
+            <a href="/guides">Guides</a>
             <a href="#" onclick="openLocalTerminal(); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -334,9 +335,13 @@
                         <button class="btn btn-sm" onclick="quickAddConnection('ssh-server')">SSH</button>
                         <button class="btn btn-sm" onclick="quickAddConnection('vnc-server')">VNC</button>
                         <button class="btn btn-sm" onclick="quickAddConnection('rdp-server')">RDP</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('mysql-db')">MySQL</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('postgres-db')">PostgreSQL</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('plex')">Plex</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('jellyfin')">Jellyfin</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('nextcloud')">Nextcloud</button>
                         <button class="btn btn-sm" onclick="quickAddConnection('proxmox-ve')">Proxmox</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('home-assistant')">Home Assistant</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('pihole')">Pi-hole</button>
+                        <button class="btn btn-sm" onclick="quickAddConnection('postgres-db')">PostgreSQL</button>
                         <button class="btn btn-sm" onclick="quickAddConnection('http-proxy')">HTTP Proxy</button>
                     </div>
                 </div>
@@ -777,18 +782,52 @@
         </div>
     </div>
 
-    <!-- Invite Code Modal -->
+    <!-- Invite Codes Modal -->
     <div id="invite-code-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('invite-code-modal')"></div>
-        <div class="modal-content">
+        <div class="modal-content modal-large">
             <div class="modal-header">
-                <h3>Daily Invite Code</h3>
+                <h3>Invite Codes</h3>
                 <button class="modal-close" onclick="closeModal('invite-code-modal')">&times;</button>
             </div>
-            <div class="modal-body" style="text-align: center; padding: 2rem;">
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">Share this code to allow new user registration:</p>
-                <div id="invite-code-display" class="invite-code-display">Loading...</div>
-                <p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 1rem;">Code expires at midnight UTC</p>
+            <div class="modal-body">
+                <!-- Create Code Form -->
+                <div id="invite-create-form" class="invite-create-form">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h4 style="margin: 0; color: var(--text-primary);">Create New Code</h4>
+                        <button class="btn btn-sm btn-secondary" onclick="toggleInviteCreateForm()">
+                            <span id="invite-form-toggle-icon">+</span>
+                        </button>
+                    </div>
+                    <div id="invite-form-fields" style="display: none;">
+                        <div class="form-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label>Type</label>
+                                <select id="invite-code-type" onchange="onInviteTypeChange()">
+                                    <option value="single_use">Single Use</option>
+                                    <option value="timed">Timed (N days)</option>
+                                    <option value="daily">Daily</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label>Label <span style="color: var(--text-muted); font-size: 0.75rem;">(optional)</span></label>
+                                <input type="text" id="invite-code-label" placeholder="e.g. For friend" maxlength="50">
+                            </div>
+                        </div>
+                        <div id="invite-duration-row" class="form-group" style="margin-bottom: 0.75rem; display: none;">
+                            <label>Duration (days)</label>
+                            <input type="number" id="invite-code-duration" value="30" min="1" max="365" placeholder="30">
+                        </div>
+                        <button class="btn btn-primary" id="invite-create-btn" onclick="createInviteCode()" style="width: 100%;">Create Code</button>
+                    </div>
+                </div>
+
+                <hr style="border-color: var(--border-color); margin: 1rem 0;">
+
+                <!-- Codes Table -->
+                <div id="invite-codes-list">
+                    <p style="color: var(--text-muted); text-align: center;">Loading...</p>
+                </div>
             </div>
         </div>
     </div>
@@ -1258,40 +1297,7 @@
                     <div class="form-group">
                         <label for="connection-type">Type</label>
                         <select id="connection-type" required onchange="onConnectionTypeChange()">
-                            <optgroup label="Remote Access">
-                                <option value="ssh">SSH Terminal</option>
-                                <option value="sftp">SFTP File Transfer</option>
-                                <option value="vnc">VNC Desktop</option>
-                                <option value="rdp">RDP Desktop</option>
-                                <option value="spice">SPICE Console</option>
-                            </optgroup>
-                            <optgroup label="Media & Streaming">
-                                <option value="mediamtx">MediaMTX Stream</option>
-                                <option value="stream">Generic Stream</option>
-                            </optgroup>
-                            <optgroup label="Virtualization">
-                                <option value="proxmox">Proxmox VE</option>
-                            </optgroup>
-                            <optgroup label="Development">
-                                <option value="github">GitHub</option>
-                            </optgroup>
-                            <optgroup label="Network & Tunneling">
-                                <option value="tcp_tunnel">TCP Tunnel</option>
-                                <option value="secure_tunnel">Secure Tunnel</option>
-                                <option value="vpn_tunnel">VPN Bridge</option>
-                                <option value="http_proxy">HTTP Proxy</option>
-                            </optgroup>
-                            <optgroup label="Web Services">
-                                <option value="http">HTTP</option>
-                                <option value="https">HTTPS</option>
-                            </optgroup>
-                            <optgroup label="Databases">
-                                <option value="database">Database</option>
-                                <option value="redis">Redis</option>
-                            </optgroup>
-                            <optgroup label="Other">
-                                <option value="custom">Custom</option>
-                            </optgroup>
+                            <option value="ssh">SSH Terminal</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -1550,11 +1556,11 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=26"></script>
+    <script src="/static/js/portal.js?v=27"></script>
     <script src="/static/js/dashboard.js?v=29"></script>
-    <script src="/static/js/admin.js?v=23"></script>
+    <script src="/static/js/admin.js?v=25"></script>
     <script src="/static/js/ssh-keys.js?v=21"></script>
-    <script src="/static/js/user-connections.js?v=24"></script>
+    <script src="/static/js/user-connections.js?v=26"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

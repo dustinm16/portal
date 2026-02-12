@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Relay Portal - About</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=37">
+    <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <style>
         .docs-container {
             max-width: 1200px;
@@ -222,6 +222,7 @@
             <a href="/streams">Streams</a>
             <a href="/docs">API Docs</a>
             <a href="/about" class="active">About</a>
+            <a href="/guides">Guides</a>
             <a href="#" onclick="window.open('/terminal/local','_blank','width=900,height=600'); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -347,7 +348,13 @@
                 </table>
 
                 <div class="alert alert-info">
-                    <strong>Registration:</strong> New users register with a daily invite code. After registration, an admin can promote users to higher roles.
+                    <strong>Registration:</strong> New users register with an invite code. Admins can create three types of invite codes:
+                    <ul style="margin: 0.5rem 0 0 0;">
+                        <li><strong>Daily</strong> &mdash; Auto-rotating code that expires at midnight UTC each day. Unlimited uses.</li>
+                        <li><strong>Single-Use</strong> &mdash; One-time code for inviting a specific person. Invalidated after first use. Optional expiry (1&ndash;365 days).</li>
+                        <li><strong>Timed</strong> &mdash; Reusable code that stays active for a set duration (1&ndash;365 days). Unlimited uses until it expires.</li>
+                    </ul>
+                    After registration, an admin can promote users to higher roles.
                 </div>
 
                 <!-- Dashboard -->
@@ -429,6 +436,7 @@
                 </ul>
 
                 <h3>Connection Types</h3>
+                <p>Open Relay Portal supports <strong>75 connection types</strong> out of the box, covering remote access, web panels, databases, media servers, dev tools, monitoring, automation, file/photo management, security, and networking. The most common types are listed below &mdash; see the <a href="/guides">Guides</a> page for detailed setup instructions for each connection type.</p>
 
                 <h4 style="color: var(--text-primary); margin-top: 1.5rem;">Remote Access</h4>
                 <table class="param-table">
@@ -1086,7 +1094,7 @@
                     <li><strong>Rate Limiting</strong> &mdash; Per-IP rate limiting on all endpoints to prevent abuse.</li>
                     <li><strong>Localhost Blocking</strong> &mdash; User connections cannot target local addresses (127.0.0.1, ::1).</li>
                     <li><strong>CSRF Protection</strong> &mdash; Secure cookie attributes prevent cross-site request forgery.</li>
-                    <li><strong>Invite-Only Registration</strong> &mdash; New accounts require a daily invite code.</li>
+                    <li><strong>Invite-Only Registration</strong> &mdash; New accounts require an invite code (daily, single-use, or timed).</li>
                 </ul>
 
                 <!-- Mobile Compatibility -->
@@ -1118,7 +1126,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=26"></script>
+    <script src="/static/js/portal.js?v=27"></script>
     <script>
         document.addEventListener('DOMContentLoaded', async () => {
             // Load user info for navbar and admin visibility

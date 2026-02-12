@@ -616,6 +616,22 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_dm_fts_map_msg ON dm_fts_map(message_id)",
     "CREATE INDEX IF NOT EXISTS idx_dm_fts_map_conv ON dm_fts_map(conversation_id)",
+    # Invite codes system
+    """CREATE TABLE IF NOT EXISTS invite_codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL DEFAULT 'daily',
+        label TEXT,
+        created_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT,
+        max_uses INTEGER,
+        use_count INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON invite_codes(code)",
+    "CREATE INDEX IF NOT EXISTS idx_invite_codes_active ON invite_codes(is_active)",
+    "ALTER TABLE users ADD COLUMN invite_code_id INTEGER REFERENCES invite_codes(id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -3855,6 +3871,116 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount
+
+    # =========================================================================
+    # Invite Codes
+    # =========================================================================
+
+    async def create_invite_code(self, code: str, code_type: str, created_by: int,
+                                  label: Optional[str] = None, expires_at: Optional[str] = None,
+                                  max_uses: Optional[int] = None) -> int:
+        """Create a new invite code. Returns the code ID."""
+        cursor = await self.conn.execute(
+            """INSERT INTO invite_codes (code, type, created_by, label, expires_at, max_uses)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (code, code_type, created_by, label, expires_at, max_uses)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_invite_codes(self, include_inactive: bool = False) -> list[dict]:
+        """Get all invite codes with creator username."""
+        query = """SELECT ic.*, u.username as created_by_username
+                   FROM invite_codes ic
+                   LEFT JOIN users u ON ic.created_by = u.id"""
+        if not include_inactive:
+            query += " WHERE ic.is_active = 1"
+        query += " ORDER BY ic.created_at DESC"
+        cursor = await self.conn.execute(query)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_active_invite_code_by_code(self, code: str) -> Optional[dict]:
+        """Get an active, non-expired invite code with available uses."""
+        cursor = await self.conn.execute(
+            """SELECT * FROM invite_codes
+               WHERE code = ? AND is_active = 1
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
+               AND (max_uses IS NULL OR use_count < max_uses)""",
+            (code,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def increment_invite_code_usage(self, code_id: int) -> None:
+        """Increment use count for an invite code."""
+        await self.conn.execute(
+            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?",
+            (code_id,)
+        )
+        await self.conn.commit()
+
+    async def deactivate_invite_code(self, code_id: int) -> None:
+        """Deactivate an invite code."""
+        await self.conn.execute(
+            "UPDATE invite_codes SET is_active = 0 WHERE id = ?",
+            (code_id,)
+        )
+        await self.conn.commit()
+
+    async def get_invite_code_registrations(self, code_id: int) -> list[dict]:
+        """Get users who registered with a specific invite code."""
+        cursor = await self.conn.execute(
+            """SELECT id, username, role, created_at
+               FROM users WHERE invite_code_id = ?
+               ORDER BY created_at DESC""",
+            (code_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def set_user_invite_code(self, user_id: int, code_id: int) -> None:
+        """Set the invite code used for registration."""
+        await self.conn.execute(
+            "UPDATE users SET invite_code_id = ? WHERE id = ?",
+            (code_id, user_id)
+        )
+        await self.conn.commit()
+
+    async def ensure_daily_invite_code(self, admin_user_id: int) -> str:
+        """Ensure today's daily invite code exists in DB. Returns the code string."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_start = f"{today}T00:00:00"
+        today_end = f"{today}T23:59:59"
+
+        # Check for existing daily code created today
+        cursor = await self.conn.execute(
+            """SELECT * FROM invite_codes
+               WHERE type = 'daily' AND is_active = 1
+               AND created_at >= ? AND created_at <= ?""",
+            (today_start, today_end)
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            return existing["code"]
+
+        # Deactivate previous daily codes
+        await self.conn.execute(
+            "UPDATE invite_codes SET is_active = 0 WHERE type = 'daily' AND is_active = 1"
+        )
+
+        # Generate new daily code
+        import secrets
+        chars = secrets.token_hex(6).upper()
+        code = f"PORTAL-{chars[:4]}-{chars[4:8]}-{chars[8:12]}"
+
+        await self.conn.execute(
+            """INSERT INTO invite_codes (code, type, created_by, expires_at, max_uses)
+               VALUES (?, 'daily', ?, ?, NULL)""",
+            (code, admin_user_id, today_end)
+        )
+        await self.conn.commit()
+        return code
 
     async def vacuum_database(self) -> None:
         """Run VACUUM to reclaim disk space."""

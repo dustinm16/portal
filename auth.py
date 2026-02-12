@@ -289,21 +289,33 @@ def get_daily_invite_code() -> str:
     return _current_invite_code
 
 
-def validate_invite_code(code: str) -> bool:
-    """Validate an invite code against the current daily code.
+async def validate_invite_code(code: str, db=None) -> tuple:
+    """Validate an invite code against DB codes or legacy daily code.
 
     Args:
         code: The invite code to validate
+        db: Database instance for DB-backed code lookup
 
     Returns:
-        True if code matches today's invite code, False otherwise
+        Tuple of (is_valid: bool, code_id: int or None)
     """
     if not code:
-        return False
+        return (False, None)
 
+    code = code.strip().upper()
+
+    # Check DB first if available
+    if db:
+        row = await db.get_active_invite_code_by_code(code)
+        if row:
+            return (True, row["id"])
+
+    # Fall back to legacy file-based daily code
     current_code = get_daily_invite_code()
-    # Case-insensitive comparison
-    return code.strip().upper() == current_code.upper()
+    if code == current_code.upper():
+        return (True, None)
+
+    return (False, None)
 
 
 def get_invite_code_info() -> dict:

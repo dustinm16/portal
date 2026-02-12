@@ -1065,34 +1065,191 @@ function confirmAction() {
 }
 
 /**
- * Show Invite Code Modal
+ * Show Invite Codes Modal
  */
 async function showInviteCode() {
-    console.log('showInviteCode called');
     showModal('invite-code-modal');
-    const display = document.getElementById('invite-code-display');
-    console.log('invite-code-display element:', display);
-    display.textContent = 'Loading...';
+    // Reset create form
+    const fields = document.getElementById('invite-form-fields');
+    if (fields) fields.style.display = 'none';
+    const icon = document.getElementById('invite-form-toggle-icon');
+    if (icon) icon.textContent = '+';
+    await loadInviteCodes();
+}
+
+function toggleInviteCreateForm() {
+    const fields = document.getElementById('invite-form-fields');
+    const icon = document.getElementById('invite-form-toggle-icon');
+    if (!fields) return;
+    const show = fields.style.display === 'none';
+    fields.style.display = show ? 'block' : 'none';
+    if (icon) icon.textContent = show ? '−' : '+';
+}
+
+function onInviteTypeChange() {
+    const type = document.getElementById('invite-code-type').value;
+    const durationRow = document.getElementById('invite-duration-row');
+    if (durationRow) {
+        durationRow.style.display = (type === 'timed' || type === 'single_use') ? 'block' : 'none';
+    }
+}
+
+async function loadInviteCodes() {
+    const container = document.getElementById('invite-codes-list');
+    if (!container) return;
+    container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">Loading...</p>';
 
     try {
         const response = await Portal.fetch('/api/invite-code');
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.error || 'Failed to load invite code');
-        }
-
+        if (!response.ok) throw new Error('Failed to load');
         const data = await response.json();
+        const codes = data.codes || [];
 
-        if (!data || !data.code) {
-            throw new Error('Invalid response format');
+        if (codes.length === 0) {
+            container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">No invite codes yet. Create one above.</p>';
+            return;
         }
 
-        document.getElementById('invite-code-display').textContent = data.code;
+        let html = '<div class="invite-codes-table-wrap"><table class="invite-codes-table"><thead><tr>';
+        html += '<th>Code</th><th>Type</th><th>Label</th><th>Uses</th><th>Status</th><th>Created</th><th>Actions</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const code of codes) {
+            const status = getInviteCodeStatus(code);
+            const typeLabel = code.type === 'single_use' ? 'Single Use' : code.type === 'timed' ? 'Timed' : 'Daily';
+            const typeBadgeClass = code.type === 'daily' ? 'badge-info' : code.type === 'single_use' ? 'badge-purple' : 'badge-warning';
+            const usesText = code.max_uses ? `${code.use_count}/${code.max_uses}` : `${code.use_count}`;
+            const createdDate = code.created_at ? formatDate(code.created_at) : '—';
+            const expiresInfo = code.expires_at ? `Expires: ${formatDate(code.expires_at)}` : '';
+
+            html += '<tr>';
+            html += `<td><code class="invite-code-text">${escapeHtml(code.code)}</code>`;
+            html += ` <button class="btn-icon-sm" onclick="copyInviteCode('${escapeHtml(code.code)}')" title="Copy">📋</button></td>`;
+            html += `<td><span class="badge ${typeBadgeClass}">${typeLabel}</span></td>`;
+            html += `<td>${code.label ? escapeHtml(code.label) : '<span style="color:var(--text-muted)">—</span>'}</td>`;
+            html += `<td>${usesText}</td>`;
+            html += `<td><span class="badge ${status.badgeClass}">${status.label}</span></td>`;
+            html += `<td><span title="${expiresInfo}">${createdDate}</span></td>`;
+            html += '<td>';
+            if (code.is_active) {
+                html += `<button class="btn btn-sm btn-danger" onclick="deactivateInviteCode(${code.id})">Revoke</button>`;
+            }
+            html += `<button class="btn btn-sm btn-secondary" onclick="viewCodeRegistrations(${code.id})" style="margin-left:4px;" title="View registrations">👥</button>`;
+            html += '</td>';
+            html += '</tr>';
+            // Expandable registrations row
+            html += `<tr id="invite-reg-${code.id}" style="display:none;"><td colspan="7" class="invite-registrations-cell"></td></tr>`;
+        }
+
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
     } catch (error) {
-        document.getElementById('invite-code-display').textContent = 'Error loading code';
-        Portal.toast(error.message || 'Failed to load invite code', 'error');
-        console.error('Load invite code error:', error);
+        container.innerHTML = '<p style="color: var(--danger-color); text-align: center;">Failed to load invite codes</p>';
+        console.error('Load invite codes error:', error);
+    }
+}
+
+function getInviteCodeStatus(code) {
+    if (!code.is_active) return { label: 'Revoked', badgeClass: 'badge-secondary' };
+    if (code.max_uses && code.use_count >= code.max_uses) return { label: 'Used Up', badgeClass: 'badge-secondary' };
+    if (code.expires_at) {
+        const now = new Date();
+        const expires = new Date(code.expires_at + 'Z');
+        if (now > expires) return { label: 'Expired', badgeClass: 'badge-danger' };
+    }
+    return { label: 'Active', badgeClass: 'badge-success' };
+}
+
+async function createInviteCode() {
+    const btn = document.getElementById('invite-create-btn');
+    const type = document.getElementById('invite-code-type').value;
+    const label = document.getElementById('invite-code-label').value.trim();
+    const duration = document.getElementById('invite-code-duration').value;
+
+    const body = { type, label: label || undefined };
+    if ((type === 'timed' || type === 'single_use') && duration) {
+        body.duration_days = parseInt(duration);
+    }
+
+    if (btn) Portal.setButtonLoading(btn, true);
+    try {
+        const response = await Portal.fetch('/api/admin/invite-codes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to create');
+        }
+        const data = await response.json();
+        Portal.toast(`Code created: ${data.code}`, 'success');
+        // Reset form
+        document.getElementById('invite-code-label').value = '';
+        document.getElementById('invite-code-duration').value = '30';
+        toggleInviteCreateForm();
+        await loadInviteCodes();
+    } catch (error) {
+        Portal.toast(error.message, 'error');
+    } finally {
+        if (btn) Portal.setButtonLoading(btn, false);
+    }
+}
+
+async function deactivateInviteCode(id) {
+    if (!confirm('Revoke this invite code? It will no longer be usable.')) return;
+    try {
+        const response = await Portal.fetch(`/api/admin/invite-codes/${id}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error('Failed to revoke');
+        Portal.toast('Code revoked', 'success');
+        await loadInviteCodes();
+    } catch (error) {
+        Portal.toast(error.message, 'error');
+    }
+}
+
+function copyInviteCode(code) {
+    navigator.clipboard.writeText(code).then(() => {
+        Portal.toast('Copied to clipboard', 'success');
+    }).catch(() => {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = code;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        Portal.toast('Copied to clipboard', 'success');
+    });
+}
+
+async function viewCodeRegistrations(codeId) {
+    const row = document.getElementById(`invite-reg-${codeId}`);
+    if (!row) return;
+    // Toggle
+    if (row.style.display !== 'none') {
+        row.style.display = 'none';
+        return;
+    }
+    row.style.display = '';
+    const cell = row.querySelector('.invite-registrations-cell');
+    if (!cell) return;
+    cell.innerHTML = '<em style="color:var(--text-muted)">Loading...</em>';
+
+    try {
+        const response = await Portal.fetch(`/api/admin/invite-codes/${codeId}/registrations`);
+        if (!response.ok) throw new Error('Failed to load');
+        const data = await response.json();
+        const regs = data.registrations || [];
+        if (regs.length === 0) {
+            cell.innerHTML = '<em style="color:var(--text-muted)">No registrations yet</em>';
+        } else {
+            cell.innerHTML = regs.map(u =>
+                `<span class="badge badge-info" style="margin: 2px;">${escapeHtml(u.username)} <small>(${formatDate(u.created_at)})</small></span>`
+            ).join(' ');
+        }
+    } catch (error) {
+        cell.innerHTML = '<em style="color:var(--danger-color)">Failed to load registrations</em>';
     }
 }
 

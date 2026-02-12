@@ -462,6 +462,7 @@ const Portal = {
             { type: 'page', name: 'File Manager', url: '/files', icon: 'folder' },
             { type: 'page', name: 'API Docs', url: '/api-docs', icon: 'doc' },
             { type: 'page', name: 'About', url: '/about', icon: 'info' },
+            { type: 'page', name: 'Guides', url: '/guides', icon: 'doc' },
         ],
         STATIC_ADMIN: [
             { type: 'page', name: 'Admin Panel', url: '/admin', icon: 'admin' },

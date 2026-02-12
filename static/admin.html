@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=37">
+    <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     <script>
         if (typeof Chart === 'undefined') {
@@ -517,6 +517,7 @@
             <a href="/streams">Streams</a>
             <a href="/docs">API Docs</a>
             <a href="/about">About</a>
+            <a href="/guides">Guides</a>
             <a href="#" onclick="window.open('/terminal/local','_blank','width=900,height=600'); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -1256,7 +1257,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=26"></script>
+    <script src="/static/js/portal.js?v=27"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -2967,7 +2968,9 @@
             try {
                 const res = await fetch(`/api/sysmon/processes?sort=${sort}&limit=200`, { credentials: 'include' });
                 if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) { console.error('Failed to load processes:', res.status); return; }
                 sysAllProcesses = await res.json();
+                if (!Array.isArray(sysAllProcesses)) { sysAllProcesses = []; return; }
                 sysFilterProcesses();
             } catch (e) {
                 console.error('Failed to load processes:', e);
@@ -2983,14 +2986,14 @@
             document.getElementById('sys-process-body').innerHTML = filtered.map(p => `
                 <tr>
                     <td>${p.pid}</td>
-                    <td><strong>${Portal.escapeHtml(p.name)}</strong></td>
-                    <td>${Portal.escapeHtml(p.username)}</td>
+                    <td><strong>${escapeHtml(p.name)}</strong></td>
+                    <td>${escapeHtml(p.username)}</td>
                     <td>${p.cpu_percent.toFixed(1)}</td>
                     <td>${p.memory_percent.toFixed(1)}</td>
                     <td>${formatBytes(p.memory_rss)}</td>
                     <td>${p.status}</td>
-                    <td class="cmdline" title="${Portal.escapeHtml(p.cmdline)}">${Portal.escapeHtml(p.cmdline)}</td>
-                    <td><button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysKillProcess(${p.pid}, '${Portal.escapeHtml(p.name)}')">Kill</button></td>
+                    <td class="cmdline" title="${escapeHtml(p.cmdline)}">${escapeHtml(p.cmdline)}</td>
+                    <td><button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysKillProcess(${p.pid}, '${escapeHtml(p.name)}')">Kill</button></td>
                 </tr>
             `).join('');
         }
@@ -3030,7 +3033,9 @@
                 const url = filter ? `/api/sysmon/services?filter=${filter}` : '/api/sysmon/services';
                 const res = await fetch(url, { credentials: 'include' });
                 if (res.status === 401) { window.location.href = '/login'; return; }
+                if (!res.ok) { console.error('Failed to load services:', res.status); return; }
                 sysAllServices = await res.json();
+                if (!Array.isArray(sysAllServices)) { sysAllServices = []; return; }
                 sysFilterServices();
             } catch (e) {
                 console.error('Failed to load services:', e);
@@ -3050,17 +3055,17 @@
                 const isRunning = s.sub_state === 'running';
                 return `
                 <tr>
-                    <td><strong>${Portal.escapeHtml(s.name)}</strong></td>
+                    <td><strong>${escapeHtml(s.name)}</strong></td>
                     <td><span class="${badge}">${s.sub_state}</span></td>
                     <td>${s.active_state}</td>
-                    <td>${Portal.escapeHtml(s.description)}</td>
+                    <td>${escapeHtml(s.description)}</td>
                     <td style="display:flex;gap:0.25rem;flex-wrap:wrap;">
                         ${isRunning
-                            ? `<button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysControlService('${Portal.escapeHtml(s.name)}','stop')">Stop</button>
-                               <button class="range-btn" style="border-color:#f59e0b;color:#f59e0b;" onclick="sysControlService('${Portal.escapeHtml(s.name)}','restart')">Restart</button>`
-                            : `<button class="range-btn" style="border-color:#10b981;color:#10b981;" onclick="sysControlService('${Portal.escapeHtml(s.name)}','start')">Start</button>`
+                            ? `<button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysControlService('${escapeHtml(s.name)}','stop')">Stop</button>
+                               <button class="range-btn" style="border-color:#f59e0b;color:#f59e0b;" onclick="sysControlService('${escapeHtml(s.name)}','restart')">Restart</button>`
+                            : `<button class="range-btn" style="border-color:#10b981;color:#10b981;" onclick="sysControlService('${escapeHtml(s.name)}','start')">Start</button>`
                         }
-                        <button class="range-btn" onclick="sysShowServiceLogs('${Portal.escapeHtml(s.name)}')">Logs</button>
+                        <button class="range-btn" onclick="sysShowServiceLogs('${escapeHtml(s.name)}')">Logs</button>
                     </td>
                 </tr>
                 `;
@@ -3117,16 +3122,18 @@
                     fetch('/api/sysmon/network', { credentials: 'include' }),
                     fetch('/api/sysmon/ports', { credentials: 'include' })
                 ]);
-                if (ifRes.status === 401) { window.location.href = '/login'; return; }
+                if (ifRes.status === 401 || portRes.status === 401) { window.location.href = '/login'; return; }
+                if (!ifRes.ok || !portRes.ok) { console.error('Failed to load network:', ifRes.status, portRes.status); return; }
 
                 const interfaces = await ifRes.json();
                 const ports = await portRes.json();
+                if (!Array.isArray(interfaces) || !Array.isArray(ports)) return;
 
                 document.getElementById('sys-interfaces-body').innerHTML = interfaces.map(iface => {
                     const ips = iface.addresses.map(a => `${a.address}${a.netmask ? '/' + a.netmask : ''}`).join('<br>');
                     return `
                     <tr>
-                        <td><strong>${Portal.escapeHtml(iface.name)}</strong></td>
+                        <td><strong>${escapeHtml(iface.name)}</strong></td>
                         <td><span class="${iface.is_up ? 'badge-running' : 'badge-stopped'}">${iface.is_up ? 'UP' : 'DOWN'}</span></td>
                         <td style="white-space:normal;font-size:0.8rem;">${ips || '-'}</td>
                         <td>${iface.mac || '-'}</td>
@@ -3140,10 +3147,10 @@
                 document.getElementById('sys-ports-body').innerHTML = ports.map(p => `
                     <tr>
                         <td>${p.proto.toUpperCase()}</td>
-                        <td>${Portal.escapeHtml(p.address)}</td>
+                        <td>${escapeHtml(p.address)}</td>
                         <td><strong>${p.port}</strong></td>
                         <td>${p.pid || '-'}</td>
-                        <td>${Portal.escapeHtml(p.process) || '-'}</td>
+                        <td>${escapeHtml(p.process) || '-'}</td>
                     </tr>
                 `).join('');
             } catch (e) {
@@ -3520,6 +3527,14 @@
                     case 'tab-overview': loadOverview(); break;
                     case 'tab-metrics': loadMetrics(); break;
                     case 'tab-connections': loadActiveConnections(); break;
+                    case 'tab-system':
+                        const activeSub = document.querySelector('.sys-sub-content.active');
+                        if (activeSub) {
+                            if (activeSub.id === 'sys-sub-processes') sysLoadProcesses();
+                            else if (activeSub.id === 'sys-sub-sysservices') sysLoadServices();
+                            else if (activeSub.id === 'sys-sub-network') sysLoadNetwork();
+                        }
+                        break;
                 }
             }
         }, 30000);

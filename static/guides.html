@@ -1,0 +1,2618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Relay Portal - Connection Guides</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=38">
+    <style>
+        .docs-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .docs-nav {
+            position: sticky;
+            top: 80px;
+            max-height: calc(100vh - 100px);
+            overflow-y: auto;
+            padding-right: 1rem;
+        }
+        .docs-nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .docs-nav li {
+            margin: 0.15rem 0;
+        }
+        .docs-nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.8rem;
+            display: block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+        }
+        .docs-nav a:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.05);
+        }
+        .docs-nav a.active {
+            color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .docs-nav h4 {
+            color: var(--text-primary);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin: 0.75rem 0 0.25rem 0;
+        }
+        .docs-nav h4:first-child {
+            margin-top: 0;
+        }
+        .docs-content {
+            flex: 1;
+            min-width: 0;
+            overflow-x: auto;
+        }
+        .docs-content h1 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+        .docs-content h2 {
+            color: var(--text-primary);
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .docs-content h3 {
+            color: var(--text-secondary);
+            margin-top: 2rem;
+        }
+        .docs-content h4 {
+            color: var(--text-secondary);
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+        .docs-content p, .docs-content li {
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+        .docs-content ul, .docs-content ol {
+            padding-left: 1.5rem;
+        }
+        .docs-content ul li, .docs-content ol li {
+            margin: 0.3rem 0;
+        }
+        .docs-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 2rem;
+        }
+        @media (max-width: 900px) {
+            .docs-grid {
+                grid-template-columns: 1fr;
+            }
+            .docs-nav {
+                position: static;
+                max-height: none;
+                margin-bottom: 2rem;
+            }
+        }
+        .alert {
+            padding: 1rem;
+            border-radius: 6px;
+            margin: 1rem 0;
+        }
+        .alert-info {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: var(--text-secondary);
+        }
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: var(--text-secondary);
+        }
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0.75rem 0;
+            font-size: 0.875rem;
+        }
+        .param-table th, .param-table td {
+            padding: 0.4rem 0.75rem;
+            border: 1px solid rgba(255,255,255,0.1);
+            text-align: left;
+        }
+        .param-table th {
+            background: rgba(255,255,255,0.03);
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+        .guide-search {
+            width: 100%;
+            padding: 0.4rem 0.6rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-size: 0.8rem;
+            margin-bottom: 0.75rem;
+        }
+        .guide-search::placeholder {
+            color: var(--text-muted);
+        }
+        section {
+            scroll-margin-top: 80px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <a href="/dashboard" style="display: flex; align-items: center; gap: 0.5rem; color: inherit; text-decoration: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+                </svg>
+                Open Relay Portal
+            </a>
+        </div>
+        <button class="navbar-toggle" aria-label="Toggle menu" aria-expanded="false">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="navbar-menu">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/chat">Chat</a>
+            <a href="/streams">Streams</a>
+            <a href="/docs">API Docs</a>
+            <a href="/about">About</a>
+            <a href="/guides" class="active">Guides</a>
+            <a href="#" onclick="window.open('/terminal/local','_blank','width=900,height=600'); return false;" class="navbar-terminal" title="Open Terminal" id="terminal-btn" style="display: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+            </a>
+            <a href="/dashboard" class="navbar-user" id="user-info" title="User Profile">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <span id="username-display"></span>
+                <span id="admin-badge" class="admin-badge" style="display: none;">Admin</span>
+            </a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="docs-container">
+        <div class="docs-grid">
+            <nav class="docs-nav">
+                <input type="text" class="guide-search" id="guide-search" placeholder="Filter guides..." oninput="filterGuides()">
+            <h4>Remote Access</h4>
+            <ul>
+                <li><a href="#guide-ssh">SSH Terminal</a></li>
+                <li><a href="#guide-sftp">SFTP File Transfer</a></li>
+                <li><a href="#guide-vnc">VNC Desktop</a></li>
+                <li><a href="#guide-rdp">RDP Desktop</a></li>
+                <li><a href="#guide-spice">SPICE Console</a></li>
+                <li><a href="#guide-telnet">Telnet</a></li>
+            </ul>
+            <h4>Media Servers</h4>
+            <ul>
+                <li><a href="#guide-plex">Plex</a></li>
+                <li><a href="#guide-jellyfin">Jellyfin</a></li>
+                <li><a href="#guide-emby">Emby</a></li>
+                <li><a href="#guide-navidrome">Navidrome</a></li>
+                <li><a href="#guide-audiobookshelf">Audiobookshelf</a></li>
+            </ul>
+            <h4>Media Management (*arr)</h4>
+            <ul>
+                <li><a href="#guide-sonarr">Sonarr</a></li>
+                <li><a href="#guide-radarr">Radarr</a></li>
+                <li><a href="#guide-lidarr">Lidarr</a></li>
+                <li><a href="#guide-readarr">Readarr</a></li>
+                <li><a href="#guide-prowlarr">Prowlarr</a></li>
+                <li><a href="#guide-bazarr">Bazarr</a></li>
+                <li><a href="#guide-jellyseerr">Jellyseerr</a></li>
+                <li><a href="#guide-overseerr">Overseerr</a></li>
+                <li><a href="#guide-tautulli">Tautulli</a></li>
+            </ul>
+            <h4>Download Clients</h4>
+            <ul>
+                <li><a href="#guide-sabnzbd">SABnzbd</a></li>
+                <li><a href="#guide-qbittorrent">qBittorrent</a></li>
+                <li><a href="#guide-transmission">Transmission</a></li>
+            </ul>
+            <h4>Files, Photos & Documents</h4>
+            <ul>
+                <li><a href="#guide-nextcloud">Nextcloud</a></li>
+                <li><a href="#guide-immich">Immich</a></li>
+                <li><a href="#guide-photoprism">PhotoPrism</a></li>
+                <li><a href="#guide-syncthing">Syncthing</a></li>
+                <li><a href="#guide-paperless_ngx">Paperless-ngx</a></li>
+                <li><a href="#guide-calibre_web">Calibre-Web</a></li>
+                <li><a href="#guide-komga">Komga</a></li>
+                <li><a href="#guide-filebrowser">File Browser</a></li>
+            </ul>
+            <h4>Virtualization & Infrastructure</h4>
+            <ul>
+                <li><a href="#guide-proxmox">Proxmox VE</a></li>
+                <li><a href="#guide-cockpit">Cockpit</a></li>
+            </ul>
+            <h4>Home Automation & IoT</h4>
+            <ul>
+                <li><a href="#guide-home_assistant">Home Assistant</a></li>
+                <li><a href="#guide-node_red">Node-RED</a></li>
+                <li><a href="#guide-n8n">n8n</a></li>
+            </ul>
+            <h4>Security & Auth</h4>
+            <ul>
+                <li><a href="#guide-vaultwarden">Vaultwarden</a></li>
+                <li><a href="#guide-authelia">Authelia</a></li>
+            </ul>
+            <h4>Monitoring & Networking</h4>
+            <ul>
+                <li><a href="#guide-uptime_kuma">Uptime Kuma</a></li>
+                <li><a href="#guide-pihole">Pi-hole</a></li>
+                <li><a href="#guide-adguard_home">AdGuard Home</a></li>
+                <li><a href="#guide-nginx_proxy_manager">Nginx Proxy Manager</a></li>
+                <li><a href="#guide-traefik">Traefik</a></li>
+                <li><a href="#guide-portainer">Portainer</a></li>
+                <li><a href="#guide-netdata">Netdata</a></li>
+                <li><a href="#guide-dozzle">Dozzle</a></li>
+            </ul>
+            <h4>Dashboards & Panels</h4>
+            <ul>
+                <li><a href="#guide-homepage">Homepage</a></li>
+                <li><a href="#guide-homarr">Homarr</a></li>
+                <li><a href="#guide-organizr">Organizr</a></li>
+                <li><a href="#guide-truenas">TrueNAS</a></li>
+                <li><a href="#guide-pfsense">pfSense</a></li>
+            </ul>
+            <h4>Dev Tools</h4>
+            <ul>
+                <li><a href="#guide-grafana">Grafana</a></li>
+                <li><a href="#guide-prometheus">Prometheus</a></li>
+                <li><a href="#guide-jupyter">Jupyter Notebook</a></li>
+                <li><a href="#guide-gitea">Gitea</a></li>
+                <li><a href="#guide-gitlab">GitLab</a></li>
+                <li><a href="#guide-code_server">code-server</a></li>
+                <li><a href="#guide-github">GitHub</a></li>
+            </ul>
+            <h4>Web Services</h4>
+            <ul>
+                <li><a href="#guide-http">HTTP Service</a></li>
+                <li><a href="#guide-https">HTTPS Service</a></li>
+            </ul>
+            <h4>Databases</h4>
+            <ul>
+                <li><a href="#guide-database">MySQL</a></li>
+                <li><a href="#guide-postgresql">PostgreSQL</a></li>
+                <li><a href="#guide-mariadb">MariaDB</a></li>
+                <li><a href="#guide-redis">Redis</a></li>
+                <li><a href="#guide-mongodb">MongoDB</a></li>
+                <li><a href="#guide-elasticsearch">Elasticsearch</a></li>
+                <li><a href="#guide-influxdb">InfluxDB</a></li>
+                <li><a href="#guide-custom">Custom / Generic</a></li>
+            </ul>
+            <h4>Network & Tunneling</h4>
+            <ul>
+                <li><a href="#guide-http_proxy">HTTP Proxy</a></li>
+                <li><a href="#guide-tcp_tunnel">TCP Tunnel</a></li>
+                <li><a href="#guide-secure_tunnel">Secure Tunnel</a></li>
+                <li><a href="#guide-vpn_tunnel">VPN Bridge</a></li>
+            </ul>
+            <h4>Streaming & Game Servers</h4>
+            <ul>
+                <li><a href="#guide-mediamtx">MediaMTX Stream</a></li>
+                <li><a href="#guide-stream">Media Stream</a></li>
+                <li><a href="#guide-minecraft_rcon">Minecraft RCON</a></li>
+            </ul>
+
+            </nav>
+
+            <main class="docs-content">
+                <h1>Connection Setup Guides</h1>
+                <p>Step-by-step configuration guides for all 75 supported connection types. Each guide covers requirements, setup steps, default ports, and security best practices.</p>
+                
+                <div class="alert alert-info">
+                    <strong>How connections work:</strong> Portal proxies connections through your browser via WebSocket. HTTP-based services use the <code>http_proxy</code> plugin (reverse proxy). TCP services like databases use the <code>tcp_tunnel</code> plugin. SSH and VNC have dedicated plugins with native protocol support.
+                </div>
+
+            <h2 id="cat-remote-access">Remote Access</h2>
+
+            <section id="guide-ssh">
+                <h3>SSH Terminal</h3>
+                <p>Secure Shell provides encrypted command-line access to remote servers. Portal opens a full terminal emulator in your browser via WebSocket.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>ssh</code></td></tr>
+                    <tr><th>Default Port</th><td><code>22</code></td></tr>
+                    <tr><th>Protocol</th><td>SSH</td></tr>
+                    <tr><th>Plugin</th><td><code>ssh</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>OpenSSH server (or compatible) running on the remote host</li>
+                    <li>Port 22 (or custom) accessible from the Portal server</li>
+                    <li>Valid user account with password or SSH key authentication</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>SSH Terminal</strong> type (or Quick Add → SSH)</li>
+                    <li>Enter the remote host IP/hostname and port (default: 22)</li>
+                    <li>Choose authentication method: <strong>Password</strong> (prompted on connect) or <strong>Private Key</strong> (paste PEM key)</li>
+                    <li>Optionally select an SSH key from your managed keys</li>
+                    <li>Optionally override the default login shell (bash, zsh, fish)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Use SSH key authentication instead of passwords whenever possible</li>
+                    <li>Disable root login on the remote server (<code>PermitRootLogin no</code>)</li>
+                    <li>Use <code>AllowUsers</code> or <code>AllowGroups</code> to restrict SSH access</li>
+                    <li>Consider changing the default SSH port to reduce automated attacks</li>
+                    <li>Private keys stored in Portal are encrypted at rest with Fernet encryption</li>
+                </ul>
+            </section>
+
+            <section id="guide-sftp">
+                <h3>SFTP File Transfer</h3>
+                <p>SFTP provides secure file transfer over SSH. Portal's dual-pane file manager lets you browse, upload, download, and manage files on remote servers.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>sftp</code></td></tr>
+                    <tr><th>Default Port</th><td><code>22</code></td></tr>
+                    <tr><th>Protocol</th><td>SFTP/SSH</td></tr>
+                    <tr><th>Plugin</th><td><code>ssh</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>SSH server with SFTP subsystem enabled (default in OpenSSH)</li>
+                    <li>Port 22 accessible from the Portal server</li>
+                    <li>User account with appropriate file permissions</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>SFTP File Transfer</strong> type</li>
+                    <li>Enter host, port, and credentials (same as SSH)</li>
+                    <li>Access via Dashboard → File Manager → Remote SFTP tab</li>
+                    <li>With 2+ SFTP connections, the commander-style dual-pane view enables drag-and-drop between servers</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Use chroot jails to restrict SFTP users to their home directory</li>
+                    <li>Apply the same SSH hardening as above (keys, restricted users)</li>
+                    <li>SFTP connections in Portal are ephemeral — opened per-request, not persistent</li>
+                </ul>
+            </section>
+
+            <section id="guide-vnc">
+                <h3>VNC Desktop</h3>
+                <p>Virtual Network Computing provides remote graphical desktop access. Portal uses noVNC to render the VNC session directly in your browser.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>vnc</code></td></tr>
+                    <tr><th>Default Port</th><td><code>5900</code></td></tr>
+                    <tr><th>Protocol</th><td>VNC/RFB</td></tr>
+                    <tr><th>Plugin</th><td><code>vnc</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>VNC server running on the remote host (TigerVNC, TightVNC, RealVNC, x11vnc, etc.)</li>
+                    <li>Port 5900+ accessible from the Portal server</li>
+                    <li>VNC password configured on the server</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>VNC Desktop</strong> type (or Quick Add → VNC)</li>
+                    <li>Enter host and port (default: 5900; display :1 = port 5901)</li>
+                    <li>You'll be prompted for the VNC password on connect</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>VNC traffic through Portal is encrypted via WSS (WebSocket over TLS)</li>
+                    <li>Always set a strong VNC password on the server</li>
+                    <li>Consider using SSH tunneling for an additional encryption layer</li>
+                    <li>Bind VNC to localhost only and access through Portal's tunnel</li>
+                    <li>Disable clipboard sharing if not needed</li>
+                </ul>
+            </section>
+
+            <section id="guide-rdp">
+                <h3>RDP Desktop</h3>
+                <p>Remote Desktop Protocol provides graphical access to Windows desktops and servers. Portal proxies the RDP connection through your browser.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>rdp</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3389</code></td></tr>
+                    <tr><th>Protocol</th><td>RDP</td></tr>
+                    <tr><th>Plugin</th><td><code>vnc</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Remote Desktop enabled on the Windows machine</li>
+                    <li>Port 3389 accessible from the Portal server</li>
+                    <li>User account with Remote Desktop Users group membership</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>RDP Desktop</strong> type (or Quick Add → RDP)</li>
+                    <li>Enter the Windows host IP and port (default: 3389)</li>
+                    <li>Enter Windows username and password when connecting</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable Network Level Authentication (NLA) on the Windows host</li>
+                    <li>Use strong passwords and consider enabling 2FA for Windows login</li>
+                    <li>Keep Windows updated to patch RDP vulnerabilities</li>
+                    <li>Restrict RDP access via Windows Firewall to Portal's IP only</li>
+                    <li>All traffic is encrypted via Portal's TLS connection</li>
+                </ul>
+            </section>
+
+            <section id="guide-spice">
+                <h3>SPICE Console</h3>
+                <p>SPICE (Simple Protocol for Independent Computing Environments) provides high-performance remote access to virtual machines, commonly used with KVM/QEMU/Proxmox.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>spice</code></td></tr>
+                    <tr><th>Default Port</th><td><code>5930</code></td></tr>
+                    <tr><th>Protocol</th><td>SPICE</td></tr>
+                    <tr><th>Plugin</th><td><code>spice</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>SPICE server configured on the VM (KVM/QEMU/Proxmox)</li>
+                    <li>SPICE port accessible from the Portal server</li>
+                    <li>SPICE viewer support via Portal's web client</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>SPICE Console</strong> type</li>
+                    <li>Enter the hypervisor host and SPICE port for the VM</li>
+                    <li>For Proxmox VMs, the SPICE port is assigned dynamically — check the VM settings</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Configure SPICE with TLS encryption on the hypervisor</li>
+                    <li>Set a SPICE password for the VM</li>
+                    <li>Restrict SPICE port access to the Portal server IP only</li>
+                </ul>
+            </section>
+
+            <section id="guide-telnet">
+                <h3>Telnet</h3>
+                <p>Telnet provides unencrypted remote terminal access. Used primarily for legacy network equipment (switches, routers) that don't support SSH.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>telnet</code></td></tr>
+                    <tr><th>Default Port</th><td><code>23</code></td></tr>
+                    <tr><th>Protocol</th><td>Telnet</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Telnet service running on the remote host</li>
+                    <li>Port 23 accessible from the Portal server</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Telnet</strong> type</li>
+                    <li>Enter host and port (default: 23)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Warning:</strong> Telnet transmits credentials and data in plaintext</li>
+                    <li>Only use for legacy devices on isolated/trusted networks</li>
+                    <li>Portal's TLS encrypts the browser-to-Portal leg, but Portal-to-device is unencrypted</li>
+                    <li>Migrate to SSH wherever possible</li>
+                    <li>Use VLANs or firewall rules to isolate Telnet-only devices</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-media-servers">Media Servers</h2>
+
+            <section id="guide-plex">
+                <h3>Plex</h3>
+                <p>Plex is a media server that organizes your movies, TV shows, music, and photos and streams them to any device.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>plex</code></td></tr>
+                    <tr><th>Default Port</th><td><code>32400</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Plex Media Server installed and running</li>
+                    <li>Port 32400 accessible from the Portal server</li>
+                    <li>Plex account configured (or local auth enabled)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Plex</strong> type (or Quick Add → Plex)</li>
+                    <li>Enter the Plex server host and port (default: 32400)</li>
+                    <li>Access the Plex web interface through Portal's proxy</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable Plex's built-in HTTPS (<code>Settings → Network → Secure connections: Required</code>)</li>
+                    <li>Set <code>List of IP addresses and networks that are allowed without auth</code> to only include Portal's IP</li>
+                    <li>Disable DLNA if not needed</li>
+                    <li>Keep Plex Media Server updated</li>
+                </ul>
+            </section>
+
+            <section id="guide-jellyfin">
+                <h3>Jellyfin</h3>
+                <p>Jellyfin is a free, open-source media server — a fork of Emby. It manages and streams your media library without requiring an account on external servers.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>jellyfin</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8096</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Jellyfin server installed and running</li>
+                    <li>Port 8096 (HTTP) or 8920 (HTTPS) accessible from Portal</li>
+                    <li>Admin account created during initial setup</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Jellyfin</strong> type (or Quick Add → Jellyfin)</li>
+                    <li>Enter host and port (default: 8096 for HTTP, 8920 for HTTPS)</li>
+                    <li>Log in with your Jellyfin credentials through Portal</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable HTTPS in Jellyfin (<code>Dashboard → Networking</code>)</li>
+                    <li>Set <code>Known proxies</code> to Portal's IP address</li>
+                    <li>Enable login rate limiting in Jellyfin settings</li>
+                    <li>Disable remote access if only accessing through Portal</li>
+                </ul>
+            </section>
+
+            <section id="guide-emby">
+                <h3>Emby</h3>
+                <p>Emby is a media server that automatically organizes your personal media and streams it to any device.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>emby</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8096</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Emby Server installed and running</li>
+                    <li>Port 8096 (HTTP) or 8920 (HTTPS) accessible</li>
+                    <li>Emby account configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Emby</strong> type</li>
+                    <li>Enter host and port (default: 8096)</li>
+                    <li>Access Emby's web dashboard through Portal</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable HTTPS in Emby's network settings</li>
+                    <li>Configure Emby's API key for trusted applications</li>
+                    <li>Set up user-level permissions for library access</li>
+                </ul>
+            </section>
+
+            <section id="guide-navidrome">
+                <h3>Navidrome</h3>
+                <p>Navidrome is a self-hosted music server and streamer compatible with Subsonic/Airsonic clients.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>navidrome</code></td></tr>
+                    <tr><th>Default Port</th><td><code>4533</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Navidrome installed and running</li>
+                    <li>Port 4533 accessible from Portal</li>
+                    <li>Music library configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Navidrome</strong> type</li>
+                    <li>Enter host and port (default: 4533)</li>
+                    <li>Create your admin account on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set <code>ReverseProxyWhitelist</code> to Portal's IP in Navidrome config</li>
+                    <li>Enable password complexity requirements</li>
+                    <li>Use HTTPS (configure TLS or rely on Portal's proxy)</li>
+                </ul>
+            </section>
+
+            <section id="guide-audiobookshelf">
+                <h3>Audiobookshelf</h3>
+                <p>Audiobookshelf is a self-hosted audiobook and podcast server with a web player, mobile apps, and library management.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>audiobookshelf</code></td></tr>
+                    <tr><th>Default Port</th><td><code>13378</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Audiobookshelf installed and running</li>
+                    <li>Port 13378 accessible from Portal</li>
+                    <li>Audiobook/podcast library configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Audiobookshelf</strong> type</li>
+                    <li>Enter host and port (default: 13378)</li>
+                    <li>Log in with your Audiobookshelf credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong admin password during initial setup</li>
+                    <li>Configure trusted proxies if using Portal as reverse proxy</li>
+                    <li>Enable server-side backups for library metadata</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-arr-stack">Media Management (*arr)</h2>
+            <p>The *arr stack is a collection of tools for automated media management. They all follow a similar pattern: web UI on a unique port, API key authentication, and webhook/notification support.</p>
+
+            <div class="alert alert-info">
+                <strong>Common *arr Setup Pattern:</strong> All *arr apps follow the same pattern. Install via Docker, access the web UI on their default port, and find the API key at <code>Settings → General → API Key</code>. Configure indexers in Prowlarr and sync to other apps.
+            </div>
+            <h4>Security (applies to all *arr apps)</h4>
+            <ul>
+                <li>Enable <strong>authentication</strong> in each app: <code>Settings → General → Authentication → Forms</code></li>
+                <li>Set a strong username and password for the web UI</li>
+                <li>Use API keys for inter-app communication (Sonarr↔Prowlarr, etc.)</li>
+                <li>Keep all *arr apps updated — they receive frequent security fixes</li>
+                <li>Bind to <code>127.0.0.1</code> or your internal network if only accessed via Portal</li>
+            </ul>
+
+            <section id="guide-sonarr">
+                <h3>Sonarr</h3>
+                <p>Automated TV show downloading and management. Monitors RSS feeds, searches indexers, and manages your TV library.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>sonarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8989</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Sonarr</strong> type</li>
+                    <li>Enter host and port (default: 8989)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-radarr">
+                <h3>Radarr</h3>
+                <p>Automated movie downloading and management. Finds, downloads, and organizes your movie collection.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>radarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>7878</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Radarr</strong> type</li>
+                    <li>Enter host and port (default: 7878)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-lidarr">
+                <h3>Lidarr</h3>
+                <p>Automated music downloading and management. Monitors artists and albums across indexers.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>lidarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8686</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Lidarr</strong> type</li>
+                    <li>Enter host and port (default: 8686)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-readarr">
+                <h3>Readarr</h3>
+                <p>Automated ebook and audiobook management. Tracks authors and books across indexers.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>readarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8787</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Readarr</strong> type</li>
+                    <li>Enter host and port (default: 8787)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-prowlarr">
+                <h3>Prowlarr</h3>
+                <p>Indexer manager for the *arr stack. Centralizes indexer configuration and syncs to Sonarr, Radarr, Lidarr, etc.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>prowlarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9696</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Prowlarr</strong> type</li>
+                    <li>Enter host and port (default: 9696)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-bazarr">
+                <h3>Bazarr</h3>
+                <p>Automated subtitle downloading companion for Sonarr and Radarr.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>bazarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>6767</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Bazarr</strong> type</li>
+                    <li>Enter host and port (default: 6767)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-jellyseerr">
+                <h3>Jellyseerr</h3>
+                <p>Media request and discovery tool for Jellyfin. Users can request movies and TV shows which auto-download via Sonarr/Radarr.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>jellyseerr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>5055</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Jellyseerr</strong> type</li>
+                    <li>Enter host and port (default: 5055)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-overseerr">
+                <h3>Overseerr</h3>
+                <p>Media request and discovery tool for Plex. The Plex equivalent of Jellyseerr.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>overseerr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>5055</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Overseerr</strong> type</li>
+                    <li>Enter host and port (default: 5055)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <section id="guide-tautulli">
+                <h3>Tautulli</h3>
+                <p>Plex monitoring and statistics dashboard. Tracks viewing history, user activity, and server health.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>tautulli</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8181</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Tautulli</strong> type</li>
+                    <li>Enter host and port (default: 8181)</li>
+                    <li>Access the web UI through Portal</li>
+                </ol>
+            </section>
+
+            <h2 id="cat-downloads">Download Clients</h2>
+
+            <section id="guide-sabnzbd">
+                <h3>SABnzbd</h3>
+                <p>SABnzbd is an open-source Usenet download client with a web interface.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>sabnzbd</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8080</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>SABnzbd installed and running</li>
+                    <li>Port 8080 accessible</li>
+                    <li>Usenet provider configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>SABnzbd</strong> type</li>
+                    <li>Enter host and port (default: 8080)</li>
+                    <li>Log in with SABnzbd credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable SABnzbd's built-in authentication</li>
+                    <li>Set <code>host_whitelist</code> to include Portal's hostname</li>
+                    <li>Use an API key for automated access from *arr apps</li>
+                </ul>
+            </section>
+
+            <section id="guide-qbittorrent">
+                <h3>qBittorrent</h3>
+                <p>qBittorrent is an open-source BitTorrent client with a feature-rich web UI.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>qbittorrent</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8080</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>qBittorrent installed with Web UI enabled</li>
+                    <li>Port 8080 accessible</li>
+                    <li>Web UI authentication configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>qBittorrent</strong> type</li>
+                    <li>Enter host and port (default: 8080)</li>
+                    <li>Log in with qBittorrent Web UI credentials (default: admin/adminadmin)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Change the default password immediately</strong> (admin/adminadmin)</li>
+                    <li>Enable HTTPS in qBittorrent settings if available</li>
+                    <li>Bind the Web UI to localhost and access only through Portal</li>
+                    <li>Set <code>Bypass authentication for clients on localhost</code> carefully</li>
+                </ul>
+            </section>
+
+            <section id="guide-transmission">
+                <h3>Transmission</h3>
+                <p>Transmission is a lightweight BitTorrent client with a clean web interface.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>transmission</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9091</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Transmission daemon running with web UI enabled</li>
+                    <li>Port 9091 accessible</li>
+                    <li>RPC authentication configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Transmission</strong> type</li>
+                    <li>Enter host and port (default: 9091)</li>
+                    <li>Configure <code>rpc-whitelist</code> in <code>settings.json</code> to include Portal's IP</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set <code>rpc-authentication-required: true</code> in settings.json</li>
+                    <li>Configure <code>rpc-whitelist</code> to only allow Portal's IP</li>
+                    <li>Use a strong RPC password</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-files-photos">Files, Photos & Documents</h2>
+
+            <section id="guide-nextcloud">
+                <h3>Nextcloud</h3>
+                <p>Nextcloud is a self-hosted productivity platform — file sync, calendar, contacts, office documents, and hundreds of apps.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>nextcloud</code></td></tr>
+                    <tr><th>Default Port</th><td><code>443</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Nextcloud server installed (with Apache/Nginx and PHP)</li>
+                    <li>Port 443 (HTTPS) or 80 (HTTP) accessible</li>
+                    <li>Admin account created</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Nextcloud</strong> type (or Quick Add → Nextcloud)</li>
+                    <li>Enter host and port (default: 443 for HTTPS)</li>
+                    <li>Log in with your Nextcloud credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Always use HTTPS — Nextcloud strongly recommends it</li>
+                    <li>Add Portal's domain to <code>trusted_domains</code> in <code>config.php</code></li>
+                    <li>Set <code>trusted_proxies</code> to Portal's IP address</li>
+                    <li>Enable 2FA in Nextcloud for all users</li>
+                    <li>Configure brute force protection (<code>bruteforce</code> app)</li>
+                </ul>
+            </section>
+
+            <section id="guide-immich">
+                <h3>Immich</h3>
+                <p>Immich is a self-hosted Google Photos alternative with machine learning-powered face recognition, object detection, and smart search.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>immich</code></td></tr>
+                    <tr><th>Default Port</th><td><code>2283</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Immich server running (Docker recommended)</li>
+                    <li>Port 2283 accessible</li>
+                    <li>PostgreSQL database configured (included in Docker setup)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Immich</strong> type</li>
+                    <li>Enter host and port (default: 2283)</li>
+                    <li>Create admin account on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set <code>IMMICH_TRUSTED_PROXIES</code> to Portal's IP</li>
+                    <li>Use strong admin password</li>
+                    <li>Back up the PostgreSQL database regularly</li>
+                    <li>GPU recommended for ML features but not required</li>
+                </ul>
+            </section>
+
+            <section id="guide-photoprism">
+                <h3>PhotoPrism</h3>
+                <p>PhotoPrism is an AI-powered self-hosted photo management app with automatic tagging, face recognition, and map views.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>photoprism</code></td></tr>
+                    <tr><th>Default Port</th><td><code>2342</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>PhotoPrism running (Docker recommended)</li>
+                    <li>Port 2342 accessible</li>
+                    <li>At least 2 CPU cores and 4GB RAM recommended</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>PhotoPrism</strong> type</li>
+                    <li>Enter host and port (default: 2342)</li>
+                    <li>Log in with admin credentials (set via <code>PHOTOPRISM_ADMIN_PASSWORD</code>)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong admin password via environment variable</li>
+                    <li>Enable read-only mode if only viewing</li>
+                    <li>Configure <code>PHOTOPRISM_SITE_URL</code> to match Portal's proxy URL</li>
+                </ul>
+            </section>
+
+            <section id="guide-syncthing">
+                <h3>Syncthing</h3>
+                <p>Syncthing is a continuous file synchronization program that syncs files between devices in real time, without a central server.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>syncthing</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8384</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Syncthing running on the host</li>
+                    <li>Web GUI port 8384 accessible</li>
+                    <li>Sync protocol port 22000 accessible between sync peers</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Syncthing</strong> type</li>
+                    <li>Enter host and port (default: 8384)</li>
+                    <li>Access the Syncthing web GUI through Portal</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a GUI password in Syncthing settings</li>
+                    <li>Configure <code>gui.insecureAdminAccess</code> carefully</li>
+                    <li>Use device IDs for peer authentication (built-in)</li>
+                </ul>
+            </section>
+
+            <section id="guide-paperless_ngx">
+                <h3>Paperless-ngx</h3>
+                <p>Paperless-ngx is a document management system that scans, indexes, and archives your physical documents with OCR.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>paperless_ngx</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8000</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Paperless-ngx running (Docker recommended)</li>
+                    <li>Port 8000 accessible</li>
+                    <li>OCR dependencies installed (Tesseract, included in Docker)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Paperless-ngx</strong> type</li>
+                    <li>Enter host and port (default: 8000)</li>
+                    <li>Log in with superuser credentials created during setup</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set <code>PAPERLESS_URL</code> to match the Portal proxy URL</li>
+                    <li>Add Portal's IP to <code>PAPERLESS_TRUSTED_PROXIES</code></li>
+                    <li>Use strong passwords — documents contain sensitive info</li>
+                    <li>Enable automatic document encryption if available</li>
+                </ul>
+            </section>
+
+            <section id="guide-calibre_web">
+                <h3>Calibre-Web</h3>
+                <p>Calibre-Web is a web app for browsing, reading, and downloading ebooks from a Calibre library database.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>calibre_web</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8083</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Calibre-Web running</li>
+                    <li>Calibre library database (metadata.db) accessible</li>
+                    <li>Port 8083 accessible</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Calibre-Web</strong> type</li>
+                    <li>Enter host and port (default: 8083)</li>
+                    <li>Default credentials: admin / admin123 — change immediately</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Change default admin password on first login</strong></li>
+                    <li>Enable upload protection</li>
+                    <li>Configure user permissions per-library</li>
+                </ul>
+            </section>
+
+            <section id="guide-komga">
+                <h3>Komga</h3>
+                <p>Komga is a media server for comics, mangas, BDs, and magazines with OPDS support and a web reader.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>komga</code></td></tr>
+                    <tr><th>Default Port</th><td><code>25600</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Komga running (Java 17+ required)</li>
+                    <li>Port 25600 accessible</li>
+                    <li>Comic/manga library configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Komga</strong> type</li>
+                    <li>Enter host and port (default: 25600)</li>
+                    <li>Create admin account on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong admin password</li>
+                    <li>Configure user-level library permissions</li>
+                    <li>Komga supports API key authentication for automated access</li>
+                </ul>
+            </section>
+
+            <section id="guide-filebrowser">
+                <h3>File Browser</h3>
+                <p>File Browser is a lightweight web-based file manager with upload/download, editing, and sharing capabilities.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>filebrowser</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8080</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>File Browser installed and running</li>
+                    <li>Port 8080 accessible</li>
+                    <li>File system path configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>File Browser</strong> type</li>
+                    <li>Enter host and port (default: 8080)</li>
+                    <li>Default credentials: admin / admin — change immediately</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Change default credentials immediately</strong></li>
+                    <li>Restrict the base directory scope</li>
+                    <li>Enable HTTPS if accessing directly</li>
+                    <li>Configure user permissions to limit file access</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-virtualization">Virtualization & Infrastructure</h2>
+
+            <section id="guide-proxmox">
+                <h3>Proxmox VE</h3>
+                <p>Proxmox Virtual Environment is an open-source server virtualization platform for KVM VMs and LXC containers.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>proxmox</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8006</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>proxmox</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Proxmox VE installed on the host</li>
+                    <li>Port 8006 (HTTPS) accessible from Portal</li>
+                    <li>User account with appropriate permissions (PVEAdmin or custom role)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Proxmox VE</strong> type (or Quick Add → Proxmox)</li>
+                    <li>Enter the Proxmox host and port (default: 8006)</li>
+                    <li>Portal connects via the Proxmox API — enter your Proxmox credentials when prompted</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Proxmox uses self-signed certificates by default — Portal can handle this</li>
+                    <li>Create a dedicated API user with limited permissions instead of using root</li>
+                    <li>Use API tokens instead of passwords: <code>Datacenter → Permissions → API Tokens</code></li>
+                    <li>Enable Proxmox 2FA for admin accounts</li>
+                    <li>Restrict Proxmox web access to Portal's IP via firewall</li>
+                </ul>
+            </section>
+
+            <section id="guide-cockpit">
+                <h3>Cockpit</h3>
+                <p>Cockpit is a web-based Linux server management interface. It provides real-time system monitoring, terminal access, container management, and storage administration.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>cockpit</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9090</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Cockpit installed (<code>apt install cockpit</code> on Debian/Ubuntu)</li>
+                    <li>Port 9090 accessible</li>
+                    <li>Linux user account with sudo access</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Cockpit</strong> type</li>
+                    <li>Enter host and port (default: 9090)</li>
+                    <li>Log in with your Linux system credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Cockpit uses system PAM authentication — same as SSH</li>
+                    <li>Configure <code>/etc/cockpit/cockpit.conf</code> to set allowed origins for Portal</li>
+                    <li>Enable certificate-based authentication if available</li>
+                    <li>Restrict access via firewall rules</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-home-automation">Home Automation & IoT</h2>
+
+            <section id="guide-home_assistant">
+                <h3>Home Assistant</h3>
+                <p>Home Assistant is an open-source home automation platform that integrates with 2000+ smart home devices and services.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>home_assistant</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8123</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Home Assistant running (HAOS, Docker, or Core)</li>
+                    <li>Port 8123 accessible from Portal</li>
+                    <li>Admin account configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Home Assistant</strong> type (or Quick Add → Home Assistant)</li>
+                    <li>Enter host and port (default: 8123)</li>
+                    <li>Log in with your Home Assistant credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Add Portal's IP to <code>trusted_proxies</code> in <code>configuration.yaml</code>:</li>
+                    <li>Set <code>use_x_forwarded_for: true</code> in the HTTP integration</li>
+                    <li>Generate a Long-Lived Access Token for API integrations</li>
+                    <li>Enable 2FA (TOTP) for all Home Assistant accounts</li>
+                    <li>Keep Home Assistant and integrations updated</li>
+                </ul>
+            </section>
+
+            <section id="guide-node_red">
+                <h3>Node-RED</h3>
+                <p>Node-RED is a flow-based programming tool for wiring IoT devices, APIs, and online services with a browser-based editor.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>node_red</code></td></tr>
+                    <tr><th>Default Port</th><td><code>1880</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Node-RED installed and running (Node.js required)</li>
+                    <li>Port 1880 accessible</li>
+                    <li>Admin authentication configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Node-RED</strong> type</li>
+                    <li>Enter host and port (default: 1880)</li>
+                    <li>Access the flow editor through Portal</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Enable authentication</strong> — Node-RED has no auth by default</li>
+                    <li>Set <code>adminAuth</code> in <code>settings.js</code> with bcrypt-hashed passwords</li>
+                    <li>Configure <code>httpNodeAuth</code> to protect HTTP endpoints in flows</li>
+                    <li>Restrict editor access to admin users only</li>
+                </ul>
+            </section>
+
+            <section id="guide-n8n">
+                <h3>n8n</h3>
+                <p>n8n is a workflow automation tool similar to Zapier/Make but self-hosted, with 200+ integrations and a visual flow editor.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>n8n</code></td></tr>
+                    <tr><th>Default Port</th><td><code>5678</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>n8n running (Docker or npm install)</li>
+                    <li>Port 5678 accessible</li>
+                    <li>Owner account configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>n8n</strong> type</li>
+                    <li>Enter host and port (default: 5678)</li>
+                    <li>Log in with your n8n owner credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set <code>N8N_PROTOCOL=https</code> if terminating TLS at n8n</li>
+                    <li>Configure <code>N8N_HOST</code> and <code>WEBHOOK_URL</code> to match Portal proxy URL</li>
+                    <li>Enable user management for multi-user setups</li>
+                    <li>Review workflow permissions — workflows can execute arbitrary code</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-security-auth">Security & Auth</h2>
+
+            <section id="guide-vaultwarden">
+                <h3>Vaultwarden</h3>
+                <p>Vaultwarden is an unofficial Bitwarden-compatible server written in Rust. It provides password management with full Bitwarden client compatibility.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>vaultwarden</code></td></tr>
+                    <tr><th>Default Port</th><td><code>80</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Vaultwarden running (Docker recommended)</li>
+                    <li>Port 80 or 443 accessible</li>
+                    <li>HTTPS strongly recommended (required for browser extensions)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Vaultwarden</strong> type</li>
+                    <li>Enter host and port (default: 80)</li>
+                    <li>Create your account on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>HTTPS is mandatory</strong> for Bitwarden clients to work</li>
+                    <li>Set <code>ADMIN_TOKEN</code> environment variable to protect the admin panel</li>
+                    <li>Disable new user signups after creating your accounts: <code>SIGNUPS_ALLOWED=false</code></li>
+                    <li>Enable 2FA for all vault accounts</li>
+                    <li>Back up the SQLite database and <code>attachments/</code> directory regularly</li>
+                </ul>
+            </section>
+
+            <section id="guide-authelia">
+                <h3>Authelia</h3>
+                <p>Authelia is an authentication and authorization server that provides SSO (Single Sign-On) and 2FA for your applications via a reverse proxy.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>authelia</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9091</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Authelia running (Docker recommended)</li>
+                    <li>Port 9091 accessible</li>
+                    <li>Reverse proxy (Traefik/Nginx) configured for auth forwarding</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Authelia</strong> type</li>
+                    <li>Enter host and port (default: 9091)</li>
+                    <li>Access the Authelia portal for login/2FA management</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Configure LDAP or file-based user backend</li>
+                    <li>Enable 2FA (TOTP, WebAuthn, or Duo)</li>
+                    <li>Set up access control rules per-domain or per-path</li>
+                    <li>Use a strong JWT secret and encryption key</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-monitoring">Monitoring & Networking</h2>
+
+            <section id="guide-uptime_kuma">
+                <h3>Uptime Kuma</h3>
+                <p>Uptime Kuma is a self-hosted monitoring tool with a beautiful UI, supporting HTTP/TCP/DNS/ping monitors and notification integrations.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>uptime_kuma</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3001</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Uptime Kuma running (Docker or Node.js)</li>
+                    <li>Port 3001 accessible</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Uptime Kuma</strong> type</li>
+                    <li>Enter host and port (default: 3001)</li>
+                    <li>Create admin account on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong admin password</li>
+                    <li>Enable 2FA in user settings</li>
+                    <li>Status pages can be public — configure carefully</li>
+                </ul>
+            </section>
+
+            <section id="guide-pihole">
+                <h3>Pi-hole</h3>
+                <p>Pi-hole is a network-wide ad blocker that acts as a DNS sinkhole, filtering ads and trackers for all devices on your network.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>pihole</code></td></tr>
+                    <tr><th>Default Port</th><td><code>80</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Pi-hole installed and running</li>
+                    <li>Web interface port 80 accessible</li>
+                    <li>DNS port 53 configured on your network</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Pi-hole</strong> type (or Quick Add → Pi-hole)</li>
+                    <li>Enter host and port (default: 80)</li>
+                    <li>Access the admin dashboard at <code>/admin</code></li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong web interface password (<code>pihole -a -p</code>)</li>
+                    <li>Restrict DNS queries to your local network only</li>
+                    <li>Keep gravity lists updated regularly</li>
+                    <li>Pi-hole v6+ has improved authentication</li>
+                </ul>
+            </section>
+
+            <section id="guide-adguard_home">
+                <h3>AdGuard Home</h3>
+                <p>AdGuard Home is a network-wide ad and tracker blocker with DNS-over-HTTPS, DNS-over-TLS, and parental controls.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>adguard_home</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3000</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>AdGuard Home installed and running</li>
+                    <li>Web UI port 3000 accessible (setup) or 80 (after setup)</li>
+                    <li>DNS port 53 configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>AdGuard Home</strong> type</li>
+                    <li>Enter host and port (default: 3000 for setup, then typically 80)</li>
+                    <li>Complete initial setup wizard on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong admin password during setup</li>
+                    <li>Enable DNS-over-HTTPS for encrypted DNS queries</li>
+                    <li>Configure access control lists for the DNS service</li>
+                    <li>The web UI port changes from 3000 to 80 after initial setup</li>
+                </ul>
+            </section>
+
+            <section id="guide-nginx_proxy_manager">
+                <h3>Nginx Proxy Manager</h3>
+                <p>Nginx Proxy Manager is a web UI for managing Nginx reverse proxy configurations with Let's Encrypt SSL certificate support.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>nginx_proxy_manager</code></td></tr>
+                    <tr><th>Default Port</th><td><code>81</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Nginx Proxy Manager running (Docker)</li>
+                    <li>Admin port 81 accessible</li>
+                    <li>Ports 80 and 443 for proxy traffic</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Nginx Proxy Manager</strong> type</li>
+                    <li>Enter host and port (default: 81)</li>
+                    <li>Default login: <code>admin@example.com</code> / <code>changeme</code></li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Change default credentials immediately</strong></li>
+                    <li>Use strong passwords for all proxy host authentications</li>
+                    <li>Enable SSL for all proxy hosts</li>
+                    <li>Restrict admin access to trusted IPs</li>
+                </ul>
+            </section>
+
+            <section id="guide-traefik">
+                <h3>Traefik</h3>
+                <p>Traefik is a modern reverse proxy and load balancer with automatic service discovery, Let's Encrypt, and Docker integration.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>traefik</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8080</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Traefik running with dashboard enabled</li>
+                    <li>Dashboard port 8080 accessible</li>
+                    <li>API enabled in Traefik config</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Traefik</strong> type</li>
+                    <li>Enter host and port (default: 8080 for dashboard)</li>
+                    <li>Access the Traefik dashboard</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Enable dashboard authentication</strong> — it's open by default</li>
+                    <li>Use BasicAuth or ForwardAuth middleware</li>
+                    <li>Expose the dashboard only on internal networks</li>
+                    <li>Configure TLS for all entrypoints</li>
+                </ul>
+            </section>
+
+            <section id="guide-portainer">
+                <h3>Portainer</h3>
+                <p>Portainer is a container management UI for Docker, Kubernetes, and Nomad with a clean web interface.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>portainer</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9443</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Portainer running (Docker)</li>
+                    <li>Port 9443 (HTTPS) or 9000 (HTTP) accessible</li>
+                    <li>Docker socket mounted</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Portainer</strong> type</li>
+                    <li>Enter host and port (default: 9443 for HTTPS)</li>
+                    <li>Create admin account on first access (within 5 minutes)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Use HTTPS (port 9443) instead of HTTP (9000)</li>
+                    <li>Create the admin account immediately — the setup expires after 5 minutes</li>
+                    <li>Use Portainer teams and roles to restrict access</li>
+                    <li>Be cautious with Docker socket access — it grants root-level control</li>
+                </ul>
+            </section>
+
+            <section id="guide-netdata">
+                <h3>Netdata</h3>
+                <p>Netdata is a real-time performance monitoring tool with per-second metrics for CPU, memory, disk, network, and applications.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>netdata</code></td></tr>
+                    <tr><th>Default Port</th><td><code>19999</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Netdata agent installed and running</li>
+                    <li>Port 19999 accessible</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Netdata</strong> type</li>
+                    <li>Enter host and port (default: 19999)</li>
+                    <li>Dashboard is accessible immediately — no login required by default</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Netdata dashboard has no authentication by default</strong></li>
+                    <li>Restrict access via firewall or use Portal as the only access point</li>
+                    <li>Configure <code>[web].allow connections from</code> in <code>netdata.conf</code></li>
+                    <li>Consider Netdata Cloud for centralized access with auth</li>
+                </ul>
+            </section>
+
+            <section id="guide-dozzle">
+                <h3>Dozzle</h3>
+                <p>Dozzle is a real-time log viewer for Docker containers with a clean web interface. No database required — it reads directly from Docker.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>dozzle</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8080</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Dozzle running (Docker)</li>
+                    <li>Port 8080 accessible</li>
+                    <li>Docker socket mounted read-only</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Dozzle</strong> type</li>
+                    <li>Enter host and port (default: 8080)</li>
+                    <li>Container logs are visible immediately</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable authentication: set <code>DOZZLE_USERNAME</code> and <code>DOZZLE_PASSWORD</code></li>
+                    <li>Mount Docker socket as read-only (<code>/var/run/docker.sock:/var/run/docker.sock:ro</code>)</li>
+                    <li>Container logs may contain sensitive information</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-dashboards">Dashboards & Panels</h2>
+
+            <section id="guide-homepage">
+                <h3>Homepage</h3>
+                <p>Homepage is a modern, fully static, fast dashboard with service integrations, bookmarks, and widgets.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>homepage</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3000</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Homepage running (Docker recommended)</li>
+                    <li>Port 3000 accessible</li>
+                    <li>Configuration via YAML files</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Homepage</strong> type</li>
+                    <li>Enter host and port (default: 3000)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Homepage has no built-in authentication — rely on Portal for access control</li>
+                    <li>API keys for service widgets should use read-only tokens</li>
+                    <li>Sensitive service URLs are exposed in the config</li>
+                </ul>
+            </section>
+
+            <section id="guide-homarr">
+                <h3>Homarr</h3>
+                <p>Homarr is a customizable dashboard for your self-hosted services with drag-and-drop tiles, integrations, and a clean UI.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>homarr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>7575</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Homarr running (Docker)</li>
+                    <li>Port 7575 accessible</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Homarr</strong> type</li>
+                    <li>Enter host and port (default: 7575)</li>
+                    <li>Customize your dashboard layout in the web UI</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable Homarr's built-in authentication</li>
+                    <li>Use read-only API keys for service integrations</li>
+                    <li>Password-protect the settings page</li>
+                </ul>
+            </section>
+
+            <section id="guide-organizr">
+                <h3>Organizr</h3>
+                <p>Organizr is a dashboard that combines all your self-hosted services into one tabbed interface with user management and SSO.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>organizr</code></td></tr>
+                    <tr><th>Default Port</th><td><code>80</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Organizr running (PHP + web server)</li>
+                    <li>Port 80 accessible</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Organizr</strong> type</li>
+                    <li>Enter host and port (default: 80)</li>
+                    <li>Complete the setup wizard on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong admin password during setup</li>
+                    <li>Configure user groups and tab permissions</li>
+                    <li>Enable Organizr's built-in authentication for all tabs</li>
+                </ul>
+            </section>
+
+            <section id="guide-truenas">
+                <h3>TrueNAS</h3>
+                <p>TrueNAS is a network-attached storage OS (based on FreeBSD/Linux) with a web-based management interface for ZFS pools, shares, and plugins.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>truenas</code></td></tr>
+                    <tr><th>Default Port</th><td><code>443</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>TrueNAS installed on dedicated hardware or VM</li>
+                    <li>Web UI port 443 (HTTPS) or 80 (HTTP) accessible</li>
+                    <li>Admin account configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>TrueNAS</strong> type</li>
+                    <li>Enter host and port (default: 443)</li>
+                    <li>Log in with your TrueNAS admin credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Always use HTTPS for the web interface</li>
+                    <li>Set a strong root/admin password</li>
+                    <li>Enable 2FA for the web interface</li>
+                    <li>Configure network ACLs for management access</li>
+                    <li>Keep TrueNAS updated for ZFS and security patches</li>
+                </ul>
+            </section>
+
+            <section id="guide-pfsense">
+                <h3>pfSense</h3>
+                <p>pfSense is an open-source firewall and router platform based on FreeBSD with a comprehensive web-based management interface.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>pfsense</code></td></tr>
+                    <tr><th>Default Port</th><td><code>443</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>pfSense installed on dedicated hardware or VM</li>
+                    <li>Web UI port 443 (HTTPS) accessible from Portal</li>
+                    <li>Admin account configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>pfSense</strong> type</li>
+                    <li>Enter host and port (default: 443)</li>
+                    <li>Log in with pfSense admin credentials</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Always use HTTPS for the web configurator</li>
+                    <li>Change the default admin password immediately</li>
+                    <li>Enable CSRF protection (enabled by default)</li>
+                    <li>Restrict web configurator access to specific IPs/subnets</li>
+                    <li>Enable SSH with key authentication only if remote CLI needed</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-dev-tools">Dev Tools</h2>
+
+            <section id="guide-grafana">
+                <h3>Grafana</h3>
+                <p>Grafana is an open-source analytics and visualization platform for metrics from Prometheus, InfluxDB, Elasticsearch, and more.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>grafana</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3000</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Grafana server running</li>
+                    <li>Port 3000 accessible</li>
+                    <li>Data source configured (Prometheus, InfluxDB, etc.)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Grafana</strong> type</li>
+                    <li>Enter host and port (default: 3000)</li>
+                    <li>Default login: admin / admin — change on first login</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Change default admin password on first login</strong></li>
+                    <li>Configure <code>root_url</code> in <code>grafana.ini</code> to match Portal proxy URL</li>
+                    <li>Set <code>[security].cookie_secure = true</code></li>
+                    <li>Disable anonymous access unless intentional</li>
+                    <li>Use org-level permissions for multi-tenant setups</li>
+                </ul>
+            </section>
+
+            <section id="guide-prometheus">
+                <h3>Prometheus</h3>
+                <p>Prometheus is a time-series database and monitoring system with a powerful query language (PromQL) and alerting.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>prometheus</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9090</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Prometheus server running</li>
+                    <li>Port 9090 accessible</li>
+                    <li>Scrape targets configured in <code>prometheus.yml</code></li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Prometheus</strong> type</li>
+                    <li>Enter host and port (default: 9090)</li>
+                    <li>Access the Prometheus web UI for querying and alerts</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Prometheus has no built-in authentication</strong></li>
+                    <li>Restrict access via firewall — use Portal as the sole access point</li>
+                    <li>Consider using <code>--web.config.file</code> for basic auth (Prometheus 2.24+)</li>
+                    <li>Metrics may expose sensitive infrastructure information</li>
+                </ul>
+            </section>
+
+            <section id="guide-jupyter">
+                <h3>Jupyter Notebook</h3>
+                <p>Jupyter Notebook is an interactive computing environment for creating documents with live code, equations, and visualizations.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>jupyter</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8888</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Jupyter Notebook/Lab running</li>
+                    <li>Port 8888 accessible</li>
+                    <li>Token or password authentication configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Jupyter Notebook</strong> type</li>
+                    <li>Enter host and port (default: 8888)</li>
+                    <li>Enter the Jupyter token or password to access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Always set a password or token (<code>jupyter notebook password</code>)</li>
+                    <li>Configure <code>NotebookApp.allow_origin</code> for Portal's domain</li>
+                    <li>Jupyter can execute arbitrary code — restrict access carefully</li>
+                    <li>Consider JupyterHub for multi-user setups with proper auth</li>
+                </ul>
+            </section>
+
+            <section id="guide-gitea">
+                <h3>Gitea</h3>
+                <p>Gitea is a lightweight, self-hosted Git service with a GitHub-like web interface, issue tracking, and CI/CD.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>gitea</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3000</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Gitea running (single binary or Docker)</li>
+                    <li>Port 3000 (HTTP) accessible</li>
+                    <li>SSH port 22 or 2222 for Git SSH operations</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Gitea</strong> type</li>
+                    <li>Enter host and port (default: 3000)</li>
+                    <li>Complete initial configuration on first access</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set <code>ROOT_URL</code> in <code>app.ini</code> to match Portal's proxy URL</li>
+                    <li>Disable self-registration if not needed: <code>DISABLE_REGISTRATION = true</code></li>
+                    <li>Enable 2FA for all user accounts</li>
+                    <li>Configure SSH keys for Git push/pull operations</li>
+                </ul>
+            </section>
+
+            <section id="guide-gitlab">
+                <h3>GitLab</h3>
+                <p>GitLab is a complete DevOps platform with Git hosting, CI/CD pipelines, container registry, and project management.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>gitlab</code></td></tr>
+                    <tr><th>Default Port</th><td><code>80</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>GitLab installed (Omnibus package or Docker)</li>
+                    <li>Port 80/443 accessible</li>
+                    <li>Minimum 4GB RAM (8GB recommended)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>GitLab</strong> type</li>
+                    <li>Enter host and port (default: 80 or 443)</li>
+                    <li>Get the initial root password from <code>/etc/gitlab/initial_root_password</code></li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Change the root password immediately after first login</li>
+                    <li>Configure <code>external_url</code> in <code>gitlab.rb</code> to match Portal's URL</li>
+                    <li>Disable sign-up if not needed: <code>gitlab_rails['gitlab_signup_enabled'] = false</code></li>
+                    <li>Enable 2FA enforcement for all users</li>
+                    <li>Keep GitLab updated — it gets frequent security patches</li>
+                </ul>
+            </section>
+
+            <section id="guide-code_server">
+                <h3>code-server</h3>
+                <p>code-server runs VS Code in the browser, providing a full IDE experience remotely with extensions, terminal, and Git integration.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>code_server</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8080</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>code-server installed and running</li>
+                    <li>Port 8080 accessible</li>
+                    <li>Password configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>code-server</strong> type</li>
+                    <li>Enter host and port (default: 8080)</li>
+                    <li>Enter the password set in <code>~/.config/code-server/config.yaml</code></li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Always set a strong password in the config</li>
+                    <li>Configure <code>proxy-domain</code> if using Portal as reverse proxy</li>
+                    <li>code-server provides full terminal access — treat it like SSH</li>
+                    <li>Consider hashed passwords for the config file</li>
+                </ul>
+            </section>
+
+            <section id="guide-github">
+                <h3>GitHub</h3>
+                <p>GitHub integration connects Portal to your GitHub repositories, enabling code browsing, issue tracking, and repository management directly from the Portal dashboard.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>github</code></td></tr>
+                    <tr><th>Default Port</th><td><code>443</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>github</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>GitHub account or GitHub Enterprise instance</li>
+                    <li>Personal access token with appropriate scopes</li>
+                    <li>Internet access from Portal server (for github.com)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>GitHub</strong> type</li>
+                    <li>For GitHub.com, use host <code>github.com</code> and port <code>443</code></li>
+                    <li>For GitHub Enterprise, enter your instance host and port</li>
+                    <li>Configure your personal access token in the connection settings</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Use fine-grained personal access tokens with minimal scopes</li>
+                    <li>Rotate tokens regularly</li>
+                    <li>Never share tokens — Portal encrypts them at rest</li>
+                    <li>For Enterprise, ensure TLS is configured on your instance</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-web-services">Web Services</h2>
+            <p>Generic web service connections for any HTTP or HTTPS endpoint. Use these when a service doesn't have a dedicated type but has a web interface.</p>
+
+            <section id="guide-http">
+                <h3>HTTP Service</h3>
+                <p>Generic HTTP connection for any unencrypted web service. Portal acts as a reverse proxy, adding TLS on the browser-facing side.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>http</code></td></tr>
+                    <tr><th>Default Port</th><td><code>80</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Target HTTP service running</li>
+                    <li>Port accessible from Portal server</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>HTTP Service</strong> type</li>
+                    <li>Enter the target host and port (default: 80)</li>
+                    <li>Access the service through Portal's proxy URL</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Traffic between Portal and the target is unencrypted — only use on trusted networks</li>
+                    <li>Portal adds TLS encryption on the browser-to-Portal leg</li>
+                    <li>Prefer the HTTPS type when the target supports TLS</li>
+                </ul>
+            </section>
+
+            <section id="guide-https">
+                <h3>HTTPS Service</h3>
+                <p>Generic HTTPS connection for any TLS-encrypted web service. Portal proxies requests while maintaining end-to-end encryption to the target.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>https</code></td></tr>
+                    <tr><th>Default Port</th><td><code>443</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTPS</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Target HTTPS service running with a valid or self-signed certificate</li>
+                    <li>Port accessible from Portal server</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>HTTPS Service</strong> type</li>
+                    <li>Enter the target host and port (default: 443)</li>
+                    <li>Access the service through Portal's proxy URL</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Ensures end-to-end encryption from browser through Portal to the target</li>
+                    <li>Verify the target's TLS certificate is valid</li>
+                    <li>Use this type for any service that supports HTTPS</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-databases">Databases</h2>
+            <p>Database connections use Portal's TCP tunnel plugin to forward the database protocol through a WebSocket. This lets you access your databases securely from your browser or connect local database tools through Portal.</p>
+
+            <section id="guide-database">
+                <h3>MySQL</h3>
+                <p>MySQL is the world's most popular open-source relational database.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>database</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3306</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP (MySQL)</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>MySQL/MariaDB server running</li>
+                    <li>Port 3306 accessible from Portal</li>
+                    <li>User account with appropriate grants</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Database</strong> type with MySQL config</li>
+                    <li>Enter host and port (default: 3306)</li>
+                    <li>Configure the database user with remote access grants</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Never use the root account for remote access</li>
+                    <li>Create dedicated users with minimal privileges: <code>GRANT SELECT ON db.* TO 'user'@'portal_ip'</code></li>
+                    <li>Bind MySQL to specific interfaces (not 0.0.0.0) if possible</li>
+                    <li>Use TLS connections: configure <code>require_secure_transport=ON</code></li>
+                    <li>Traffic is encrypted between browser and Portal via TLS</li>
+                </ul>
+            </section>
+
+            <section id="guide-postgresql">
+                <h3>PostgreSQL</h3>
+                <p>PostgreSQL is an advanced open-source relational database known for reliability and standards compliance.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>postgresql</code></td></tr>
+                    <tr><th>Default Port</th><td><code>5432</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP (PostgreSQL)</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>PostgreSQL server running</li>
+                    <li>Port 5432 accessible</li>
+                    <li>User role configured in <code>pg_hba.conf</code> for remote access</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>PostgreSQL</strong> type</li>
+                    <li>Enter host and port (default: 5432)</li>
+                    <li>Configure <code>pg_hba.conf</code> to allow connections from Portal's IP</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Edit <code>pg_hba.conf</code> to restrict access: <code>host all user portal_ip/32 scram-sha-256</code></li>
+                    <li>Use <code>scram-sha-256</code> authentication (not <code>md5</code> or <code>trust</code>)</li>
+                    <li>Create role-specific users with minimal privileges</li>
+                    <li>Enable SSL: set <code>ssl = on</code> in <code>postgresql.conf</code></li>
+                </ul>
+            </section>
+
+            <section id="guide-mariadb">
+                <h3>MariaDB</h3>
+                <p>MariaDB is a community-developed fork of MySQL with enhanced performance and additional storage engines.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>mariadb</code></td></tr>
+                    <tr><th>Default Port</th><td><code>3306</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP (MySQL)</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>MariaDB server running</li>
+                    <li>Port 3306 accessible</li>
+                    <li>User with remote access grants</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>MariaDB</strong> type</li>
+                    <li>Enter host and port (default: 3306)</li>
+                    <li>Same configuration as MySQL</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Same security practices as MySQL apply</li>
+                    <li>Use <code>ed25519</code> authentication plugin for stronger password hashing</li>
+                    <li>Configure <code>bind-address</code> to limit listening interfaces</li>
+                </ul>
+            </section>
+
+            <section id="guide-redis">
+                <h3>Redis</h3>
+                <p>Redis is an in-memory data store used as a database, cache, and message broker.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>redis</code></td></tr>
+                    <tr><th>Default Port</th><td><code>6379</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP (Redis)</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Redis server running</li>
+                    <li>Port 6379 accessible</li>
+                    <li>Authentication configured (recommended)</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Redis</strong> type</li>
+                    <li>Enter host and port (default: 6379)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Set a password</strong>: <code>requirepass</code> in <code>redis.conf</code></li>
+                    <li>Bind to specific interfaces: <code>bind 127.0.0.1 portal_ip</code></li>
+                    <li>Disable dangerous commands: <code>rename-command FLUSHALL ""</code></li>
+                    <li>Enable TLS if your Redis version supports it (6.0+)</li>
+                    <li>Redis has no user-level permissions in OSS — use ACLs in Redis 6+</li>
+                </ul>
+            </section>
+
+            <section id="guide-mongodb">
+                <h3>MongoDB</h3>
+                <p>MongoDB is a document-oriented NoSQL database designed for scalability and flexibility.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>mongodb</code></td></tr>
+                    <tr><th>Default Port</th><td><code>27017</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP (MongoDB)</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>MongoDB server running</li>
+                    <li>Port 27017 accessible</li>
+                    <li>Authentication enabled</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>MongoDB</strong> type</li>
+                    <li>Enter host and port (default: 27017)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li><strong>Enable authentication</strong>: <code>security.authorization: enabled</code> in <code>mongod.conf</code></li>
+                    <li>Create users with specific database roles</li>
+                    <li>Bind to specific IPs: <code>net.bindIp: 127.0.0.1,portal_ip</code></li>
+                    <li>Enable TLS/SSL for connections</li>
+                    <li>Disable the MongoDB HTTP interface if enabled</li>
+                </ul>
+            </section>
+
+            <section id="guide-elasticsearch">
+                <h3>Elasticsearch</h3>
+                <p>Elasticsearch is a distributed search and analytics engine used for log analysis, full-text search, and metrics.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>elasticsearch</code></td></tr>
+                    <tr><th>Default Port</th><td><code>9200</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP/TCP</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Elasticsearch running</li>
+                    <li>Port 9200 (HTTP API) accessible</li>
+                    <li>Minimum 2GB heap memory</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Elasticsearch</strong> type</li>
+                    <li>Enter host and port (default: 9200)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Enable X-Pack security (built-in since 6.8/7.1)</li>
+                    <li>Set <code>xpack.security.enabled: true</code></li>
+                    <li>Configure TLS for transport and HTTP layers</li>
+                    <li>Use role-based access control (RBAC)</li>
+                    <li>Elasticsearch exposes cluster data — restrict access carefully</li>
+                </ul>
+            </section>
+
+            <section id="guide-influxdb">
+                <h3>InfluxDB</h3>
+                <p>InfluxDB is a time-series database optimized for metrics, events, and real-time analytics.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>influxdb</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8086</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>InfluxDB running (v2 recommended)</li>
+                    <li>Port 8086 accessible</li>
+                    <li>Organization and bucket configured</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>InfluxDB</strong> type</li>
+                    <li>Enter host and port (default: 8086)</li>
+                    <li>InfluxDB 2.x uses token-based auth — generate a token in the UI</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Use API tokens with minimal permissions (read-only where possible)</li>
+                    <li>Enable HTTPS: <code>tls-cert</code> and <code>tls-key</code> in config</li>
+                    <li>Set token expiration policies</li>
+                    <li>InfluxDB 1.x: enable authentication with <code>auth-enabled = true</code></li>
+                </ul>
+            </section>
+
+            <section id="guide-custom">
+                <h3>Custom / Generic</h3>
+                <p>Custom connections allow you to proxy any TCP service through Portal. Use this for services not covered by other types.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>custom</code></td></tr>
+                    <tr><th>Default Port</th><td><code>Varies</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Target service running and accessible on a TCP port</li>
+                    <li>Port accessible from the Portal server</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Custom</strong> type</li>
+                    <li>Enter the host, port, and a descriptive name</li>
+                    <li>Portal will create a TCP tunnel to the target</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Ensure the target service has its own authentication</li>
+                    <li>Portal encrypts the browser-to-server leg via TLS</li>
+                    <li>The Portal-to-target leg uses your internal network — secure accordingly</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-network-tunneling">Network & Tunneling</h2>
+
+            <section id="guide-http_proxy">
+                <h3>HTTP Proxy</h3>
+                <p>Generic HTTP reverse proxy for any web-based service. Portal forwards HTTP requests to the target, handling TLS termination.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>http_proxy</code></td></tr>
+                    <tr><th>Default Port</th><td><code>80</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Target HTTP service running</li>
+                    <li>Port accessible from Portal</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>HTTP Proxy</strong> type</li>
+                    <li>Enter host and port of the target service</li>
+                    <li>Access the service through Portal's proxy URL</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Portal handles TLS termination — browser-to-Portal is always encrypted</li>
+                    <li>Configure the target service to trust Portal's IP as a proxy</li>
+                    <li>Set appropriate CORS and CSP headers on the target if needed</li>
+                </ul>
+            </section>
+
+            <section id="guide-tcp_tunnel">
+                <h3>TCP Tunnel</h3>
+                <p>Generic TCP tunnel for any non-HTTP service. Portal forwards raw TCP traffic over a WebSocket connection.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>tcp_tunnel</code></td></tr>
+                    <tr><th>Default Port</th><td><code>Varies</code></td></tr>
+                    <tr><th>Protocol</th><td>TCP</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Target TCP service running</li>
+                    <li>Port accessible from Portal</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>TCP Tunnel</strong> type</li>
+                    <li>Enter host and port of the target service</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>The WebSocket layer is encrypted via TLS</li>
+                    <li>Ensure the target service has its own authentication layer</li>
+                    <li>TCP tunnels pass raw bytes — Portal does not inspect the traffic</li>
+                </ul>
+            </section>
+
+            <section id="guide-secure_tunnel">
+                <h3>Secure Tunnel</h3>
+                <p>Encrypted tunnel with additional security layers for sensitive connections.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>secure_tunnel</code></td></tr>
+                    <tr><th>Default Port</th><td><code>Varies</code></td></tr>
+                    <tr><th>Protocol</th><td>Encrypted TCP</td></tr>
+                    <tr><th>Plugin</th><td><code>secure_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Target service running</li>
+                    <li>Port accessible from Portal</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Secure Tunnel</strong> type</li>
+                    <li>Enter host and port</li>
+                    <li>Portal adds encryption on top of the standard TCP tunnel</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Double encryption: WebSocket TLS + tunnel encryption</li>
+                    <li>Use for highly sensitive services</li>
+                    <li>All traffic is encrypted end-to-end</li>
+                </ul>
+            </section>
+
+            <section id="guide-vpn_tunnel">
+                <h3>VPN Bridge</h3>
+                <p>VPN bridge for connecting to services behind a VPN gateway.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>vpn_tunnel</code></td></tr>
+                    <tr><th>Default Port</th><td><code>Varies</code></td></tr>
+                    <tr><th>Protocol</th><td>VPN</td></tr>
+                    <tr><th>Plugin</th><td><code>vpn_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>VPN gateway or bridge configured</li>
+                    <li>Appropriate VPN credentials</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>VPN Bridge</strong> type</li>
+                    <li>Enter the VPN gateway host and port</li>
+                    <li>Configure VPN-specific settings as needed</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>VPN traffic is encrypted by the VPN protocol</li>
+                    <li>Ensure VPN credentials are stored securely</li>
+                    <li>Use certificate-based VPN authentication when available</li>
+                </ul>
+            </section>
+
+            <h2 id="cat-streaming-games">Streaming & Game Servers</h2>
+
+            <section id="guide-mediamtx">
+                <h3>MediaMTX Stream</h3>
+                <p>MediaMTX (formerly rtsp-simple-server) is a media server that supports RTSP, RTMP, HLS, and WebRTC for live streaming.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>mediamtx</code></td></tr>
+                    <tr><th>Default Port</th><td><code>8554</code></td></tr>
+                    <tr><th>Protocol</th><td>RTSP/RTMP</td></tr>
+                    <tr><th>Plugin</th><td><code>mediamtx</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>MediaMTX running</li>
+                    <li>RTSP port 8554 or API port 9997 accessible</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>MediaMTX Stream</strong> type</li>
+                    <li>Enter host and port (default: 8554 for RTSP, 9997 for API)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Configure authentication in MediaMTX config</li>
+                    <li>Use RTSPS (encrypted RTSP) for secure streams</li>
+                    <li>Restrict publish permissions to authorized users</li>
+                </ul>
+            </section>
+
+            <section id="guide-stream">
+                <h3>Media Stream</h3>
+                <p>Generic media stream connection for IP cameras, RTSP sources, and other streaming endpoints.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>stream</code></td></tr>
+                    <tr><th>Default Port</th><td><code>Varies</code></td></tr>
+                    <tr><th>Protocol</th><td>RTSP/HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>mediamtx</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Streaming source accessible (IP camera, RTSP server, etc.)</li>
+                    <li>Stream URL known</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Media Stream</strong> type</li>
+                    <li>Enter the stream source host and port</li>
+                    <li>Configure the stream protocol (RTSP, HTTP, etc.)</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Change default camera passwords (many ship with admin/admin)</li>
+                    <li>Use RTSP over TCP instead of UDP where possible</li>
+                    <li>Isolate cameras on a separate VLAN</li>
+                </ul>
+            </section>
+
+            <section id="guide-minecraft_rcon">
+                <h3>Minecraft RCON</h3>
+                <p>RCON (Remote Console) provides command-line access to a Minecraft server for administration.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Type Key</th><td><code>minecraft_rcon</code></td></tr>
+                    <tr><th>Default Port</th><td><code>25575</code></td></tr>
+                    <tr><th>Protocol</th><td>RCON</td></tr>
+                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                </table>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>Minecraft server with RCON enabled</li>
+                    <li>RCON port 25575 accessible</li>
+                    <li>RCON password configured in <code>server.properties</code></li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
+                    <li>Select <strong>Minecraft RCON</strong> type</li>
+                    <li>Enter host and port (default: 25575)</li>
+                    <li>Enter the RCON password when connecting</li>
+                </ol>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Set a strong <code>rcon.password</code> in <code>server.properties</code></li>
+                    <li>Bind RCON to specific IPs: <code>rcon.ip=portal_ip</code></li>
+                    <li>RCON transmits passwords in plaintext — Portal's TLS protects the browser leg</li>
+                    <li>Consider using RCON only on trusted networks</li>
+                </ul>
+            </section>
+
+            </main>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=27"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const response = await fetch('/api/me', { credentials: 'include' });
+                if (response.ok) {
+                    const user = await response.json();
+                    document.getElementById('username-display').textContent = user.nickname || user.username;
+                    if (Portal.isAdmin(user)) {
+                        const termBtn = document.getElementById('terminal-btn');
+                        const badge = document.getElementById('admin-badge');
+                        if (termBtn) termBtn.style.display = '';
+                        if (badge) badge.style.display = '';
+                    }
+                }
+            } catch (e) {}
+
+            // Sidebar scroll tracking
+            const navLinks = document.querySelectorAll('.docs-nav a[href^="#"]');
+            const sections = [];
+            navLinks.forEach(link => {
+                const id = link.getAttribute('href').slice(1);
+                const el = document.getElementById(id);
+                if (el) sections.push({ link, el });
+            });
+
+            function updateActiveNav() {
+                let current = sections[0];
+                for (const s of sections) {
+                    if (s.el.getBoundingClientRect().top <= 120) {
+                        current = s;
+                    }
+                }
+                navLinks.forEach(l => l.classList.remove('active'));
+                if (current) current.link.classList.add('active');
+            }
+
+            window.addEventListener('scroll', updateActiveNav);
+            updateActiveNav();
+        });
+
+        function filterGuides() {
+            const query = document.getElementById('guide-search').value.toLowerCase().trim();
+            const nav = document.querySelector('.docs-nav');
+            const headers = nav.querySelectorAll('h4');
+            const lists = nav.querySelectorAll('ul');
+
+            headers.forEach((h, i) => {
+                const ul = lists[i];
+                if (!ul) return;
+                const items = ul.querySelectorAll('li');
+                let anyVisible = false;
+                items.forEach(li => {
+                    const text = li.textContent.toLowerCase();
+                    const match = !query || text.includes(query);
+                    li.style.display = match ? '' : 'none';
+                    if (match) anyVisible = true;
+                });
+                h.style.display = anyVisible ? '' : 'none';
+                ul.style.display = anyVisible ? '' : 'none';
+            });
+        }
+    </script>
+</body>
+</html>

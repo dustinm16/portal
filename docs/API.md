@@ -191,6 +191,105 @@ Get the current daily invite code (admin only).
 
 ---
 
+### Invite Code Management (Admin)
+
+#### GET /api/admin/invite-code
+Get all invite codes (daily + custom). Returns both the auto-generated daily code and any custom codes created by admins.
+
+**Response:**
+```json
+{
+  "daily_code": {
+    "code": "ABC123",
+    "expires_at": "2026-02-07T00:00:00Z"
+  },
+  "custom_codes": [
+    {
+      "id": 1,
+      "code": "WELCOME2026",
+      "type": "timed",
+      "uses": 5,
+      "max_uses": null,
+      "expires_at": "2026-03-01T00:00:00Z",
+      "is_active": true,
+      "created_by": "admin",
+      "created_at": "2026-02-10T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### POST /api/admin/invite-codes
+Create a new invite code.
+
+**Request:**
+```json
+{
+  "code": "WELCOME2026",
+  "type": "timed",
+  "max_uses": 10,
+  "expires_hours": 48
+}
+```
+
+**Code Types:**
+
+| Type | Description |
+|------|-------------|
+| `daily` | Regenerates automatically each day |
+| `single_use` | Deactivates after one registration |
+| `timed` | Active until expiry time (set via `expires_hours`) |
+
+**Response (201):**
+```json
+{
+  "id": 2,
+  "code": "WELCOME2026",
+  "type": "timed",
+  "max_uses": 10,
+  "expires_at": "2026-02-12T12:00:00Z",
+  "message": "Invite code created"
+}
+```
+
+---
+
+#### DELETE /api/admin/invite-codes/{id}
+Deactivate an invite code. Does not delete the record (preserves registration history).
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Invite code deactivated"
+}
+```
+
+---
+
+#### GET /api/admin/invite-codes/{id}/registrations
+View all user registrations that used a specific invite code.
+
+**Response:**
+```json
+{
+  "code": "WELCOME2026",
+  "registrations": [
+    {
+      "user_id": 15,
+      "username": "newuser",
+      "registered_at": "2026-02-11T08:30:00Z",
+      "ip_address": "redacted"
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
 ### API Keys
 
 #### POST /api/api-keys
@@ -661,6 +760,7 @@ Create a new connection.
 | Category | Types |
 |----------|-------|
 | Remote Access | `ssh`, `vnc`, `rdp`, `spice`, `telnet` |
+| File Transfer | `sftp` |
 | Virtualization | `proxmox` |
 | Web Panels | `home_assistant`, `portainer`, `truenas`, `pfsense`, `http`, `https`, `http_proxy` |
 | Databases | `database`, `redis`, `mongodb`, `elasticsearch` |

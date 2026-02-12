@@ -1796,6 +1796,11 @@ select option {
     color: var(--accent-red);
 }
 
+.badge-info {
+    background: rgba(96, 165, 250, 0.2);
+    color: #60a5fa;
+}
+
 /* Inactive row styling */
 .row-inactive {
     opacity: 0.6;
@@ -3397,4 +3402,75 @@ kbd {
     .welcome-features {
         grid-template-columns: 1fr;
     }
+}
+
+/* Invite Codes Management */
+.invite-create-form {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 1rem;
+}
+
+.invite-codes-table-wrap {
+    overflow-x: auto;
+}
+
+.invite-codes-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.invite-codes-table th,
+.invite-codes-table td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.invite-codes-table th {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+}
+
+.invite-code-text {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.8rem;
+    background: var(--bg-secondary);
+    padding: 0.15rem 0.4rem;
+    border-radius: 0.25rem;
+    user-select: all;
+}
+
+.btn-icon-sm {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.8rem;
+    opacity: 0.6;
+    transition: opacity 0.15s;
+}
+
+.btn-icon-sm:hover {
+    opacity: 1;
+}
+
+.invite-registrations-cell {
+    background: var(--bg-secondary);
+    padding: 0.75rem !important;
+}
+
+.badge-purple {
+    background: rgba(168, 85, 247, 0.2);
+    color: #c084fc;
+}
+
+.badge-secondary {
+    background: rgba(148, 163, 184, 0.2);
+    color: #94a3b8;
 }
