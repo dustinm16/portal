@@ -36,7 +36,7 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
     connect_opts = {
         "host": connection["host"],
         "port": connection.get("port") or 22,
-        "username": connection.get("username", ""),
+        "username": config.get("username", ""),
         "known_hosts": None,
     }
 

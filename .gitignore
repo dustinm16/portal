@@ -44,6 +44,7 @@ id_dsa*
 # Credentials & auth
 .invite_code
 .claude_test_creds
+.encryption_salt
 admin_credentials.txt
 *_credentials*
 *.keystore

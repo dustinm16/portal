@@ -1,6 +1,7 @@
 """Database layer for Open Relay Portal using SQLite."""
 
 import json
+import secrets as _secrets
 
 import aiosqlite
 import base64
@@ -21,20 +22,105 @@ except ImportError:
     CRYPTO_AVAILABLE = False
 
 
-def get_chat_encryption_key() -> bytes:
-    """Generate encryption key from JWT_SECRET."""
+# --- Machine-bound encryption salt ---
+# The encryption salt is unique per installation: derived from /etc/machine-id
+# (hardware-bound) + a random component. Even with the same JWT_SECRET, a
+# different machine produces different encryption keys. The salt file is
+# auto-generated on first run and must NOT be committed to version control.
+
+_ENCRYPTION_SALT_FILE = Path(__file__).parent / ".encryption_salt"
+_encryption_salt_cache: bytes | None = None
+
+
+def _get_machine_id() -> bytes:
+    """Read /etc/machine-id for hardware binding."""
+    try:
+        return Path("/etc/machine-id").read_text().strip().encode()
+    except (FileNotFoundError, PermissionError):
+        return b"no-machine-id"
+
+
+def _get_encryption_salt() -> bytes:
+    """Get machine-bound encryption salt. Auto-generated on first run."""
+    global _encryption_salt_cache
+    if _encryption_salt_cache is not None:
+        return _encryption_salt_cache
+
+    if _ENCRYPTION_SALT_FILE.exists():
+        _encryption_salt_cache = _ENCRYPTION_SALT_FILE.read_bytes()
+        return _encryption_salt_cache
+
+    return _generate_encryption_salt()
+
+
+def _generate_encryption_salt() -> bytes:
+    """Generate and persist a new machine-bound encryption salt."""
+    global _encryption_salt_cache
+    machine_id = _get_machine_id()
+    random_component = _secrets.token_bytes(32)
+    salt = hashlib.sha256(machine_id + random_component).digest()
+    _ENCRYPTION_SALT_FILE.write_bytes(salt)
+    os.chmod(str(_ENCRYPTION_SALT_FILE), 0o600)
+    _encryption_salt_cache = salt
+    return salt
+
+
+# --- Legacy key functions (hardcoded salts, pre-machine-binding) ---
+
+def _get_legacy_chat_key() -> bytes:
+    """Legacy chat encryption key using hardcoded salt."""
     secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
-    # Use PBKDF2 to derive a Fernet-compatible key
+    if CRYPTO_AVAILABLE:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(), length=32,
+            salt=b"portal-chat-salt", iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(secret))
+    return base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+
+
+def _get_legacy_config_key() -> bytes:
+    """Legacy config encryption key using hardcoded salt."""
+    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    if CRYPTO_AVAILABLE:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(), length=32,
+            salt=b"portal-config-salt", iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(secret))
+    return base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+
+
+# --- Current key derivation (machine-bound) ---
+
+def get_chat_encryption_key() -> bytes:
+    """Derive chat encryption key from JWT_SECRET + machine-bound salt."""
+    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    machine_salt = _get_encryption_salt()
     if CRYPTO_AVAILABLE:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"portal-chat-salt",
+            salt=machine_salt + b"chat",
             iterations=100000,
         )
-        key = base64.urlsafe_b64encode(kdf.derive(secret))
-        return key
-    return base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+        return base64.urlsafe_b64encode(kdf.derive(secret))
+    return base64.urlsafe_b64encode(hashlib.sha256(secret + machine_salt).digest())
+
+
+def get_config_encryption_key() -> bytes:
+    """Derive config encryption key from JWT_SECRET + machine-bound salt."""
+    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    machine_salt = _get_encryption_salt()
+    if CRYPTO_AVAILABLE:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=machine_salt + b"config",
+            iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(secret))
+    return base64.urlsafe_b64encode(hashlib.sha256(secret + machine_salt).digest())
 
 
 def encrypt_message(plaintext: str) -> str:
@@ -49,33 +135,22 @@ def encrypt_message(plaintext: str) -> str:
 
 
 def decrypt_message(ciphertext: str) -> str:
-    """Decrypt a chat message."""
+    """Decrypt a chat message. Falls back to legacy key for pre-migration data."""
     if not CRYPTO_AVAILABLE or not ciphertext:
         return ciphertext
     try:
         f = Fernet(get_chat_encryption_key())
         return f.decrypt(ciphertext.encode()).decode()
     except Exception:
-        # Return as-is if decryption fails (might be unencrypted legacy message)
-        return ciphertext
+        # Try legacy key (pre-machine-binding)
+        try:
+            f = Fernet(_get_legacy_chat_key())
+            return f.decrypt(ciphertext.encode()).decode()
+        except Exception:
+            return ciphertext
 
 
 # --- Connection config encryption (separate key from chat) ---
-
-def get_config_encryption_key() -> bytes:
-    """Generate encryption key for connection configs (separate from chat key)."""
-    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
-    if CRYPTO_AVAILABLE:
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=b"portal-config-salt",
-            iterations=100000,
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(secret))
-        return key
-    return base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
-
 
 def encrypt_config(config_json: str) -> str:
     """Encrypt a connection config JSON string.
@@ -92,17 +167,19 @@ def encrypt_config(config_json: str) -> str:
 
 
 def decrypt_config(data: str) -> str:
-    """Decrypt a connection config string.
-
-    Handles both encrypted ('enc:' prefixed) and legacy plaintext values.
-    """
+    """Decrypt a connection config string. Falls back to legacy key for pre-migration data."""
     if not data or not data.startswith("enc:"):
         return data  # Not encrypted (legacy or empty)
     try:
         f = Fernet(get_config_encryption_key())
         return f.decrypt(data[4:].encode()).decode()
     except Exception:
-        return "{}"  # Decryption failed
+        # Try legacy key (pre-machine-binding)
+        try:
+            f = Fernet(_get_legacy_config_key())
+            return f.decrypt(data[4:].encode()).decode()
+        except Exception:
+            return "{}"
 
 
 def hash_stream_key(key: str) -> str:
@@ -724,6 +801,9 @@ class Database:
         # Encrypt any plaintext stream keys (one-time migration)
         await self._migrate_encrypt_stream_keys()
 
+        # Re-encrypt all data with machine-bound keys (one-time migration)
+        await self._migrate_encryption_to_machine_key()
+
     async def _migrate_service_logs_fk(self) -> None:
         """Fix service_logs FK: managed_services(id) -> services(id)."""
         try:
@@ -860,6 +940,179 @@ class Database:
             logging.getLogger("portal.database").info(
                 f"Encrypted {total} plaintext stream key(s)"
             )
+
+    async def _migrate_encryption_to_machine_key(self) -> None:
+        """Re-encrypt all data with machine-bound keys (one-time migration).
+
+        Detects data encrypted with the old hardcoded-salt keys and re-encrypts
+        it with the new machine-bound keys. Uses a DB setting to track completion.
+        """
+        if not CRYPTO_AVAILABLE:
+            return
+
+        import logging
+        log = logging.getLogger("portal.database")
+
+        # Check if already migrated
+        try:
+            cursor = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = 'encryption_key_version'"
+            )
+            row = await cursor.fetchone()
+            if row and row["value"] == "2":
+                return  # Already migrated
+        except Exception:
+            pass  # Settings table might not exist yet
+
+        # Ensure machine salt file exists
+        _get_encryption_salt()
+
+        old_config_key = _get_legacy_config_key()
+        new_config_key = get_config_encryption_key()
+        old_chat_key = _get_legacy_chat_key()
+        new_chat_key = get_chat_encryption_key()
+
+        # Skip if keys are identical (shouldn't happen, but safety check)
+        if old_config_key == new_config_key:
+            try:
+                await self._connection.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_key_version', '2')"
+                )
+                await self._connection.commit()
+            except Exception:
+                pass
+            return
+
+        total = 0
+
+        # 1. Re-encrypt config fields (user_connections, services, vod_storage)
+        for table in ["user_connections", "services", "vod_storage"]:
+            try:
+                cursor = await self._connection.execute(
+                    f"SELECT id, config FROM {table} WHERE config LIKE 'enc:%'"
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    try:
+                        old_f = Fernet(old_config_key)
+                        plaintext = old_f.decrypt(row["config"][4:].encode()).decode()
+                        new_f = Fernet(new_config_key)
+                        new_encrypted = "enc:" + new_f.encrypt(plaintext.encode()).decode()
+                        await self._connection.execute(
+                            f"UPDATE {table} SET config = ? WHERE id = ?",
+                            (new_encrypted, row["id"])
+                        )
+                        total += 1
+                    except Exception:
+                        pass  # Skip rows that can't be decrypted
+            except Exception:
+                pass  # Table might not exist
+
+        # 2. Re-encrypt stream keys
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, stream_key, public_key FROM user_streams "
+                "WHERE stream_key LIKE 'enc:%'"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                try:
+                    old_f = Fernet(old_config_key)
+                    new_f = Fernet(new_config_key)
+                    updates = {}
+                    if row["stream_key"] and row["stream_key"].startswith("enc:"):
+                        sk_plain = old_f.decrypt(row["stream_key"][4:].encode()).decode()
+                        updates["stream_key"] = "enc:" + new_f.encrypt(sk_plain.encode()).decode()
+                    if row["public_key"] and row["public_key"].startswith("enc:"):
+                        pk_plain = old_f.decrypt(row["public_key"][4:].encode()).decode()
+                        updates["public_key"] = "enc:" + new_f.encrypt(pk_plain.encode()).decode()
+                    if updates:
+                        set_clause = ", ".join(f"{k} = ?" for k in updates)
+                        await self._connection.execute(
+                            f"UPDATE user_streams SET {set_clause} WHERE id = ?",
+                            (*updates.values(), row["id"])
+                        )
+                        total += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 3. Re-encrypt chat messages (content + reply_preview)
+        chat_total = 0
+        try:
+            old_f = Fernet(old_chat_key)
+            new_f = Fernet(new_chat_key)
+            cursor = await self._connection.execute(
+                "SELECT id, content, reply_preview FROM chat_messages"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                try:
+                    updates = {}
+                    if row["content"]:
+                        try:
+                            plaintext = old_f.decrypt(row["content"].encode()).decode()
+                            updates["content"] = new_f.encrypt(plaintext.encode()).decode()
+                        except Exception:
+                            pass  # Might be unencrypted legacy
+                    if row.get("reply_preview"):
+                        try:
+                            plaintext = old_f.decrypt(row["reply_preview"].encode()).decode()
+                            updates["reply_preview"] = new_f.encrypt(plaintext.encode()).decode()
+                        except Exception:
+                            pass
+                    if updates:
+                        set_clause = ", ".join(f"{k} = ?" for k in updates)
+                        await self._connection.execute(
+                            f"UPDATE chat_messages SET {set_clause} WHERE id = ?",
+                            (*updates.values(), row["id"])
+                        )
+                        chat_total += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 4. Re-encrypt DM messages
+        dm_total = 0
+        try:
+            old_f = Fernet(old_chat_key)
+            new_f = Fernet(new_chat_key)
+            cursor = await self._connection.execute(
+                "SELECT id, content FROM dm_messages"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                try:
+                    if row["content"]:
+                        plaintext = old_f.decrypt(row["content"].encode()).decode()
+                        new_encrypted = new_f.encrypt(plaintext.encode()).decode()
+                        await self._connection.execute(
+                            "UPDATE dm_messages SET content = ? WHERE id = ?",
+                            (new_encrypted, row["id"])
+                        )
+                        dm_total += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        if total or chat_total or dm_total:
+            await self._connection.commit()
+            log.info(
+                f"Migrated encryption to machine-bound keys: "
+                f"{total} config(s), {chat_total} chat message(s), {dm_total} DM(s)"
+            )
+
+        # Mark migration complete
+        try:
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_key_version', '2')"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass
 
     @staticmethod
     def _decrypt_stream_keys(stream: dict) -> dict:

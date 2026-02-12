@@ -145,7 +145,7 @@ Permission Hierarchy:
 ```
 /opt/portal/
 ├── server.py              # Main aiohttp server (~11280 lines)
-├── database.py            # SQLite async database layer (~4000 lines)
+├── database.py            # SQLite async database layer (~4255 lines)
 ├── auth.py                # JWT/API key authentication (~465 lines)
 ├── config.py              # Environment configuration (~155 lines)
 ├── logger.py              # Logging with rotation
@@ -186,7 +186,7 @@ Permission Hierarchy:
 │   ├── chat.html          # Community chat (mobile sidebar toggle)
 │   ├── streams.html       # Community streams
 │   ├── live.html          # Public live streams (unauthenticated)
-│   ├── watch.html         # Stream viewer (HLS playback)
+│   ├── watch.html         # Stream viewer (HLS playback, mobile chat popout)
 │   ├── terminal.html      # Terminal UI
 │   ├── vnc.html           # VNC viewer
 │   ├── spice.html         # SPICE viewer
@@ -901,8 +901,8 @@ Open Relay Portal is designed with privacy and security as core principles:
 5. **Rate Limiting** - Per-IP request throttling, 1 registration per IP per 24 hours
 6. **Localhost Blocking** - User connections cannot target localhost
 7. **Chat Encryption** - Messages encrypted at rest (Fernet)
-8. **Config Encryption** - Connection, service, and VOD configs encrypted at rest (Fernet, `enc:` prefix, separate PBKDF2 key from chat)
-9. **Stream Key Encryption** - Stream keys encrypted at rest (Fernet); SHA-256 hashes stored for indexed lookups
+8. **Config Encryption** - Connection, service, and VOD configs encrypted at rest (Fernet, `enc:` prefix, separate PBKDF2 key from chat); keys bound to machine hardware
+9. **Stream Key Encryption** - Stream keys encrypted at rest (Fernet); SHA-256 hashes stored for indexed lookups; decryption keys machine-bound
 10. **API Credential Redaction** - GET endpoints never return passwords/keys; replaced with `has_<field>` flags
 11. **HTTPS/WSS Only** - All traffic encrypted via TLS, HSTS with preload
 12. **Security Headers** - Applied to all response types (including redirects and errors) via middleware; server version suppressed
@@ -921,6 +921,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 25. **File Manager Security** - Path traversal prevention via `Path.resolve()` + root check; blocked files list (`.env`, credentials); symlinks resolved and checked; configurable root directory; upload size limits enforced server-side
 26. **SFTP Browser Security** - Per-user connection ownership enforced on every request; only SSH/SFTP connection types eligible; SFTP connections are ephemeral (opened per-request, closed after); no path traversal possible (remote filesystem)
 27. **System Monitor Safety** - Process kill refuses PID 1, kernel threads, and portal process; systemd service control limited to start/stop/restart/enable/disable (no mask/daemon-reload); all subprocess calls use list args (no shell=True); service names validated with regex
+28. **Machine-Bound Encryption** - Encryption keys are derived from `JWT_SECRET` + a machine-specific salt (SHA-256 of `/etc/machine-id` + random bytes). The salt file (`.encryption_salt`) is auto-generated on first run, chmod 600, and gitignored. Even with the same `.env`, a different machine produces different keys — cloning the repo cannot decrypt existing data. One-time migration re-encrypts all data on upgrade.
 
 ---
 

@@ -198,6 +198,7 @@ Single binary. No Docker required. No microservices. No external databases. One 
 
 - **HTTPS only** — TLS 1.2+ with HSTS preload, no HTTP fallback
 - **Encryption at rest** — Chat messages, connection configs, stream keys all encrypted (Fernet/PBKDF2)
+- **Machine-bound keys** — Encryption keys derived from hardware ID + random salt; cloning the repo cannot decrypt data
 - **Argon2id** password hashing
 - **Zero-knowledge voice** — WebRTC DTLS-SRTP, audio never touches the server
 - **Path traversal protection** — File manager validates all paths with `Path.resolve()`
@@ -207,7 +208,7 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Rate limiting** — Per-IP request throttling on all endpoints
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model (27 documented security features).
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model (28 documented security features).
 
 ## Streaming
 
