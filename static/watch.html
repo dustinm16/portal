@@ -871,14 +871,16 @@
 
                     // Set up video
                     setupVideo();
-
-                    // Connect to chat
-                    const chatKey = streamData.public_key || streamData.stream_key;
-                    if (chatKey) {
-                        connectChat(chatKey);
-                    }
+                } else if (streamData.is_live === 2) {
+                    showEncodingMessage();
                 } else {
                     showOfflineMessage();
+                }
+
+                // Always connect to chat regardless of stream status
+                const chatKey = streamData.public_key || streamData.stream_key;
+                if (chatKey) {
+                    connectChat(chatKey);
                 }
 
                 // Periodically refresh stream info (only after successful load)
@@ -1206,7 +1208,7 @@
                 chatWs = null;
                 // Reconnect after a delay
                 setTimeout(() => {
-                    if (streamData && (streamData.is_live === 1 || streamData.is_live === true)) {
+                    if (streamData) {
                         const chatKey = streamData.public_key || streamData.stream_key;
                         if (chatKey) connectChat(chatKey);
                     }
