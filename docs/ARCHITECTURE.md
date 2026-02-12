@@ -144,19 +144,19 @@ Permission Hierarchy:
 
 ```
 /opt/portal/
-├── server.py              # Main aiohttp server (~8100 lines)
-├── database.py            # SQLite async database layer (~2500 lines)
-├── auth.py                # JWT/API key authentication (~450 lines)
-├── config.py              # Environment configuration
+├── server.py              # Main aiohttp server (~11280 lines)
+├── database.py            # SQLite async database layer (~4000 lines)
+├── auth.py                # JWT/API key authentication (~465 lines)
+├── config.py              # Environment configuration (~155 lines)
 ├── logger.py              # Logging with rotation
-├── ssh_keys.py            # SSH key generation/management
+├── ssh_keys.py            # SSH key generation/management (~260 lines)
 ├── shodan_integration.py  # Shodan API for recon
 ├── traffic_metrics.py     # Connection metrics, time series, Chart.js data
 ├── vulnerability_scanner.py # CVE/port scanning
 ├── cert_manager.py        # TLS certificate lifecycle (self-signed, Let's Encrypt, custom)
-├── setup.py               # Interactive setup wizard
-├── system_monitor.py      # Process, systemd service, and network monitoring
-├── file_manager.py        # Local filesystem operations (admin)
+├── setup.py               # Interactive setup wizard + MediaMTX installer (~1265 lines)
+├── system_monitor.py      # Process, systemd service, and network monitoring (~370 lines)
+├── file_manager.py        # Local filesystem operations (admin) (~280 lines)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user)
 │
 ├── plugins/               # Connection plugins
@@ -179,7 +179,7 @@ Permission Hierarchy:
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   └── mediamtx.py        # MediaMTX process manager
 │
-├── static/                # 16 HTML pages, 8 JS modules, 1 CSS file
+├── static/                # 19 HTML pages, 9 JS modules, 1 CSS file
 │   ├── index.html         # Dashboard
 │   ├── login.html         # Login page
 │   ├── admin.html         # Admin panel
@@ -195,10 +195,11 @@ Permission Hierarchy:
 │   ├── github.html        # GitHub browser
 │   ├── api-docs.html      # Interactive API documentation
 │   ├── about.html         # Feature guide & docs
-│   ├── files.html         # File manager (admin local + user SFTP)
-│   ├── sysmon.html        # System monitor (processes, services, network)
+│   ├── guides.html        # Connection setup guides (75 types)
+│   ├── files.html         # File manager (SFTP, admin local in admin panel)
+│   ├── sysmon.html        # Redirects to /admin#system
 │   ├── unauthorized.html  # Auth error page
-│   ├── css/portal.css     # Shared styles (~3100 lines, 6 responsive breakpoints)
+│   ├── css/portal.css     # Shared styles (~3475 lines, 6 responsive breakpoints)
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
@@ -209,6 +210,7 @@ Permission Hierarchy:
 │       ├── ssh-keys.js    # SSH key management
 │       ├── streams.js     # Stream management
 │       ├── vods.js        # VOD file manager
+│       ├── voice.js       # WebRTC voice chat (VAD/PTT)
 │       └── terminal.js    # Terminal WebSocket client
 │
 ├── docs/                  # Documentation
@@ -998,12 +1000,13 @@ sudo python3 server.py setup
 ```
 
 The wizard runs **before dependencies are installed** (early argv intercept bypasses third-party imports). It handles:
-1. Virtual environment creation and `pip install -r requirements.txt`
+1. Hostname, port, and optional stream hostname configuration
 2. Auto-generates a self-signed TLS certificate on fresh installs (openssl or Python cryptography)
-3. Hostname, port, and optional stream hostname configuration
-4. JWT secret generation and `.env` file creation
-5. Database initialization and admin user creation
-6. Systemd service file generation, installation, and startup
+3. JWT secret generation and `.env` file creation (chmod 600)
+4. Virtual environment creation and `pip install -r requirements.txt`
+5. **Downloads and installs MediaMTX** streaming server (Linux amd64)
+6. Database initialization and admin user creation
+7. Systemd service file generation, installation, and startup
 
 On reconfiguration, existing settings are detected and preserved by default. The wizard validates the final configuration (cert files exist, key permissions, JWT secret set) before finishing.
 
@@ -1021,7 +1024,7 @@ Switch from self-signed to Let's Encrypt at any time by re-running `sudo python3
 
 ### Systemd Service
 
-The setup wizard auto-generates a service file with correct paths. Manual template:
+The setup wizard auto-generates a service file with correct paths. A template is also provided at `portal.service.example`. Manual setup:
 
 ```ini
 [Unit]
@@ -1044,7 +1047,7 @@ WantedBy=multi-user.target
 ### Commands
 
 ```bash
-# Setup wizard (works on fresh clone, no venv needed)
+# Setup wizard (works on fresh clone, no venv needed, downloads MediaMTX)
 sudo python3 server.py setup
 
 # Initialize admin user (if not using setup wizard)
@@ -1052,6 +1055,9 @@ sudo venv/bin/python server.py init
 
 # Start server directly (port 443 requires root)
 sudo venv/bin/python server.py serve
+
+# Install/update MediaMTX streaming server
+sudo python server.py install-mediamtx
 
 # Systemd service management (after setup installs the service)
 sudo systemctl start portal

@@ -5,7 +5,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv(Path(__file__).parent / ".env")
+# override=True ensures .env values take precedence over system env vars
+# (critical for HOSTNAME which is a standard Linux shell variable)
+load_dotenv(Path(__file__).parent / ".env", override=True)
 
 
 class Config:

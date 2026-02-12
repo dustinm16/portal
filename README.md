@@ -139,8 +139,9 @@ That's it. The setup wizard handles everything automatically:
 1. Creates a virtual environment and installs all dependencies
 2. **Auto-generates a self-signed TLS certificate** (server starts immediately)
 3. Generates a JWT secret and writes `.env` configuration
-4. Creates the database and initial admin user
-5. Installs and starts a systemd service
+4. **Downloads MediaMTX** streaming server (for RTMPS/HLS live streaming)
+5. Creates the database and initial admin user
+6. Installs and starts a systemd service
 
 Open `https://your-hostname` in a browser. Self-signed certs show a warning — click "Advanced" > "Proceed" to continue. Switch to Let's Encrypt or a custom certificate later via the Admin Panel or by re-running setup.
 
@@ -154,10 +155,14 @@ pip install -r requirements.txt
 
 # Configure (or copy .env.example and edit)
 cp .env.example .env
+chmod 600 .env
 # Edit .env: set JWT_SECRET, HOSTNAME, SSL_CERT, SSL_KEY
 
 # Generate a self-signed cert if you don't have one
 python -c "import cert_manager; cert_manager.generate_self_signed_cert('localhost', 'certs')"
+
+# Install MediaMTX for streaming (optional, Linux amd64)
+sudo python server.py install-mediamtx
 
 # Initialize database and create admin user
 python server.py init

@@ -6,15 +6,9 @@ python-dotenv>=1.0
 argon2-cffi>=23.1
 pyotp>=2.9.0
 aiofiles>=23.0
-
-# Optional: SSH plugin
 asyncssh>=2.14
-
-# Optional: VPN encryption
 cryptography>=41.0
-
-# Optional: System health monitoring
 psutil>=5.9
 
-# Optional: Better async support
-uvloop>=0.19; sys_platform != 'win32'
+# Optional: faster event loop (Linux only, not required)
+# uvloop>=0.19; sys_platform != 'win32'

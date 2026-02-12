@@ -11121,7 +11121,7 @@ def show_invite_code() -> None:
     logger.info(f"Daily invite code requested for {today}")
 
     print(f"\n{'='*50}")
-    print("PORTAL GATEWAY - DAILY INVITE CODE")
+    print("OPEN RELAY PORTAL - DAILY INVITE CODE")
     print(f"{'='*50}")
     print(f"Date:    {today}")
     print(f"Code:    {code}")
@@ -11151,14 +11151,15 @@ async def set_admin_cli(username: str, remove: bool = False) -> None:
         await db.close()
         return
 
+    new_role = "user" if remove else "admin"
     await db.conn.execute(
-        "UPDATE users SET is_admin = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (new_status, user["id"])
+        "UPDATE users SET is_admin = ?, role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_status, new_role, user["id"])
     )
     await db.conn.commit()
 
     status_word = "removed from" if remove else "added to"
-    print(f"User '{username}' has been {status_word} admin group")
+    print(f"User '{username}' has been {status_word} admin group (role={new_role})")
 
     await db.close()
 
@@ -11242,9 +11243,15 @@ def main():
     # Setup wizard
     subparsers.add_parser("setup", help="Interactive setup wizard")
 
+    # Install MediaMTX
+    subparsers.add_parser("install-mediamtx", help="Download and install MediaMTX streaming server")
+
     args = parser.parse_args()
 
-    if args.command == "serve" or args.command is None:
+    if args.command is None:
+        parser.print_help()
+        return
+    elif args.command == "serve":
         server = PortalServer()
         asyncio.run(server.run())
     elif args.command == "init":
@@ -11262,6 +11269,10 @@ def main():
     elif args.command == "setup":
         from setup import run_setup_wizard
         run_setup_wizard()
+    elif args.command == "install-mediamtx":
+        from setup import install_mediamtx
+        success = install_mediamtx()
+        sys.exit(0 if success else 1)
     else:
         parser.print_help()
 

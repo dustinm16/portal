@@ -1,3 +1,14 @@
+# Open Relay Portal - Systemd Service Template
+#
+# This is a template. The setup wizard generates a machine-specific version:
+#   sudo python3 server.py setup
+#
+# Manual install:
+#   1. Copy this file:  sudo cp portal.service.example /etc/systemd/system/portal.service
+#   2. Edit the paths below to match your installation
+#   3. Reload systemd:  sudo systemctl daemon-reload
+#   4. Enable & start:  sudo systemctl enable --now portal
+
 [Unit]
 Description=Open Relay Portal - WebSocket Auth and Relay Server
 After=network.target
@@ -7,9 +18,9 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/home/dustin/scripts/portal
+WorkingDirectory=/path/to/portal
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/dustin/scripts/portal/venv/bin/python /home/dustin/scripts/portal/server.py serve
+ExecStart=/path/to/portal/venv/bin/python /path/to/portal/server.py serve
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5

@@ -166,22 +166,17 @@ def run_setup_wizard() -> None:
         config["JWT_SECRET"] = secrets.token_hex(32)
         print("  JWT secret auto-generated (64-char hex).")
 
-    # --- Step 5: Database ---
+    # --- Database path ---
     default_db = existing_config.get("DATABASE_PATH", str(PROJECT_DIR / "portal.db"))
     config["DATABASE_PATH"] = default_db
 
-    # Carry over other existing settings
-    carry_over_keys = [
-        "TOKEN_EXPIRY_HOURS", "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW",
-        "SHODAN_API_KEY", "RTMP_PLAIN_ENABLED", "RTMP_PLAIN_PORT",
-        "STUN_SERVER", "TURN_SERVER", "TURN_USERNAME", "TURN_PASSWORD",
-        "CERT_EMAIL", "STREAM_HOSTNAME",
-    ]
-    for key in carry_over_keys:
-        if key in existing_config and key not in config:
-            config[key] = existing_config[key]
+    # Carry over ALL existing settings not already set by the wizard
+    # This preserves any custom env vars the user added manually
+    for key, value in existing_config.items():
+        if key not in config:
+            config[key] = value
 
-    # --- Step 6: Write .env ---
+    # --- Step 5: Write .env ---
     print()
     print("=" * 50)
     print("STEP 5: Writing Configuration")
@@ -189,31 +184,38 @@ def run_setup_wizard() -> None:
     _write_env(env_path, config)
     print(f"  Configuration written to: {env_path}")
 
-    # --- Step 7: Virtual Environment & Dependencies ---
+    # --- Step 6: Virtual Environment & Dependencies ---
     print()
     print("=" * 50)
     print("STEP 6: Dependencies")
     print("=" * 50)
     venv_python = _setup_venv_and_deps()
 
+    # --- Step 7: MediaMTX (streaming) ---
+    print()
+    print("=" * 50)
+    print("STEP 7: MediaMTX (Streaming Server)")
+    print("=" * 50)
+    _setup_mediamtx()
+
     # --- Step 8: Admin User ---
     print()
     print("=" * 50)
-    print("STEP 7: Admin User")
+    print("STEP 8: Admin User")
     print("=" * 50)
     _setup_admin_user(venv_python)
 
     # --- Step 9: Systemd Service ---
     print()
     print("=" * 50)
-    print("STEP 8: Systemd Service")
+    print("STEP 9: Systemd Service")
     print("=" * 50)
     _setup_systemd(venv_python)
 
     # --- Step 10: Verify Configuration ---
     print()
     print("=" * 50)
-    print("STEP 9: Verification")
+    print("STEP 10: Verification")
     print("=" * 50)
     _verify_setup(config)
 
@@ -818,9 +820,147 @@ def _write_env(env_path: Path, config: dict) -> None:
             optional_lines.append(f"{key}={config[key]}")
 
     lines.extend(optional_lines)
+
+    # Write any extra keys not already covered (user-added custom vars)
+    written_keys = {
+        "JWT_SECRET", "HOST", "PORT", "HOSTNAME", "STREAM_HOSTNAME",
+        "SSL_CERT", "SSL_KEY", "CERT_METHOD", "CERT_EMAIL", "DATABASE_PATH",
+    }
+    written_keys.update(optional_keys.keys())
+    extra_keys = sorted(k for k in config if k not in written_keys and config[k])
+    if extra_keys:
+        lines.append("")
+        lines.append("# Additional settings")
+        for key in extra_keys:
+            lines.append(f"{key}={config[key]}")
+
     lines.append("")
 
     env_path.write_text("\n".join(lines))
+    os.chmod(str(env_path), 0o600)
+
+
+MEDIAMTX_VERSION = "1.9.3"
+MEDIAMTX_URL = (
+    f"https://github.com/bluenviron/mediamtx/releases/download/"
+    f"v{MEDIAMTX_VERSION}/mediamtx_v{MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+)
+
+
+def install_mediamtx(install_dir: str = "/usr/local/bin", version: str = None) -> bool:
+    """Download and install MediaMTX binary. Returns True on success."""
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    version = version or MEDIAMTX_VERSION
+    url = (
+        f"https://github.com/bluenviron/mediamtx/releases/download/"
+        f"v{version}/mediamtx_v{version}_linux_amd64.tar.gz"
+    )
+    dest = Path(install_dir) / "mediamtx"
+
+    print(f"  Downloading MediaMTX v{version}...")
+    print(f"  URL: {url}")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tarball = Path(tmpdir) / "mediamtx.tar.gz"
+
+            # Download
+            urllib.request.urlretrieve(url, str(tarball))
+            print(f"  Downloaded ({tarball.stat().st_size // 1024 // 1024} MB)")
+
+            # Extract just the binary
+            with tarfile.open(str(tarball), "r:gz") as tar:
+                members = [m for m in tar.getmembers() if m.name == "mediamtx"]
+                if not members:
+                    # Try any member that looks like the binary
+                    members = [m for m in tar.getmembers() if "mediamtx" in m.name and not m.name.endswith(".yml")]
+                if not members:
+                    print("  ERROR: mediamtx binary not found in archive")
+                    return False
+                tar.extract(members[0], tmpdir)
+                extracted = Path(tmpdir) / members[0].name
+
+                # Install to destination
+                is_root = os.geteuid() == 0
+                if is_root:
+                    shutil.copy2(str(extracted), str(dest))
+                    os.chmod(str(dest), 0o755)
+                else:
+                    result = subprocess.run(
+                        ["sudo", "cp", str(extracted), str(dest)],
+                        capture_output=True, text=True,
+                    )
+                    if result.returncode != 0:
+                        print(f"  ERROR: Failed to install: {result.stderr.strip()}")
+                        return False
+                    subprocess.run(["sudo", "chmod", "755", str(dest)],
+                                   capture_output=True, text=True)
+
+        # Verify
+        result = subprocess.run([str(dest), "--help"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 or "mediamtx" in (result.stdout + result.stderr).lower():
+            print(f"  Installed: {dest}")
+            return True
+        else:
+            print(f"  WARNING: Binary installed but verification failed")
+            return True
+
+    except urllib.error.HTTPError as e:
+        print(f"  ERROR: Download failed: HTTP {e.code}")
+        print(f"  Check that version v{version} exists at:")
+        print(f"    https://github.com/bluenviron/mediamtx/releases")
+        return False
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return False
+
+
+def _setup_mediamtx() -> None:
+    """Check for MediaMTX and offer to install if missing."""
+    existing = shutil.which("mediamtx")
+
+    if existing:
+        print(f"  MediaMTX found: {existing}")
+        # Try to get version
+        try:
+            result = subprocess.run(
+                [existing, "--help"], capture_output=True, text=True, timeout=5,
+            )
+            output = result.stdout + result.stderr
+            if "v" in output:
+                for line in output.splitlines():
+                    if line.strip().startswith("mediamtx") or "v" in line.lower():
+                        print(f"  {line.strip()}")
+                        break
+        except Exception:
+            pass
+
+        reinstall = _prompt_yes_no(
+            f"Reinstall/update to v{MEDIAMTX_VERSION}?", default_yes=False,
+        )
+        if not reinstall:
+            print("  Keeping existing installation.")
+            return
+
+    else:
+        print("  MediaMTX is not installed.")
+        print("  MediaMTX is required for live streaming (RTMPS/HLS).")
+        print(f"  Version: v{MEDIAMTX_VERSION}\n")
+        install = _prompt_yes_no("Download and install MediaMTX?", default_yes=True)
+        if not install:
+            print("  Skipped. Streaming features will not work without MediaMTX.")
+            print("  Install later with: sudo python server.py install-mediamtx")
+            return
+
+    if install_mediamtx():
+        print("  MediaMTX is ready for streaming.")
+    else:
+        print("  MediaMTX installation failed.")
+        print("  Install manually: https://github.com/bluenviron/mediamtx/releases")
+        print("  Or retry: sudo python server.py install-mediamtx")
 
 
 def _setup_venv_and_deps() -> str:
