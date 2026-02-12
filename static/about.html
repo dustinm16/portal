@@ -198,7 +198,13 @@
         .role-admin { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
         .role-moderator { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
         .role-user { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
-        /* Hide admin-only sections by default until we know user role */
+        /* Hide auth-only and admin-only sections by default until we know user */
+        .auth-only {
+            display: none;
+        }
+        .auth-only.visible {
+            display: block;
+        }
         .admin-only {
             display: none;
         }
@@ -251,6 +257,7 @@
                     <li><a href="#overview">Overview</a></li>
                     <li><a href="#roles">Roles & Permissions</a></li>
                 </ul>
+                <div class="auth-only">
                 <h4>Features</h4>
                 <ul>
                     <li><a href="#dashboard">Dashboard</a></li>
@@ -263,6 +270,7 @@
                     <li><a href="#ssh-keys">SSH Keys</a></li>
                     <li><a href="#api-keys">API Keys & Auth</a></li>
                 </ul>
+                </div>
                 <div class="admin-only">
                     <h4>Administration</h4>
                     <ul>
@@ -270,10 +278,12 @@
                         <li><a href="#system-monitor">System Monitor</a></li>
                     </ul>
                 </div>
+                <div class="auth-only">
                 <h4>Tools</h4>
                 <ul>
                     <li><a href="#file-manager">File Manager</a></li>
                 </ul>
+                </div>
                 <h4>Security</h4>
                 <ul>
                     <li><a href="#security">Security Overview</a></li>
@@ -367,6 +377,9 @@
                     </ul>
                     After registration, an admin can promote users to higher roles.
                 </div>
+
+                <!-- Authenticated user features -->
+                <div class="auth-only">
 
                 <!-- Dashboard -->
                 <h2 id="dashboard">Dashboard</h2>
@@ -884,6 +897,8 @@
                 </ol>
                 <p>Once enabled, you'll need to enter a code from your authenticator app each time you log in.</p>
 
+                </div><!-- end auth-only -->
+
                 <!-- Admin Features -->
                 <div class="admin-only">
                 <h2 id="admin-features">Admin Features <span class="badge-admin">ADMIN</span></h2>
@@ -1070,6 +1085,7 @@
                 </div>
 
                 <!-- File Manager -->
+                <div class="auth-only">
                 <h2 id="file-manager">File Manager</h2>
                 <p>Browse and manage files through the web interface. The File Manager page (<code>/files</code>) provides Remote Files (SFTP) access for all users. Server file management is available in the Admin Panel Files tab (see <a href="#admin-features">Admin Features</a>).</p>
 
@@ -1083,6 +1099,7 @@
                     <li>Per-user access &mdash; only your own connections are accessible</li>
                 </ul>
                 </div>
+                </div><!-- end auth-only -->
 
                 <!-- Security -->
                 <h2 id="security">Security</h2>
@@ -1145,10 +1162,26 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=27"></script>
+    <script src="/static/js/portal.js?v=28"></script>
     <script>
+        // Prevent Portal.fetch from redirecting to login on 401 (this is a public page)
+        const _originalPortalFetch = Portal.fetch.bind(Portal);
+        Portal.fetch = async function(url, options = {}) {
+            const { headers: optHeaders, ...restOptions } = options;
+            const response = await fetch(url, {
+                credentials: 'same-origin',
+                ...restOptions,
+                headers: {
+                    'Accept': 'application/json',
+                    ...optHeaders
+                },
+            });
+            // Do NOT redirect on 401 - this is a public page
+            return response;
+        };
+
         document.addEventListener('DOMContentLoaded', async () => {
-            // Load user info for navbar and admin visibility
+            // Load user info for navbar and auth-only visibility
             let isAuthenticated = false;
             try {
                 const response = await fetch('/api/me', { credentials: 'include' });
@@ -1156,6 +1189,11 @@
                     isAuthenticated = true;
                     const user = await response.json();
                     document.getElementById('username-display').textContent = user.nickname || user.username;
+
+                    // Show auth-only sections for all authenticated users
+                    document.querySelectorAll('.auth-only').forEach(el => {
+                        el.classList.add('visible');
+                    });
 
                     // Show admin-only sections if user is admin
                     if (Portal.isAdmin(user)) {
