@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Open Relay Portal - Secure WebSocket Authentication and Relay Server."""
 
+# Early intercept: run setup wizard before loading dependencies.
+# On a fresh clone, aiohttp/asyncssh/etc. aren't installed yet,
+# so 'python server.py setup' must work without them.
+import sys as _sys
+if len(_sys.argv) > 1 and _sys.argv[1] == "setup":
+    from setup import run_setup_wizard
+    run_setup_wizard()
+    _sys.exit(0)
+del _sys
+
 import asyncio
 import hashlib
 import json
