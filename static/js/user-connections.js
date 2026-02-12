@@ -259,8 +259,8 @@ function applyConnectionPreset() {
 /**
  * Quick add connection - opens add connection modal with preset pre-selected
  */
-function quickAddConnection(presetKey) {
-    showAddConnectionModal();
+async function quickAddConnection(presetKey) {
+    await showAddConnectionModal();
     const presetSelect = document.getElementById('connection-preset');
     if (presetSelect) {
         presetSelect.value = presetKey;
@@ -961,6 +961,7 @@ async function submitConnection(event) {
 
     // Then handle static type-specific fields
     switch (type) {
+        case 'sftp':
         case 'ssh':
             config.username = document.getElementById('connection-ssh-user').value.trim();
             const sshAuth = document.getElementById('connection-ssh-auth').value;
@@ -1026,6 +1027,7 @@ async function submitConnection(event) {
         Portal.toast(isEdit ? 'Connection updated' : 'Connection added', 'success');
         setTimeout(() => closeModal('add-connection-modal'), 800);
         await loadConnections();
+        if (typeof loadInlineConnections === 'function') loadInlineConnections();
     } catch (error) {
         console.error('[Connections] Error saving:', error);
         let msg = error.message || 'Failed to save connection';
@@ -1076,6 +1078,7 @@ async function editConnection(connectionId) {
         // Populate type-specific fields
         const config = conn.config || {};
         switch (conn.type) {
+            case 'sftp':
             case 'ssh':
                 document.getElementById('connection-ssh-user').value = config.username || '';
                 document.getElementById('connection-ssh-auth').value = config.auth_method || 'password';
@@ -1185,6 +1188,7 @@ async function deleteConnection(connectionId) {
         Portal.toast('Connection deleted');
         closeModal('confirm-modal');
         await loadConnections();
+        if (typeof loadInlineConnections === 'function') loadInlineConnections();
     } catch (error) {
         console.error('[Connections] Error deleting:', error);
         Portal.toast(error.message || 'Failed to delete connection', 'error');
@@ -1213,6 +1217,9 @@ async function connectTo(connectionId) {
         }
 
         switch (type) {
+            case 'sftp':
+                window.open(`/files#sftp-${connectionId}`, '_blank');
+                break;
             case 'ssh':
             case 'terminal':
                 window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600');
@@ -1275,7 +1282,7 @@ async function connectTo(connectionId) {
 if (typeof formatDate !== 'function') {
     function formatDate(dateStr) {
         if (!dateStr) return '';
-        const date = new Date(dateStr);
+        const date = new Date(dateStr + 'Z');
         return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 }
@@ -1285,6 +1292,7 @@ if (typeof formatDate !== 'function') {
  */
 if (typeof escapeHtml !== 'function') {
     function escapeHtml(text) {
+        if (text == null) return '';
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;

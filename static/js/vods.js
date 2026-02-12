@@ -28,7 +28,7 @@ async function loadVods() {
     error.style.display = 'none';
 
     try {
-        const response = await fetch('/api/vods', { credentials: 'include' });
+        const response = await Portal.fetch('/api/vods');
 
         if (response.status === 404) {
             loading.style.display = 'none';
@@ -37,7 +37,7 @@ async function loadVods() {
         }
 
         if (!response.ok) {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             throw new Error(data.error || 'Failed to load VODs');
         }
 
@@ -469,25 +469,27 @@ async function saveVodStorage(event) {
     else data.private_key = document.getElementById('vod-private-key').value;
 
     try {
-        const response = await fetch('/api/vods/storage', {
+        const response = await Portal.fetch('/api/vods/storage', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            credentials: 'include', body: JSON.stringify(data)
+            body: JSON.stringify(data)
         });
         const result = await response.json();
-        if (!response.ok) { alert(result.error || 'Failed to save storage config'); return; }
+        if (!response.ok) { Portal.toast(result.error || 'Failed to save storage config', 'error'); return; }
+        Portal.toast('VOD storage saved', 'success');
         closeModal('vod-storage-modal');
         loadVods();
-    } catch (err) { alert('Failed to save storage config'); }
+    } catch (err) { Portal.toast('Failed to save storage config', 'error'); }
 }
 
 async function deleteVodStorage() {
     if (!confirm('Remove VOD storage configuration? This will not delete any remote files.')) return;
     try {
-        const response = await fetch('/api/vods/storage', { method: 'DELETE', credentials: 'include' });
-        if (!response.ok) { const d = await response.json(); alert(d.error || 'Failed'); return; }
+        const response = await Portal.fetch('/api/vods/storage', { method: 'DELETE' });
+        if (!response.ok) { const d = await response.json().catch(() => ({})); Portal.toast(d.error || 'Failed to delete', 'error'); return; }
+        Portal.toast('VOD storage removed', 'success');
         closeModal('vod-storage-modal');
         loadVods();
-    } catch (err) { alert('Failed to delete storage config'); }
+    } catch (err) { Portal.toast('Failed to delete storage config', 'error'); }
 }
 
 async function testVodConnection() {
@@ -509,9 +511,9 @@ async function testVodConnection() {
     else data.private_key = document.getElementById('vod-private-key').value;
 
     try {
-        const response = await fetch('/api/vods/storage/test', {
+        const response = await Portal.fetch('/api/vods/storage/test', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            credentials: 'include', body: JSON.stringify(data)
+            body: JSON.stringify(data)
         });
         const result = await response.json();
         resultEl.style.display = 'block';

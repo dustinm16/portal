@@ -71,8 +71,15 @@ Form-based login, sets session cookie.
 
 **Request (form-data):**
 ```
-username=admin&password=secret
+username=admin&password=secret&remember_me=on
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `username` | Yes | Account username |
+| `password` | Yes | Account password |
+| `totp_code` | No | 2FA code (required if 2FA is enabled) |
+| `remember_me` | No | If `on`, session cookie lasts 30 days instead of 24 hours |
 
 **Response:** Redirect to `/dashboard` or error page
 
@@ -98,6 +105,10 @@ Register a new account (requires invite code).
   "invite_code": "ABC123"
 }
 ```
+
+**Validation:**
+- Username: 3-32 characters, alphanumeric + underscores only (`^[a-zA-Z0-9_]+$`)
+- Password: minimum 8 characters
 
 **Response (201):**
 ```json
@@ -1923,6 +1934,31 @@ TURN server is optional — only included if configured via environment variable
 - `voice_speaking`: Rate-limited to 1 broadcast per 100ms per user
 - Users can only be in voice in one channel at a time; switching text channels auto-leaves voice
 - User list (`users` messages) includes `in_voice`, `voice_muted`, `voice_deafened`, `voice_speaking` fields
+
+---
+
+### SEO & Public Endpoints
+
+These endpoints are publicly accessible without authentication.
+
+#### GET /robots.txt
+Returns SEO robots directives. Allows all crawlers access to public pages (`/about`, `/live`, `/login`) while blocking authenticated areas.
+
+**Response:** `text/plain`
+
+---
+
+#### GET /sitemap.xml
+Returns an XML sitemap for search engine indexing. Lists public pages with the portal's configured hostname.
+
+**Response:** `application/xml`
+
+---
+
+#### GET /google{id}.html
+Google Search Console verification page. The verification ID and filename are configured via `GOOGLE_SITE_VERIFICATION` and `GOOGLE_VERIFICATION_FILE` environment variables.
+
+**Response:** `text/html` with Google verification meta tag.
 
 ---
 

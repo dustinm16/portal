@@ -436,6 +436,61 @@ async def http_favicon(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+async def http_robots_txt(request: web.Request) -> web.Response:
+    """Serve robots.txt for search engine crawling."""
+    hostname = Config.HOSTNAME or request.host
+    body = f"""User-agent: *
+Allow: /login
+Allow: /live
+Allow: /about
+Disallow: /api/
+Disallow: /ws/
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /streams
+Disallow: /files
+Disallow: /guides
+Disallow: /static/uploads/
+
+Sitemap: https://{hostname}/sitemap.xml
+"""
+    return web.Response(text=body, content_type="text/plain")
+
+
+async def http_sitemap_xml(request: web.Request) -> web.Response:
+    """Serve sitemap.xml for search engine indexing."""
+    hostname = Config.HOSTNAME or request.host
+    urls = [
+        ("https://{}/login", "weekly", "1.0"),
+        ("https://{}/live", "daily", "0.8"),
+        ("https://{}/about", "monthly", "0.6"),
+    ]
+    xml_entries = []
+    for url_tpl, freq, priority in urls:
+        url = url_tpl.format(hostname)
+        xml_entries.append(
+            f"  <url>\n    <loc>{url}</loc>\n    <changefreq>{freq}</changefreq>\n    <priority>{priority}</priority>\n  </url>"
+        )
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{chr(10).join(xml_entries)}
+</urlset>"""
+    return web.Response(text=body, content_type="application/xml")
+
+
+async def http_google_verification(request: web.Request) -> web.Response:
+    """Serve Google Search Console verification file."""
+    file_id = Config.GOOGLE_VERIFICATION_FILE
+    if not file_id:
+        return web.Response(status=404, text="Not found")
+    filename = f"google{file_id}.html"
+    return web.Response(
+        text=f"google-site-verification: {filename}",
+        content_type="text/html"
+    )
+
+
 async def http_authenticated_upload(request: web.Request) -> web.Response:
     """Serve uploaded files (chat images, thumbnails) only to authenticated users."""
     token = await authenticate_request(request)
@@ -1086,23 +1141,26 @@ async def http_register(request: web.Request) -> web.Response:
             status=400
         )
 
+    # Validate username format (same rules as frontend)
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{3,30}', username):
+        return web.json_response(
+            {"error": "Username must be 3-30 characters: letters, numbers, underscores, hyphens only"},
+            status=400
+        )
+
+    if len(password) < 8 or len(password) > 128:
+        return web.json_response(
+            {"error": "Password must be between 8 and 128 characters"},
+            status=400
+        )
+
     if not invite_code:
         return web.json_response(
             {"error": "invite_code required"},
             status=400
         )
 
-    # Validate invite code
-    is_valid, code_id = await validate_invite_code(invite_code, db)
-    if not is_valid:
-        log_invite_code_usage(username, False, client_ip)
-        logger.warning(f"Invalid invite code used for registration attempt: {username} from {client_ip}")
-        return web.json_response(
-            {"error": "Invalid or expired invite code"},
-            status=403
-        )
-
-    # Check registration limit: 1 account per IP per 24 hours
+    # Check registration limit before validating invite code (prevent code waste)
     cursor = await db.conn.execute(
         """SELECT COUNT(*) FROM users
            WHERE registration_ip = ?
@@ -1115,6 +1173,16 @@ async def http_register(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Registration limit reached. Only one account per IP per 24 hours."},
             status=429
+        )
+
+    # Validate invite code
+    is_valid, code_id = await validate_invite_code(invite_code, db)
+    if not is_valid:
+        log_invite_code_usage(username, False, client_ip)
+        logger.warning(f"Invalid invite code used for registration attempt: {username} from {client_ip}")
+        return web.json_response(
+            {"error": "Invalid or expired invite code"},
+            status=403
         )
 
     try:
@@ -7062,10 +7130,18 @@ async def http_login_page(request: web.Request) -> web.Response:
     if token:
         raise web.HTTPFound("/dashboard")
 
-    return web.Response(
-        text=load_static_file("login.html"),
-        content_type="text/html"
-    )
+    html = load_static_file("login.html")
+    # Inject Google site verification meta tag if configured
+    verification = Config.GOOGLE_SITE_VERIFICATION
+    if verification:
+        html = html.replace(
+            "<!-- GOOGLE_SITE_VERIFICATION -->",
+            f'<meta name="google-site-verification" content="{verification}">'
+        )
+    else:
+        html = html.replace("<!-- GOOGLE_SITE_VERIFICATION -->", "")
+
+    return web.Response(text=html, content_type="text/html")
 
 
 async def http_login_submit(request: web.Request) -> web.Response:
@@ -7088,6 +7164,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
     username = data.get("username")
     password = data.get("password")
     totp_code = data.get("totp_code")  # Optional 2FA code
+    remember_me = data.get("remember", False)
 
     if not username or not password:
         if "application/json" in content_type:
@@ -7129,16 +7206,21 @@ async def http_login_submit(request: web.Request) -> web.Response:
         else:
             logger.info(f"2FA verified for user '{username}' from {client_ip}")
 
+    # Session duration: 30 days if "remember me", otherwise 24 hours
+    REMEMBER_ME_SECONDS = 30 * 24 * 3600  # 30 days
+    session_max_age = REMEMBER_ME_SECONDS if remember_me else Config.SESSION_COOKIE_MAX_AGE
+    session_hours = session_max_age // 3600
+
     # Create session token
     scopes = ["*"] if user["is_admin"] else ["services:read", "access:*"]
     jwt_token, _ = await create_access_token(
         user_id=user["id"],
         scopes=scopes,
         name="web_session",
-        expires_in_hours=Config.SESSION_COOKIE_MAX_AGE // 3600
+        expires_in_hours=session_hours
     )
 
-    logger.info(f"Web login for user '{username}' from {client_ip}")
+    logger.info(f"Web login for user '{username}' from {client_ip} (remember={bool(remember_me)})")
 
     # For JSON requests, return token directly
     if "application/json" in content_type:
@@ -7154,7 +7236,8 @@ async def http_login_submit(request: web.Request) -> web.Response:
     response.set_cookie(
         Config.SESSION_COOKIE_NAME,
         jwt_token,
-        max_age=Config.SESSION_COOKIE_MAX_AGE,
+        max_age=session_max_age,
+        path="/",
         secure=Config.SESSION_COOKIE_SECURE,
         httponly=Config.SESSION_COOKIE_HTTPONLY,
         samesite=Config.SESSION_COOKIE_SAMESITE,
@@ -7447,11 +7530,7 @@ async def http_api_docs_page(request: web.Request) -> web.Response:
 
 
 async def http_about_page(request: web.Request) -> web.Response:
-    """Serve About page."""
-    token = await authenticate_request(request)
-    if not token:
-        raise web.HTTPFound("/login")
-
+    """Serve About page (public access)."""
     html = load_static_file("about.html")
     return web.Response(text=html, content_type="text/html")
 
@@ -10404,6 +10483,10 @@ def create_app() -> web.Application:
     # HTTP API routes
     app.router.add_get("/health", http_health)
     app.router.add_get("/favicon.ico", http_favicon)
+    app.router.add_get("/robots.txt", http_robots_txt)
+    app.router.add_get("/sitemap.xml", http_sitemap_xml)
+    if Config.GOOGLE_VERIFICATION_FILE:
+        app.router.add_get(f"/google{Config.GOOGLE_VERIFICATION_FILE}.html", http_google_verification)
     app.router.add_get("/api/stats", http_stats)
     app.router.add_get("/api/stats/public", http_public_stats)
     app.router.add_get("/api/system/health", http_system_health)

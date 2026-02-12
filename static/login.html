@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="robots" content="noindex, nofollow">
+    <!-- GOOGLE_SITE_VERIFICATION -->
+    <meta name="description" content="Open Relay Portal - A secure, self-hosted web gateway for home infrastructure. Access SSH, VNC, RDP, and more through your browser.">
+    <meta property="og:title" content="Open Relay Portal - Login">
+    <meta property="og:description" content="Secure, authenticated web gateway for home infrastructure. Remote access to services via WebSocket proxying, live streaming, and community chat.">
+    <meta property="og:type" content="website">
     <title>Open Relay Portal - Login</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <style>
@@ -67,14 +71,16 @@
         }
         .password-toggle {
             position: absolute;
-            right: 0.75rem;
+            right: 0.5rem;
             top: 50%;
             transform: translateY(-50%);
             background: none;
             border: none;
             cursor: pointer;
             color: var(--text-muted);
-            padding: 0.25rem;
+            padding: 0.5rem;
+            min-width: 44px;
+            min-height: 44px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -120,13 +126,55 @@
             color: var(--text-secondary);
         }
         .remember-me input {
-            width: 16px;
-            height: 16px;
+            width: 18px;
+            height: 18px;
             cursor: pointer;
             accent-color: var(--accent-blue);
         }
         .remember-me label {
             cursor: pointer;
+            padding: 0.25rem 0;
+        }
+        .info-message {
+            background: rgba(96, 165, 250, 0.1);
+            border: 1px solid rgba(96, 165, 250, 0.3);
+            color: var(--accent-blue);
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .info-message svg {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+        .login-links {
+            display: flex;
+            justify-content: center;
+            gap: 1.5rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+        }
+        .login-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.5rem 0;
+            min-height: 44px;
+            transition: color 0.2s;
+        }
+        .login-links a:hover {
+            color: var(--accent-blue);
+        }
+        .login-links svg {
+            width: 16px;
+            height: 16px;
         }
         .security-notice {
             margin-top: 1.5rem;
@@ -168,13 +216,13 @@
         <div class="card">
             <div class="login-header">
                 <div class="portal-brand">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
                     </svg>
                     Open Relay Portal
                 </div>
                 <div class="login-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                     </svg>
                 </div>
@@ -217,9 +265,10 @@
                     <label for="totp-code">Two-Factor Authentication Code</label>
                     <input type="text" id="totp-code" name="totp_code" maxlength="8"
                            placeholder="Enter 6-digit code or backup code"
-                           autocomplete="one-time-code" inputmode="numeric"
+                           autocomplete="one-time-code"
+                           aria-describedby="totp-hint"
                            style="text-align: center; font-size: 1.25rem; letter-spacing: 0.3em;">
-                    <span class="input-hint">Enter the code from your authenticator app, or a backup code</span>
+                    <span class="input-hint" id="totp-hint">Enter the code from your authenticator app, or a backup code</span>
                 </div>
 
                 <div class="remember-me">
@@ -233,7 +282,7 @@
                 </button>
 
                 <div class="form-footer">
-                    Don't have an account? <a onclick="showRegister()">Register</a>
+                    Don't have an account? <a href="#register" role="button" onclick="showRegister(); return false;">Register</a>
                 </div>
             </form>
 
@@ -247,7 +296,7 @@
                            title="3-30 characters: letters, numbers, underscores, and hyphens"
                            minlength="3" maxlength="30">
                     <span class="input-hint">3-30 characters, letters, numbers, underscores, hyphens</span>
-                    <div id="username-error" class="field-error hidden"></div>
+                    <div id="username-error" class="field-error hidden" role="alert"></div>
                 </div>
 
                 <div class="form-group">
@@ -267,8 +316,8 @@
                             </svg>
                         </button>
                     </div>
-                    <div class="password-strength" id="password-strength" style="display: none;">
-                        <div class="strength-bar">
+                    <div class="password-strength" id="password-strength" style="display: none;" aria-live="polite">
+                        <div class="strength-bar" role="progressbar" aria-label="Password strength" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0" id="strength-bar">
                             <div class="strength-fill" id="strength-fill"></div>
                         </div>
                         <span class="strength-text" id="strength-text">Enter a password</span>
@@ -291,14 +340,14 @@
                             </svg>
                         </button>
                     </div>
-                    <div id="confirm-error" class="field-error hidden"></div>
+                    <div id="confirm-error" class="field-error hidden" role="alert"></div>
                 </div>
 
                 <div class="form-group">
                     <label for="register-invite">Invite Code</label>
                     <input type="text" id="register-invite" name="invite_code" required
                            placeholder="PORTAL-XXXX-XXXX-XXXX"
-                           pattern="PORTAL-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}"
+                           pattern="PORTAL-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}"
                            style="text-transform: uppercase;"
                            autocomplete="off">
                     <span class="input-hint">Format: PORTAL-XXXX-XXXX-XXXX</span>
@@ -310,19 +359,30 @@
                 </button>
 
                 <div class="form-footer">
-                    Already have an account? <a onclick="showLogin()">Sign In</a>
+                    Already have an account? <a href="#login" role="button" onclick="showLogin(); return false;">Sign In</a>
                 </div>
             </form>
 
             <div class="security-notice">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
                 Your connection is secure. Never share your credentials.
             </div>
 
-            <div class="form-footer" style="margin-top: 1rem;">
-                <a href="/live">Watch Live Streams</a>
+            <div class="login-links">
+                <a href="/live">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Live Streams
+                </a>
+                <a href="https://github.com/dustinm16/portal" target="_blank" rel="noopener noreferrer">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    GitHub
+                </a>
             </div>
         </div>
     </div>
@@ -368,6 +428,7 @@
             const strengthContainer = document.getElementById('password-strength');
             const strengthFill = document.getElementById('strength-fill');
             const strengthText = document.getElementById('strength-text');
+            const strengthBar = document.getElementById('strength-bar');
 
             if (!password) {
                 strengthContainer.style.display = 'none';
@@ -376,6 +437,7 @@
 
             strengthContainer.style.display = 'block';
             const score = calculatePasswordStrength(password);
+            strengthBar.setAttribute('aria-valuenow', score);
 
             strengthFill.className = 'strength-fill';
             switch (score) {
@@ -436,6 +498,11 @@
             formTitle.textContent = 'Welcome Back';
             formSubtitle.textContent = 'Sign in to access your services';
             messageContainer.innerHTML = '';
+            // Reset register form state
+            registerForm.reset();
+            document.getElementById('password-strength').style.display = 'none';
+            document.getElementById('confirm-error').classList.add('hidden');
+            document.getElementById('register-confirm').classList.remove('input-error', 'input-success');
             document.getElementById('login-username').focus();
         }
 
@@ -449,6 +516,11 @@
             formTitle.textContent = 'Create Account';
             formSubtitle.textContent = 'Register with an invite code';
             messageContainer.innerHTML = '';
+            // Reset login form 2FA state
+            awaiting2FA = false;
+            document.getElementById('totp-group').classList.add('hidden');
+            document.getElementById('totp-code').value = '';
+            document.getElementById('login-btn').querySelector('.btn-text').textContent = 'Sign In';
             document.getElementById('register-username').focus();
         }
 
@@ -457,6 +529,13 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>`;
             messageContainer.innerHTML = `<div class="error-message">${icon}<span>${escapeHtml(message)}</span></div>`;
+        }
+
+        function showInfo(message) {
+            const icon = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>`;
+            messageContainer.innerHTML = `<div class="info-message">${icon}<span>${escapeHtml(message)}</span></div>`;
         }
 
         function showSuccess(message) {
@@ -482,23 +561,30 @@
 
         // Track if 2FA is required
         let awaiting2FA = false;
+        let isSubmitting = false;
 
         // Login form handler
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (isSubmitting) return;
+
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value;
+            if (!username || !password) {
+                showError('Username and password are required');
+                return;
+            }
+
             const btn = document.getElementById('login-btn');
             const totpGroup = document.getElementById('totp-group');
             const totpInput = document.getElementById('totp-code');
 
+            isSubmitting = true;
             setButtonLoading(btn, true, awaiting2FA ? 'Verifying...' : 'Signing in...');
             messageContainer.innerHTML = '';
 
             const rememberMe = document.getElementById('remember-me').checked;
-            const data = {
-                username: document.getElementById('login-username').value.trim(),
-                password: document.getElementById('login-password').value,
-                remember: rememberMe
-            };
+            const data = { username, password, remember: rememberMe };
 
             // Include TOTP code if 2FA is required
             if (awaiting2FA && totpInput.value.trim()) {
@@ -516,7 +602,13 @@
                     credentials: 'same-origin'
                 });
 
-                const result = await response.json();
+                let result;
+                try {
+                    result = await response.json();
+                } catch {
+                    showError('Server returned an unexpected response');
+                    return;
+                }
 
                 if (response.ok) {
                     // Check if 2FA is required
@@ -524,12 +616,14 @@
                         awaiting2FA = true;
                         totpGroup.classList.remove('hidden');
                         totpInput.focus();
-                        showError('Two-factor authentication required. Enter your code below.');
+                        showInfo('Two-factor authentication required. Enter your code below.');
                         setButtonLoading(btn, false, 'Verify & Sign In');
                         return;
                     }
-                    // Success - redirect to dashboard
-                    window.location.href = '/dashboard';
+                    // Success - redirect
+                    setButtonLoading(btn, true, 'Redirecting...');
+                    const next = new URLSearchParams(window.location.search).get('next');
+                    window.location.href = next && next.startsWith('/') ? next : '/dashboard';
                 } else {
                     // If 2FA was wrong, keep the field visible
                     if (awaiting2FA) {
@@ -540,7 +634,12 @@
                 }
             } catch (error) {
                 showError('Connection error. Please try again.');
+                if (awaiting2FA) {
+                    totpInput.value = '';
+                    totpInput.focus();
+                }
             } finally {
+                isSubmitting = false;
                 setButtonLoading(btn, false, awaiting2FA ? 'Verify & Sign In' : 'Sign In');
             }
         });
@@ -548,27 +647,43 @@
         // Register form handler
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (isSubmitting) return;
 
-            // Validate password match
+            const username = document.getElementById('register-username').value.trim();
+            const password = document.getElementById('register-password').value;
+            const inviteCode = document.getElementById('register-invite').value.trim();
+
+            // Client-side validation (mirrors server rules)
+            if (!username || !password || !inviteCode) {
+                showError('All fields are required');
+                return;
+            }
+            if (!/^[a-zA-Z0-9_-]{3,30}$/.test(username)) {
+                showError('Username must be 3-30 characters: letters, numbers, underscores, hyphens');
+                return;
+            }
+            if (password.length < 8 || password.length > 128) {
+                showError('Password must be between 8 and 128 characters');
+                return;
+            }
             if (!validatePasswordMatch()) {
                 showError('Passwords do not match');
                 return;
             }
-
-            const password = document.getElementById('register-password').value;
             if (calculatePasswordStrength(password) < 2) {
                 showError('Please choose a stronger password');
                 return;
             }
 
             const btn = document.getElementById('register-btn');
+            isSubmitting = true;
             setButtonLoading(btn, true, 'Creating account...');
             messageContainer.innerHTML = '';
 
             const data = {
-                username: document.getElementById('register-username').value.trim(),
+                username: username,
                 password: password,
-                invite_code: document.getElementById('register-invite').value.toUpperCase()
+                invite_code: inviteCode.toUpperCase()
             };
 
             try {
@@ -581,23 +696,39 @@
                     body: JSON.stringify(data)
                 });
 
-                const result = await response.json();
+                let result;
+                try {
+                    result = await response.json();
+                } catch {
+                    showError('Server returned an unexpected response');
+                    return;
+                }
 
                 if (response.ok) {
-                    showSuccess('Account created successfully! Redirecting to sign in...');
                     registerForm.reset();
                     document.getElementById('password-strength').style.display = 'none';
+                    const savedUsername = data.username;
                     setTimeout(() => {
-                        showLogin();
-                        document.getElementById('login-username').value = data.username;
+                        // Switch to login but preserve success message
+                        registerForm.classList.add('hidden');
+                        loginForm.classList.remove('hidden');
+                        formTitle.textContent = 'Welcome Back';
+                        formSubtitle.textContent = 'Sign in to access your services';
+                        awaiting2FA = false;
+                        document.getElementById('totp-group').classList.add('hidden');
+                        document.getElementById('totp-code').value = '';
+                        document.getElementById('login-btn').querySelector('.btn-text').textContent = 'Sign In';
+                        document.getElementById('login-username').value = savedUsername;
                         document.getElementById('login-password').focus();
-                    }, 1500);
+                    }, 2000);
+                    showSuccess('Account created! Signing you in...');
                 } else {
                     showError(result.error || 'Registration failed');
                 }
             } catch (error) {
                 showError('Connection error. Please try again.');
             } finally {
+                isSubmitting = false;
                 setButtonLoading(btn, false, 'Create Account');
             }
         });
@@ -608,6 +739,11 @@
             showError('Your session has expired. Please sign in again.');
         } else if (urlParams.get('logout') === '1') {
             showSuccess('You have been signed out successfully.');
+        }
+        // Clean URL params after displaying message (prevent repeat on refresh)
+        if (urlParams.has('expired') || urlParams.has('logout')) {
+            const cleanUrl = window.location.pathname + (urlParams.get('next') ? '?next=' + encodeURIComponent(urlParams.get('next')) : '');
+            history.replaceState(null, '', cleanUrl);
         }
     </script>
 </body>

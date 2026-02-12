@@ -824,6 +824,14 @@ Configurable retention policies:
 
 Setting any value to `0` disables cleanup for that category. A unified background task runs on the configured interval, cleaning up: old chat messages, DM messages, notifications, activity log entries, expired JWT tokens, expired API keys, and service logs. The `/run` endpoint triggers an immediate cleanup cycle.
 
+### SEO & Public Endpoints
+
+```
+GET  /robots.txt                     - SEO robots directives (public, no auth)
+GET  /sitemap.xml                    - XML sitemap (public, no auth)
+GET  /google{id}.html                - Google Search Console verification (public, no auth)
+```
+
 ### SFTP Browser (Per-User)
 
 ```
@@ -854,7 +862,7 @@ WS /ws/{path}                   - Service relay (catch-all)
 ```
 GET /                    - Redirect to /dashboard
 GET /dashboard           - Main dashboard
-GET /login               - Login page
+GET /login               - Login page (SEO-optimized, remember me, 2FA UX)
 GET /admin               - Admin panel (metrics charts, managed services, security)
 GET /chat                - Community chat
 GET /streams             - Community streams
@@ -864,11 +872,14 @@ GET /spice               - SPICE viewer
 GET /proxmox             - Proxmox dashboard
 GET /watch/:id           - Stream viewer (HLS)
 GET /api-docs            - Interactive API documentation
-GET /about               - About page (feature guide)
+GET /about               - About page (public, no auth required)
 GET /files               - File manager (admin local + user SFTP)
 GET /sysmon              - System monitor (redirects to /admin#system)
 GET /guides              - Connection setup guides (75 types)
 GET /live                - Public live streams (unauthenticated)
+GET /robots.txt          - SEO robots file (public)
+GET /sitemap.xml         - SEO sitemap (public)
+GET /google{id}.html     - Google Search Console verification (public)
 ```
 
 ---
@@ -992,6 +1003,21 @@ Open Relay Portal is designed with privacy and security as core principles:
 26. **SFTP Browser Security** - Per-user connection ownership enforced on every request; only SSH/SFTP connection types eligible; SFTP connections are ephemeral (opened per-request, closed after); no path traversal possible (remote filesystem)
 27. **System Monitor Safety** - Process kill refuses PID 1, kernel threads, and portal process; systemd service control limited to start/stop/restart/enable/disable (no mask/daemon-reload); all subprocess calls use list args (no shell=True); service names validated with regex
 28. **Machine-Bound Encryption** - Encryption keys are derived from `JWT_SECRET` + a machine-specific salt (SHA-256 of `/etc/machine-id` + random bytes). The salt file (`.encryption_salt`) is auto-generated on first run, chmod 600, and gitignored. Even with the same `.env`, a different machine produces different keys — cloning the repo cannot decrypt existing data. One-time migration re-encrypts all data on upgrade.
+29. **Registration Validation** - Username: 3-32 chars, alphanumeric + underscores only; Password: min 8 chars. Server-side validation with client-side preview.
+30. **Remember Me Sessions** - Login with `remember_me` extends session from 24 hours to 30 days. Cookie attributes (`max-age`, `httponly`, `secure`, `samesite=strict`) set accordingly.
+
+### Public (Unauthenticated) Pages
+
+The following pages are accessible without login:
+
+| Path | Purpose |
+|------|---------|
+| `/login` | Login/registration page (SEO-optimized with meta tags) |
+| `/live` | Public live streams browser |
+| `/about` | Feature guide and documentation |
+| `/robots.txt` | SEO robots directives |
+| `/sitemap.xml` | XML sitemap for search engines |
+| `/google{id}.html` | Google Search Console verification (configurable via env) |
 
 ---
 
@@ -1044,6 +1070,10 @@ SSL_KEY=/path/to/key.pem
 # Optional integrations
 SHODAN_API_KEY=<key>
 NVD_API_KEY=<key>
+
+# SEO / Search Engine Verification
+GOOGLE_SITE_VERIFICATION=<verification-id>   # Google Search Console verification
+GOOGLE_VERIFICATION_FILE=<filename.html>      # Verification filename
 
 # Plain RTMP ingress (optional)
 RTMP_PLAIN_ENABLED=false          # Enable plain RTMP ingress (default: false)

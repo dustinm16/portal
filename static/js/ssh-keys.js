@@ -291,12 +291,14 @@ async function deleteSSHKey(keyId) {
 }
 
 /**
- * Format date string
+ * Format date string (use shared version if available)
  */
-function formatDate(dateStr) {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+if (typeof formatDate !== 'function') {
+    function formatDate(dateStr) {
+        if (!dateStr) return '';
+        const date = new Date(dateStr + 'Z');
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
 }
 
 /**

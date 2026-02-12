@@ -15,13 +15,14 @@ const Portal = {
      * Fetch with credentials (includes session cookie)
      */
     async fetch(url, options = {}) {
+        const { headers: optHeaders, ...restOptions } = options;
         const response = await fetch(url, {
             credentials: 'same-origin',
+            ...restOptions,
             headers: {
                 'Accept': 'application/json',
-                ...options.headers
+                ...optHeaders
             },
-            ...options
         });
 
         if (response.status === 401) {
@@ -38,6 +39,10 @@ const Portal = {
      */
     async fetchJSON(url, options = {}) {
         const response = await this.fetch(url, options);
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || `Request failed: ${response.status}`);
+        }
         return response.json();
     },
 

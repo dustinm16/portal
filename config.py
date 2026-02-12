@@ -89,6 +89,10 @@ class Config:
     FILE_MANAGER_ROOT: str = os.getenv("FILE_MANAGER_ROOT", "/")
     FILE_MANAGER_MAX_UPLOAD: int = int(os.getenv("FILE_MANAGER_MAX_UPLOAD_MB", "100")) * 1024 * 1024
 
+    # SEO / Search Engine Verification
+    GOOGLE_SITE_VERIFICATION: str = os.getenv("GOOGLE_SITE_VERIFICATION", "")  # meta tag content
+    GOOGLE_VERIFICATION_FILE: str = os.getenv("GOOGLE_VERIFICATION_FILE", "")  # filename ID (e.g. 46ea35705e711807)
+
     # Voice Chat (WebRTC ICE servers)
     STUN_SERVER: str = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")
     TURN_SERVER: str = os.getenv("TURN_SERVER", "")

@@ -10,17 +10,25 @@ var pendingConfirmAction = null;
  */
 async function initAdminUI() {
     try {
-        currentUser = await Portal.getCurrentUser();
+        // Reuse currentUser if already loaded by dashboard.js
+        if (!currentUser) {
+            currentUser = await Portal.getCurrentUser();
+        }
 
         if (Portal.isAdmin(currentUser)) {
             // Show admin section
-            document.getElementById('admin-section').style.display = 'block';
-            document.getElementById('admin-badge').style.display = 'inline';
-            document.getElementById('terminal-btn').style.display = 'flex';
+            const adminSection = document.getElementById('admin-section');
+            const adminBadge = document.getElementById('admin-badge');
+            const terminalBtn = document.getElementById('terminal-btn');
+            if (adminSection) adminSection.style.display = 'block';
+            if (adminBadge) adminBadge.style.display = 'inline-block';
+            if (terminalBtn) terminalBtn.style.display = 'flex';
 
             // Update empty state message for admins
-            document.getElementById('empty-message').textContent =
-                'Click "Add Service" in the sidebar to create your first service.';
+            const emptyMsg = document.getElementById('empty-message');
+            if (emptyMsg) {
+                emptyMsg.textContent = 'Click "Add Service" to create your first service.';
+            }
         }
     } catch (error) {
         console.error('Failed to init admin UI:', error);
@@ -1033,10 +1041,15 @@ async function deleteService(serviceId) {
 /**
  * Execute pending confirm action
  */
-function confirmAction() {
+async function confirmAction() {
     if (pendingConfirmAction) {
-        pendingConfirmAction();
+        const action = pendingConfirmAction;
         pendingConfirmAction = null;
+        try {
+            await action();
+        } catch (error) {
+            console.error('Confirm action failed:', error);
+        }
     }
 }
 
@@ -1252,6 +1265,7 @@ function formatDate(dateStr) {
  * Escape HTML to prevent XSS
  */
 function escapeHtml(text) {
+    if (text == null) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
