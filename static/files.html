@@ -405,7 +405,7 @@
                 if (connRes.status === 401) { window.location.href = '/login'; return; }
                 const connData = await connRes.json();
                 const conns = connData.connections || connData;
-                const eligible = conns.filter(c => c.connection_type === 'ssh' || c.connection_type === 'sftp');
+                const eligible = conns.filter(c => c.type === 'ssh' || c.type === 'sftp');
 
                 sftpConnectionList = [];
                 for (const c of eligible) {

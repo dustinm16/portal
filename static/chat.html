@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <title>Open Relay Portal - Chat</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <style>
@@ -15,10 +15,10 @@
             display: grid;
             grid-template-columns: 200px 1fr 200px;
             height: calc(100vh - 70px);
+            height: calc(100dvh - 70px);
             background: var(--bg-primary);
             overflow: hidden;
             position: relative;
-            margin-bottom: 4px;
         }
 
         /* Sidebar - Channels */
@@ -326,6 +326,7 @@
             padding: 1rem;
             border-top: 1px solid rgba(255,255,255,0.1);
             background: var(--bg-secondary);
+            flex-shrink: 0;
         }
 
         .chat-input-wrapper {
@@ -663,14 +664,17 @@
         @media (max-width: 900px) {
             .chat-container {
                 grid-template-columns: 1fr;
+                height: calc(100vh - 56px);
+                height: calc(100dvh - 56px);
             }
             .chat-sidebar, .users-sidebar {
                 display: none;
                 position: fixed;
-                top: 70px;
+                top: 56px;
                 bottom: 0;
                 z-index: 100;
-                width: 240px;
+                width: 260px;
+                max-width: 80vw;
                 box-shadow: 4px 0 20px rgba(0,0,0,0.4);
             }
             .chat-sidebar.mobile-open {
@@ -690,25 +694,71 @@
             .mobile-toggle-bar {
                 display: flex !important;
             }
+            .chat-send-btn .send-label {
+                display: none;
+            }
+            .chat-send-btn {
+                padding: 0.5rem;
+            }
+            .chat-input-container {
+                padding: 0.5rem;
+            }
+            .chat-header {
+                padding: 0.5rem 0.75rem;
+            }
+            .chat-header h2 {
+                font-size: 1rem;
+            }
+            .chat-header-top {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+            #voice-join-label {
+                display: none;
+            }
+            .watch-stream-btn, .search-toggle-btn {
+                font-size: 0.75rem !important;
+                padding: 0.2rem 0.4rem !important;
+            }
         }
         .mobile-toggle-bar {
             display: none;
             gap: 0.5rem;
-            padding: 0.35rem 0.75rem;
+            padding: 0.5rem 0.75rem;
             background: rgba(0,0,0,0.15);
             border-bottom: 1px solid rgba(255,255,255,0.06);
+            flex-shrink: 0;
         }
         .mobile-toggle-bar button {
             background: rgba(255,255,255,0.08);
             border: 1px solid rgba(255,255,255,0.12);
             color: var(--text-secondary);
-            padding: 0.3rem 0.6rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
             cursor: pointer;
+            min-height: 36px;
         }
-        .mobile-toggle-bar button:hover {
+        .mobile-toggle-bar button:hover, .mobile-toggle-bar button:active {
             background: rgba(255,255,255,0.15);
+        }
+        @media (max-width: 480px) {
+            .chat-input-wrapper {
+                gap: 0.25rem;
+                padding: 0.35rem;
+            }
+            .emoji-btn {
+                padding: 0.25rem !important;
+                font-size: 1.1rem !important;
+            }
+            #chat-input {
+                font-size: 0.9rem;
+                padding: 0.35rem;
+            }
+            .typing-indicator {
+                padding: 0.25rem 0.5rem;
+                font-size: 0.7rem;
+            }
         }
 
         /* Typing indicator */
@@ -2313,7 +2363,7 @@
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                         </svg>
-                        Send
+                        <span class="send-label">Send</span>
                     </button>
                 </div>
             </div>
@@ -2603,6 +2653,57 @@
             document.getElementById('chat-input').addEventListener('blur', () => {
                 setTimeout(hideMentionDropdown, 150);
             });
+
+            // --- Mobile viewport fixes ---
+            // Dynamically measure navbar height and set chat container offset
+            function updateChatHeight() {
+                const navbar = document.querySelector('.navbar');
+                if (!navbar) return;
+                const navH = navbar.offsetHeight;
+                const container = document.querySelector('.chat-container');
+                if (container) {
+                    container.style.height = `calc(100dvh - ${navH}px)`;
+                    container.style.height = `calc(100vh - ${navH}px)`;
+                    // Use dvh if supported (set second so it wins if supported)
+                    if (CSS.supports && CSS.supports('height', '100dvh')) {
+                        container.style.height = `calc(100dvh - ${navH}px)`;
+                    }
+                }
+                // Update mobile sidebar top to match
+                document.querySelectorAll('.chat-sidebar, .users-sidebar').forEach(el => {
+                    if (window.innerWidth <= 900) {
+                        el.style.top = navH + 'px';
+                    } else {
+                        el.style.top = '';
+                    }
+                });
+            }
+            updateChatHeight();
+            window.addEventListener('resize', updateChatHeight);
+
+            // Virtual keyboard: scroll input into view when focused on mobile
+            const chatInput = document.getElementById('chat-input');
+            if (chatInput) {
+                chatInput.addEventListener('focus', () => {
+                    if (window.innerWidth <= 900) {
+                        setTimeout(() => {
+                            chatInput.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        }, 300);
+                    }
+                });
+            }
+
+            // Use visualViewport API for keyboard-aware resizing
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', () => {
+                    const container = document.querySelector('.chat-container');
+                    if (!container || window.innerWidth > 900) return;
+                    const navbar = document.querySelector('.navbar');
+                    const navH = navbar ? navbar.offsetHeight : 56;
+                    const vh = window.visualViewport.height;
+                    container.style.height = (vh - navH) + 'px';
+                });
+            }
         });
 
         async function loadUserInfo() {

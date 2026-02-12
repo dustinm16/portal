@@ -5824,7 +5824,7 @@ async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     if not connection:
         return None, None, web.json_response({"error": "Connection not found"}, status=404)
 
-    if connection.get("connection_type") not in sftp_browser.SFTP_ELIGIBLE_TYPES:
+    if connection.get("type") not in sftp_browser.SFTP_ELIGIBLE_TYPES:
         return None, None, web.json_response({"error": "Connection is not SSH/SFTP type"}, status=400)
 
     ssh_conn, sftp_client, error = await sftp_browser.connect_sftp(connection)

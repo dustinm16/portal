@@ -938,9 +938,13 @@ The portal uses a mobile-first enhancement strategy with progressive breakpoints
 | `360px` | Small phones | Stats single-column, tabs wrap, brand text hidden (icon only) |
 
 Additional mobile features:
-- **Chat mobile sidebar**: Channels/Users toggle buttons appear at <900px with overlay dismiss
+- **Chat mobile sidebar**: Channels/Users toggle buttons appear at <900px with overlay dismiss (max-width: 80vw)
+- **Chat virtual keyboard**: `visualViewport` API resizes chat container when keyboard opens; `interactive-widget=resizes-content` viewport meta; input auto-scrolls into view on focus
+- **Chat dynamic navbar offset**: JS measures actual navbar height on load/resize instead of hardcoded `70px`; sidebar overlay `top` matches measured height
+- **Chat mobile input**: Send button icon-only on mobile, reduced padding, 480px breakpoint for extra-tight layouts
 - **Notification dropdown**: Responsive width `min(320px, calc(100vw - 1rem))`
 - **Table scroll**: `.table-responsive` wrapper and `overflow-x: auto` on docs content
+- **Dynamic viewport height**: Chat uses `100dvh` with `100vh` fallback for correct height on mobile browsers
 - **Z-index stacking**: Modals (10001) > Notification dropdown (10002) > Session banner (10000)
 
 ---
