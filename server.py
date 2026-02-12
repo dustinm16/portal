@@ -7530,8 +7530,25 @@ async def http_api_docs_page(request: web.Request) -> web.Response:
 
 
 async def http_about_page(request: web.Request) -> web.Response:
-    """Serve About page (public access)."""
+    """Serve About page (public access).
+
+    Authenticated users see full content. Unauthenticated visitors get
+    auth-only and admin-only sections stripped server-side so the HTML
+    is never delivered to the client.
+    """
+    import re
     html = load_static_file("about.html")
+
+    # Strip admin-only sections for non-admin users
+    token = await authenticate_request(request)
+    is_admin = False
+    if token:
+        user = await db.get_user_by_id(token.user_id) if token.user_id else None
+        if user and (user.get("is_admin") or user.get("role") in ("superadmin", "admin")):
+            is_admin = True
+    if not is_admin:
+        html = re.sub(r'<!-- ADMIN-ONLY-START -->.*?<!-- ADMIN-ONLY-END -->', '', html, flags=re.DOTALL)
+
     return web.Response(text=html, content_type="text/html")
 
 
