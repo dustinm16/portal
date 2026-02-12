@@ -7,6 +7,7 @@ import getpass
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -41,8 +42,22 @@ def run_setup_wizard() -> None:
     print("STEP 1: Server Hostname")
     print("=" * 50)
     default_hostname = existing_config.get("HOSTNAME", "localhost")
-    hostname = _prompt_input(f"Enter your hostname/domain", default_hostname)
+    hostname = _prompt_input("Enter your hostname/domain", default_hostname)
     config["HOSTNAME"] = hostname
+
+    # Stream hostname (separate RTMPS ingress hostname, bypasses CDN)
+    default_stream_host = existing_config.get("STREAM_HOSTNAME", "")
+    if default_stream_host and default_stream_host != hostname:
+        print(f"\n  Stream hostname (for RTMPS ingress): {default_stream_host}")
+        keep_stream = _prompt_yes_no("Keep separate stream hostname?", default_yes=True)
+        if keep_stream:
+            config["STREAM_HOSTNAME"] = default_stream_host
+        else:
+            config["STREAM_HOSTNAME"] = hostname
+    else:
+        print("\n  (Stream hostname defaults to same as server hostname)")
+        print("  Set a separate STREAM_HOSTNAME in .env if RTMPS ingress")
+        print("  should bypass a CDN like Cloudflare.")
 
     # --- Step 2: Port ---
     print()
@@ -56,30 +71,82 @@ def run_setup_wizard() -> None:
         if port_int < 1 or port_int > 65535:
             raise ValueError
     except ValueError:
-        print("Invalid port, using 443.")
+        print("  Invalid port, using 443.")
         port = "443"
     config["HOST"] = existing_config.get("HOST", "0.0.0.0")
     config["PORT"] = port
 
-    # --- Step 3: SSL Certificate ---
+    # Check if port is available
+    if not _check_port_available(int(port)):
+        print(f"\n  WARNING: Port {port} is already in use.")
+        print("  This is normal if Portal is already running.")
+        print("  The service will be restarted after setup completes.\n")
+
+    # --- Step 3: TLS Certificate ---
     print()
     print("=" * 50)
     print("STEP 3: TLS Certificate")
     print("=" * 50)
-    print("How would you like to handle TLS certificates?\n")
-    ssl_choice = _prompt_choice(
-        "Select certificate method:",
-        [
-            "Self-signed (auto-generate, good for dev/LAN)",
-            "Let's Encrypt (free trusted cert, requires public DNS)",
-            "Custom certificate (bring your own cert files)",
-        ],
-    )
+    print("Portal requires a TLS certificate to serve HTTPS.")
+    print("Without a valid certificate, the server will not start")
+    print("and browsers will show 'page took too long to respond'.\n")
 
-    cert_path, key_path, cert_method = _setup_ssl(ssl_choice, hostname, existing_config)
-    config["SSL_CERT"] = cert_path
-    config["SSL_KEY"] = key_path
-    config["CERT_METHOD"] = cert_method
+    # Check for existing valid certs
+    existing_cert = existing_config.get("SSL_CERT", "")
+    existing_key = existing_config.get("SSL_KEY", "")
+    if existing_cert and existing_key and Path(existing_cert).exists() and Path(existing_key).exists():
+        print(f"  Existing certificate: {existing_cert}")
+        cert_info = _get_cert_summary(existing_cert)
+        if cert_info:
+            print(f"  {cert_info}")
+        keep_cert = _prompt_yes_no("Keep existing certificate?", default_yes=True)
+        if keep_cert:
+            config["SSL_CERT"] = existing_cert
+            config["SSL_KEY"] = existing_key
+            config["CERT_METHOD"] = existing_config.get("CERT_METHOD", "custom")
+            if existing_config.get("CERT_EMAIL"):
+                config["CERT_EMAIL"] = existing_config["CERT_EMAIL"]
+        else:
+            cert_path, key_path, cert_method = _setup_ssl(hostname, existing_config)
+            config["SSL_CERT"] = cert_path
+            config["SSL_KEY"] = key_path
+            config["CERT_METHOD"] = cert_method
+    else:
+        if existing_cert and not Path(existing_cert).exists():
+            print(f"  WARNING: Configured certificate not found: {existing_cert}")
+            print("  This is why the server fails to start.\n")
+
+        # On fresh install, auto-generate self-signed cert to ensure server starts
+        is_fresh = not existing_config
+        if is_fresh:
+            print("  Auto-generating self-signed certificate for initial setup...")
+            print("  (You can switch to Let's Encrypt or custom cert later)\n")
+            cert_path, key_path, cert_method = _auto_generate_selfsigned(hostname)
+            if cert_path:
+                config["SSL_CERT"] = cert_path
+                config["SSL_KEY"] = key_path
+                config["CERT_METHOD"] = cert_method
+                # Offer to upgrade
+                upgrade = _prompt_yes_no(
+                    "Would you like to configure a different certificate instead?",
+                    default_yes=False,
+                )
+                if upgrade:
+                    cert_path, key_path, cert_method = _setup_ssl(hostname, existing_config)
+                    config["SSL_CERT"] = cert_path
+                    config["SSL_KEY"] = key_path
+                    config["CERT_METHOD"] = cert_method
+            else:
+                # Auto-gen failed, fall through to interactive
+                cert_path, key_path, cert_method = _setup_ssl(hostname, existing_config)
+                config["SSL_CERT"] = cert_path
+                config["SSL_KEY"] = key_path
+                config["CERT_METHOD"] = cert_method
+        else:
+            cert_path, key_path, cert_method = _setup_ssl(hostname, existing_config)
+            config["SSL_CERT"] = cert_path
+            config["SSL_KEY"] = key_path
+            config["CERT_METHOD"] = cert_method
 
     # --- Step 4: JWT Secret ---
     print()
@@ -88,16 +155,16 @@ def run_setup_wizard() -> None:
     print("=" * 50)
     existing_secret = existing_config.get("JWT_SECRET", "")
     if existing_secret and existing_secret != "change_me_to_a_random_64_char_hex_string":
-        print("Existing JWT secret found.")
+        print("  Existing JWT secret found.")
         keep = _prompt_yes_no("Keep existing JWT secret?", default_yes=True)
         if keep:
             config["JWT_SECRET"] = existing_secret
         else:
             config["JWT_SECRET"] = secrets.token_hex(32)
-            print("New JWT secret generated.")
+            print("  New JWT secret generated.")
     else:
         config["JWT_SECRET"] = secrets.token_hex(32)
-        print("JWT secret auto-generated (64-char hex).")
+        print("  JWT secret auto-generated (64-char hex).")
 
     # --- Step 5: Database ---
     default_db = existing_config.get("DATABASE_PATH", str(PROJECT_DIR / "portal.db"))
@@ -108,10 +175,10 @@ def run_setup_wizard() -> None:
         "TOKEN_EXPIRY_HOURS", "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW",
         "SHODAN_API_KEY", "RTMP_PLAIN_ENABLED", "RTMP_PLAIN_PORT",
         "STUN_SERVER", "TURN_SERVER", "TURN_USERNAME", "TURN_PASSWORD",
-        "CERT_EMAIL",
+        "CERT_EMAIL", "STREAM_HOSTNAME",
     ]
     for key in carry_over_keys:
-        if key in existing_config:
+        if key in existing_config and key not in config:
             config[key] = existing_config[key]
 
     # --- Step 6: Write .env ---
@@ -120,7 +187,7 @@ def run_setup_wizard() -> None:
     print("STEP 5: Writing Configuration")
     print("=" * 50)
     _write_env(env_path, config)
-    print(f"Configuration written to: {env_path}")
+    print(f"  Configuration written to: {env_path}")
 
     # --- Step 7: Virtual Environment & Dependencies ---
     print()
@@ -139,9 +206,16 @@ def run_setup_wizard() -> None:
     # --- Step 9: Systemd Service ---
     print()
     print("=" * 50)
-    print("STEP 8: Systemd Service"   )
+    print("STEP 8: Systemd Service")
     print("=" * 50)
     _setup_systemd(venv_python)
+
+    # --- Step 10: Verify Configuration ---
+    print()
+    print("=" * 50)
+    print("STEP 9: Verification")
+    print("=" * 50)
+    _verify_setup(config)
 
     # --- Summary ---
     _print_summary(config, venv_python)
@@ -211,98 +285,473 @@ def _load_existing_env(env_path: Path) -> dict:
     return config
 
 
-def _setup_ssl(choice: int, hostname: str, existing_config: dict) -> tuple[str, str, str]:
-    """Set up SSL based on user's choice. Returns (cert_path, key_path, method)."""
+def _check_port_available(port: int) -> bool:
+    """Check if a TCP port is available to bind."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            s.bind(("0.0.0.0", port))
+            return True
+    except OSError:
+        return False
+
+
+def _get_cert_summary(cert_path: str) -> str:
+    """Get a one-line summary of a certificate, or empty string on error."""
+    try:
+        import cert_manager
+        info = cert_manager.get_cert_info(cert_path)
+        cn = info.get("subject", {}).get("CN", "unknown")
+        days = info.get("days_until_expiry", 0)
+        method = info.get("method", "unknown")
+        if days <= 0:
+            return f"  CN={cn}, method={method}, EXPIRED"
+        return f"  CN={cn}, method={method}, expires in {days} days"
+    except Exception:
+        return ""
+
+
+def _auto_generate_selfsigned(hostname: str) -> tuple[str, str, str]:
+    """Auto-generate a self-signed cert without user interaction.
+
+    Tries cert_manager first, then openssl CLI as fallback.
+    Returns (cert_path, key_path, "selfsigned") or ("", "", "") on failure.
+    """
     certs_dir = str(PROJECT_DIR / "certs")
 
-    if choice == 1:
-        # Self-signed
-        print("\n  Generating self-signed certificate...")
+    # Try cert_manager (Python cryptography library)
+    if _check_cryptography_available():
         try:
             import cert_manager
             cert_path, key_path = cert_manager.generate_self_signed_cert(
                 hostname, certs_dir, validity_days=365
             )
+            if Path(cert_path).exists() and Path(key_path).exists():
+                print(f"  Certificate: {cert_path}")
+                print(f"  Private key: {key_path}")
+                print()
+                print("  NOTE: Self-signed certificates cause browser warnings.")
+                print("  Users must click 'Advanced' > 'Proceed' on first visit.")
+                print("  For production, switch to Let's Encrypt via Admin Panel.\n")
+                return cert_path, key_path, "selfsigned"
+        except Exception as e:
+            print(f"  cert_manager failed: {e}")
+
+    # Fallback: openssl CLI
+    if shutil.which("openssl"):
+        try:
+            Path(certs_dir).mkdir(parents=True, exist_ok=True)
+            cert_path = str(Path(certs_dir) / "selfsigned_cert.pem")
+            key_path = str(Path(certs_dir) / "selfsigned_key.pem")
+
+            result = subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-newkey", "rsa:4096",
+                    "-keyout", key_path, "-out", cert_path,
+                    "-sha256", "-days", "365", "-nodes",
+                    "-subj", f"/CN={hostname}/O=Open Relay Portal/OU=Self-Signed",
+                    "-addext", f"subjectAltName=DNS:{hostname},DNS:localhost,IP:127.0.0.1",
+                ],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and Path(cert_path).exists():
+                os.chmod(key_path, 0o600)
+                os.chmod(cert_path, 0o644)
+                print(f"  Certificate: {cert_path}")
+                print(f"  Private key: {key_path}")
+                print()
+                print("  NOTE: Self-signed certificates cause browser warnings.")
+                print("  Users must click 'Advanced' > 'Proceed' on first visit.")
+                print("  For production, switch to Let's Encrypt via Admin Panel.\n")
+                return cert_path, key_path, "selfsigned"
+            else:
+                print(f"  openssl failed: {result.stderr.strip()}")
+        except Exception as e:
+            print(f"  openssl failed: {e}")
+
+    # Both methods failed
+    print("  Could not auto-generate certificate.")
+    print("  Neither Python cryptography nor openssl are available.\n")
+    return "", "", ""
+
+
+def _check_cryptography_available() -> bool:
+    """Check if the cryptography library is importable."""
+    try:
+        import cryptography  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _install_cryptography() -> bool:
+    """Attempt to install the cryptography library. Returns True on success."""
+    print("  Installing cryptography library...")
+    venv_pip = PROJECT_DIR / "venv" / "bin" / "pip"
+    pip_cmd = str(venv_pip) if venv_pip.exists() else "pip3"
+
+    result = subprocess.run(
+        [pip_cmd, "install", "cryptography", "-q"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print("  cryptography installed successfully.")
+        return True
+    else:
+        # Try system pip
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "cryptography", "-q"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("  cryptography installed successfully.")
+            return True
+        print(f"  ERROR: Failed to install cryptography: {result.stderr.strip()}")
+        return False
+
+
+def _setup_ssl(hostname: str, existing_config: dict) -> tuple[str, str, str]:
+    """Set up SSL based on user's choice. Returns (cert_path, key_path, method)."""
+    certs_dir = str(PROJECT_DIR / "certs")
+
+    print("  How would you like to handle TLS certificates?\n")
+    ssl_choice = _prompt_choice(
+        "Select certificate method:",
+        [
+            "Self-signed (auto-generate, good for dev/LAN)",
+            "Let's Encrypt (free trusted cert, requires public DNS + port 80)",
+            "Custom certificate (bring your own cert files)",
+        ],
+    )
+
+    if ssl_choice == 1:
+        return _setup_ssl_selfsigned(hostname, certs_dir, existing_config)
+    elif ssl_choice == 2:
+        return _setup_ssl_letsencrypt(hostname, certs_dir, existing_config)
+    else:
+        return _setup_ssl_custom(hostname, existing_config)
+
+
+def _setup_ssl_selfsigned(
+    hostname: str, certs_dir: str, existing_config: dict
+) -> tuple[str, str, str]:
+    """Generate a self-signed certificate."""
+    print("\n  Generating self-signed certificate...")
+
+    # Ensure cryptography is available
+    if not _check_cryptography_available():
+        print("  The 'cryptography' Python library is required.")
+        install = _prompt_yes_no("Install it now?", default_yes=True)
+        if install:
+            if not _install_cryptography():
+                print("\n  Cannot generate certificate without cryptography library.")
+                print("  Falling back to openssl command-line tool...\n")
+                return _setup_ssl_selfsigned_openssl(hostname, certs_dir)
+        else:
+            print("  Trying openssl command-line tool instead...\n")
+            return _setup_ssl_selfsigned_openssl(hostname, certs_dir)
+
+    try:
+        import cert_manager
+        cert_path, key_path = cert_manager.generate_self_signed_cert(
+            hostname, certs_dir, validity_days=365
+        )
+        # Verify the files were actually created
+        if not Path(cert_path).exists() or not Path(key_path).exists():
+            raise FileNotFoundError("Certificate files were not created")
+
+        print(f"  Certificate: {cert_path}")
+        print(f"  Private key: {key_path}")
+        print()
+        print("  NOTE: Self-signed certificates cause browser warnings.")
+        print("  Users must click 'Advanced' > 'Proceed' on first visit.")
+        print("  For production, use Let's Encrypt or a trusted CA.")
+        return cert_path, key_path, "selfsigned"
+    except Exception as e:
+        print(f"  ERROR: cert_manager failed: {e}")
+        print("  Trying openssl command-line tool...\n")
+        return _setup_ssl_selfsigned_openssl(hostname, certs_dir)
+
+
+def _setup_ssl_selfsigned_openssl(
+    hostname: str, certs_dir: str
+) -> tuple[str, str, str]:
+    """Fallback: generate self-signed cert using openssl CLI."""
+    if not shutil.which("openssl"):
+        print("  ERROR: Neither cryptography library nor openssl found.")
+        print("  Install one of:")
+        print("    pip install cryptography")
+        print("    apt install openssl")
+        print()
+        print("  Setup cannot continue without TLS certificates.")
+        sys.exit(1)
+
+    Path(certs_dir).mkdir(parents=True, exist_ok=True)
+    cert_path = str(Path(certs_dir) / "selfsigned_cert.pem")
+    key_path = str(Path(certs_dir) / "selfsigned_key.pem")
+
+    # Generate with openssl
+    result = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:4096",
+            "-keyout", key_path, "-out", cert_path,
+            "-sha256", "-days", "365", "-nodes",
+            "-subj", f"/CN={hostname}/O=Open Relay Portal/OU=Self-Signed",
+            "-addext", f"subjectAltName=DNS:{hostname},DNS:localhost,IP:127.0.0.1",
+        ],
+        capture_output=True, text=True,
+    )
+
+    if result.returncode != 0:
+        print(f"  ERROR: openssl failed: {result.stderr.strip()}")
+        print("  Setup cannot continue without TLS certificates.")
+        sys.exit(1)
+
+    os.chmod(key_path, 0o600)
+    os.chmod(cert_path, 0o644)
+
+    # Verify files exist
+    if not Path(cert_path).exists() or not Path(key_path).exists():
+        print("  ERROR: Certificate files were not created.")
+        sys.exit(1)
+
+    print(f"  Certificate: {cert_path}")
+    print(f"  Private key: {key_path}")
+    print()
+    print("  NOTE: Self-signed certificates cause browser warnings.")
+    print("  Users must click 'Advanced' > 'Proceed' on first visit.")
+    return cert_path, key_path, "selfsigned"
+
+
+def _setup_ssl_letsencrypt(
+    hostname: str, certs_dir: str, existing_config: dict
+) -> tuple[str, str, str]:
+    """Obtain a Let's Encrypt certificate."""
+    print()
+
+    # Pre-flight checks
+    problems = []
+
+    # Check certbot installed
+    if not shutil.which("certbot"):
+        problems.append("certbot is not installed (install with: sudo apt install certbot)")
+
+    # Check hostname isn't localhost/IP
+    if hostname in ("localhost", "127.0.0.1", "::1") or hostname.startswith("192.168.") or hostname.startswith("10."):
+        problems.append(f"'{hostname}' is a local address — Let's Encrypt requires a public domain name")
+
+    # Check port 80 available (needed for HTTP-01 challenge)
+    if not _check_port_available(80):
+        # Check what's using it
+        port80_user = _get_port_user(80)
+        if port80_user:
+            problems.append(f"Port 80 is in use by {port80_user} — Let's Encrypt needs port 80 for verification")
+        else:
+            problems.append("Port 80 is in use — Let's Encrypt needs port 80 for HTTP challenge")
+
+    # Check running as root (certbot typically needs root)
+    if os.geteuid() != 0:
+        problems.append("Not running as root — certbot usually requires sudo")
+
+    if problems:
+        print("  Pre-flight checks found issues:\n")
+        for p in problems:
+            print(f"    - {p}")
+        print()
+        proceed = _prompt_yes_no("Try anyway?", default_yes=False)
+        if not proceed:
+            print()
+            retry = _prompt_choice(
+                "Select alternative:",
+                ["Self-signed (recommended)", "Custom certificate", "Exit setup"],
+            )
+            if retry == 1:
+                return _setup_ssl_selfsigned(hostname, certs_dir, existing_config)
+            elif retry == 2:
+                return _setup_ssl_custom(hostname, existing_config)
+            else:
+                sys.exit(1)
+
+    email = _prompt_input("Enter email for Let's Encrypt notifications")
+    config_email_holder = {"CERT_EMAIL": email}
+
+    print(f"\n  Requesting certificate for {hostname}...")
+    print("  This may take 30-60 seconds...\n")
+
+    try:
+        import cert_manager
+        success, message = cert_manager.request_letsencrypt_cert(hostname, email)
+        if success:
+            cert_path, key_path = cert_manager.get_letsencrypt_cert_paths(hostname)
+
+            # Verify cert files exist
+            if not Path(cert_path).exists():
+                print(f"  ERROR: Certificate file not found after issuance: {cert_path}")
+                print("  certbot may have saved to a different path.")
+                # Try to find it
+                found = _find_letsencrypt_cert(hostname)
+                if found:
+                    cert_path, key_path = found
+                    print(f"  Found certificate at: {cert_path}")
+                else:
+                    print("  Falling back to self-signed.")
+                    return _setup_ssl_selfsigned(hostname, certs_dir, existing_config)
+
+            cert_manager.install_renewal_hook("portal")
+            print(f"  Success! Certificate issued.")
             print(f"  Certificate: {cert_path}")
             print(f"  Private key: {key_path}")
-            print("  (Browsers will show a security warning until trusted)")
-            return cert_path, key_path, "selfsigned"
-        except Exception as e:
-            print(f"  ERROR: Failed to generate certificate: {e}")
-            print("  Falling back to manual configuration.")
-            return _setup_ssl(3, hostname, existing_config)
+            print(f"  Auto-renewal hook installed.")
 
-    elif choice == 2:
-        # Let's Encrypt
+            # Store email for renewal notifications
+            return cert_path, key_path, "letsencrypt"
+        else:
+            print(f"  ERROR: {message}")
+            print()
+            retry = _prompt_choice(
+                "Select alternative:",
+                ["Self-signed (recommended)", "Custom certificate", "Exit setup"],
+            )
+            if retry == 1:
+                return _setup_ssl_selfsigned(hostname, certs_dir, existing_config)
+            elif retry == 2:
+                return _setup_ssl_custom(hostname, existing_config)
+            else:
+                sys.exit(1)
+    except ImportError:
+        print("  ERROR: cryptography library not available for cert validation.")
+        print("  Attempting certbot directly...\n")
+
+        # Run certbot directly without cert_manager
+        if shutil.which("certbot"):
+            result = subprocess.run(
+                [
+                    "certbot", "certonly", "--non-interactive", "--agree-tos",
+                    "--email", email, "-d", hostname,
+                    "--standalone", "--preferred-challenges", "http",
+                ],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                cert_path = f"/etc/letsencrypt/live/{hostname}/fullchain.pem"
+                key_path = f"/etc/letsencrypt/live/{hostname}/privkey.pem"
+                if Path(cert_path).exists():
+                    print(f"  Success! Certificate issued.")
+                    print(f"  Certificate: {cert_path}")
+                    print(f"  Private key: {key_path}")
+                    return cert_path, key_path, "letsencrypt"
+
+            error = result.stderr.strip() or result.stdout.strip()
+            print(f"  ERROR: certbot failed: {error}")
+
         print()
-        email = _prompt_input("Enter email for Let's Encrypt notifications")
-        print(f"\n  Requesting certificate for {hostname}...")
-        print("  (This requires port 80 to be accessible from the internet)\n")
+        retry = _prompt_choice(
+            "Select alternative:",
+            ["Self-signed (recommended)", "Custom certificate", "Exit setup"],
+        )
+        if retry == 1:
+            return _setup_ssl_selfsigned(hostname, certs_dir, existing_config)
+        elif retry == 2:
+            return _setup_ssl_custom(hostname, existing_config)
+        else:
+            sys.exit(1)
 
+
+def _setup_ssl_custom(
+    hostname: str, existing_config: dict
+) -> tuple[str, str, str]:
+    """Configure custom certificate paths."""
+    print()
+    default_cert = existing_config.get("SSL_CERT", "")
+    default_key = existing_config.get("SSL_KEY", "")
+
+    cert_path = _prompt_input(
+        "Path to certificate PEM file",
+        default_cert if default_cert else ""
+    )
+    key_path = _prompt_input(
+        "Path to private key PEM file",
+        default_key if default_key else ""
+    )
+
+    # Validate files exist
+    if not Path(cert_path).exists():
+        print(f"\n  ERROR: Certificate file not found: {cert_path}")
+        retry = _prompt_yes_no("Re-enter paths?", default_yes=True)
+        if retry:
+            return _setup_ssl_custom(hostname, existing_config)
+        else:
+            print("  WARNING: Server will fail to start without valid certificate.")
+
+    if not Path(key_path).exists():
+        print(f"\n  ERROR: Key file not found: {key_path}")
+        retry = _prompt_yes_no("Re-enter paths?", default_yes=True)
+        if retry:
+            return _setup_ssl_custom(hostname, existing_config)
+        else:
+            print("  WARNING: Server will fail to start without valid key.")
+
+    # Validate the pair if both exist
+    if Path(cert_path).exists() and Path(key_path).exists():
         try:
             import cert_manager
-            success, message = cert_manager.request_letsencrypt_cert(hostname, email)
-            if success:
-                cert_path, key_path = cert_manager.get_letsencrypt_cert_paths(hostname)
-                cert_manager.install_renewal_hook("portal")
-                print(f"  Success! Certificate issued.")
-                print(f"  Certificate: {cert_path}")
-                print(f"  Auto-renewal hook installed.")
-                return cert_path, key_path, "letsencrypt"
+            cert_data = Path(cert_path).read_bytes()
+            key_data = Path(key_path).read_bytes()
+            is_valid, error = cert_manager.validate_cert_key_pair(cert_data, key_data)
+            if is_valid:
+                info = _get_cert_summary(cert_path)
+                print(f"  Certificate and key validated successfully.")
+                if info:
+                    print(f"  {info}")
             else:
-                print(f"  ERROR: {message}")
-                print("  Would you like to try a different method?")
-                retry = _prompt_choice(
-                    "Select alternative:",
-                    ["Self-signed", "Custom certificate", "Exit setup"],
-                )
-                if retry == 1:
-                    return _setup_ssl(1, hostname, existing_config)
-                elif retry == 2:
-                    return _setup_ssl(3, hostname, existing_config)
-                else:
-                    print("  Setup cancelled.")
-                    sys.exit(1)
+                print(f"  WARNING: {error}")
+                print("  The server may fail to start with mismatched cert/key.")
         except ImportError:
-            print("  ERROR: cryptography library not installed.")
-            print("  Install with: pip install cryptography")
-            return _setup_ssl(3, hostname, existing_config)
+            # Try openssl verify as fallback
+            result = subprocess.run(
+                ["openssl", "x509", "-in", cert_path, "-noout", "-dates"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print(f"  Certificate readable. Dates: {result.stdout.strip()}")
+            else:
+                print("  Could not validate certificate (cryptography library not available).")
+        except Exception as e:
+            print(f"  WARNING: Validation error: {e}")
 
-    else:
-        # Custom
-        print()
-        default_cert = existing_config.get("SSL_CERT", "")
-        default_key = existing_config.get("SSL_KEY", "")
+    return cert_path, key_path, "custom"
 
-        cert_path = _prompt_input(
-            "Path to certificate PEM file",
-            default_cert if default_cert else ""
+
+def _find_letsencrypt_cert(hostname: str) -> tuple[str, str] | None:
+    """Search for Let's Encrypt cert in common locations."""
+    candidates = [
+        (f"/etc/letsencrypt/live/{hostname}/fullchain.pem",
+         f"/etc/letsencrypt/live/{hostname}/privkey.pem"),
+        (f"/etc/letsencrypt/live/{hostname}-0001/fullchain.pem",
+         f"/etc/letsencrypt/live/{hostname}-0001/privkey.pem"),
+    ]
+    for cert, key in candidates:
+        if Path(cert).exists() and Path(key).exists():
+            return cert, key
+    return None
+
+
+def _get_port_user(port: int) -> str:
+    """Get the process name using a given port, or empty string."""
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5,
         )
-        key_path = _prompt_input(
-            "Path to private key PEM file",
-            default_key if default_key else ""
-        )
-
-        # Validate files exist
-        if not Path(cert_path).exists():
-            print(f"  WARNING: Certificate file not found: {cert_path}")
-        if not Path(key_path).exists():
-            print(f"  WARNING: Key file not found: {key_path}")
-        else:
-            # Validate the pair if both exist
-            try:
-                import cert_manager
-                cert_data = Path(cert_path).read_bytes()
-                key_data = Path(key_path).read_bytes()
-                is_valid, error = cert_manager.validate_cert_key_pair(cert_data, key_data)
-                if is_valid:
-                    print("  Certificate and key validated successfully.")
-                else:
-                    print(f"  WARNING: {error}")
-            except Exception:
-                pass
-
-        return cert_path, key_path, "custom"
+        for line in result.stdout.splitlines()[1:]:  # Skip header
+            if f":{port}" in line:
+                # Extract process name from users:(("name",pid=...))
+                if 'users:' in line:
+                    start = line.index('users:')
+                    return line[start:].split('"')[1] if '"' in line[start:] else "unknown"
+        return ""
+    except Exception:
+        return ""
 
 
 def _write_env(env_path: Path, config: dict) -> None:
@@ -323,12 +772,18 @@ def _write_env(env_path: Path, config: dict) -> None:
         f"HOST={config.get('HOST', '0.0.0.0')}",
         f"PORT={config.get('PORT', '443')}",
         f"HOSTNAME={config.get('HOSTNAME', 'localhost')}",
+    ]
+
+    if config.get("STREAM_HOSTNAME") and config["STREAM_HOSTNAME"] != config.get("HOSTNAME"):
+        lines.append(f"STREAM_HOSTNAME={config['STREAM_HOSTNAME']}")
+
+    lines.extend([
         "",
         "# TLS Certificate",
         f"SSL_CERT={config.get('SSL_CERT', '')}",
         f"SSL_KEY={config.get('SSL_KEY', '')}",
         f"CERT_METHOD={config.get('CERT_METHOD', '')}",
-    ]
+    ])
 
     if config.get("CERT_EMAIL"):
         lines.append(f"CERT_EMAIL={config['CERT_EMAIL']}")
@@ -530,9 +985,101 @@ def _setup_systemd(venv_python: str) -> None:
         )
         if result.returncode == 0:
             print("  Portal service started!")
+            # Give it a moment to start then check status
+            import time
+            time.sleep(3)
+            status = subprocess.run(
+                ["systemctl", "is-active", "portal"],
+                capture_output=True, text=True,
+            )
+            if status.stdout.strip() == "active":
+                print("  Service status: RUNNING")
+            else:
+                print(f"  Service status: {status.stdout.strip()}")
+                print("  Check logs with: sudo journalctl -u portal -f")
         else:
             print(f"  WARNING: Failed to start: {result.stderr.strip()}")
             print("  Check logs with: sudo journalctl -u portal -f")
+
+
+def _verify_setup(config: dict) -> None:
+    """Verify the setup configuration is valid and the server can start."""
+    issues = []
+    warnings = []
+
+    # Check .env exists
+    env_path = PROJECT_DIR / ".env"
+    if not env_path.exists():
+        issues.append(".env file not found")
+
+    # Check certificate files
+    cert_path = config.get("SSL_CERT", "")
+    key_path = config.get("SSL_KEY", "")
+
+    if not cert_path:
+        issues.append("SSL_CERT is not set")
+    elif not Path(cert_path).exists():
+        issues.append(f"Certificate file not found: {cert_path}")
+    else:
+        # Check cert readability
+        try:
+            Path(cert_path).read_bytes()
+        except PermissionError:
+            issues.append(f"Cannot read certificate file (permission denied): {cert_path}")
+
+    if not key_path:
+        issues.append("SSL_KEY is not set")
+    elif not Path(key_path).exists():
+        issues.append(f"Private key file not found: {key_path}")
+    else:
+        try:
+            Path(key_path).read_bytes()
+        except PermissionError:
+            issues.append(f"Cannot read private key file (permission denied): {key_path}")
+
+    # Check key permissions (should be 0o600)
+    if key_path and Path(key_path).exists():
+        mode = oct(Path(key_path).stat().st_mode)[-3:]
+        if mode != "600":
+            warnings.append(f"Private key permissions are {mode} (should be 600)")
+
+    # Check JWT secret
+    jwt = config.get("JWT_SECRET", "")
+    if not jwt or jwt == "change_me_to_a_random_64_char_hex_string":
+        issues.append("JWT_SECRET is not set or is the default placeholder")
+    elif len(jwt) < 32:
+        warnings.append("JWT_SECRET should be at least 32 characters")
+
+    # Check database path is writable
+    db_path = Path(config.get("DATABASE_PATH", str(PROJECT_DIR / "portal.db")))
+    db_dir = db_path.parent
+    if not db_dir.exists():
+        warnings.append(f"Database directory does not exist: {db_dir}")
+    elif not os.access(str(db_dir), os.W_OK):
+        issues.append(f"Database directory is not writable: {db_dir}")
+
+    # Check venv
+    venv_python = PROJECT_DIR / "venv" / "bin" / "python"
+    if not venv_python.exists():
+        warnings.append("Virtual environment not found at venv/")
+
+    # Report
+    if issues:
+        print("  ISSUES (will prevent server from starting):\n")
+        for issue in issues:
+            print(f"    [!] {issue}")
+        print()
+
+    if warnings:
+        print("  WARNINGS:\n")
+        for w in warnings:
+            print(f"    [~] {w}")
+        print()
+
+    if not issues and not warnings:
+        print("  All checks passed! Configuration looks good.")
+    elif not issues:
+        print("  No critical issues found. Server should start successfully.")
 
 
 def _print_summary(config: dict, venv_python: str) -> None:
@@ -545,6 +1092,7 @@ def _print_summary(config: dict, venv_python: str) -> None:
     print(f"  Hostname:    {config.get('HOSTNAME', 'localhost')}")
     print(f"  Port:        {config.get('PORT', '443')}")
     print(f"  Certificate: {config.get('CERT_METHOD', 'unknown')}")
+    print(f"  SSL Cert:    {config.get('SSL_CERT', 'not set')}")
     print(f"  Database:    {config.get('DATABASE_PATH', 'portal.db')}")
     print(f"  Python:      {venv_python}")
     print()
@@ -558,10 +1106,26 @@ def _print_summary(config: dict, venv_python: str) -> None:
 
     hostname = config.get("HOSTNAME", "localhost")
     port = config.get("PORT", "443")
+    cert_method = config.get("CERT_METHOD", "")
+
     if port == "443":
         print(f"  Open in browser: https://{hostname}")
     else:
         print(f"  Open in browser: https://{hostname}:{port}")
+
+    if cert_method == "selfsigned":
+        print()
+        print("  IMPORTANT: Since you're using a self-signed certificate,")
+        print("  your browser will show a security warning on first visit.")
+        print("  Click 'Advanced' > 'Proceed to site' to continue.")
+    print()
+
+    # Troubleshooting hint
+    print("  If you see 'page took too long to respond':")
+    print("    1. Check if portal is running: sudo systemctl status portal")
+    print("    2. Check logs for TLS errors: sudo journalctl -u portal -n 50")
+    print("    3. Verify cert exists: ls -la " + config.get("SSL_CERT", "/path/to/cert"))
+    print("    4. Re-run setup: sudo python server.py setup")
     print()
 
 

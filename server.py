@@ -220,11 +220,41 @@ def check_rate_limit(client_ip: str) -> bool:
 
 def create_ssl_context() -> ssl.SSLContext:
     """Create SSL context with secure settings."""
+    cert_path = Config.SSL_CERT
+    key_path = Config.SSL_KEY
+
+    # Check cert files exist before attempting to load
+    if not Path(cert_path).exists():
+        logger.error(f"SSL certificate file not found: {cert_path}")
+        logger.error("Fix with one of:")
+        logger.error("  1. Run 'sudo python server.py setup' to configure TLS")
+        logger.error("  2. Set SSL_CERT and SSL_KEY in .env to valid PEM file paths")
+        logger.error("  3. Generate self-signed cert: python -c \"import cert_manager; cert_manager.generate_self_signed_cert('localhost', 'certs')\"")
+        sys.exit(1)
+
+    if not Path(key_path).exists():
+        logger.error(f"SSL private key file not found: {key_path}")
+        logger.error("Set SSL_KEY in .env to the correct private key path, or run 'sudo python server.py setup'")
+        sys.exit(1)
+
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
-    # Load certificates
-    ssl_context.load_cert_chain(Config.SSL_CERT, Config.SSL_KEY)
+    # Load certificates with clear error on failure
+    try:
+        ssl_context.load_cert_chain(cert_path, key_path)
+    except ssl.SSLError as e:
+        logger.error(f"Failed to load TLS certificate: {e}")
+        logger.error(f"  Certificate: {cert_path}")
+        logger.error(f"  Private key: {key_path}")
+        logger.error("The certificate and key may be invalid or mismatched.")
+        logger.error("Run 'sudo python server.py setup' to reconfigure TLS.")
+        sys.exit(1)
+    except PermissionError:
+        logger.error(f"Permission denied reading TLS files. Run as root or fix permissions:")
+        logger.error(f"  sudo chmod 644 {cert_path}")
+        logger.error(f"  sudo chmod 600 {key_path}")
+        sys.exit(1)
 
     # Secure cipher suite
     ssl_context.set_ciphers(

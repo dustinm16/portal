@@ -101,7 +101,7 @@ class Config:
         if not cls.JWT_SECRET or cls.JWT_SECRET == "change_me_to_a_random_64_char_hex_string":
             errors.append("JWT_SECRET must be set to a secure random value")
 
-        if len(cls.JWT_SECRET) < 32:
+        if cls.JWT_SECRET and len(cls.JWT_SECRET) < 32:
             errors.append("JWT_SECRET should be at least 32 characters")
 
         if not Path(cls.SSL_CERT).exists():
@@ -116,6 +116,37 @@ class Config:
     def validate_or_warn(cls) -> bool:
         """Validate and print warnings. Returns True if critical errors exist."""
         errors = cls.validate()
+        if not errors:
+            return False
+
+        print()
+        print("=" * 60)
+        print("  CONFIGURATION ERRORS — Server cannot start")
+        print("=" * 60)
         for error in errors:
-            print(f"[CONFIG WARNING] {error}")
-        return len(errors) > 0
+            print(f"  [!] {error}")
+        print()
+
+        # Check if .env exists
+        env_path = Path(__file__).parent / ".env"
+        if not env_path.exists():
+            print("  No .env file found. Run the setup wizard:")
+            print("    sudo python server.py setup")
+        else:
+            # Give targeted advice based on which errors
+            ssl_errors = [e for e in errors if "SSL" in e]
+            if ssl_errors:
+                print("  TLS certificate issue detected.")
+                print("  This is the most common cause of 'page took too long to respond'.")
+                print()
+                print("  Quick fix — generate a self-signed certificate:")
+                print(f"    cd {Path(__file__).parent}")
+                print("    python -c \"import cert_manager; print(cert_manager.generate_self_signed_cert('" + cls.HOSTNAME + "', 'certs'))\"")
+                print("    # Then update SSL_CERT and SSL_KEY in .env")
+                print()
+                print("  Or re-run the setup wizard:")
+                print("    sudo python server.py setup")
+
+        print("=" * 60)
+        print()
+        return True
