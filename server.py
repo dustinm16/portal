@@ -2147,14 +2147,20 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
         )
 
         # Create a chat channel for every stream
-        user = await db.get_user_by_id(token.user_id)
-        channel_name = f"stream-{user['username']}-{stream_id}"
-        chat_channel_id = await db.create_chat_channel(
-            name=channel_name,
-            description=f"Chat for {name} by {user['username']}",
-            created_by=token.user_id
-        )
-        await db.update_user_stream(stream_id, chat_channel_id=chat_channel_id)
+        try:
+            user = await db.get_user_by_id(token.user_id)
+            channel_name = f"stream-{user['username']}-{stream_id}"
+            chat_channel_id = await db.create_chat_channel(
+                name=channel_name,
+                description=f"Chat for {name} by {user['username']}",
+                created_by=token.user_id
+            )
+            await db.update_user_stream(stream_id, chat_channel_id=chat_channel_id)
+        except Exception as chan_err:
+            # Chat channel failed — delete the orphaned stream
+            logger.error(f"Failed to create chat channel for stream {stream_id}: {chan_err}")
+            await db.delete_user_stream(stream_id, token.user_id)
+            return web.json_response({"error": "Failed to create stream chat channel"}, status=500)
 
         stream = await db.get_user_stream(stream_id)
         return web.json_response({"stream": stream}, status=201)
@@ -3098,12 +3104,17 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             if token_record["revoked"]:
                 logger.warning(f"Revoked RTMP token from {ip}")
                 return web.json_response({"error": "Token revoked"}, status=401)
-            if datetime.fromisoformat(token_record["expires_at"]) < datetime.now(timezone.utc):
+            expires = datetime.fromisoformat(token_record["expires_at"])
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < datetime.now(timezone.utc):
                 logger.warning(f"Expired RTMP token from {ip}")
                 return web.json_response({"error": "Token expired"}, status=401)
             # Grace period: allow re-auth within window after first use (OBS reconnect)
             if token_record["used"]:
                 used_at = datetime.fromisoformat(token_record["used_at"])
+                if used_at.tzinfo is None:
+                    used_at = used_at.replace(tzinfo=timezone.utc)
                 grace = timedelta(seconds=Config.RTMP_TOKEN_GRACE_SECONDS)
                 if datetime.now(timezone.utc) - used_at > grace:
                     logger.warning(f"RTMP token grace period expired from {ip}")
@@ -9073,8 +9084,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
         # Clean up voice state (remove from any channel)
         for vc in list(voice_state.keys()):
-            if user_id in voice_state[vc]:
-                del voice_state[vc][user_id]
+            vc_users = voice_state.get(vc)
+            if vc_users is None:
+                continue
+            if user_id in vc_users:
+                del vc_users[user_id]
                 try:
                     await broadcast_to_channel(vc, {
                         "type": "voice_user_left",
@@ -9083,8 +9097,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     await broadcast_users_list(vc)
                 except Exception:
                     pass
-                if not voice_state[vc]:
-                    del voice_state[vc]
+                if not vc_users:
+                    voice_state.pop(vc, None)
         # Clean up speaking rate-limit entries
         for key in [k for k in _voice_speaking_last if k[1] == user_id]:
             _voice_speaking_last.pop(key, None)

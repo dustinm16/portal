@@ -10,6 +10,24 @@ Open Relay Portal is a secure, authenticated gateway for home infrastructure tha
 
 **Public Endpoint:** `https://portal.example.com`
 
+### Codebase Statistics
+
+| Category | Files | Lines |
+|----------|------:|------:|
+| Python (core) | 14 | 21,517 |
+| Python (plugins) | 13 | 4,376 |
+| Python (services) | 3 | 1,291 |
+| **Python Total** | **30** | **27,184** |
+| HTML | 19 | 27,457 |
+| JavaScript | 9 | 7,231 |
+| CSS | 1 | 3,476 |
+| **All Code Total** | **59** | **65,348** |
+
+- **217 HTTP routes** (118 GET, 67 POST, 14 PUT, 17 DELETE, 1 PATCH)
+- **28 WebSocket message types** (13 chat, 9 DM, 6 voice)
+- **75 connection types** across 17 categories
+- **28 documented security features**
+
 ---
 
 ## System Architecture
@@ -144,20 +162,20 @@ Permission Hierarchy:
 
 ```
 /opt/portal/
-├── server.py              # Main aiohttp server (~11280 lines)
-├── database.py            # SQLite async database layer (~4255 lines)
-├── auth.py                # JWT/API key authentication (~465 lines)
-├── config.py              # Environment configuration (~155 lines)
-├── logger.py              # Logging with rotation
-├── ssh_keys.py            # SSH key generation/management (~260 lines)
-├── shodan_integration.py  # Shodan API for recon
-├── traffic_metrics.py     # Connection metrics, time series, Chart.js data
-├── vulnerability_scanner.py # CVE/port scanning
-├── cert_manager.py        # TLS certificate lifecycle (self-signed, Let's Encrypt, custom)
-├── setup.py               # Interactive setup wizard + MediaMTX installer (~1265 lines)
-├── system_monitor.py      # Process, systemd service, and network monitoring (~370 lines)
-├── file_manager.py        # Local filesystem operations (admin) (~280 lines)
-├── sftp_browser.py        # Remote SFTP file browsing (per-user)
+├── server.py              # Main aiohttp server (~11,280 lines, 217 routes)
+├── database.py            # SQLite async database layer (~4,255 lines)
+├── auth.py                # JWT/API key authentication (~466 lines)
+├── config.py              # Environment configuration (~154 lines)
+├── logger.py              # Logging with rotation (~281 lines)
+├── ssh_keys.py            # SSH key generation/management (~261 lines)
+├── shodan_integration.py  # Shodan API for recon (~307 lines)
+├── traffic_metrics.py     # Connection metrics, time series, Chart.js data (~400 lines)
+├── vulnerability_scanner.py # CVE/port scanning (~1,525 lines)
+├── cert_manager.py        # TLS certificate lifecycle (~492 lines)
+├── setup.py               # Interactive setup wizard + MediaMTX installer (~1,265 lines)
+├── system_monitor.py      # Process, systemd service, and network monitoring (~368 lines)
+├── file_manager.py        # Local filesystem operations (admin) (~279 lines)
+├── sftp_browser.py        # Remote SFTP file browsing (per-user) (~183 lines)
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry
@@ -179,7 +197,7 @@ Permission Hierarchy:
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   └── mediamtx.py        # MediaMTX process manager
 │
-├── static/                # 19 HTML pages, 9 JS modules, 1 CSS file
+├── static/                # 19 HTML pages, 9 JS modules, 1 CSS file (~38,164 lines frontend)
 │   ├── index.html         # Dashboard
 │   ├── login.html         # Login page
 │   ├── admin.html         # Admin panel
@@ -199,7 +217,7 @@ Permission Hierarchy:
 │   ├── files.html         # File manager (SFTP, admin local in admin panel)
 │   ├── sysmon.html        # Redirects to /admin#system
 │   ├── unauthorized.html  # Auth error page
-│   ├── css/portal.css     # Shared styles (~3475 lines, 6 responsive breakpoints)
+│   ├── css/portal.css     # Shared styles (~3,476 lines, 6 responsive breakpoints)
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
@@ -432,6 +450,39 @@ CREATE TABLE dm_messages (
 -- FTS5 full-text search (contentless indexes alongside encrypted data)
 CREATE VIRTUAL TABLE chat_messages_fts USING fts5(message, content='', tokenize='porter unicode61');
 CREATE VIRTUAL TABLE dm_messages_fts USING fts5(message, content='', tokenize='porter unicode61');
+
+-- Invite codes (3 types: daily, single_use, timed)
+CREATE TABLE invite_codes (
+    id INTEGER PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL DEFAULT 'daily',  -- daily, single_use, timed
+    label TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT,
+    expires_at TEXT,
+    max_uses INTEGER,
+    use_count INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1
+);
+
+-- Notifications (persistent, pushed via WebSocket)
+CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT,
+    data TEXT DEFAULT '{}',
+    is_read INTEGER DEFAULT 0,
+    created_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- App settings (key-value, used for data retention config, encryption version, etc.)
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 ```
 
 ---
@@ -450,7 +501,17 @@ POST /api/token/revoke   - Revoke a token
 POST /api/api-keys       - Create API key
 GET  /api/api-keys       - List API keys
 DELETE /api/api-keys/:id - Delete API key
-GET  /api/invite-code    - Get daily invite code (admin)
+```
+
+### Invite Codes (Admin)
+
+Three types of invite codes for registration: **daily** (auto-cycles every 24h), **single-use** (one registration, then invalidated), and **timed** (valid for a configurable duration).
+
+```
+GET    /api/invite-code                       - List all invite codes (admin)
+POST   /api/admin/invite-codes                - Create invite code (admin)
+DELETE /api/admin/invite-codes/:id            - Deactivate code (admin)
+GET    /api/admin/invite-codes/:id/registrations - Users who registered with code (admin)
 ```
 
 ### User Management
@@ -638,6 +699,14 @@ GET  /api/shells                     - Available shells (admin)
 GET  /api/plugins                    - Available plugins with schemas
 ```
 
+### Notifications
+
+```
+GET  /api/notifications              - List notifications (paginated)
+POST /api/notifications/{id}/read    - Mark notification as read
+POST /api/notifications/read-all     - Mark all as read
+```
+
 ### Public Stats
 
 ```
@@ -797,7 +866,8 @@ GET /watch/:id           - Stream viewer (HLS)
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (feature guide)
 GET /files               - File manager (admin local + user SFTP)
-GET /sysmon              - System monitor (admin only)
+GET /sysmon              - System monitor (redirects to /admin#system)
+GET /guides              - Connection setup guides (75 types)
 GET /live                - Public live streams (unauthenticated)
 ```
 
