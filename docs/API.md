@@ -3395,7 +3395,7 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/proxmox/{id}` | Proxmox management |
 | `/github/{id}` | GitHub browser |
 | `/media/{id}` | Media player |
-| `/about` | About page (feature guide) |
+| `/about` | About page (public; features visible to all, admin sections server-stripped) |
 
 ### Navigation Structure
 
