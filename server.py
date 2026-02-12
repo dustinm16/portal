@@ -10764,7 +10764,23 @@ class PortalServer:
             Config.PORT,
             ssl_context=ssl_context
         )
-        await site.start()
+        try:
+            await site.start()
+        except PermissionError:
+            logger.error(f"Permission denied binding to port {Config.PORT}.")
+            logger.error(f"Ports below 1024 require root. Fix with one of:")
+            logger.error(f"  1. sudo python server.py serve")
+            logger.error(f"  2. sudo systemctl start portal  (if installed)")
+            logger.error(f"  3. Change PORT to 8443 in .env (no root needed)")
+            sys.exit(1)
+        except OSError as e:
+            if e.errno == 98:  # EADDRINUSE
+                logger.error(f"Port {Config.PORT} is already in use.")
+                logger.error(f"Another instance may be running. Check with:")
+                logger.error(f"  sudo ss -tlnp sport = :{Config.PORT}")
+            else:
+                logger.error(f"Failed to bind to {Config.HOST}:{Config.PORT}: {e}")
+            sys.exit(1)
 
         # Generate/log daily invite code (DB-backed + legacy file)
         invite_code = get_daily_invite_code()  # Legacy file-based
