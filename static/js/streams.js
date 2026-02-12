@@ -843,6 +843,7 @@ window.closeModal = function(modalId) {
     if (typeof originalCloseModal === 'function') {
         originalCloseModal(modalId);
     } else {
-        document.getElementById(modalId).style.display = 'none';
+        const el = document.getElementById(modalId);
+        if (el) el.style.display = 'none';
     }
 };

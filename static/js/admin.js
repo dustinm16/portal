@@ -2,8 +2,6 @@
  * Open Relay Portal - Admin Functions
  */
 
-console.log('admin.js loading...');
-
 // currentUser is defined in dashboard.js
 var pendingConfirmAction = null;
 
@@ -33,18 +31,9 @@ async function initAdminUI() {
  * Show modal by ID
  */
 function showModal(modalId) {
-    console.log('showModal called:', modalId);
     const modal = document.getElementById(modalId);
-    if (!modal) {
-        console.error('Modal not found:', modalId);
-        alert('Modal not found: ' + modalId);
-        return;
-    }
-    console.log('Modal element found, setting display to flex');
-    console.log('Modal before:', modal.style.display);
+    if (!modal) return;
     modal.style.display = 'flex';
-    console.log('Modal after:', modal.style.display);
-    console.log('Modal computed style:', window.getComputedStyle(modal).display);
     document.body.style.overflow = 'hidden';
 }
 
@@ -52,8 +41,8 @@ function showModal(modalId) {
  * Close modal by ID
  */
 function closeModal(modalId) {
-    console.log('closeModal called:', modalId);
-    document.getElementById(modalId).style.display = 'none';
+    const modal = document.getElementById(modalId);
+    if (modal) modal.style.display = 'none';
     document.body.style.overflow = '';
 
     // Clean up log auto-refresh if closing logs modal
@@ -72,7 +61,6 @@ var pluginConfigs = {};
  * Show Add Service Modal
  */
 async function showAddServiceModal() {
-    console.log('showAddServiceModal called');
     document.getElementById('add-service-form').reset();
     document.getElementById('plugin-config-fields').innerHTML = '';
     document.getElementById('common-target-fields').style.display = 'block';
@@ -97,7 +85,6 @@ async function loadPluginConfigs() {
         const response = await Portal.fetch('/api/plugins');
         if (response.ok) {
             const data = await response.json();
-            console.log('Loaded plugins:', data.plugins.map(p => p.name));
             data.plugins.forEach(p => {
                 pluginConfigs[p.name] = p;
             });
@@ -283,9 +270,7 @@ function onPluginChange() {
 
     // Get plugin config schema
     const pluginInfo = pluginConfigs[plugin];
-    console.log('Plugin selected:', plugin, 'Config:', pluginInfo);
     if (!pluginInfo || !pluginInfo.config_schema || !pluginInfo.config_schema.properties) {
-        console.log('No config schema for plugin:', plugin);
         return;
     }
 
@@ -512,8 +497,6 @@ async function submitAddService(event) {
  * Show Edit Service Modal
  */
 async function showEditServiceModal(serviceId) {
-    console.log('showEditServiceModal called for service:', serviceId);
-
     // Load plugins if not cached
     if (Object.keys(pluginConfigs).length === 0) {
         await loadPluginConfigs();
@@ -798,15 +781,12 @@ const ROLE_COLORS = {
  * Show Manage Users Modal
  */
 async function showManageUsersModal() {
-    console.log('showManageUsersModal called');
     showModal('manage-users-modal');
     document.getElementById('users-loading').style.display = 'flex';
     document.getElementById('users-table').style.display = 'none';
 
     try {
-        console.log('Fetching users...');
         const response = await Portal.fetch('/api/users');
-        console.log('Users response status:', response.status);
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
@@ -814,7 +794,6 @@ async function showManageUsersModal() {
         }
 
         const data = await response.json();
-        console.log('Users data:', data);
 
         if (!data || !data.users) {
             throw new Error('Invalid response format');
@@ -825,7 +804,6 @@ async function showManageUsersModal() {
         manageableRoles = data.manageable_roles || [];
 
         renderUsersTable(data.users);
-        console.log('Users table rendered');
     } catch (error) {
         Portal.toast(error.message || 'Failed to load users', 'error');
         console.error('Load users error:', error);
@@ -847,9 +825,7 @@ function canManageRole(targetRole) {
  * Render users table
  */
 function renderUsersTable(users) {
-    console.log('renderUsersTable called with', users?.length, 'users');
     const tbody = document.getElementById('users-tbody');
-    console.log('tbody element:', tbody);
 
     const canResetPasswords = currentUser?.permissions?.can_reset_passwords;
     const canDeleteUsers = currentUser?.permissions?.can_delete_users;
@@ -1291,7 +1267,6 @@ var logAutoRefreshInterval = null;
  * Show Logs Modal
  */
 async function showLogsModal() {
-    console.log('showLogsModal called');
     showModal('logs-modal');
     await loadLogFiles();
     await loadLogSettings();
@@ -1655,15 +1630,8 @@ async function disable2FA(event) {
 
 // Initialize admin UI when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('admin.js DOMContentLoaded');
     initAdminUI();
 });
-
-console.log('admin.js loaded, functions defined:',
-    typeof showAddServiceModal,
-    typeof showManageUsersModal,
-    typeof showInviteCode,
-    typeof showLogsModal);
 
 // Close modals on Escape key
 document.addEventListener('keydown', (e) => {
