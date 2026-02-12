@@ -948,15 +948,6 @@ def _setup_systemd(venv_python: str) -> None:
     local_service.write_text(service_content)
     print(f"  Service file generated: {local_service}")
 
-    # Check if running as root
-    if os.geteuid() != 0:
-        print("  Not running as root. To install the service manually:")
-        print(f"    sudo cp {local_service} /etc/systemd/system/")
-        print("    sudo systemctl daemon-reload")
-        print("    sudo systemctl enable portal")
-        print("    sudo systemctl start portal")
-        return
-
     install = _prompt_yes_no("Install systemd service and enable?", default_yes=True)
     if not install:
         print("  Skipped. Install manually with:")
@@ -964,34 +955,47 @@ def _setup_systemd(venv_python: str) -> None:
         print("    sudo systemctl daemon-reload && sudo systemctl enable portal")
         return
 
+    is_root = os.geteuid() == 0
+    use_sudo = not is_root
+
+    if use_sudo:
+        print("  Not running as root — will use sudo for service installation.")
+        print("  (You may be prompted for your password)\n")
+
     # Copy to systemd
-    target = Path("/etc/systemd/system/portal.service")
-    shutil.copy2(local_service, target)
+    target = "/etc/systemd/system/portal.service"
+    if is_root:
+        shutil.copy2(local_service, target)
+    else:
+        result = subprocess.run(
+            ["sudo", "cp", str(local_service), target],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"  ERROR: Failed to copy service file: {result.stderr.strip()}")
+            print(f"  Install manually with:")
+            print(f"    sudo cp {local_service} /etc/systemd/system/")
+            print(f"    sudo systemctl daemon-reload && sudo systemctl enable --now portal")
+            return
     print(f"  Installed to: {target}")
 
     # Daemon reload
-    subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+    _run_systemctl(["daemon-reload"], use_sudo)
     print("  systemd reloaded.")
 
     # Enable
-    subprocess.run(["systemctl", "enable", "portal"], capture_output=True)
+    _run_systemctl(["enable", "portal"], use_sudo)
     print("  Service enabled (will start on boot).")
 
     start = _prompt_yes_no("Start the portal service now?", default_yes=True)
     if start:
-        result = subprocess.run(
-            ["systemctl", "restart", "portal"],
-            capture_output=True, text=True,
-        )
+        result = _run_systemctl(["restart", "portal"], use_sudo)
         if result.returncode == 0:
             print("  Portal service started!")
             # Give it a moment to start then check status
             import time
             time.sleep(3)
-            status = subprocess.run(
-                ["systemctl", "is-active", "portal"],
-                capture_output=True, text=True,
-            )
+            status = _run_systemctl(["is-active", "portal"], use_sudo)
             if status.stdout.strip() == "active":
                 print("  Service status: RUNNING")
             else:
@@ -1000,6 +1004,13 @@ def _setup_systemd(venv_python: str) -> None:
         else:
             print(f"  WARNING: Failed to start: {result.stderr.strip()}")
             print("  Check logs with: sudo journalctl -u portal -f")
+
+
+def _run_systemctl(args: list[str], use_sudo: bool = False) -> subprocess.CompletedProcess:
+    """Run a systemctl command, optionally with sudo."""
+    cmd = ["sudo", "systemctl"] if use_sudo else ["systemctl"]
+    cmd.extend(args)
+    return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def _verify_setup(config: dict) -> None:
