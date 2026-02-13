@@ -92,6 +92,9 @@ class Config:
     # SEO / Search Engine Verification
     GOOGLE_SITE_VERIFICATION: str = os.getenv("GOOGLE_SITE_VERIFICATION", "")  # meta tag content
     GOOGLE_VERIFICATION_FILE: str = os.getenv("GOOGLE_VERIFICATION_FILE", "")  # filename ID (e.g. 46ea35705e711807)
+    BING_SITE_VERIFICATION: str = os.getenv("BING_SITE_VERIFICATION", "")  # Bing Webmaster Tools verification
+    YANDEX_SITE_VERIFICATION: str = os.getenv("YANDEX_SITE_VERIFICATION", "")  # Yandex Webmaster verification
+    INDEXNOW_API_KEY: str = os.getenv("INDEXNOW_API_KEY", "")  # IndexNow instant indexing (Bing, Yandex, Seznam, Naver)
 
     # Voice Chat (WebRTC ICE servers)
     STUN_SERVER: str = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")

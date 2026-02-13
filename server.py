@@ -440,9 +440,16 @@ async def http_robots_txt(request: web.Request) -> web.Response:
     """Serve robots.txt for search engine crawling."""
     hostname = Config.HOSTNAME or request.host
     body = f"""User-agent: *
+# Public pages
 Allow: /login
 Allow: /live
 Allow: /about
+Allow: /guides
+Allow: /api-docs
+# Static assets (CSS/JS for rendering)
+Allow: /static/css/
+Allow: /static/js/
+# Block everything else
 Disallow: /api/
 Disallow: /ws/
 Disallow: /admin
@@ -450,8 +457,119 @@ Disallow: /dashboard
 Disallow: /chat
 Disallow: /streams
 Disallow: /files
-Disallow: /guides
+Disallow: /watch
+Disallow: /github
+Disallow: /terminal
+Disallow: /vnc
+Disallow: /spice
+Disallow: /proxmox
+Disallow: /mediamtx
 Disallow: /static/uploads/
+Disallow: /static/admin.html
+Disallow: /static/index.html
+Disallow: /static/chat.html
+Disallow: /static/streams.html
+Disallow: /static/files.html
+Disallow: /static/watch.html
+Disallow: /static/terminal.html
+Disallow: /static/vnc.html
+Disallow: /static/github.html
+Disallow: /static/proxmox.html
+Disallow: /static/mediamtx.html
+Disallow: /static/spice.html
+Disallow: /static/sysmon.html
+Disallow: /static/unauthorized.html
+Crawl-delay: 2
+
+# Googlebot (no crawl-delay — Google ignores it, uses Search Console settings)
+User-agent: Googlebot
+Allow: /login
+Allow: /live
+Allow: /about
+Allow: /guides
+Allow: /api-docs
+Allow: /static/css/
+Allow: /static/js/
+Disallow: /api/
+Disallow: /ws/
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /streams
+Disallow: /files
+Disallow: /watch
+Disallow: /static/uploads/
+Disallow: /static/admin.html
+Disallow: /static/index.html
+Disallow: /static/chat.html
+Disallow: /static/streams.html
+Disallow: /static/files.html
+
+# Bing
+User-agent: Bingbot
+Allow: /login
+Allow: /live
+Allow: /about
+Allow: /guides
+Allow: /api-docs
+Allow: /static/css/
+Allow: /static/js/
+Disallow: /api/
+Disallow: /ws/
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /streams
+Disallow: /files
+Disallow: /watch
+Disallow: /static/uploads/
+Disallow: /static/admin.html
+Disallow: /static/index.html
+Disallow: /static/chat.html
+Disallow: /static/streams.html
+Disallow: /static/files.html
+Crawl-delay: 3
+
+# DuckDuckGo (uses Bing index, but respects its own robots rules)
+User-agent: DuckDuckBot
+Allow: /login
+Allow: /live
+Allow: /about
+Allow: /guides
+Allow: /api-docs
+Allow: /static/css/
+Allow: /static/js/
+Disallow: /api/
+Disallow: /ws/
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /streams
+Disallow: /files
+Disallow: /watch
+Disallow: /static/uploads/
+Disallow: /static/admin.html
+
+# Yandex
+User-agent: Yandex
+Allow: /login
+Allow: /live
+Allow: /about
+Allow: /guides
+Allow: /api-docs
+Allow: /static/css/
+Allow: /static/js/
+Disallow: /api/
+Disallow: /ws/
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /streams
+Disallow: /files
+Disallow: /watch
+Disallow: /static/uploads/
+Disallow: /static/admin.html
+Crawl-delay: 5
 
 Sitemap: https://{hostname}/sitemap.xml
 """
@@ -460,20 +578,27 @@ Sitemap: https://{hostname}/sitemap.xml
 
 async def http_sitemap_xml(request: web.Request) -> web.Response:
     """Serve sitemap.xml for search engine indexing."""
+    from datetime import datetime
     hostname = Config.HOSTNAME or request.host
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     urls = [
-        ("https://{}/login", "weekly", "1.0"),
+        ("https://{}/about", "weekly", "1.0"),
+        ("https://{}/login", "monthly", "0.9"),
         ("https://{}/live", "daily", "0.8"),
-        ("https://{}/about", "monthly", "0.6"),
+        ("https://{}/guides", "weekly", "0.8"),
+        ("https://{}/api-docs", "monthly", "0.5"),
     ]
     xml_entries = []
     for url_tpl, freq, priority in urls:
         url = url_tpl.format(hostname)
         xml_entries.append(
-            f"  <url>\n    <loc>{url}</loc>\n    <changefreq>{freq}</changefreq>\n    <priority>{priority}</priority>\n  </url>"
+            f"  <url>\n    <loc>{url}</loc>\n    <lastmod>{today}</lastmod>\n    <changefreq>{freq}</changefreq>\n    <priority>{priority}</priority>\n  </url>"
         )
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9
+                            http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
 {chr(10).join(xml_entries)}
 </urlset>"""
     return web.Response(text=body, content_type="application/xml")
@@ -489,6 +614,26 @@ async def http_google_verification(request: web.Request) -> web.Response:
         text=f"google-site-verification: {filename}",
         content_type="text/html"
     )
+
+
+async def http_indexnow_key(request: web.Request) -> web.Response:
+    """Serve IndexNow API key verification file for Bing/Yandex/Seznam/Naver instant indexing."""
+    key = Config.INDEXNOW_API_KEY
+    if not key:
+        return web.Response(status=404, text="Not found")
+    return web.Response(text=key, content_type="text/plain")
+
+
+async def http_bing_verification(request: web.Request) -> web.Response:
+    """Serve Bing Webmaster Tools verification XML."""
+    code = Config.BING_SITE_VERIFICATION
+    if not code:
+        return web.Response(status=404, text="Not found")
+    xml = f"""<?xml version="1.0"?>
+<users>
+    <user>{code}</user>
+</users>"""
+    return web.Response(text=xml, content_type="text/xml")
 
 
 async def http_authenticated_upload(request: web.Request) -> web.Response:
@@ -2698,6 +2843,9 @@ async def http_get_open_streams(request: web.Request) -> web.Response:
 async def http_live_page(request: web.Request) -> web.Response:
     """Serve the public live streams page (no auth required)."""
     html = load_static_file("live.html")
+    # Inject dynamic hostname for canonical URLs and OG tags
+    hostname = Config.HOSTNAME or "localhost"
+    html = html.replace("{{HOSTNAME}}", hostname)
     return web.Response(text=html, content_type="text/html")
 
 
@@ -7131,15 +7279,22 @@ async def http_login_page(request: web.Request) -> web.Response:
         raise web.HTTPFound("/dashboard")
 
     html = load_static_file("login.html")
-    # Inject Google site verification meta tag if configured
-    verification = Config.GOOGLE_SITE_VERIFICATION
-    if verification:
-        html = html.replace(
-            "<!-- GOOGLE_SITE_VERIFICATION -->",
-            f'<meta name="google-site-verification" content="{verification}">'
-        )
-    else:
-        html = html.replace("<!-- GOOGLE_SITE_VERIFICATION -->", "")
+    # Inject search engine verification meta tags if configured
+    verification_tags = []
+    if Config.GOOGLE_SITE_VERIFICATION:
+        verification_tags.append(f'<meta name="google-site-verification" content="{Config.GOOGLE_SITE_VERIFICATION}">')
+    if Config.BING_SITE_VERIFICATION:
+        verification_tags.append(f'<meta name="msvalidate.01" content="{Config.BING_SITE_VERIFICATION}">')
+    if Config.YANDEX_SITE_VERIFICATION:
+        verification_tags.append(f'<meta name="yandex-verification" content="{Config.YANDEX_SITE_VERIFICATION}">')
+    html = html.replace(
+        "<!-- SEARCH_ENGINE_VERIFICATION -->",
+        "\n    ".join(verification_tags) if verification_tags else ""
+    )
+
+    # Inject dynamic hostname for canonical URLs and OG tags
+    hostname = Config.HOSTNAME or "localhost"
+    html = html.replace("{{HOSTNAME}}", hostname)
 
     return web.Response(text=html, content_type="text/html")
 
@@ -7520,45 +7675,79 @@ async def http_admin_page(request: web.Request) -> web.Response:
 
 
 async def http_api_docs_page(request: web.Request) -> web.Response:
-    """Serve API documentation page."""
-    token = await authenticate_request(request)
-    if not token:
-        raise web.HTTPFound("/login")
+    """Serve API documentation page (public access for SEO).
 
-    html = load_static_file("api-docs.html")
-    return web.Response(text=html, content_type="text/html")
-
-
-async def http_about_page(request: web.Request) -> web.Response:
-    """Serve About page (public access).
-
-    Authenticated users see full content. Unauthenticated visitors get
-    auth-only and admin-only sections stripped server-side so the HTML
-    is never delivered to the client.
+    Admin-only API sections are stripped server-side for non-admin users
+    so the HTML source never contains admin endpoint documentation.
     """
-    import re
-    html = load_static_file("about.html")
+    html = load_static_file("api-docs.html")
 
-    # Strip admin-only sections for non-admin users
+    # Strip admin-only sections server-side for non-admin users
     token = await authenticate_request(request)
     is_admin = False
     if token:
         user = await db.get_user_by_id(token.user_id) if token.user_id else None
         if user and (user.get("is_admin") or user.get("role") in ("superadmin", "admin")):
             is_admin = True
+
     if not is_admin:
-        html = re.sub(r'<!-- ADMIN-ONLY-START -->.*?<!-- ADMIN-ONLY-END -->', '', html, flags=re.DOTALL)
+        # Remove <div class="...admin-only...">...</div> blocks by tracking nesting
+        result = []
+        i = 0
+        skip_depth = 0
+        while i < len(html):
+            if skip_depth > 0:
+                if html[i:i+4].lower() == '<div':
+                    skip_depth += 1
+                elif html[i:i+6].lower() == '</div>':
+                    skip_depth -= 1
+                    if skip_depth == 0:
+                        i += 6
+                        continue
+                i += 1
+                continue
+
+            if html[i:i+4].lower() == '<div':
+                tag_end = html.find('>', i)
+                if tag_end != -1:
+                    tag = html[i:tag_end+1]
+                    if 'admin-only' in tag:
+                        skip_depth = 1
+                        i = tag_end + 1
+                        continue
+
+            result.append(html[i])
+            i += 1
+
+        html = ''.join(result)
+
+    # Inject dynamic hostname for canonical URLs and OG tags
+    hostname = Config.HOSTNAME or "localhost"
+    html = html.replace("{{HOSTNAME}}", hostname)
+    return web.Response(text=html, content_type="text/html")
+
+
+async def http_about_page(request: web.Request) -> web.Response:
+    """Serve About page (public access).
+
+    All content including administration features is visible to everyone
+    since this is a feature guide explaining how the software works.
+    """
+    html = load_static_file("about.html")
+
+    # Inject dynamic hostname for canonical URLs and OG tags
+    hostname = Config.HOSTNAME or "localhost"
+    html = html.replace("{{HOSTNAME}}", hostname)
 
     return web.Response(text=html, content_type="text/html")
 
 
 async def http_guides_page(request: web.Request) -> web.Response:
-    """Serve Guides page."""
-    token = await authenticate_request(request)
-    if not token:
-        raise web.HTTPFound("/login")
-
+    """Serve Guides page (public access for SEO - 75 connection type guides)."""
     html = load_static_file("guides.html")
+    # Inject dynamic hostname for canonical URLs and OG tags
+    hostname = Config.HOSTNAME or "localhost"
+    html = html.replace("{{HOSTNAME}}", hostname)
     return web.Response(text=html, content_type="text/html")
 
 
@@ -10504,6 +10693,10 @@ def create_app() -> web.Application:
     app.router.add_get("/sitemap.xml", http_sitemap_xml)
     if Config.GOOGLE_VERIFICATION_FILE:
         app.router.add_get(f"/google{Config.GOOGLE_VERIFICATION_FILE}.html", http_google_verification)
+    if Config.INDEXNOW_API_KEY:
+        app.router.add_get(f"/{Config.INDEXNOW_API_KEY}.txt", http_indexnow_key)
+    if Config.BING_SITE_VERIFICATION:
+        app.router.add_get("/BingSiteAuth.xml", http_bing_verification)
     app.router.add_get("/api/stats", http_stats)
     app.router.add_get("/api/stats/public", http_public_stats)
     app.router.add_get("/api/system/health", http_system_health)

@@ -3,11 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Watch live streams on Open Relay Portal. Community streaming with real-time chat and voice.">
-    <meta property="og:title" content="Open Relay Portal - Live Streams">
-    <meta property="og:description" content="Watch live streams on Open Relay Portal. Community streaming with real-time chat and voice.">
+    <meta name="description" content="Watch live streams on Open Relay Portal — a self-hosted, open-source Twitch alternative. RTMPS streaming with HLS playback, real-time encrypted chat, WebRTC voice chat, and automatic VOD recording to your own storage.">
+    <meta name="keywords" content="live streaming, self-hosted twitch alternative, open source streaming, RTMPS streaming, HLS live stream, self-hosted live streaming, community streaming platform, encrypted stream chat, open relay portal live">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://{{HOSTNAME}}/live">
+
+    <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
-    <title>Open Relay Portal - Live Streams</title>
+    <meta property="og:url" content="https://{{HOSTNAME}}/live">
+    <meta property="og:title" content="Live Streams — Open Relay Portal | Self-Hosted Twitch Alternative">
+    <meta property="og:description" content="Watch live streams on a self-hosted, open-source streaming platform. RTMPS ingest, HLS playback, encrypted chat, and automatic VOD recording.">
+    <meta property="og:site_name" content="Open Relay Portal">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Live Streams — Open Relay Portal | Self-Hosted Streaming">
+    <meta name="twitter:description" content="Self-hosted live streaming with RTMPS, HLS playback, encrypted chat, and automatic VODs. Open source Twitch alternative.">
+
+    <meta name="theme-color" content="#1a1a2e">
+    <title>Live Streams — Open Relay Portal | Self-Hosted Open-Source Twitch Alternative</title>
+
+    <!-- JSON-LD Structured Data: BreadcrumbList -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {
+                "@type": "ListItem",
+                "position": 1,
+                "name": "Open Relay Portal",
+                "item": "https://{{HOSTNAME}}/about"
+            },
+            {
+                "@type": "ListItem",
+                "position": 2,
+                "name": "Live Streams",
+                "item": "https://{{HOSTNAME}}/live"
+            }
+        ]
+    }
+    </script>
     <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>

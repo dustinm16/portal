@@ -1937,28 +1937,21 @@ TURN server is optional — only included if configured via environment variable
 
 ---
 
-### SEO & Public Endpoints
+### Public Endpoints
 
 These endpoints are publicly accessible without authentication.
 
 #### GET /robots.txt
-Returns SEO robots directives. Allows all crawlers access to public pages (`/about`, `/live`, `/login`) while blocking authenticated areas.
+Returns robots directives for search engine crawlers. Allows access to public pages (`/about`, `/live`, `/login`, `/guides`, `/api-docs`) while blocking authenticated areas. Includes per-bot directives for Googlebot, Bingbot, DuckDuckBot, and Yandex.
 
 **Response:** `text/plain`
 
 ---
 
 #### GET /sitemap.xml
-Returns an XML sitemap for search engine indexing. Lists public pages with the portal's configured hostname.
+Returns an XML sitemap listing public pages with the portal's configured hostname, last modification dates, change frequencies, and priorities.
 
 **Response:** `application/xml`
-
----
-
-#### GET /google{id}.html
-Google Search Console verification page. The verification ID and filename are configured via `GOOGLE_SITE_VERIFICATION` and `GOOGLE_VERIFICATION_FILE` environment variables.
-
-**Response:** `text/html` with Google verification meta tag.
 
 ---
 
@@ -3387,21 +3380,24 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/streams` | Community streams |
 | `/watch/{id}` | Stream viewer with integrated chat |
 | `/live` | Public live streams (unauthenticated) |
-| `/docs` | API documentation (interactive) |
-| `/api-docs` | API documentation (alias) |
+| `/about` | Feature guide (public; all features visible to everyone) |
+| `/guides` | Connection setup guides for 75+ types (public) |
+| `/docs` | API documentation (public; admin endpoints stripped server-side for non-admins) |
+| `/api-docs` | API documentation (alias for `/docs`) |
 | `/terminal/{id}` | Terminal UI (shell selector for local terminal and SSH user connections) |
 | `/vnc/{id}` | VNC viewer |
 | `/spice/{id}` | SPICE viewer |
 | `/proxmox/{id}` | Proxmox management |
 | `/github/{id}` | GitHub browser |
 | `/media/{id}` | Media player |
-| `/about` | About page (public; features visible to all, admin sections server-stripped) |
+| `/files` | File manager (SFTP for all users) |
+| `/sysmon` | System monitor (redirects to /admin#system) |
 
 ### Navigation Structure
 
 All pages use a standardized navbar with a responsive hamburger menu on mobile:
 ```
-Dashboard | Chat | Streams | API Docs | About | [username] | Logout
+Dashboard | Chat | Streams | API Docs | About | Guides | [username] | Logout
 ```
 
 ### Dashboard Tabs

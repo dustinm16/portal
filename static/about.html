@@ -3,11 +3,151 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Open Relay Portal - A secure, self-hosted web gateway for home infrastructure. Features include SSH, VNC, RDP access, live streaming, encrypted chat, and more.">
-    <meta property="og:title" content="Open Relay Portal - About">
-    <meta property="og:description" content="Secure, self-hosted web gateway with remote access, live streaming, encrypted chat, and 75+ connection types.">
+    <meta name="description" content="Open Relay Portal is a free, open-source, self-hosted alternative to Discord and Twitch. Features encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH, VNC, and RDP. Built with Python. End-to-end encrypted. Own your data.">
+    <meta name="keywords" content="discord alternative, twitch alternative, self-hosted chat, open source streaming, encrypted chat server, self-hosted streaming platform, open source discord alternative, private chat server, self-hosted twitch alternative, WebRTC voice chat, RTMP streaming server, open relay portal, self-hosted infrastructure, remote access gateway, open source chat platform, encrypted voice chat, self-hosted VOD, HLS streaming, aiohttp web server">
+    <meta name="author" content="Open Relay Portal">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://{{HOSTNAME}}/about">
+
+    <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
-    <title>Open Relay Portal - About</title>
+    <meta property="og:url" content="https://{{HOSTNAME}}/about">
+    <meta property="og:title" content="Open Relay Portal — Free, Open-Source Discord & Twitch Alternative">
+    <meta property="og:description" content="Self-hosted platform with encrypted chat, RTMPS live streaming, WebRTC voice chat, automatic VOD recording, and 75+ remote connection types. Your server, your data, your rules.">
+    <meta property="og:site_name" content="Open Relay Portal">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Open Relay Portal — Free, Open-Source Discord & Twitch Alternative">
+    <meta name="twitter:description" content="Self-hosted encrypted chat, live streaming, voice chat, and 75+ remote connection types. Open source. Own your data.">
+
+    <!-- Additional SEO -->
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="application-name" content="Open Relay Portal">
+
+    <title>Open Relay Portal — Free, Open-Source Self-Hosted Alternative to Discord & Twitch</title>
+
+    <!-- JSON-LD Structured Data: SoftwareApplication -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Open Relay Portal",
+        "alternateName": ["ORP", "Open Relay"],
+        "description": "A free, open-source, self-hosted alternative to Discord and Twitch. Features encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH, VNC, and RDP.",
+        "url": "https://{{HOSTNAME}}/about",
+        "applicationCategory": "CommunicationApplication",
+        "applicationSubCategory": ["Chat Application", "Streaming Platform", "Remote Access Gateway"],
+        "operatingSystem": "Linux",
+        "softwareRequirements": "Python 3.11+",
+        "programmingLanguage": "Python",
+        "codeRepository": "https://github.com/dustinm16/portal",
+        "license": "https://opensource.org/licenses/MIT",
+        "isAccessibleForFree": true,
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD",
+            "availability": "https://schema.org/InStock"
+        },
+        "featureList": [
+            "Encrypted chat with channels, DMs, reactions, and threads",
+            "RTMPS live streaming with HLS playback",
+            "Automatic VOD recording to SFTP storage",
+            "WebRTC voice chat with VAD and push-to-talk",
+            "75+ remote connection types (SSH, VNC, RDP, databases)",
+            "Self-hosted on your own infrastructure",
+            "End-to-end encrypted messages at rest",
+            "Two-factor authentication (TOTP)",
+            "Role-based access control",
+            "Machine-bound encryption keys",
+            "Open source and free"
+        ],
+        "author": {
+            "@type": "Organization",
+            "name": "Open Relay Portal",
+            "url": "https://github.com/dustinm16/portal"
+        },
+        "maintainer": {
+            "@type": "Organization",
+            "name": "Open Relay Portal",
+            "url": "https://github.com/dustinm16/portal"
+        },
+        "keywords": "discord alternative, twitch alternative, self-hosted chat, open source streaming, encrypted chat, self-hosted streaming, voice chat, remote access, SSH gateway, VNC gateway"
+    }
+    </script>
+
+    <!-- JSON-LD Structured Data: WebSite -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Open Relay Portal",
+        "alternateName": "ORP",
+        "url": "https://{{HOSTNAME}}",
+        "description": "Free, open-source, self-hosted alternative to Discord and Twitch with encrypted chat, live streaming, and 75+ remote connection types."
+    }
+    </script>
+
+    <!-- JSON-LD Structured Data: FAQPage (common questions) -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": "What is Open Relay Portal?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Open Relay Portal is a free, open-source, self-hosted web gateway that combines the features of Discord (encrypted chat, voice chat, channels) and Twitch (live streaming, VODs) with remote infrastructure access (SSH, VNC, RDP, and 72+ more connection types). It runs on your own server, giving you full control over your data."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is Open Relay Portal a Discord alternative?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, and WebRTC voice chat — all self-hosted on your own infrastructure. Unlike Discord, your messages are encrypted at rest and you own all your data."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is Open Relay Portal a Twitch alternative?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. Open Relay Portal supports RTMPS live streaming with HLS playback, automatic VOD recording to your own SFTP storage, dynamic thumbnails, viewer counts, stream chat, and quality selection. It works with OBS, Streamlabs, and any RTMP-compatible encoder."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is Open Relay Portal free and open source?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. Open Relay Portal is completely free and open source, available on GitHub. It is self-hosted, meaning you run it on your own server and maintain full ownership of your data, messages, streams, and recordings."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How is Open Relay Portal encrypted?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Open Relay Portal uses Fernet encryption for chat messages and DMs at rest, machine-bound encryption keys derived from hardware IDs so cloned servers cannot decrypt data, Argon2id password hashing, HTTPS with HSTS, and TLS 1.2+ for all connections. Connection configs and stream keys are also encrypted at rest."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What connection types does Open Relay Portal support?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Open Relay Portal supports 75+ connection types including SSH, VNC, RDP, SFTP, MySQL, PostgreSQL, MongoDB, Redis, Proxmox, Home Assistant, Plex, Jellyfin, Nextcloud, Grafana, Portainer, pfSense, TrueNAS, and many more self-hosted services."
+                }
+            }
+        ]
+    }
+    </script>
+
     <link rel="stylesheet" href="/static/css/portal.css?v=38">
     <style>
         .docs-container {
@@ -198,13 +338,6 @@
         .role-admin { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
         .role-moderator { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
         .role-user { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
-        /* Hide admin-only sections by default until we know user */
-        .admin-only {
-            display: none;
-        }
-        .admin-only.visible {
-            display: block;
-        }
         /* Hide auth-only nav items and show sign-in by default; JS toggles on auth check */
         .navbar-menu .auth-nav {
             display: none;
@@ -278,15 +411,11 @@
                     <li><a href="#ssh-keys">SSH Keys</a></li>
                     <li><a href="#api-keys">API Keys & Auth</a></li>
                 </ul>
-                <!-- ADMIN-ONLY-START -->
-                <div class="admin-only">
-                    <h4>Administration</h4>
+                <h4>Administration</h4>
                     <ul>
                         <li><a href="#admin-features">Admin Features</a></li>
                         <li><a href="#system-monitor">System Monitor</a></li>
                     </ul>
-                </div>
-                <!-- ADMIN-ONLY-END -->
                 <h4>Tools</h4>
                 <ul>
                     <li><a href="#file-manager">File Manager</a></li>
@@ -901,9 +1030,7 @@
                 </ol>
                 <p>Once enabled, you'll need to enter a code from your authenticator app each time you log in.</p>
 
-                <!-- ADMIN-ONLY-START -->
                 <!-- Admin Features -->
-                <div class="admin-only">
                 <h2 id="admin-features">Admin Features <span class="badge-admin">ADMIN</span></h2>
                 <p>Administrators have access to additional tools for managing the portal and monitoring infrastructure.</p>
 
@@ -1085,8 +1212,6 @@
                 <h3>Network Info</h3>
                 <p>View network interfaces (IPs, MAC, speed, TX/RX bytes) and all listening ports with associated processes.</p>
                 </div>
-                </div>
-                <!-- ADMIN-ONLY-END -->
 
                 <!-- File Manager -->
                 <h2 id="file-manager">File Manager</h2>
@@ -1196,11 +1321,8 @@
                     document.querySelectorAll('.auth-nav').forEach(el => el.style.display = '');
                     document.querySelectorAll('.unauth-nav').forEach(el => el.style.display = 'none');
 
-                    // Show admin-only sections if user is admin
+                    // Show admin UI elements if user is admin
                     if (Portal.isAdmin(user)) {
-                        document.querySelectorAll('.admin-only').forEach(el => {
-                            el.classList.add('visible');
-                        });
                         const termBtn = document.getElementById('terminal-btn');
                         const badge = document.getElementById('admin-badge');
                         if (termBtn) termBtn.style.display = '';

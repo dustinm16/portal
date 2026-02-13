@@ -212,7 +212,7 @@ Permission Hierarchy:
 │   ├── mediamtx.html      # MediaMTX management
 │   ├── github.html        # GitHub browser
 │   ├── api-docs.html      # Interactive API documentation
-│   ├── about.html         # Feature guide & docs (public, admin sections server-stripped)
+│   ├── about.html         # Feature guide & docs (fully public, all features visible)
 │   ├── guides.html        # Connection setup guides (75 types)
 │   ├── files.html         # File manager (SFTP, admin local in admin panel)
 │   ├── sysmon.html        # Redirects to /admin#system
@@ -1005,7 +1005,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 28. **Machine-Bound Encryption** - Encryption keys are derived from `JWT_SECRET` + a machine-specific salt (SHA-256 of `/etc/machine-id` + random bytes). The salt file (`.encryption_salt`) is auto-generated on first run, chmod 600, and gitignored. Even with the same `.env`, a different machine produces different keys — cloning the repo cannot decrypt existing data. One-time migration re-encrypts all data on upgrade.
 29. **Registration Validation** - Username: 3-32 chars, alphanumeric + underscores only; Password: min 8 chars. Server-side validation with client-side preview.
 30. **Remember Me Sessions** - Login with `remember_me` extends session from 24 hours to 30 days. Cookie attributes (`max-age`, `httponly`, `secure`, `samesite=strict`) set accordingly.
-31. **Server-Side Content Stripping** - About page admin-only sections (Admin Features, System Monitor) are removed server-side via `re.sub()` with HTML comment markers before delivery. Non-admin users never receive admin documentation in the HTML response. Feature documentation is public.
+31. **Server-Side Content Stripping** - API documentation page admin-only sections (admin endpoints, system management, vulnerability scanner, etc.) are removed server-side for non-admin users by parsing and stripping `<div class="admin-only">` blocks. Non-admin users never receive admin API documentation in the HTML response. User-facing API documentation is public.
 
 ### Public (Unauthenticated) Pages
 
@@ -1013,12 +1013,13 @@ The following pages are accessible without login:
 
 | Path | Purpose |
 |------|---------|
-| `/login` | Login/registration page (SEO-optimized with meta tags) |
+| `/login` | Login/registration page |
 | `/live` | Public live streams browser |
-| `/about` | Feature guide and documentation (admin sections stripped server-side for non-admins; unauthenticated navbar with Sign In) |
-| `/robots.txt` | SEO robots directives |
+| `/about` | Feature guide and documentation (all features visible including admin docs; unauthenticated navbar with Sign In) |
+| `/guides` | Connection setup guides for 75+ connection types |
+| `/api-docs` | API documentation (admin endpoints stripped server-side for non-admin users) |
+| `/robots.txt` | Search engine robots directives |
 | `/sitemap.xml` | XML sitemap for search engines |
-| `/google{id}.html` | Google Search Console verification (configurable via env) |
 
 ---
 
