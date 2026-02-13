@@ -6712,7 +6712,7 @@ async def http_managed_service_logs(request: web.Request) -> web.Response:
 # =============================================================================
 
 async def http_root_redirect(request: web.Request) -> web.Response:
-    """Redirect root path to dashboard or login based on auth status."""
+    """Serve login page at root for crawlers/unauthenticated, redirect to dashboard if logged in."""
     # Check if this is a WebSocket upgrade request
     # Connection header can contain multiple values like "keep-alive, Upgrade"
     upgrade_header = request.headers.get("Upgrade", "").lower()
@@ -6722,12 +6722,28 @@ async def http_root_redirect(request: web.Request) -> web.Response:
         # WebSocket request - delegate to websocket_handler
         return await websocket_handler(request)
 
-    # HTTP request - redirect based on auth status
+    # Authenticated users go to dashboard
     token = await authenticate_request(request)
     if token:
         raise web.HTTPFound("/dashboard")
-    else:
-        raise web.HTTPFound("/login")
+
+    # Serve login page directly at root (no redirect) so crawlers and
+    # embed services (Discord, Slack, Twitter) see OG tags immediately
+    html = load_static_file("login.html")
+    verification_tags = []
+    if Config.GOOGLE_SITE_VERIFICATION:
+        verification_tags.append(f'<meta name="google-site-verification" content="{Config.GOOGLE_SITE_VERIFICATION}">')
+    if Config.BING_SITE_VERIFICATION:
+        verification_tags.append(f'<meta name="msvalidate.01" content="{Config.BING_SITE_VERIFICATION}">')
+    if Config.YANDEX_SITE_VERIFICATION:
+        verification_tags.append(f'<meta name="yandex-verification" content="{Config.YANDEX_SITE_VERIFICATION}">')
+    html = html.replace(
+        "<!-- SEARCH_ENGINE_VERIFICATION -->",
+        "\n    ".join(verification_tags) if verification_tags else ""
+    )
+    hostname = Config.HOSTNAME or "localhost"
+    html = html.replace("{{HOSTNAME}}", hostname)
+    return web.Response(text=html, content_type="text/html")
 
 
 # =============================================================================
