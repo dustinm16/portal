@@ -9363,19 +9363,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 })
                             continue
 
-                        # Auto-moderation check (mod+ bypass)
-                        if message_text and user_role not in ("admin", "superadmin", "moderator"):
+                        # Auto-moderation check (applies to all users)
+                        # Mod+ are exempt from timeout/mute penalties but messages are still blocked
+                        if message_text:
                             automod_result = await check_automod(message_text, user_id, channel["id"], current_channel)
                             if automod_result:
                                 am_action = automod_result["action"]
-                                if am_action == "warn":
-                                    await ws.send_json({
-                                        "type": "error",
-                                        "error_code": "automod",
-                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
-                                    })
-                                    continue
-                                elif am_action == "delete":
+                                is_privileged = user_role in ("admin", "superadmin", "moderator")
+                                if am_action in ("warn", "delete"):
                                     await ws.send_json({
                                         "type": "error",
                                         "error_code": "automod",
@@ -9383,37 +9378,39 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     })
                                     continue
                                 elif am_action == "timeout":
-                                    await db.create_chat_timeout(user_id, 0, "timeout", channel["id"],
-                                                                 f"AutoMod: {automod_result['rule_name']}",
-                                                                 automod_result.get("duration", 300))
+                                    if not is_privileged:
+                                        await db.create_chat_timeout(user_id, 0, "timeout", channel["id"],
+                                                                     f"AutoMod: {automod_result['rule_name']}",
+                                                                     automod_result.get("duration", 300))
+                                        await broadcast_to_channel(current_channel, {
+                                            "type": "user_timed_out",
+                                            "user_id": user_id,
+                                            "username": my_state.get("nickname") or username,
+                                            "duration": automod_result.get("duration", 300),
+                                            "reason": f"AutoMod: {automod_result['rule_name']}",
+                                            "moderator": "AutoMod"
+                                        })
                                     await ws.send_json({
                                         "type": "error",
-                                        "error_code": "timeout",
-                                        "message": f"You were timed out by auto-moderation ({automod_result['rule_name']})"
-                                    })
-                                    await broadcast_to_channel(current_channel, {
-                                        "type": "user_timed_out",
-                                        "user_id": user_id,
-                                        "username": my_state.get("nickname") or username,
-                                        "duration": automod_result.get("duration", 300),
-                                        "reason": f"AutoMod: {automod_result['rule_name']}",
-                                        "moderator": "AutoMod"
+                                        "error_code": "automod",
+                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
                                     })
                                     continue
                                 elif am_action == "mute":
-                                    await db.create_chat_timeout(user_id, 0, "mute", channel["id"],
-                                                                 f"AutoMod: {automod_result['rule_name']}")
+                                    if not is_privileged:
+                                        await db.create_chat_timeout(user_id, 0, "mute", channel["id"],
+                                                                     f"AutoMod: {automod_result['rule_name']}")
+                                        await broadcast_to_channel(current_channel, {
+                                            "type": "user_muted",
+                                            "user_id": user_id,
+                                            "username": my_state.get("nickname") or username,
+                                            "reason": f"AutoMod: {automod_result['rule_name']}",
+                                            "moderator": "AutoMod"
+                                        })
                                     await ws.send_json({
                                         "type": "error",
-                                        "error_code": "muted",
-                                        "message": f"You were muted by auto-moderation ({automod_result['rule_name']})"
-                                    })
-                                    await broadcast_to_channel(current_channel, {
-                                        "type": "user_muted",
-                                        "user_id": user_id,
-                                        "username": my_state.get("nickname") or username,
-                                        "reason": f"AutoMod: {automod_result['rule_name']}",
-                                        "moderator": "AutoMod"
+                                        "error_code": "automod",
+                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
                                     })
                                     continue
 
