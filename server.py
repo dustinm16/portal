@@ -473,7 +473,10 @@ Disallow: /static/spice.html
 Disallow: /static/sysmon.html
 Disallow: /static/unauthorized.html"""
 
-    body = f"""# Cloudflare prepends managed rules: User-agent: * / Allow: /
+    body = f"""# Sitemap — declared early for crawler visibility
+Sitemap: https://{hostname}/sitemap.xml
+
+# Cloudflare prepends managed rules: User-agent: * / Allow: /
 # and blocks AI training bots (GPTBot, ClaudeBot, CCBot, etc.)
 # Our rules below restrict auth-required paths.
 
@@ -500,8 +503,6 @@ Crawl-delay: 2
 User-agent: Yandex
 {disallow_paths}
 Crawl-delay: 5
-
-Sitemap: https://{hostname}/sitemap.xml
 """
     return web.Response(text=body, content_type="text/plain")
 
@@ -11902,9 +11903,12 @@ async def security_headers_middleware(request: web.Request, handler):
     response.headers.setdefault('Permissions-Policy',
         'geolocation=(), microphone=(self), camera=(), payment=()')
 
-    # Content Security Policy for HTML pages
+    # Cache control and CSP for HTML pages
     content_type = response.headers.get('Content-Type', '')
     if 'text/html' in content_type:
+        # Prevent CDN/browser from serving stale HTML — always revalidate
+        response.headers.setdefault('Cache-Control', 'no-cache')
+
         csp = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net blob:; "

@@ -2566,7 +2566,7 @@
                         <div class="emoji-grid" id="emoji-grid"></div>
                     </div>
                     <button class="emoji-btn" onclick="triggerImageUpload()" title="Upload file">📎</button>
-                    <button class="emoji-btn" onclick="showCreatePollModal()" title="Create poll">📊</button>
+                    <button class="emoji-btn" id="poll-btn" onclick="showCreatePollModal()" title="Create poll">📊</button>
                     <input type="file" id="image-file-input" accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.txt,.md,.csv,.zip,.gz,.tar,.7z,.json,.xml,.html,.css,.js,.py,.go,.rs,.sh,.mp3,.ogg,.mp4,.webm,.log,.yaml,.yml,.toml,.conf,.cfg,.ini" style="display:none;" onchange="handleFileSelect(event)">
                     <input type="text" id="chat-input" placeholder="Type a message... (supports **bold**, *italic*, `code`, ~~strike~~)" autocomplete="off">
                     <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">
@@ -5800,10 +5800,11 @@
             const prefix = conversation.type === 'group' ? '' : '@';
             document.getElementById('channel-name').textContent = prefix + displayName;
             document.getElementById('channel-topic').textContent = conversation.type === 'group' ? `Group DM - ${conversation.participants.length} members` : 'Direct Message';
-            // Show voice button for DM calls, hide stream/clear controls
+            // Show voice button for DM calls, hide stream/clear/poll controls
             document.getElementById('voice-join-btn').style.display = '';
             document.getElementById('watch-stream-btn').style.display = 'none';
             document.getElementById('clear-channel-btn').style.display = 'none';
+            document.getElementById('poll-btn').style.display = 'none';
             // Hide pinned banner
             document.getElementById('pinned-banner').style.display = 'none';
             // Render messages
@@ -5817,8 +5818,9 @@
         function switchToChannel(channelName) {
             currentView = 'channel';
             currentDmConversationId = null;
-            // Restore voice/stream buttons
+            // Restore voice/stream/poll buttons
             document.getElementById('voice-join-btn').style.display = '';
+            document.getElementById('poll-btn').style.display = '';
             joinChannel(channelName);
             renderDmList();
         }
