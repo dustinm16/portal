@@ -8,25 +8,26 @@
 
 /* Custom scrollbar for dark theme */
 ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #12162b;
+    background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.15);
-    border-radius: 4px;
+    border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 4px rgba(99, 102, 241, 0.3);
 }
 
 ::-webkit-scrollbar-corner {
-    background: #12162b;
+    background: transparent;
 }
 
 /* Firefox scrollbar */
@@ -153,14 +154,18 @@ body {
 
 /* Cards */
 .card {
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
+    background: rgba(30, 30, 46, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 12px;
     padding: 1.5rem;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .card:hover {
     background: var(--card-hover);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 /* Forms */
@@ -198,6 +203,30 @@ body {
 
 .form-group input::placeholder {
     color: var(--text-muted);
+}
+
+.preset-links {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
+}
+.preset-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    color: var(--accent-blue);
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    border-radius: 6px;
+    text-decoration: none;
+    transition: background 0.15s, border-color 0.15s;
+}
+.preset-link:hover {
+    background: rgba(96, 165, 250, 0.15);
+    border-color: rgba(96, 165, 250, 0.4);
 }
 
 .form-group select {
@@ -274,6 +303,7 @@ body {
 .btn-primary:hover:not(:disabled) {
     background: #3b82f6;
     transform: translateY(-1px);
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.35);
 }
 
 .btn-primary:focus-visible {
@@ -315,6 +345,7 @@ body {
 
 .login-container .card {
     padding: 2rem;
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.08), 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 .login-header {
@@ -344,6 +375,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    animation: logoPulse 3s ease-in-out infinite;
     border: 2px solid rgba(96, 165, 250, 0.3);
 }
 
@@ -371,7 +403,8 @@ body {
     justify-content: space-between;
     padding: 1rem 2rem;
     background: rgba(0, 0, 0, 0.2);
-    border-bottom: 1px solid var(--card-border);
+    border-bottom: 1px solid transparent;
+    border-image: linear-gradient(90deg, transparent, var(--accent-color), transparent) 1;
 }
 
 .navbar-brand {
@@ -636,6 +669,11 @@ body {
     50% { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
 }
 
+@keyframes logoPulse {
+    0%, 100% { filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.15)); }
+    50% { filter: drop-shadow(0 0 12px rgba(99, 102, 241, 0.3)); }
+}
+
 /* Service type badges */
 .service-type-badge {
     display: inline-flex;
@@ -867,6 +905,8 @@ body {
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
 }
 
 .modal-content {
@@ -2199,6 +2239,14 @@ select option {
 
     .vod-file-size, .vod-file-date {
         display: none;
+    }
+
+    .modal-content {
+        width: 100vw;
+        max-width: 100vw;
+        max-height: 100dvh;
+        border-radius: 0;
+        margin: 0;
     }
 }
 

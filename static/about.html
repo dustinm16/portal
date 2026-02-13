@@ -152,7 +152,7 @@
     }
     </script>
 
-    <link rel="stylesheet" href="/static/css/portal.css?v=38">
+    <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <style>
         .docs-container {
             max-width: 1200px;
@@ -313,6 +313,11 @@
             border-radius: 8px;
             padding: 1.25rem;
             margin: 1rem 0;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .feature-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
         }
         .feature-card h4 {
             color: var(--text-primary);
@@ -320,6 +325,12 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
+        }
+        .feature-card h4 svg {
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 50%;
+            padding: 4px;
+            flex-shrink: 0;
         }
         .feature-card p {
             margin: 0;
@@ -600,6 +611,7 @@
                     <li><strong>Username</strong> &mdash; Login username (for SSH/VNC connections)</li>
                     <li><strong>Auth Method</strong> &mdash; Password or SSH key (for SSH connections)</li>
                 </ul>
+                <p>When you select a preset, documentation links appear below the dropdown &mdash; one linking to the software's official documentation and one linking to the <a href="/guides">Portal Setup Guide</a> for that connection type.</p>
 
                 <h3>Connection Types</h3>
                 <p>Open Relay Portal supports <strong>75 connection types</strong> out of the box, covering remote access, web panels, databases, media servers, dev tools, monitoring, automation, file/photo management, security, and networking. The most common types are listed below &mdash; see the <a href="/guides">Guides</a> page for detailed setup instructions for each connection type.</p>

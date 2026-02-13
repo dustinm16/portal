@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - File Manager</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=38">
+    <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <style>
         .fm-toolbar {
             display: flex;
@@ -13,6 +13,10 @@
             align-items: center;
             margin-bottom: 1rem;
             flex-wrap: wrap;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
         }
         .fm-toolbar button, .fm-toolbar select {
             padding: 0.4rem 0.75rem;
@@ -66,7 +70,7 @@
             background: var(--card-bg);
             z-index: 1;
         }
-        .file-table tr:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
+        .file-table tr:hover { background: rgba(255,255,255,0.05); cursor: pointer; transition: background 0.15s ease; }
         .file-table .file-name {
             display: flex;
             align-items: center;

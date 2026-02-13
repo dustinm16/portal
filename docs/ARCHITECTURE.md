@@ -224,7 +224,7 @@ Permission Hierarchy:
 │       ├── portal.js      # Core utilities, Portal.isAdmin(), Portal.getRoleLabel()
 │       ├── dashboard.js   # Dashboard logic
 │       ├── admin.js       # Admin panel
-│       ├── user-connections.js # Connection CRUD, edit, type schemas
+│       ├── user-connections.js # Connection CRUD, presets with docs/guide links, type schemas
 │       ├── ssh-keys.js    # SSH key management
 │       ├── streams.js     # Stream management
 │       ├── vods.js        # VOD file manager
@@ -1152,7 +1152,8 @@ The portal uses a mobile-first enhancement strategy with progressive breakpoints
 | `360px` | Small phones | Stats single-column, tabs wrap, brand text hidden (icon only) |
 
 Additional mobile features:
-- **Chat mobile sidebar**: Channels/Users toggle buttons appear at <900px with overlay dismiss (max-width: 80vw)
+- **Full-screen mobile modals**: At ≤600px, modals expand to 100vw/100dvh with no border-radius for maximum usable space
+- **Chat mobile sidebar**: Slide transition (CSS `transform: translateX`) with backdrop blur overlay; max-width 80vw
 - **Chat virtual keyboard**: `visualViewport` API resizes chat container when keyboard opens; `interactive-widget=resizes-content` viewport meta; input auto-scrolls into view on focus
 - **Chat dynamic navbar offset**: JS measures actual navbar height on load/resize instead of hardcoded `70px`; sidebar overlay `top` matches measured height
 - **Chat mobile input**: Send button icon-only on mobile, reduced padding, 480px breakpoint for extra-tight layouts
@@ -1160,6 +1161,15 @@ Additional mobile features:
 - **Table scroll**: `.table-responsive` wrapper and `overflow-x: auto` on docs content
 - **Dynamic viewport height**: Chat uses `100dvh` with `100vh` fallback for correct height on mobile browsers
 - **Z-index stacking**: Modals (10001) > Notification dropdown (10002) > Session banner (10000)
+
+Visual polish:
+- **Card glass-morphism**: `backdrop-filter: blur(12px)` with semi-transparent backgrounds and subtle borders
+- **Button glow**: Primary buttons emit a subtle box-shadow glow on hover with `translateY(-1px)` lift
+- **Navbar gradient accent**: Bottom border uses a `linear-gradient` that fades to transparent at edges
+- **Modal backdrop blur**: All modal overlays use `backdrop-filter: blur(4px)`
+- **Login animations**: Card glow shadow and subtle logo pulse animation
+- **Stream card hover**: Cards lift with `translateY(-4px)` and gradient overlay on thumbnails
+- **Scrollbar refinement**: 6px thin scrollbar with rounded thumb and hover glow
 
 ---
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=38">
+    <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
@@ -333,17 +333,17 @@
                 <div id="quick-add-bar" style="margin-bottom: 1rem;">
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
                         <span style="color: var(--text-muted); font-size: 0.8rem;">Quick Add:</span>
-                        <button class="btn btn-sm" onclick="quickAddConnection('ssh-server')">SSH</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('vnc-server')">VNC</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('rdp-server')">RDP</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('plex')">Plex</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('jellyfin')">Jellyfin</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('nextcloud')">Nextcloud</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('proxmox-ve')">Proxmox</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('home-assistant')">Home Assistant</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('pihole')">Pi-hole</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('postgres-db')">PostgreSQL</button>
-                        <button class="btn btn-sm" onclick="quickAddConnection('http-proxy')">HTTP Proxy</button>
+                        <button class="btn btn-sm" style="background: rgba(96, 165, 250, 0.15); border-color: rgba(96, 165, 250, 0.3); color: #60a5fa;" onclick="quickAddConnection('ssh-server')">SSH</button>
+                        <button class="btn btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.3); color: #22c55e;" onclick="quickAddConnection('vnc-server')">VNC</button>
+                        <button class="btn btn-sm" style="background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.3); color: #22c55e;" onclick="quickAddConnection('rdp-server')">RDP</button>
+                        <button class="btn btn-sm" style="background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.3); color: #a855f7;" onclick="quickAddConnection('plex')">Plex</button>
+                        <button class="btn btn-sm" style="background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.3); color: #a855f7;" onclick="quickAddConnection('jellyfin')">Jellyfin</button>
+                        <button class="btn btn-sm" style="background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.3); color: #a855f7;" onclick="quickAddConnection('nextcloud')">Nextcloud</button>
+                        <button class="btn btn-sm" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); color: #f59e0b;" onclick="quickAddConnection('proxmox-ve')">Proxmox</button>
+                        <button class="btn btn-sm" style="background: rgba(96, 165, 250, 0.15); border-color: rgba(96, 165, 250, 0.3); color: #60a5fa;" onclick="quickAddConnection('home-assistant')">Home Assistant</button>
+                        <button class="btn btn-sm" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.3); color: #ef4444;" onclick="quickAddConnection('pihole')">Pi-hole</button>
+                        <button class="btn btn-sm" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); color: #f59e0b;" onclick="quickAddConnection('postgres-db')">PostgreSQL</button>
+                        <button class="btn btn-sm" style="background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.3); color: #6366f1;" onclick="quickAddConnection('http-proxy')">HTTP Proxy</button>
                     </div>
                 </div>
 
@@ -1274,26 +1274,101 @@
                             <option value="vnc-server">VNC Desktop</option>
                             <option value="rdp-server">RDP Desktop</option>
                             <option value="spice-console">SPICE Console</option>
+                            <option value="telnet">Telnet</option>
                         </optgroup>
                         <optgroup label="Media & Streaming">
+                            <option value="plex">Plex</option>
+                            <option value="jellyfin">Jellyfin</option>
+                            <option value="emby">Emby</option>
+                            <option value="navidrome">Navidrome</option>
+                            <option value="audiobookshelf">Audiobookshelf</option>
                             <option value="mediamtx-rtsp">MediaMTX RTSP</option>
                             <option value="ip-camera">IP Camera Stream</option>
                         </optgroup>
-                        <optgroup label="Virtualization">
-                            <option value="proxmox-ve">Proxmox VE</option>
+                        <optgroup label="Media Management">
+                            <option value="jellyseerr">Jellyseerr</option>
+                            <option value="overseerr">Overseerr</option>
+                            <option value="sonarr">Sonarr</option>
+                            <option value="radarr">Radarr</option>
+                            <option value="lidarr">Lidarr</option>
+                            <option value="readarr">Readarr</option>
+                            <option value="prowlarr">Prowlarr</option>
+                            <option value="bazarr">Bazarr</option>
+                            <option value="tautulli">Tautulli</option>
                         </optgroup>
-                        <optgroup label="Network Tools">
+                        <optgroup label="Downloads">
+                            <option value="sabnzbd">SABnzbd</option>
+                            <option value="qbittorrent">qBittorrent</option>
+                            <option value="transmission">Transmission</option>
+                        </optgroup>
+                        <optgroup label="Files & Photos">
+                            <option value="nextcloud">Nextcloud</option>
+                            <option value="immich">Immich</option>
+                            <option value="photoprism">PhotoPrism</option>
+                            <option value="syncthing">Syncthing</option>
+                            <option value="paperless-ngx">Paperless-ngx</option>
+                            <option value="calibre-web">Calibre-Web</option>
+                            <option value="komga">Komga</option>
+                            <option value="filebrowser">File Browser</option>
+                        </optgroup>
+                        <optgroup label="Virtualization & Infrastructure">
+                            <option value="proxmox-ve">Proxmox VE</option>
+                            <option value="cockpit">Cockpit</option>
+                        </optgroup>
+                        <optgroup label="Home Automation & Panels">
+                            <option value="home-assistant">Home Assistant</option>
+                            <option value="node-red">Node-RED</option>
+                            <option value="n8n">n8n</option>
+                            <option value="portainer">Portainer</option>
+                            <option value="truenas">TrueNAS</option>
+                            <option value="pfsense">pfSense</option>
+                        </optgroup>
+                        <optgroup label="Security & Auth">
+                            <option value="vaultwarden">Vaultwarden</option>
+                            <option value="authelia">Authelia</option>
+                        </optgroup>
+                        <optgroup label="Monitoring & Networking">
+                            <option value="uptime-kuma">Uptime Kuma</option>
+                            <option value="pihole">Pi-hole</option>
+                            <option value="adguard-home">AdGuard Home</option>
+                            <option value="nginx-proxy-manager">Nginx Proxy Manager</option>
+                            <option value="traefik">Traefik</option>
+                            <option value="netdata">Netdata</option>
+                            <option value="dozzle">Dozzle</option>
+                        </optgroup>
+                        <optgroup label="Dashboards">
+                            <option value="homepage">Homepage</option>
+                            <option value="homarr">Homarr</option>
+                            <option value="organizr">Organizr</option>
+                        </optgroup>
+                        <optgroup label="Dev Tools">
+                            <option value="grafana">Grafana</option>
+                            <option value="prometheus">Prometheus</option>
+                            <option value="jupyter">Jupyter Notebook</option>
+                            <option value="gitea">Gitea</option>
+                            <option value="gitlab">GitLab</option>
+                            <option value="code-server">code-server</option>
+                        </optgroup>
+                        <optgroup label="Databases">
+                            <option value="mysql-db">MySQL</option>
+                            <option value="postgres-db">PostgreSQL</option>
+                            <option value="mariadb">MariaDB</option>
+                            <option value="redis-db">Redis</option>
+                            <option value="mongodb">MongoDB</option>
+                            <option value="influxdb">InfluxDB</option>
+                            <option value="elasticsearch">Elasticsearch</option>
+                        </optgroup>
+                        <optgroup label="Network & Tunneling">
                             <option value="tcp-tunnel">TCP Tunnel</option>
                             <option value="secure-tunnel">Encrypted Tunnel</option>
                             <option value="vpn-bridge">VPN Bridge</option>
                             <option value="http-proxy">HTTP Reverse Proxy</option>
                         </optgroup>
-                        <optgroup label="Databases">
-                            <option value="mysql-db">MySQL Database</option>
-                            <option value="postgres-db">PostgreSQL Database</option>
-                            <option value="redis-db">Redis</option>
+                        <optgroup label="Game Servers">
+                            <option value="minecraft-rcon">Minecraft RCON</option>
                         </optgroup>
                     </select>
+                    <div id="preset-links" class="preset-links" style="display: none;"></div>
                 </div>
 
                 <hr style="border-color: rgba(255,255,255,0.1); margin: 1rem 0;">
@@ -1570,7 +1645,7 @@
     <script src="/static/js/dashboard.js?v=30"></script>
     <script src="/static/js/admin.js?v=29"></script>
     <script src="/static/js/ssh-keys.js?v=22"></script>
-    <script src="/static/js/user-connections.js?v=27"></script>
+    <script src="/static/js/user-connections.js?v=28"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

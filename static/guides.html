@@ -77,7 +77,7 @@
         "keywords": "SSH guide, VNC setup, RDP connection, database connection, Proxmox, Home Assistant, remote access, self-hosted"
     }
     </script>
-    <link rel="stylesheet" href="/static/css/portal.css?v=38">
+    <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <style>
         /* Hide auth-only nav items and show sign-in by default; JS toggles on auth check */
         .navbar-menu .auth-nav {
@@ -407,6 +407,9 @@
                 
                 <div class="alert alert-info">
                     <strong>How connections work:</strong> Portal proxies connections through your browser via WebSocket. HTTP-based services use the <code>http_proxy</code> plugin (reverse proxy). TCP services like databases use the <code>tcp_tunnel</code> plugin. SSH and VNC have dedicated plugins with native protocol support.
+                </div>
+                <div class="alert alert-info">
+                    <strong>Tip:</strong> When adding a connection from the Dashboard, selecting a preset will show links to these guides and the software's official documentation directly in the form.
                 </div>
 
             <h2 id="cat-remote-access">Remote Access</h2>

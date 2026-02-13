@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Community Streams</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=38">
+    <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         .streams-container {
@@ -100,12 +100,13 @@
             border-radius: 8px;
             overflow: hidden;
             cursor: pointer;
-            transition: transform 0.15s, border-color 0.15s;
+            transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
         .stream-card:hover {
-            transform: translateY(-2px);
+            transform: translateY(-4px);
             border-color: var(--accent-blue);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         }
 
         .stream-thumbnail {
@@ -116,6 +117,18 @@
             align-items: center;
             justify-content: center;
             position: relative;
+        }
+
+        .stream-thumbnail::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 50%;
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
+            pointer-events: none;
+            z-index: 1;
         }
 
         .stream-thumbnail svg {

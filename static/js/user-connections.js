@@ -11,102 +11,102 @@ let userSSHKeys = [];
 // Connection presets for quick setup
 const CONNECTION_PRESETS = {
     // Remote Access
-    'ssh-server': { name: 'SSH Server', type: 'ssh', port: 22, icon: 'terminal', config: { auth_method: 'password' } },
-    'vnc-server': { name: 'VNC Desktop', type: 'vnc', port: 5900, icon: 'desktop', config: {} },
-    'rdp-server': { name: 'RDP Desktop', type: 'rdp', port: 3389, icon: 'desktop', config: {} },
-    'spice-console': { name: 'SPICE Console', type: 'spice', port: 5930, icon: 'desktop', config: {} },
-    'telnet': { name: 'Telnet', type: 'telnet', port: 23, icon: 'terminal', config: {} },
+    'ssh-server': { name: 'SSH Server', type: 'ssh', port: 22, icon: 'terminal', config: { auth_method: 'password' }, docs: 'https://www.openssh.com/', guide: 'ssh' },
+    'vnc-server': { name: 'VNC Desktop', type: 'vnc', port: 5900, icon: 'desktop', config: {}, docs: 'https://tigervnc.org/', guide: 'vnc' },
+    'rdp-server': { name: 'RDP Desktop', type: 'rdp', port: 3389, icon: 'desktop', config: {}, docs: 'https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/welcome-to-rds', guide: 'rdp' },
+    'spice-console': { name: 'SPICE Console', type: 'spice', port: 5930, icon: 'desktop', config: {}, docs: 'https://www.spice-space.org/', guide: 'spice' },
+    'telnet': { name: 'Telnet', type: 'telnet', port: 23, icon: 'terminal', config: {}, docs: 'https://en.wikipedia.org/wiki/Telnet', guide: 'telnet' },
 
     // Media & Streaming
-    'plex': { name: 'Plex', type: 'plex', port: 32400, icon: 'play', config: {} },
-    'jellyfin': { name: 'Jellyfin', type: 'jellyfin', port: 8096, icon: 'play', config: {} },
-    'emby': { name: 'Emby', type: 'emby', port: 8096, icon: 'play', config: {} },
-    'navidrome': { name: 'Navidrome', type: 'navidrome', port: 4533, icon: 'play', config: {} },
-    'audiobookshelf': { name: 'Audiobookshelf', type: 'audiobookshelf', port: 13378, icon: 'play', config: {} },
-    'mediamtx-rtsp': { name: 'MediaMTX Stream', type: 'mediamtx', port: 8554, icon: 'play', config: {} },
-    'ip-camera': { name: 'IP Camera', type: 'stream', port: 554, icon: 'play', config: { protocol: 'rtsp' } },
+    'plex': { name: 'Plex', type: 'plex', port: 32400, icon: 'play', config: {}, docs: 'https://support.plex.tv/', guide: 'plex' },
+    'jellyfin': { name: 'Jellyfin', type: 'jellyfin', port: 8096, icon: 'play', config: {}, docs: 'https://jellyfin.org/docs/', guide: 'jellyfin' },
+    'emby': { name: 'Emby', type: 'emby', port: 8096, icon: 'play', config: {}, docs: 'https://emby.media/support/articles/Home.html', guide: 'emby' },
+    'navidrome': { name: 'Navidrome', type: 'navidrome', port: 4533, icon: 'play', config: {}, docs: 'https://www.navidrome.org/docs/', guide: 'navidrome' },
+    'audiobookshelf': { name: 'Audiobookshelf', type: 'audiobookshelf', port: 13378, icon: 'play', config: {}, docs: 'https://www.audiobookshelf.org/docs/', guide: 'audiobookshelf' },
+    'mediamtx-rtsp': { name: 'MediaMTX Stream', type: 'mediamtx', port: 8554, icon: 'play', config: {}, docs: 'https://github.com/bluenviron/mediamtx', guide: 'mediamtx' },
+    'ip-camera': { name: 'IP Camera', type: 'stream', port: 554, icon: 'play', config: { protocol: 'rtsp' }, docs: 'https://en.wikipedia.org/wiki/Real-Time_Streaming_Protocol', guide: 'stream' },
 
     // Media Management (*arr stack)
-    'jellyseerr': { name: 'Jellyseerr', type: 'jellyseerr', port: 5055, icon: 'play', config: {} },
-    'overseerr': { name: 'Overseerr', type: 'overseerr', port: 5055, icon: 'play', config: {} },
-    'sonarr': { name: 'Sonarr', type: 'sonarr', port: 8989, icon: 'globe', config: {} },
-    'radarr': { name: 'Radarr', type: 'radarr', port: 7878, icon: 'globe', config: {} },
-    'lidarr': { name: 'Lidarr', type: 'lidarr', port: 8686, icon: 'globe', config: {} },
-    'readarr': { name: 'Readarr', type: 'readarr', port: 8787, icon: 'globe', config: {} },
-    'prowlarr': { name: 'Prowlarr', type: 'prowlarr', port: 9696, icon: 'globe', config: {} },
-    'bazarr': { name: 'Bazarr', type: 'bazarr', port: 6767, icon: 'globe', config: {} },
-    'tautulli': { name: 'Tautulli', type: 'tautulli', port: 8181, icon: 'play', config: {} },
+    'jellyseerr': { name: 'Jellyseerr', type: 'jellyseerr', port: 5055, icon: 'play', config: {}, docs: 'https://docs.jellyseerr.dev/', guide: 'jellyseerr' },
+    'overseerr': { name: 'Overseerr', type: 'overseerr', port: 5055, icon: 'play', config: {}, docs: 'https://docs.overseerr.dev/', guide: 'overseerr' },
+    'sonarr': { name: 'Sonarr', type: 'sonarr', port: 8989, icon: 'globe', config: {}, docs: 'https://wiki.servarr.com/sonarr', guide: 'sonarr' },
+    'radarr': { name: 'Radarr', type: 'radarr', port: 7878, icon: 'globe', config: {}, docs: 'https://wiki.servarr.com/radarr', guide: 'radarr' },
+    'lidarr': { name: 'Lidarr', type: 'lidarr', port: 8686, icon: 'globe', config: {}, docs: 'https://wiki.servarr.com/lidarr', guide: 'lidarr' },
+    'readarr': { name: 'Readarr', type: 'readarr', port: 8787, icon: 'globe', config: {}, docs: 'https://wiki.servarr.com/readarr', guide: 'readarr' },
+    'prowlarr': { name: 'Prowlarr', type: 'prowlarr', port: 9696, icon: 'globe', config: {}, docs: 'https://wiki.servarr.com/prowlarr', guide: 'prowlarr' },
+    'bazarr': { name: 'Bazarr', type: 'bazarr', port: 6767, icon: 'globe', config: {}, docs: 'https://wiki.bazarr.media/', guide: 'bazarr' },
+    'tautulli': { name: 'Tautulli', type: 'tautulli', port: 8181, icon: 'play', config: {}, docs: 'https://github.com/Tautulli/Tautulli/wiki', guide: 'tautulli' },
 
     // Downloads
-    'sabnzbd': { name: 'SABnzbd', type: 'sabnzbd', port: 8080, icon: 'globe', config: {} },
-    'qbittorrent': { name: 'qBittorrent', type: 'qbittorrent', port: 8080, icon: 'globe', config: {} },
-    'transmission': { name: 'Transmission', type: 'transmission', port: 9091, icon: 'globe', config: {} },
+    'sabnzbd': { name: 'SABnzbd', type: 'sabnzbd', port: 8080, icon: 'globe', config: {}, docs: 'https://sabnzbd.org/wiki/', guide: 'sabnzbd' },
+    'qbittorrent': { name: 'qBittorrent', type: 'qbittorrent', port: 8080, icon: 'globe', config: {}, docs: 'https://github.com/qbittorrent/qBittorrent/wiki', guide: 'qbittorrent' },
+    'transmission': { name: 'Transmission', type: 'transmission', port: 9091, icon: 'globe', config: {}, docs: 'https://transmissionbt.com/', guide: 'transmission' },
 
     // Files, Photos & Docs
-    'nextcloud': { name: 'Nextcloud', type: 'nextcloud', port: 443, icon: 'globe', config: {} },
-    'immich': { name: 'Immich', type: 'immich', port: 2283, icon: 'globe', config: {} },
-    'photoprism': { name: 'PhotoPrism', type: 'photoprism', port: 2342, icon: 'globe', config: {} },
-    'syncthing': { name: 'Syncthing', type: 'syncthing', port: 8384, icon: 'globe', config: {} },
-    'paperless-ngx': { name: 'Paperless-ngx', type: 'paperless_ngx', port: 8000, icon: 'globe', config: {} },
-    'calibre-web': { name: 'Calibre-Web', type: 'calibre_web', port: 8083, icon: 'globe', config: {} },
-    'komga': { name: 'Komga', type: 'komga', port: 25600, icon: 'globe', config: {} },
-    'filebrowser': { name: 'File Browser', type: 'filebrowser', port: 8080, icon: 'globe', config: {} },
+    'nextcloud': { name: 'Nextcloud', type: 'nextcloud', port: 443, icon: 'globe', config: {}, docs: 'https://docs.nextcloud.com/', guide: 'nextcloud' },
+    'immich': { name: 'Immich', type: 'immich', port: 2283, icon: 'globe', config: {}, docs: 'https://immich.app/docs/overview/introduction', guide: 'immich' },
+    'photoprism': { name: 'PhotoPrism', type: 'photoprism', port: 2342, icon: 'globe', config: {}, docs: 'https://docs.photoprism.app/', guide: 'photoprism' },
+    'syncthing': { name: 'Syncthing', type: 'syncthing', port: 8384, icon: 'globe', config: {}, docs: 'https://docs.syncthing.net/', guide: 'syncthing' },
+    'paperless-ngx': { name: 'Paperless-ngx', type: 'paperless_ngx', port: 8000, icon: 'globe', config: {}, docs: 'https://docs.paperless-ngx.com/', guide: 'paperless_ngx' },
+    'calibre-web': { name: 'Calibre-Web', type: 'calibre_web', port: 8083, icon: 'globe', config: {}, docs: 'https://github.com/janeczku/calibre-web/wiki', guide: 'calibre_web' },
+    'komga': { name: 'Komga', type: 'komga', port: 25600, icon: 'globe', config: {}, docs: 'https://komga.org/docs/', guide: 'komga' },
+    'filebrowser': { name: 'File Browser', type: 'filebrowser', port: 8080, icon: 'globe', config: {}, docs: 'https://filebrowser.org/', guide: 'filebrowser' },
 
     // Virtualization & Infrastructure
-    'proxmox-ve': { name: 'Proxmox VE', type: 'proxmox', port: 8006, icon: 'server', config: { verify_ssl: false } },
-    'cockpit': { name: 'Cockpit', type: 'cockpit', port: 9090, icon: 'server', config: {} },
+    'proxmox-ve': { name: 'Proxmox VE', type: 'proxmox', port: 8006, icon: 'server', config: { verify_ssl: false }, docs: 'https://pve.proxmox.com/wiki/Main_Page', guide: 'proxmox' },
+    'cockpit': { name: 'Cockpit', type: 'cockpit', port: 9090, icon: 'server', config: {}, docs: 'https://cockpit-project.org/documentation.html', guide: 'cockpit' },
 
     // Web Panels & Home Automation
-    'home-assistant': { name: 'Home Assistant', type: 'home_assistant', port: 8123, icon: 'home', config: {} },
-    'node-red': { name: 'Node-RED', type: 'node_red', port: 1880, icon: 'globe', config: {} },
-    'n8n': { name: 'n8n', type: 'n8n', port: 5678, icon: 'globe', config: {} },
-    'portainer': { name: 'Portainer', type: 'portainer', port: 9443, icon: 'server', config: {} },
-    'truenas': { name: 'TrueNAS', type: 'truenas', port: 443, icon: 'server', config: {} },
-    'pfsense': { name: 'pfSense', type: 'pfsense', port: 443, icon: 'lock', config: {} },
+    'home-assistant': { name: 'Home Assistant', type: 'home_assistant', port: 8123, icon: 'home', config: {}, docs: 'https://www.home-assistant.io/docs/', guide: 'home_assistant' },
+    'node-red': { name: 'Node-RED', type: 'node_red', port: 1880, icon: 'globe', config: {}, docs: 'https://nodered.org/docs/', guide: 'node_red' },
+    'n8n': { name: 'n8n', type: 'n8n', port: 5678, icon: 'globe', config: {}, docs: 'https://docs.n8n.io/', guide: 'n8n' },
+    'portainer': { name: 'Portainer', type: 'portainer', port: 9443, icon: 'server', config: {}, docs: 'https://docs.portainer.io/', guide: 'portainer' },
+    'truenas': { name: 'TrueNAS', type: 'truenas', port: 443, icon: 'server', config: {}, docs: 'https://www.truenas.com/docs/', guide: 'truenas' },
+    'pfsense': { name: 'pfSense', type: 'pfsense', port: 443, icon: 'lock', config: {}, docs: 'https://docs.netgate.com/pfsense/en/latest/', guide: 'pfsense' },
 
     // Security & Auth
-    'vaultwarden': { name: 'Vaultwarden', type: 'vaultwarden', port: 80, icon: 'lock', config: {} },
-    'authelia': { name: 'Authelia', type: 'authelia', port: 9091, icon: 'lock', config: {} },
+    'vaultwarden': { name: 'Vaultwarden', type: 'vaultwarden', port: 80, icon: 'lock', config: {}, docs: 'https://github.com/dani-garcia/vaultwarden/wiki', guide: 'vaultwarden' },
+    'authelia': { name: 'Authelia', type: 'authelia', port: 9091, icon: 'lock', config: {}, docs: 'https://www.authelia.com/configuration/prologue/introduction/', guide: 'authelia' },
 
     // Monitoring & Networking
-    'uptime-kuma': { name: 'Uptime Kuma', type: 'uptime_kuma', port: 3001, icon: 'globe', config: {} },
-    'pihole': { name: 'Pi-hole', type: 'pihole', port: 80, icon: 'lock', config: {} },
-    'adguard-home': { name: 'AdGuard Home', type: 'adguard_home', port: 3000, icon: 'lock', config: {} },
-    'nginx-proxy-manager': { name: 'Nginx Proxy Manager', type: 'nginx_proxy_manager', port: 81, icon: 'globe', config: {} },
-    'traefik': { name: 'Traefik', type: 'traefik', port: 8080, icon: 'globe', config: {} },
-    'netdata': { name: 'Netdata', type: 'netdata', port: 19999, icon: 'globe', config: {} },
-    'dozzle': { name: 'Dozzle', type: 'dozzle', port: 8080, icon: 'globe', config: {} },
+    'uptime-kuma': { name: 'Uptime Kuma', type: 'uptime_kuma', port: 3001, icon: 'globe', config: {}, docs: 'https://github.com/louislam/uptime-kuma/wiki', guide: 'uptime_kuma' },
+    'pihole': { name: 'Pi-hole', type: 'pihole', port: 80, icon: 'lock', config: {}, docs: 'https://docs.pi-hole.net/', guide: 'pihole' },
+    'adguard-home': { name: 'AdGuard Home', type: 'adguard_home', port: 3000, icon: 'lock', config: {}, docs: 'https://github.com/AdguardTeam/AdGuardHome/wiki', guide: 'adguard_home' },
+    'nginx-proxy-manager': { name: 'Nginx Proxy Manager', type: 'nginx_proxy_manager', port: 81, icon: 'globe', config: {}, docs: 'https://nginxproxymanager.com/guide/', guide: 'nginx_proxy_manager' },
+    'traefik': { name: 'Traefik', type: 'traefik', port: 8080, icon: 'globe', config: {}, docs: 'https://doc.traefik.io/traefik/', guide: 'traefik' },
+    'netdata': { name: 'Netdata', type: 'netdata', port: 19999, icon: 'globe', config: {}, docs: 'https://learn.netdata.cloud/docs/', guide: 'netdata' },
+    'dozzle': { name: 'Dozzle', type: 'dozzle', port: 8080, icon: 'globe', config: {}, docs: 'https://dozzle.dev/guide/getting-started', guide: 'dozzle' },
 
     // Dashboards
-    'homepage': { name: 'Homepage', type: 'homepage', port: 3000, icon: 'globe', config: {} },
-    'homarr': { name: 'Homarr', type: 'homarr', port: 7575, icon: 'globe', config: {} },
-    'organizr': { name: 'Organizr', type: 'organizr', port: 80, icon: 'globe', config: {} },
+    'homepage': { name: 'Homepage', type: 'homepage', port: 3000, icon: 'globe', config: {}, docs: 'https://gethomepage.dev/configs/', guide: 'homepage' },
+    'homarr': { name: 'Homarr', type: 'homarr', port: 7575, icon: 'globe', config: {}, docs: 'https://homarr.dev/docs/getting-started/', guide: 'homarr' },
+    'organizr': { name: 'Organizr', type: 'organizr', port: 80, icon: 'globe', config: {}, docs: 'https://docs.organizr.app/', guide: 'organizr' },
 
     // Dev Tools
-    'grafana': { name: 'Grafana', type: 'grafana', port: 3000, icon: 'globe', config: {} },
-    'prometheus': { name: 'Prometheus', type: 'prometheus', port: 9090, icon: 'globe', config: {} },
-    'jupyter': { name: 'Jupyter Notebook', type: 'jupyter', port: 8888, icon: 'globe', config: {} },
-    'gitea': { name: 'Gitea', type: 'gitea', port: 3000, icon: 'globe', config: {} },
-    'gitlab': { name: 'GitLab', type: 'gitlab', port: 80, icon: 'globe', config: {} },
-    'code-server': { name: 'code-server', type: 'code_server', port: 8080, icon: 'globe', config: {} },
+    'grafana': { name: 'Grafana', type: 'grafana', port: 3000, icon: 'globe', config: {}, docs: 'https://grafana.com/docs/grafana/latest/', guide: 'grafana' },
+    'prometheus': { name: 'Prometheus', type: 'prometheus', port: 9090, icon: 'globe', config: {}, docs: 'https://prometheus.io/docs/', guide: 'prometheus' },
+    'jupyter': { name: 'Jupyter Notebook', type: 'jupyter', port: 8888, icon: 'globe', config: {}, docs: 'https://jupyter-notebook.readthedocs.io/', guide: 'jupyter' },
+    'gitea': { name: 'Gitea', type: 'gitea', port: 3000, icon: 'globe', config: {}, docs: 'https://docs.gitea.com/', guide: 'gitea' },
+    'gitlab': { name: 'GitLab', type: 'gitlab', port: 80, icon: 'globe', config: {}, docs: 'https://docs.gitlab.com/', guide: 'gitlab' },
+    'code-server': { name: 'code-server', type: 'code_server', port: 8080, icon: 'globe', config: {}, docs: 'https://coder.com/docs/code-server', guide: 'code_server' },
 
     // Databases
-    'mysql-db': { name: 'MySQL', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' } },
-    'postgres-db': { name: 'PostgreSQL', type: 'postgresql', port: 5432, icon: 'database', config: {} },
-    'mariadb': { name: 'MariaDB', type: 'mariadb', port: 3306, icon: 'database', config: {} },
-    'redis-db': { name: 'Redis', type: 'redis', port: 6379, icon: 'database', config: {} },
-    'mongodb': { name: 'MongoDB', type: 'mongodb', port: 27017, icon: 'database', config: {} },
-    'influxdb': { name: 'InfluxDB', type: 'influxdb', port: 8086, icon: 'database', config: {} },
-    'elasticsearch': { name: 'Elasticsearch', type: 'elasticsearch', port: 9200, icon: 'database', config: {} },
+    'mysql-db': { name: 'MySQL', type: 'database', port: 3306, icon: 'database', config: { db_type: 'mysql' }, docs: 'https://dev.mysql.com/doc/', guide: 'database' },
+    'postgres-db': { name: 'PostgreSQL', type: 'postgresql', port: 5432, icon: 'database', config: {}, docs: 'https://www.postgresql.org/docs/', guide: 'postgresql' },
+    'mariadb': { name: 'MariaDB', type: 'mariadb', port: 3306, icon: 'database', config: {}, docs: 'https://mariadb.com/kb/en/documentation/', guide: 'mariadb' },
+    'redis-db': { name: 'Redis', type: 'redis', port: 6379, icon: 'database', config: {}, docs: 'https://redis.io/docs/', guide: 'redis' },
+    'mongodb': { name: 'MongoDB', type: 'mongodb', port: 27017, icon: 'database', config: {}, docs: 'https://www.mongodb.com/docs/', guide: 'mongodb' },
+    'influxdb': { name: 'InfluxDB', type: 'influxdb', port: 8086, icon: 'database', config: {}, docs: 'https://docs.influxdata.com/influxdb/', guide: 'influxdb' },
+    'elasticsearch': { name: 'Elasticsearch', type: 'elasticsearch', port: 9200, icon: 'database', config: {}, docs: 'https://www.elastic.co/guide/en/elasticsearch/reference/current/index.html', guide: 'elasticsearch' },
 
     // Game Servers
-    'minecraft-rcon': { name: 'Minecraft RCON', type: 'minecraft_rcon', port: 25575, icon: 'link', config: {} },
+    'minecraft-rcon': { name: 'Minecraft RCON', type: 'minecraft_rcon', port: 25575, icon: 'link', config: {}, docs: 'https://minecraft.wiki/w/RCON', guide: 'minecraft_rcon' },
 
     // Network & Tunneling
-    'tcp-tunnel': { name: 'TCP Tunnel', type: 'tcp_tunnel', icon: 'link', config: {} },
-    'secure-tunnel': { name: 'Secure Tunnel', type: 'secure_tunnel', icon: 'lock', config: {} },
-    'vpn-bridge': { name: 'VPN Bridge', type: 'vpn_tunnel', icon: 'lock', config: {} },
-    'http-proxy': { name: 'HTTP Proxy', type: 'http_proxy', port: 80, icon: 'globe', config: {} },
+    'tcp-tunnel': { name: 'TCP Tunnel', type: 'tcp_tunnel', icon: 'link', config: {}, docs: null, guide: 'tcp_tunnel' },
+    'secure-tunnel': { name: 'Secure Tunnel', type: 'secure_tunnel', icon: 'lock', config: {}, docs: null, guide: 'secure_tunnel' },
+    'vpn-bridge': { name: 'VPN Bridge', type: 'vpn_tunnel', icon: 'lock', config: {}, docs: null, guide: 'vpn_tunnel' },
+    'http-proxy': { name: 'HTTP Proxy', type: 'http_proxy', port: 80, icon: 'globe', config: {}, docs: null, guide: 'http_proxy' },
 };
 
 /**
@@ -253,7 +253,38 @@ function applyConnectionPreset() {
         });
     }, 50);
 
+    // Show documentation links
+    updatePresetLinks(preset);
+
     Portal.toast(`Applied preset: ${preset.name}`);
+}
+
+/**
+ * Show/hide preset documentation links
+ */
+function updatePresetLinks(preset) {
+    const container = document.getElementById('preset-links');
+    if (!container) return;
+
+    if (!preset) {
+        container.style.display = 'none';
+        return;
+    }
+
+    const links = [];
+    if (preset.docs) {
+        links.push(`<a href="${preset.docs}" target="_blank" rel="noopener noreferrer" class="preset-link"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg> ${preset.name} Docs</a>`);
+    }
+    if (preset.guide) {
+        links.push(`<a href="/guides#guide-${preset.guide}" target="_blank" class="preset-link"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg> Portal Setup Guide</a>`);
+    }
+
+    if (links.length > 0) {
+        container.innerHTML = links.join('');
+        container.style.display = 'flex';
+    } else {
+        container.style.display = 'none';
+    }
 }
 
 /**
@@ -674,8 +705,9 @@ async function showAddConnectionModal() {
     document.getElementById('connection-modal-title').textContent = 'Add Connection';
     document.getElementById('connection-submit-btn').textContent = 'Add Connection';
 
-    // Reset preset
+    // Reset preset and links
     document.getElementById('connection-preset').value = '';
+    updatePresetLinks(null);
 
     // Reset SSH private key field placeholder
     const sshKeyField = document.getElementById('connection-ssh-private-key');
