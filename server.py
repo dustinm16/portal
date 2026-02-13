@@ -9185,12 +9185,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                                 "deleted": True
                                             }
 
-                        # Enrich messages with reactions
+                        # Enrich messages with reactions and polls
                         if messages:
                             msg_ids = [m["id"] for m in messages]
                             all_reactions = await db.get_bulk_reactions(msg_ids)
+                            all_polls = await db.get_polls_by_message_ids(msg_ids)
                             for m in messages:
                                 m["reactions"] = all_reactions.get(m["id"], [])
+                                if m["id"] in all_polls:
+                                    m["poll"] = _format_poll_for_client(all_polls[m["id"]], user_id)
 
                         await ws.send_json({
                             "type": "history",
@@ -10376,7 +10379,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         image_url = data.get("image_url")
                         if image_url and not image_url.startswith("/static/uploads/chat/"):
                             image_url = None
-                        if not text and not image_url:
+                        attachment_url = data.get("attachment_url")
+                        attachment_name = data.get("attachment_name")
+                        attachment_size = data.get("attachment_size")
+                        attachment_type = data.get("attachment_type")
+                        if attachment_url and not attachment_url.startswith("/static/uploads/chat/"):
+                            attachment_url = None
+                            attachment_name = None
+                            attachment_size = None
+                            attachment_type = None
+                        if not text and not image_url and not attachment_url:
                             continue
                         if text and len(text) > 4000:
                             text = text[:4000]
@@ -10408,7 +10420,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             conv_id, user_id, username, text,
                             reply_to=reply_to, image_url=image_url,
                             reply_preview_username=reply_preview_username,
-                            reply_preview_text=reply_preview_text
+                            reply_preview_text=reply_preview_text,
+                            attachment_url=attachment_url,
+                            attachment_name=attachment_name,
+                            attachment_size=attachment_size,
+                            attachment_type=attachment_type
                         )
                         payload = {
                             "type": "dm_message",
@@ -10418,6 +10434,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "username": display_name,
                             "message": text,
                             "image_url": image_url,
+                            "attachment_url": attachment_url,
+                            "attachment_name": attachment_name,
+                            "attachment_size": attachment_size,
+                            "attachment_type": attachment_type,
                             "reply_to": reply_to,
                             "reply_preview_username": reply_preview_username,
                             "reply_preview_text": reply_preview_text,

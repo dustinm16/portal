@@ -3523,11 +3523,19 @@
 
             container.appendChild(div);
 
+            // If message has a poll, replace the message text with poll card
+            if (data.poll) {
+                div.classList.add('poll-message');
+                div.dataset.pollId = data.poll.id;
+                const textEl = div.querySelector('.message-text');
+                if (textEl) textEl.innerHTML = renderPollCard(data.poll, displayName, data.created_at);
+            }
+
             // Observe for read tracking (IntersectionObserver marks read when scrolled into view)
             if (data.id) observeMessageForRead(div);
 
-            // Fetch link previews for URLs in message
-            if (data.message) {
+            // Fetch link previews for URLs in message (skip poll messages)
+            if (data.message && !data.poll) {
                 const urls = data.message.match(/https?:\/\/[^\s<>)"']+/g);
                 if (urls) fetchLinkPreviews(div, urls);
             }

@@ -2888,6 +2888,23 @@ class Database:
             return await self.get_poll(row["id"])
         return None
 
+    async def get_polls_by_message_ids(self, message_ids: list[int]) -> dict[int, dict]:
+        """Get polls for multiple message IDs. Returns {message_id: poll_dict}."""
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" * len(message_ids))
+        cursor = await self.conn.execute(
+            f"SELECT id, message_id FROM chat_polls WHERE message_id IN ({placeholders})",
+            message_ids
+        )
+        rows = await cursor.fetchall()
+        result = {}
+        for row in rows:
+            poll = await self.get_poll(row["id"])
+            if poll:
+                result[row["message_id"]] = poll
+        return result
+
     # =============================================
     # Audit log operations
     # =============================================
@@ -4112,7 +4129,9 @@ class Database:
     async def create_dm_message(
         self, conversation_id: int, user_id: int, username: str, message: str,
         reply_to: int = None, image_url: str = None,
-        reply_preview_username: str = None, reply_preview_text: str = None
+        reply_preview_username: str = None, reply_preview_text: str = None,
+        attachment_url: str = None, attachment_name: str = None,
+        attachment_size: int = None, attachment_type: str = None
     ) -> int:
         """Create a new DM message (encrypted). Returns message_id."""
         plaintext = message
@@ -4121,10 +4140,12 @@ class Database:
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO dm_messages (conversation_id, user_id, username, message, created_at,
-                                        reply_to, image_url, reply_preview_username, reply_preview_text)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                        reply_to, image_url, reply_preview_username, reply_preview_text,
+                                        attachment_url, attachment_name, attachment_size, attachment_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (conversation_id, user_id, username, encrypted_message, created_at,
-             reply_to, image_url, reply_preview_username, encrypted_preview)
+             reply_to, image_url, reply_preview_username, encrypted_preview,
+             attachment_url, attachment_name, attachment_size, attachment_type)
         )
         msg_id = cursor.lastrowid
         await self.conn.execute(
