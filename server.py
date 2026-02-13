@@ -7720,6 +7720,9 @@ async def http_api_docs_page(request: web.Request) -> web.Response:
             i += 1
 
         html = ''.join(result)
+        # Also strip orphaned HTML comments that preceded admin-only divs
+        import re as _re
+        html = _re.sub(r'<!--\s*[^>]*\(Admin\)\s*-->\s*\n?\s*', '', html)
 
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"

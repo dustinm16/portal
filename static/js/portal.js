@@ -817,10 +817,17 @@ const NotificationBell = {
     _dropdown: null,
     _pollInterval: null,
 
-    init() {
+    async init() {
         // Find the navbar user link to inject bell before it
         const userLink = document.querySelector('.navbar-user');
         if (!userLink) return;
+
+        // Only show notifications for authenticated users
+        try {
+            await Portal.api('/api/me');
+        } catch (e) {
+            return;
+        }
 
         // Create bell button
         const bell = document.createElement('a');
