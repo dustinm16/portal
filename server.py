@@ -5131,6 +5131,19 @@ async def http_get_cert_info(request: web.Request) -> web.Response:
     if Config.CERT_METHOD:
         info["method"] = Config.CERT_METHOD
 
+    # Check hostname coverage — warn if configured hostnames aren't in cert SANs
+    sans = [s.lower() for s in (info.get("sans") or [])]
+    hostnames = {"hostname": Config.HOSTNAME, "stream_hostname": Config.STREAM_HOSTNAME}
+    coverage = {}
+    for key, hostname in hostnames.items():
+        hn = hostname.lower()
+        covered = hn in sans or any(
+            s.startswith("*.") and hn.endswith(s[1:]) and hn.count(".") == s.count(".")
+            for s in sans
+        )
+        coverage[key] = {"value": hostname, "covered": covered}
+    info["hostname_coverage"] = coverage
+
     return web.json_response(info)
 
 
@@ -5211,9 +5224,14 @@ async def http_generate_selfsigned(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid validity_days"}, status=400)
 
+    # Include stream hostname in SANs if different
+    extra_hostnames = []
+    if Config.STREAM_HOSTNAME and Config.STREAM_HOSTNAME != hostname:
+        extra_hostnames.append(Config.STREAM_HOSTNAME)
+
     try:
         cert_path, key_path = cert_manager.generate_self_signed_cert(
-            hostname, Config.CERTS_DIR, validity_days
+            hostname, Config.CERTS_DIR, validity_days, extra_hostnames=extra_hostnames
         )
     except Exception as e:
         return web.json_response({"error": f"Failed to generate certificate: {e}"}, status=500)
@@ -5334,7 +5352,11 @@ async def http_get_server_hostname(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    return web.json_response({"hostname": Config.HOSTNAME, "port": Config.PORT})
+    return web.json_response({
+        "hostname": Config.HOSTNAME,
+        "stream_hostname": Config.STREAM_HOSTNAME,
+        "port": Config.PORT,
+    })
 
 
 async def http_update_server_hostname(request: web.Request) -> web.Response:
@@ -5362,11 +5384,20 @@ async def http_update_server_hostname(request: web.Request) -> web.Response:
     cert_manager.update_env_value(env_path, "HOSTNAME", hostname)
     Config.HOSTNAME = hostname
 
-    logger.info(f"Hostname updated to {hostname} by user {token.user_id}")
+    # Update stream hostname if provided
+    stream_hostname = data.get("stream_hostname", "").strip()
+    if stream_hostname:
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]$', stream_hostname) and stream_hostname != "localhost":
+            return web.json_response({"error": "Invalid stream hostname format"}, status=400)
+        cert_manager.update_env_value(env_path, "STREAM_HOSTNAME", stream_hostname)
+        Config.STREAM_HOSTNAME = stream_hostname
+
+    logger.info(f"Hostname updated to {hostname} (stream: {Config.STREAM_HOSTNAME}) by user {token.user_id}")
 
     return web.json_response({
         "status": "success",
         "hostname": hostname,
+        "stream_hostname": Config.STREAM_HOSTNAME,
         "message": "Hostname updated. Restart the server for full effect.",
     })
 

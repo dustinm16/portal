@@ -975,6 +975,7 @@
                             <div id="cert-method-selfsigned" class="cert-method-panel" style="display:none;">
                                 <p style="color:var(--text-secondary); font-size:0.8rem; margin-bottom:1rem; margin-top:0;">
                                     Generate a self-signed certificate for development or LAN use. Browsers will show a security warning until the certificate is trusted.
+                                    If a stream hostname is configured, it will be automatically included in the certificate SANs.
                                 </p>
                                 <div style="display:flex; flex-direction:column; gap:0.75rem;">
                                     <div>
@@ -1037,9 +1038,15 @@
                                 <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Hostname</label>
                                 <div style="display:flex; gap:0.5rem;">
                                     <input type="text" id="settings-hostname" style="flex:1; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem;">
-                                    <button class="btn btn-secondary" onclick="updateHostname()">Update</button>
                                 </div>
                             </div>
+                            <div>
+                                <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Stream Hostname <span style="font-size:0.7rem; color:var(--text-muted);">(for RTMPS ingress, leave blank to use main hostname)</span></label>
+                                <div style="display:flex; gap:0.5rem;">
+                                    <input type="text" id="settings-stream-hostname" placeholder="Same as hostname" style="flex:1; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); padding:0.5rem;">
+                                </div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="updateHostname()" style="align-self:flex-start;">Update Hostnames</button>
                             <div class="stat-row">
                                 <span class="stat-label">Port</span>
                                 <span class="stat-value" id="settings-port">443</span>
@@ -2795,6 +2802,37 @@
                     'custom': '<span style="background:rgba(96,165,250,0.2); color:var(--accent-blue); padding:2px 8px; border-radius:4px; font-size:0.75rem;">Custom</span>'
                 };
 
+                // Build hostname coverage warnings
+                let coverageHtml = '';
+                if (info.hostname_coverage) {
+                    const cov = info.hostname_coverage;
+                    const entries = [];
+                    if (cov.hostname) {
+                        const icon = cov.hostname.covered ? '<span style="color:var(--accent-green);">&#10003;</span>' : '<span style="color:var(--accent-red);">&#10007;</span>';
+                        entries.push(`${icon} ${escapeHtml(cov.hostname.value)}`);
+                    }
+                    if (cov.stream_hostname && cov.stream_hostname.value !== cov.hostname?.value) {
+                        const icon = cov.stream_hostname.covered ? '<span style="color:var(--accent-green);">&#10003;</span>' : '<span style="color:var(--accent-red);">&#10007;</span>';
+                        entries.push(`${icon} ${escapeHtml(cov.stream_hostname.value)} <span style="color:var(--text-muted); font-size:0.7rem;">(stream)</span>`);
+                    }
+                    const anyMissing = (cov.hostname && !cov.hostname.covered) ||
+                        (cov.stream_hostname && cov.stream_hostname.value !== cov.hostname?.value && !cov.stream_hostname.covered);
+                    coverageHtml = `
+                        <div class="stat-row">
+                            <span class="stat-label">Hostname Coverage</span>
+                            <span class="stat-value" style="font-size:0.8rem; text-align:right;">${entries.join('<br>')}</span>
+                        </div>`;
+                    if (anyMissing) {
+                        coverageHtml += `
+                        <div style="background:rgba(239,68,68,0.1); border:1px solid var(--accent-red); border-radius:6px; padding:0.5rem 0.75rem; margin-top:0.5rem;">
+                            <span style="color:var(--accent-red); font-size:0.8rem; font-weight:600;">Certificate does not cover all configured hostnames</span>
+                            <p style="color:var(--text-secondary); font-size:0.75rem; margin:0.25rem 0 0;">
+                                Visitors to uncovered hostnames will see browser security warnings. Update your certificate to include all hostnames, or use a wildcard certificate.
+                            </p>
+                        </div>`;
+                    }
+                }
+
                 el.innerHTML = `
                     <div class="stat-row">
                         <span class="stat-label">Method</span>
@@ -2812,6 +2850,7 @@
                         <span class="stat-label">SANs</span>
                         <span class="stat-value" style="font-size:0.75rem; text-align:right; max-width:60%;">${(info.sans || []).join(', ') || 'None'}</span>
                     </div>
+                    ${coverageHtml}
                     <div class="stat-row">
                         <span class="stat-label">Valid Until</span>
                         <span class="stat-value" style="color:${statusColor}">${new Date(info.not_after).toLocaleDateString()} (${statusText})</span>
@@ -2826,11 +2865,19 @@
                     </div>
                 `;
 
-                // Show/hide expiry warning
+                // Show/hide expiry warning and hostname coverage warning
                 const warningEl = document.getElementById('cert-expiry-warning');
                 const warningText = document.getElementById('cert-expiry-warning-text');
+                const cov = info.hostname_coverage || {};
+                const uncoveredHostnames = Object.entries(cov)
+                    .filter(([k, v]) => !v.covered)
+                    .map(([k, v]) => v.value);
                 if (daysLeft <= 0) {
                     warningText.textContent = 'Your TLS certificate has EXPIRED. Connections may fail. Renew immediately.';
+                    warningEl.style.display = '';
+                    warningEl.style.borderColor = 'var(--accent-red)';
+                } else if (uncoveredHostnames.length > 0) {
+                    warningText.textContent = `Your TLS certificate does not cover: ${uncoveredHostnames.join(', ')}. Visitors will see security warnings. Update your certificate to include all hostnames.`;
                     warningEl.style.display = '';
                     warningEl.style.borderColor = 'var(--accent-red)';
                 } else if (daysLeft <= 30) {
@@ -2859,6 +2906,8 @@
                 if (hostnameResp.ok) {
                     const data = await hostnameResp.json();
                     document.getElementById('settings-hostname').value = data.hostname;
+                    document.getElementById('settings-stream-hostname').value =
+                        (data.stream_hostname && data.stream_hostname !== data.hostname) ? data.stream_hostname : '';
                     document.getElementById('settings-port').textContent = data.port;
                 }
                 if (healthResp.ok) {
@@ -3021,17 +3070,22 @@
                 Portal.toast('Hostname cannot be empty', 'error');
                 return;
             }
+            const streamHostname = document.getElementById('settings-stream-hostname').value.trim();
+
+            const payload = { hostname };
+            if (streamHostname) payload.stream_hostname = streamHostname;
 
             try {
                 const resp = await fetch('/api/settings/hostname', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
-                    body: JSON.stringify({ hostname })
+                    body: JSON.stringify(payload)
                 });
                 const data = await resp.json();
                 if (resp.ok) {
-                    Portal.toast('Hostname updated. Restart to take effect.', 'success');
+                    Portal.toast('Hostnames updated. Restart to take effect.', 'success');
+                    loadCertInfo(); // Refresh coverage check
                 } else {
                     Portal.toast(data.error || 'Update failed', 'error');
                 }

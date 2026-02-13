@@ -170,10 +170,11 @@ def generate_self_signed_cert(
     hostname: str,
     output_dir: str,
     validity_days: int = 365,
+    extra_hostnames: list[str] | None = None,
 ) -> tuple[str, str]:
     """Generate a self-signed server certificate.
 
-    Creates RSA 4096-bit key, adds SANs for hostname + localhost.
+    Creates RSA 4096-bit key, adds SANs for hostname + extra_hostnames + localhost.
     Returns (cert_path, key_path).
     """
     output_path = Path(output_dir)
@@ -192,19 +193,24 @@ def generate_self_signed_cert(
         x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "Self-Signed"),
     ])
 
-    # Build SANs
-    san_entries = [
-        x509.DNSName(hostname),
-        x509.DNSName("localhost"),
+    # Build SANs — include primary hostname, any extras, and localhost
+    san_dns = {hostname, "localhost"}
+    for extra in (extra_hostnames or []):
+        if extra and extra != hostname:
+            san_dns.add(extra)
+
+    san_entries = [x509.DNSName(h) for h in sorted(san_dns)]
+    san_entries.extend([
         x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
         x509.IPAddress(ipaddress.IPv6Address("::1")),
-    ]
+    ])
 
     # If hostname looks like an IP, add it as IPAddress SAN too
-    try:
-        san_entries.append(x509.IPAddress(ipaddress.ip_address(hostname)))
-    except ValueError:
-        pass
+    for h in [hostname] + (extra_hostnames or []):
+        try:
+            san_entries.append(x509.IPAddress(ipaddress.ip_address(h)))
+        except ValueError:
+            pass
 
     now = datetime.datetime.now(datetime.timezone.utc)
 
