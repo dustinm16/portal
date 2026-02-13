@@ -546,6 +546,8 @@
                 <button class="tab-btn" onclick="showTab('settings', event)">Settings</button>
                 <button class="tab-btn" onclick="showTab('system', event)">System</button>
                 <button class="tab-btn" onclick="showTab('files', event)">Files</button>
+                <button class="tab-btn" onclick="showTab('audit', event)">Audit Log</button>
+                <button class="tab-btn" onclick="showTab('automod', event)">Auto-Mod</button>
             </div>
 
             <!-- Overview Tab -->
@@ -1216,6 +1218,100 @@
                 </div>
             </div>
 
+            <!-- Audit Log Tab -->
+            <div id="tab-audit" class="tab-content">
+                <div class="sysmon-toolbar">
+                    <select id="audit-filter-action" onchange="loadAuditLog()" style="padding:4px 8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                        <option value="">All Actions</option>
+                        <option value="message_delete">Message Delete</option>
+                        <option value="pin_message">Pin</option>
+                        <option value="unpin_message">Unpin</option>
+                        <option value="user_timeout">Timeout</option>
+                        <option value="user_mute">Mute</option>
+                        <option value="user_unmute">Unmute</option>
+                        <option value="user_ban">Ban</option>
+                        <option value="user_unban">Unban</option>
+                        <option value="channel_create">Channel Create</option>
+                        <option value="channel_update">Channel Update</option>
+                        <option value="channel_delete">Channel Delete</option>
+                        <option value="channel_clear">Channel Clear</option>
+                        <option value="role_change">Role Change</option>
+                        <option value="automod_trigger">AutoMod Trigger</option>
+                        <option value="automod_rule_create">AutoMod Rule Create</option>
+                        <option value="automod_rule_update">AutoMod Rule Update</option>
+                        <option value="automod_rule_delete">AutoMod Rule Delete</option>
+                        <option value="channel_member_add">Member Add</option>
+                        <option value="channel_member_remove">Member Remove</option>
+                        <option value="channel_member_role">Member Role</option>
+                    </select>
+                    <button class="range-btn" onclick="loadAuditLog()">Refresh</button>
+                    <span id="audit-count" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
+                </div>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th>Actor</th>
+                                <th>Target</th>
+                                <th>Channel</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="audit-log-body"></tbody>
+                    </table>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:8px;justify-content:center;">
+                    <button class="range-btn" id="audit-prev-btn" onclick="auditPrevPage()" disabled>Previous</button>
+                    <span id="audit-page-info" style="padding:6px;color:var(--text-muted);font-size:0.85rem;"></span>
+                    <button class="range-btn" id="audit-next-btn" onclick="auditNextPage()" disabled>Next</button>
+                </div>
+            </div>
+
+            <!-- Auto-Moderation Tab -->
+            <div id="tab-automod" class="tab-content">
+                <div class="sysmon-toolbar">
+                    <button class="range-btn" onclick="showCreateAutomodRuleModal()">+ New Rule</button>
+                    <button class="range-btn" onclick="loadAutomodRules()">Refresh</button>
+                    <button class="range-btn" onclick="loadAutomodActions()" style="margin-left:auto;">View Action Log</button>
+                </div>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Action</th>
+                                <th>Enabled</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="automod-rules-body">
+                            <tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="automod-actions-panel" style="display:none;margin-top:16px;">
+                    <h4 style="margin:0 0 8px;color:var(--text-secondary);">Recent Triggers</h4>
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Rule</th>
+                                    <th>User</th>
+                                    <th>Action</th>
+                                    <th>Message</th>
+                                </tr>
+                            </thead>
+                            <tbody id="automod-actions-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Files Edit Modal -->
             <div id="files-edit-modal" class="sys-logs-modal" style="display:none;" onclick="if(event.target===this)filesCloseEditModal()">
                 <div class="sys-logs-modal-content" style="max-width:900px;">
@@ -1278,6 +1374,8 @@
                 case 'settings': loadSettingsTab(); break;
                 case 'system': sysLoadProcesses(); break;
                 case 'files': filesLoadDirectory(filesCurrentPath || '/'); break;
+                case 'audit': loadAuditLog(); break;
+                case 'automod': loadAutomodRules(); break;
             }
         }
 
@@ -3538,6 +3636,281 @@
                 }
             }
         }, 30000);
+
+        // =============================================
+        // Audit Log
+        // =============================================
+        let auditOffset = 0;
+        const auditLimit = 50;
+        let auditTotal = 0;
+
+        async function loadAuditLog() {
+            const action = document.getElementById('audit-filter-action').value;
+            const params = new URLSearchParams({ limit: auditLimit, offset: auditOffset });
+            if (action) params.set('action', action);
+
+            try {
+                const res = await fetch(`/api/admin/audit-log?${params}`, { credentials: 'include' });
+                if (!res.ok) { document.getElementById('audit-log-body').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Failed to load</td></tr>'; return; }
+                const data = await res.json();
+                auditTotal = data.total || 0;
+                const entries = data.entries || [];
+
+                document.getElementById('audit-count').textContent = `${auditTotal} total entries`;
+                document.getElementById('audit-page-info').textContent = `${auditOffset + 1}-${Math.min(auditOffset + auditLimit, auditTotal)} of ${auditTotal}`;
+                document.getElementById('audit-prev-btn').disabled = auditOffset === 0;
+                document.getElementById('audit-next-btn').disabled = auditOffset + auditLimit >= auditTotal;
+
+                if (entries.length === 0) {
+                    document.getElementById('audit-log-body').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No entries found</td></tr>';
+                    return;
+                }
+
+                document.getElementById('audit-log-body').innerHTML = entries.map(e => {
+                    const ts = e.created_at ? new Date(e.created_at).toLocaleString() : '';
+                    let details = '';
+                    if (e.details) {
+                        try {
+                            const d = typeof e.details === 'string' ? JSON.parse(e.details) : e.details;
+                            details = Object.entries(d).map(([k,v]) => `${k}: ${v}`).join(', ');
+                        } catch { details = e.details; }
+                    }
+                    return `<tr>
+                        <td style="white-space:nowrap;">${escapeHtml(ts)}</td>
+                        <td><span style="background:var(--bg-secondary);padding:2px 6px;border-radius:3px;font-size:0.8rem;">${escapeHtml(e.action || '')}</span></td>
+                        <td>${escapeHtml(e.actor_username || '')}</td>
+                        <td>${escapeHtml(e.target_name || (e.target_type ? e.target_type + '#' + e.target_id : ''))}</td>
+                        <td>${escapeHtml(e.channel_name || '')}</td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(details)}">${escapeHtml(details)}</td>
+                    </tr>`;
+                }).join('');
+            } catch (err) {
+                document.getElementById('audit-log-body').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Error loading audit log</td></tr>';
+            }
+        }
+
+        function auditPrevPage() { auditOffset = Math.max(0, auditOffset - auditLimit); loadAuditLog(); }
+        function auditNextPage() { auditOffset += auditLimit; loadAuditLog(); }
+
+        // =============================================
+        // Auto-Moderation
+        // =============================================
+        const AUTOMOD_TYPES = {
+            word_filter: 'Word Filter',
+            spam_filter: 'Spam Filter',
+            link_filter: 'Link Filter',
+            caps_filter: 'Caps Filter',
+            mention_spam: 'Mention Spam'
+        };
+        const AUTOMOD_ACTIONS = { warn: 'Warn', delete: 'Delete', timeout: 'Timeout', mute: 'Mute' };
+
+        async function loadAutomodRules() {
+            try {
+                const res = await fetch('/api/admin/automod', { credentials: 'include' });
+                if (!res.ok) { document.getElementById('automod-rules-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Failed to load</td></tr>'; return; }
+                const data = await res.json();
+                const rules = data.rules || [];
+
+                if (rules.length === 0) {
+                    document.getElementById('automod-rules-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">No rules configured</td></tr>';
+                    return;
+                }
+
+                document.getElementById('automod-rules-body').innerHTML = rules.map(r => `<tr>
+                    <td>${escapeHtml(r.name)}</td>
+                    <td>${AUTOMOD_TYPES[r.type] || r.type}</td>
+                    <td>${AUTOMOD_ACTIONS[r.action] || r.action}${r.action_duration ? ' (' + r.action_duration + 's)' : ''}</td>
+                    <td><label style="cursor:pointer;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleAutomodRule(${r.id}, this.checked)"></label></td>
+                    <td>
+                        <button class="range-btn" onclick="editAutomodRule(${r.id})" style="padding:2px 8px;font-size:0.8rem;">Edit</button>
+                        <button class="range-btn" onclick="deleteAutomodRule(${r.id})" style="padding:2px 8px;font-size:0.8rem;color:#f87171;">Delete</button>
+                    </td>
+                </tr>`).join('');
+            } catch (err) {
+                document.getElementById('automod-rules-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Error</td></tr>';
+            }
+        }
+
+        async function toggleAutomodRule(ruleId, enabled) {
+            try {
+                await fetch(`/api/admin/automod/${ruleId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ enabled })
+                });
+            } catch (e) {}
+        }
+
+        async function deleteAutomodRule(ruleId) {
+            if (!confirm('Delete this automod rule?')) return;
+            try {
+                const res = await fetch(`/api/admin/automod/${ruleId}`, { method: 'DELETE', credentials: 'include' });
+                if (res.ok) loadAutomodRules();
+            } catch (e) {}
+        }
+
+        function showCreateAutomodRuleModal() {
+            showAutomodRuleModal(null);
+        }
+
+        async function editAutomodRule(ruleId) {
+            try {
+                const res = await fetch('/api/admin/automod', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const rule = (data.rules || []).find(r => r.id === ruleId);
+                if (rule) showAutomodRuleModal(rule);
+            } catch (e) {}
+        }
+
+        function showAutomodRuleModal(rule) {
+            const isEdit = !!rule;
+            let config = {};
+            if (rule && rule.config) {
+                try { config = typeof rule.config === 'string' ? JSON.parse(rule.config) : rule.config; } catch {}
+            }
+
+            const modal = document.createElement('div');
+            modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;';
+            modal.id = 'automod-modal';
+            modal.innerHTML = `
+                <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:420px;max-height:80vh;overflow-y:auto;">
+                    <h3 style="margin:0 0 12px;">${isEdit ? 'Edit' : 'Create'} AutoMod Rule</h3>
+                    <input type="text" id="am-name" placeholder="Rule name" value="${rule ? escapeHtml(rule.name) : ''}" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);">
+                    <select id="am-type" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);" onchange="updateAutomodConfigFields()">
+                        ${Object.entries(AUTOMOD_TYPES).map(([k,v]) => `<option value="${k}" ${rule?.type === k ? 'selected' : ''}>${v}</option>`).join('')}
+                    </select>
+                    <select id="am-action" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);">
+                        ${Object.entries(AUTOMOD_ACTIONS).map(([k,v]) => `<option value="${k}" ${rule?.action === k ? 'selected' : ''}>${v}</option>`).join('')}
+                    </select>
+                    <input type="number" id="am-duration" placeholder="Duration (seconds, for timeout)" value="${rule?.action_duration || ''}" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);">
+                    <div id="am-config-fields" style="margin-bottom:12px;"></div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button onclick="document.getElementById('automod-modal').remove()" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;">Cancel</button>
+                        <button onclick="submitAutomodRule(${rule ? rule.id : 'null'})" style="padding:6px 14px;background:var(--accent-color);border:none;border-radius:6px;color:white;cursor:pointer;">${isEdit ? 'Update' : 'Create'}</button>
+                    </div>
+                </div>`;
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+            document.body.appendChild(modal);
+
+            // Set initial config fields
+            window._amEditConfig = config;
+            updateAutomodConfigFields();
+        }
+
+        function updateAutomodConfigFields() {
+            const type = document.getElementById('am-type').value;
+            const config = window._amEditConfig || {};
+            const container = document.getElementById('am-config-fields');
+            let html = '';
+            if (type === 'word_filter') {
+                const words = (config.words || []).join(', ');
+                const mode = config.match_mode || 'contains';
+                html = `<label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Blocked words (comma-separated)</label>
+                    <textarea id="am-words" rows="3" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);resize:vertical;">${escapeHtml(words)}</textarea>
+                    <select id="am-match-mode" style="width:100%;padding:6px;margin-top:4px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                        <option value="contains" ${mode === 'contains' ? 'selected' : ''}>Contains</option>
+                        <option value="exact" ${mode === 'exact' ? 'selected' : ''}>Exact word</option>
+                        <option value="regex" ${mode === 'regex' ? 'selected' : ''}>Regex</option>
+                    </select>`;
+            } else if (type === 'link_filter') {
+                html = `<label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Block list (domains, comma-separated)</label>
+                    <textarea id="am-blocklist" rows="2" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);resize:vertical;">${escapeHtml((config.block_list || []).join(', '))}</textarea>
+                    <label style="display:flex;align-items:center;gap:4px;margin-top:4px;color:var(--text-secondary);font-size:0.85rem;">
+                        <input type="checkbox" id="am-blockall" ${config.block_all ? 'checked' : ''}> Block all links
+                    </label>`;
+            } else if (type === 'caps_filter') {
+                html = `<label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Max caps percentage</label>
+                    <input type="number" id="am-maxcaps" value="${config.max_caps_percent || 70}" min="0" max="100" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                    <label style="display:block;margin-top:4px;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Min message length</label>
+                    <input type="number" id="am-minlen" value="${config.min_length || 10}" min="1" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">`;
+            } else if (type === 'mention_spam') {
+                html = `<label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Max mentions per message</label>
+                    <input type="number" id="am-maxmentions" value="${config.max_mentions || 5}" min="1" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">`;
+            }
+            container.innerHTML = html;
+        }
+
+        function getAutomodConfig() {
+            const type = document.getElementById('am-type').value;
+            if (type === 'word_filter') {
+                return {
+                    words: (document.getElementById('am-words')?.value || '').split(',').map(s => s.trim()).filter(Boolean),
+                    match_mode: document.getElementById('am-match-mode')?.value || 'contains'
+                };
+            } else if (type === 'link_filter') {
+                return {
+                    block_list: (document.getElementById('am-blocklist')?.value || '').split(',').map(s => s.trim()).filter(Boolean),
+                    block_all: document.getElementById('am-blockall')?.checked || false
+                };
+            } else if (type === 'caps_filter') {
+                return {
+                    max_caps_percent: parseInt(document.getElementById('am-maxcaps')?.value) || 70,
+                    min_length: parseInt(document.getElementById('am-minlen')?.value) || 10
+                };
+            } else if (type === 'mention_spam') {
+                return { max_mentions: parseInt(document.getElementById('am-maxmentions')?.value) || 5 };
+            }
+            return {};
+        }
+
+        async function submitAutomodRule(ruleId) {
+            const name = document.getElementById('am-name').value.trim();
+            if (!name) return alert('Name required');
+            const payload = {
+                name,
+                type: document.getElementById('am-type').value,
+                action: document.getElementById('am-action').value,
+                action_duration: parseInt(document.getElementById('am-duration').value) || null,
+                config: getAutomodConfig()
+            };
+
+            try {
+                const url = ruleId ? `/api/admin/automod/${ruleId}` : '/api/admin/automod';
+                const method = ruleId ? 'PUT' : 'POST';
+                const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    document.getElementById('automod-modal')?.remove();
+                    loadAutomodRules();
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Failed to save rule');
+                }
+            } catch (e) {
+                alert('Failed to save rule');
+            }
+        }
+
+        async function loadAutomodActions() {
+            const panel = document.getElementById('automod-actions-panel');
+            panel.style.display = '';
+            try {
+                const res = await fetch('/api/admin/automod/actions?limit=50', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const actions = data.actions || [];
+                if (actions.length === 0) {
+                    document.getElementById('automod-actions-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">No triggers yet</td></tr>';
+                    return;
+                }
+                document.getElementById('automod-actions-body').innerHTML = actions.map(a => {
+                    const ts = a.created_at ? new Date(a.created_at).toLocaleString() : '';
+                    return `<tr>
+                        <td style="white-space:nowrap;">${escapeHtml(ts)}</td>
+                        <td>${escapeHtml(a.rule_name || 'Rule #' + a.rule_id)}</td>
+                        <td>${escapeHtml(a.username || 'User #' + a.user_id)}</td>
+                        <td>${escapeHtml(a.action_taken || '')}</td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(a.message_text || '')}">${escapeHtml(a.message_text || '')}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {}
+        }
 
         // Load username for navbar
         (async function() {

@@ -2221,6 +2221,158 @@
             font-size: 0.75rem;
             color: var(--text-muted);
         }
+
+        /* Spoiler tags */
+        .message-text .spoiler {
+            background: var(--text-muted);
+            color: transparent;
+            border-radius: 3px;
+            padding: 0 0.2rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+
+        .message-text .spoiler.revealed {
+            background: rgba(255,255,255,0.1);
+            color: inherit;
+            user-select: auto;
+        }
+
+        /* Message headers */
+        .message-text .msg-h1 {
+            display: block;
+            font-size: 1.5em;
+            font-weight: 700;
+            margin: 0.25rem 0;
+            line-height: 1.3;
+        }
+
+        .message-text .msg-h2 {
+            display: block;
+            font-size: 1.25em;
+            font-weight: 600;
+            margin: 0.2rem 0;
+            line-height: 1.3;
+        }
+
+        .message-text .msg-h3 {
+            display: block;
+            font-size: 1.1em;
+            font-weight: 600;
+            margin: 0.15rem 0;
+            line-height: 1.3;
+        }
+
+        /* Blocked messages */
+        .message.blocked-message {
+            opacity: 0.4;
+            max-height: 28px;
+            overflow: hidden;
+        }
+        .blocked-placeholder {
+            color: var(--text-muted);
+            font-style: italic;
+            font-size: 0.85rem;
+            cursor: pointer;
+            padding: 4px 0;
+        }
+        .blocked-placeholder:hover {
+            color: var(--text-secondary);
+        }
+
+        /* Poll cards */
+        .poll-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 4px 0;
+            max-width: 400px;
+        }
+        .poll-question {
+            font-weight: 600;
+            font-size: 1.05rem;
+            margin-bottom: 4px;
+        }
+        .poll-creator {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-bottom: 8px;
+        }
+        .poll-option {
+            position: relative;
+            padding: 6px 10px;
+            margin-bottom: 4px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+        .poll-option:hover:not(.closed) {
+            border-color: var(--accent-color);
+        }
+        .poll-option.voted {
+            border-color: var(--accent-color);
+        }
+        .poll-option.closed {
+            cursor: default;
+        }
+        .poll-option-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: rgba(59, 130, 246, 0.15);
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+        .poll-option-text {
+            position: relative;
+            z-index: 1;
+        }
+        .poll-option-count {
+            position: relative;
+            z-index: 1;
+            float: right;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+        .poll-footer {
+            margin-top: 8px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+        .poll-footer a {
+            color: var(--accent-color);
+        }
+
+        /* Modal overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+        .modal {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal h3 {
+            margin: 0 0 12px;
+            color: var(--text-primary);
+        }
     </style>
 </head>
 <body>
@@ -2414,6 +2566,7 @@
                         <div class="emoji-grid" id="emoji-grid"></div>
                     </div>
                     <button class="emoji-btn" onclick="triggerImageUpload()" title="Upload file">📎</button>
+                    <button class="emoji-btn" onclick="showCreatePollModal()" title="Create poll">📊</button>
                     <input type="file" id="image-file-input" accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.txt,.md,.csv,.zip,.gz,.tar,.7z,.json,.xml,.html,.css,.js,.py,.go,.rs,.sh,.mp3,.ogg,.mp4,.webm,.log,.yaml,.yml,.toml,.conf,.cfg,.ini" style="display:none;" onchange="handleFileSelect(event)">
                     <input type="text" id="chat-input" placeholder="Type a message... (supports **bold**, *italic*, `code`, ~~strike~~)" autocomplete="off">
                     <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">
@@ -2557,6 +2710,9 @@
         <div class="context-menu-item" id="timeout-1h-item" style="display:none;">⏱ Timeout 1h</div>
         <div class="context-menu-item" id="mute-item" style="display:none;">🔇 Mute</div>
         <div class="context-menu-item" id="unmute-item" style="display:none;">🔊 Unmute</div>
+        <div class="context-menu-separator" id="block-separator" style="display:none;"></div>
+        <div class="context-menu-item" id="block-user-item" onclick="blockUser()" style="display:none;">🚫 Block User</div>
+        <div class="context-menu-item" id="unblock-user-item" onclick="unblockUser()" style="display:none;">✅ Unblock User</div>
         <div class="context-menu-separator" id="delete-separator" style="display:none;"></div>
         <div class="context-menu-item danger" id="delete-menu-item" onclick="deleteMessage()" style="display:none;">🗑️ Delete</div>
     </div>
@@ -2571,6 +2727,8 @@
         <div class="context-menu-item" onclick="renameChannel()">✏️ Rename</div>
         <div class="context-menu-item" onclick="showSetCategoryPrompt()">📁 Set Category</div>
         <div class="context-menu-item" onclick="showSetSlowmodeMenu()">⏱ Set Slowmode</div>
+        <div class="context-menu-item" onclick="showChannelPermissions()">🔒 Permissions</div>
+        <div class="context-menu-item" onclick="showChannelMembers()">👥 Members</div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" onclick="deleteChannel()">🗑️ Delete Channel</div>
     </div>
@@ -2649,6 +2807,8 @@
         let pendingImageUrl = null; // uploaded image URL waiting to be sent
         let pendingAttachment = null; // {url, name, size, type, is_image}
         let slowmodeCooldownTimer = null; // timer for slowmode countdown
+        let blockedUsers = new Set(); // set of blocked user IDs
+        let channelCanSend = true; // whether current user can send in current channel
 
         // DM state
         let currentView = 'channel'; // 'channel' or 'dm'
@@ -2708,6 +2868,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
             await loadUserInfo();
             await loadChannels();
+            await loadBlockedUsers();
             connectWebSocket();
 
             // Keyboard handler — mention autocomplete navigation + Enter to send
@@ -2832,6 +2993,18 @@
                 initEmojiPicker();
             } catch (error) {
                 console.error('Failed to load user:', error);
+            }
+        }
+
+        async function loadBlockedUsers() {
+            try {
+                const res = await fetch('/api/users/blocked', { credentials: 'include' });
+                if (res.ok) {
+                    const data = await res.json();
+                    blockedUsers = new Set((data.blocked || []).map(b => b.blocked_user_id));
+                }
+            } catch (e) {
+                console.error('Failed to load blocked users:', e);
             }
         }
 
@@ -2970,12 +3143,14 @@
             const unread = unreadCounts.get(ch.name) || 0;
             const badgeHtml = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
             const slowBadge = ch.slowmode_seconds > 0 ? `<span class="slowmode-badge" title="Slowmode: ${ch.slowmode_seconds}s">&#9201;</span>` : '';
+            const lockIcon = ch.visibility === 'private' ? '<span title="Private" style="opacity:0.5;margin-right:2px;">&#128274;</span>' : '';
+            const readonlyIcon = ch.mode === 'readonly' ? '<span title="Read-only" style="opacity:0.5;margin-right:2px;">&#128263;</span>' : '';
             return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
                      data-is-stream="${ch.is_stream_channel || false}"
                      data-stream-live="${ch.stream_is_live || false}">
-                    ${escapeHtml(ch.name)}${slowBadge}${badgeHtml}
+                    ${lockIcon}${readonlyIcon}${escapeHtml(ch.name)}${slowBadge}${badgeHtml}
                 </div>`;
         }
 
@@ -3220,6 +3395,21 @@
                 case 'user_unmuted':
                     appendSystemMessage(`${data.username} was unmuted by ${data.moderator}`);
                     break;
+                case 'user_blocked':
+                    blockedUsers.add(data.user_id);
+                    break;
+                case 'user_unblocked':
+                    blockedUsers.delete(data.user_id);
+                    break;
+                case 'poll_created':
+                    appendPollMessage(data);
+                    break;
+                case 'poll_updated':
+                    updatePollDisplay(data.poll);
+                    break;
+                case 'poll_closed':
+                    updatePollDisplay(data.poll);
+                    break;
                 default:
                     // Delegate voice_* messages to VoiceChat
                     if (data.type && data.type.startsWith('voice_')) {
@@ -3246,12 +3436,16 @@
             if (data.username) knownChatNames.add(data.username);
             if (data.nickname) knownChatNames.add(data.nickname);
 
+            // Filter blocked users — show collapsed placeholder
+            const isBlocked = data.user_id && blockedUsers.has(data.user_id);
+
             const container = document.getElementById('chat-messages');
             const div = document.createElement('div');
-            div.className = 'message' + (data.is_pinned ? ' pinned' : '');
+            div.className = 'message' + (data.is_pinned ? ' pinned' : '') + (isBlocked ? ' blocked-message' : '');
             div.dataset.messageId = data.id;
             if (data.user_id) div.dataset.userId = data.user_id;
             if (data.created_at) div.dataset.createdAt = data.created_at;
+
 
             // Per-message anonymous flag takes priority over current user state
             const msgAnonymous = !!data.anonymous;
@@ -3329,6 +3523,12 @@
                 if (urls) fetchLinkPreviews(div, urls);
             }
 
+            // Apply blocked message collapsing
+            if (isBlocked) {
+                div.dataset.originalHtml = div.innerHTML;
+                div.innerHTML = '<span class="blocked-placeholder" onclick="this.parentElement.classList.remove(\'blocked-message\');this.parentElement.innerHTML=this.parentElement.dataset.originalHtml;">Blocked message (click to reveal)</span>';
+            }
+
             if (scroll) {
                 container.scrollTop = container.scrollHeight;
             }
@@ -3349,6 +3549,20 @@
         function updateChannelInfo(data) {
             document.getElementById('channel-name').textContent = data.name;
             document.getElementById('channel-topic').textContent = data.topic || data.description || 'No topic set';
+
+            // Handle channel permissions - readonly mode
+            channelCanSend = data.can_send !== false;
+            const chatInput = document.getElementById('chat-input');
+            const sendBtn = document.getElementById('send-btn');
+            if (!channelCanSend) {
+                chatInput.disabled = true;
+                chatInput.placeholder = 'This channel is read-only';
+                if (sendBtn) sendBtn.disabled = true;
+            } else {
+                chatInput.disabled = false;
+                chatInput.placeholder = 'Type a message...';
+                if (sendBtn) sendBtn.disabled = false;
+            }
 
             // Show/hide watch stream button
             const watchBtn = document.getElementById('watch-stream-btn');
@@ -4134,6 +4348,10 @@
             document.getElementById('channel-name-input').focus();
         }
 
+        function openModal(id) {
+            document.getElementById(id).style.display = 'flex';
+        }
+
         function closeModal(id) {
             document.getElementById(id).style.display = 'none';
         }
@@ -4232,6 +4450,11 @@
             // Escape HTML first
             text = escapeHtml(text);
 
+            // Message headers (# ## ###) — before bold/italic to avoid ## conflicts
+            text = text.replace(/^### (.+)$/gm, '<span class="msg-h3">$1</span>');
+            text = text.replace(/^## (.+)$/gm, '<span class="msg-h2">$1</span>');
+            text = text.replace(/^# (.+)$/gm, '<span class="msg-h1">$1</span>');
+
             // Convert emoji shortcodes
             for (const [code, emoji] of Object.entries(EMOJI_SHORTCODES)) {
                 // Escape regex special characters in code
@@ -4255,6 +4478,9 @@
 
             // Strikethrough (~~text~~)
             text = text.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+
+            // Spoiler tags (||text||)
+            text = text.replace(/\|\|([^|]+)\|\|/g, '<span class="spoiler" onclick="this.classList.toggle(\'revealed\')">$1</span>');
 
             // Blockquote (> text)
             text = text.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
@@ -4576,16 +4802,31 @@
                 document.getElementById('unmute-item').onclick = () => unmuteUser(contextMenuMessageUserId);
             }
 
+            // Show block/unblock (not own messages)
+            const blockSep = document.getElementById('block-separator');
+            const blockItem = document.getElementById('block-user-item');
+            const unblockItem = document.getElementById('unblock-user-item');
+            if (!isOwner && contextMenuMessageUserId) {
+                blockSep.style.display = '';
+                const isBlocked = blockedUsers.has(contextMenuMessageUserId);
+                blockItem.style.display = isBlocked ? 'none' : '';
+                unblockItem.style.display = isBlocked ? '' : 'none';
+            } else {
+                blockSep.style.display = 'none';
+                blockItem.style.display = 'none';
+                unblockItem.style.display = 'none';
+            }
+
             showContextMenu('message-context-menu', e.clientX, e.clientY);
         });
 
-        // Channel context menu (admin only)
+        // Channel context menu (moderator+ only)
         document.getElementById('channel-list').addEventListener('contextmenu', (e) => {
             const channelEl = e.target.closest('.channel-item');
             if (!channelEl) return;
 
-            const isAdmin = currentUser && ['admin', 'superadmin'].includes(currentUser.role);
-            if (!isAdmin) return;
+            const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
+            if (!isMod) return;
 
             const isDefault = channelEl.dataset.isDefault === 'true';
             const isStream = channelEl.dataset.isStream === 'true';
@@ -4878,6 +5119,347 @@
                 channel: currentChannel,
                 target_user_id: userId
             }));
+        }
+
+        // ==============================================
+        // User Blocking
+        // ==============================================
+        function blockUser() {
+            hideContextMenus();
+            if (!contextMenuMessageUserId || !ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: 'block_user', target_user_id: contextMenuMessageUserId }));
+            blockedUsers.add(contextMenuMessageUserId);
+            // Collapse blocked messages in view
+            document.querySelectorAll(`.message[data-user-id="${contextMenuMessageUserId}"]`).forEach(el => {
+                if (!el.classList.contains('blocked-message')) {
+                    el.classList.add('blocked-message');
+                    el.dataset.originalHtml = el.innerHTML;
+                    el.innerHTML = '<span class="blocked-placeholder" onclick="this.parentElement.classList.remove(\'blocked-message\');this.parentElement.innerHTML=this.parentElement.dataset.originalHtml;">Blocked message (click to reveal)</span>';
+                }
+            });
+            showToast('User blocked');
+        }
+
+        function unblockUser() {
+            hideContextMenus();
+            if (!contextMenuMessageUserId || !ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: 'unblock_user', target_user_id: contextMenuMessageUserId }));
+            blockedUsers.delete(contextMenuMessageUserId);
+            // Restore blocked messages
+            document.querySelectorAll(`.message[data-user-id="${contextMenuMessageUserId}"].blocked-message`).forEach(el => {
+                el.classList.remove('blocked-message');
+                if (el.dataset.originalHtml) el.innerHTML = el.dataset.originalHtml;
+            });
+            showToast('User unblocked');
+        }
+
+        // ==============================================
+        // Polls
+        // ==============================================
+        function showCreatePollModal() {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'poll-modal';
+            modal.innerHTML = `
+                <div class="modal" style="width:420px;">
+                    <h3>Create Poll</h3>
+                    <input type="text" id="poll-question" placeholder="Question" maxlength="500"
+                           style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);">
+                    <div id="poll-options-list">
+                        <input type="text" class="poll-option-input" placeholder="Option 1" maxlength="200"
+                               style="width:100%;padding:6px;margin-bottom:4px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                        <input type="text" class="poll-option-input" placeholder="Option 2" maxlength="200"
+                               style="width:100%;padding:6px;margin-bottom:4px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                    </div>
+                    <button onclick="addPollOption()" style="margin:4px 0 8px;padding:4px 10px;background:none;border:1px dashed var(--border-color);color:var(--text-muted);border-radius:4px;cursor:pointer;">+ Add Option</button>
+                    <div style="display:flex;gap:12px;margin-bottom:8px;">
+                        <label style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);font-size:0.85rem;">
+                            <input type="checkbox" id="poll-multi"> Allow multiple votes
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;color:var(--text-secondary);font-size:0.85rem;">
+                            <input type="checkbox" id="poll-anon"> Anonymous votes
+                        </label>
+                    </div>
+                    <select id="poll-duration" style="width:100%;padding:6px;margin-bottom:12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                        <option value="">No time limit</option>
+                        <option value="300">5 minutes</option>
+                        <option value="1800">30 minutes</option>
+                        <option value="3600">1 hour</option>
+                        <option value="86400">24 hours</option>
+                        <option value="604800">7 days</option>
+                    </select>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button onclick="document.getElementById('poll-modal').remove()" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;">Cancel</button>
+                        <button onclick="submitPoll()" style="padding:6px 14px;background:var(--accent-color);border:none;border-radius:6px;color:white;cursor:pointer;">Create Poll</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+            document.getElementById('poll-question').focus();
+        }
+
+        function addPollOption() {
+            const list = document.getElementById('poll-options-list');
+            const count = list.querySelectorAll('.poll-option-input').length;
+            if (count >= 10) return showToast('Maximum 10 options', 'error');
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'poll-option-input';
+            input.placeholder = `Option ${count + 1}`;
+            input.maxLength = 200;
+            input.style.cssText = 'width:100%;padding:6px;margin-bottom:4px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);';
+            list.appendChild(input);
+        }
+
+        function submitPoll() {
+            const question = document.getElementById('poll-question').value.trim();
+            const optionInputs = document.querySelectorAll('.poll-option-input');
+            const options = Array.from(optionInputs).map(i => i.value.trim()).filter(v => v);
+            if (!question) return showToast('Question required', 'error');
+            if (options.length < 2) return showToast('Need at least 2 options', 'error');
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'create_poll',
+                    question,
+                    options,
+                    allow_multiple: document.getElementById('poll-multi').checked,
+                    anonymous_votes: document.getElementById('poll-anon').checked,
+                    duration: document.getElementById('poll-duration').value || null
+                }));
+            }
+            document.getElementById('poll-modal').remove();
+        }
+
+        function appendPollMessage(data) {
+            const container = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = 'message poll-message';
+            div.dataset.messageId = data.message_id;
+            div.dataset.pollId = data.poll.id;
+            if (data.user_id) div.dataset.userId = data.user_id;
+            div.innerHTML = renderPollCard(data.poll, data.username, data.created_at);
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function renderPollCard(poll, creatorName, createdAt) {
+            const options = typeof poll.options === 'string' ? JSON.parse(poll.options) : poll.options;
+            const votes = poll.votes || {};
+            const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
+            const myVotes = poll.my_votes || [];
+            const isClosed = poll.is_closed;
+            const canClose = currentUser && (poll.user_id === currentUser.id || ['admin', 'superadmin', 'moderator'].includes(currentUser.role));
+
+            let html = `<div class="poll-card" data-poll-id="${poll.id}">
+                <div class="poll-question">${escapeHtml(poll.question)}</div>
+                <div class="poll-creator">${creatorName ? 'by ' + escapeHtml(creatorName) : ''}</div>
+                <div class="poll-options">`;
+
+            options.forEach((opt, i) => {
+                const count = votes[i] || 0;
+                const pct = totalVotes > 0 ? Math.round(count / totalVotes * 100) : 0;
+                const voted = myVotes.includes(i);
+                const clickable = !isClosed ? `onclick="votePoll(${poll.id}, ${i})"` : '';
+                html += `<div class="poll-option ${voted ? 'voted' : ''} ${isClosed ? 'closed' : ''}" ${clickable}>
+                    <div class="poll-option-fill" style="width:${pct}%"></div>
+                    <span class="poll-option-text">${escapeHtml(opt)}</span>
+                    <span class="poll-option-count">${count} (${pct}%)</span>
+                </div>`;
+            });
+
+            html += `</div><div class="poll-footer">${totalVotes} vote${totalVotes !== 1 ? 's' : ''}`;
+            if (isClosed) html += ' &middot; Closed';
+            if (!isClosed && canClose) html += ` &middot; <a href="#" onclick="event.preventDefault();closePoll(${poll.id})">Close poll</a>`;
+            html += '</div></div>';
+            return html;
+        }
+
+        function updatePollDisplay(poll) {
+            const card = document.querySelector(`.poll-card[data-poll-id="${poll.id}"]`);
+            if (card) {
+                const parentMsg = card.closest('.message');
+                const creatorName = parentMsg?.querySelector('.poll-creator')?.textContent?.replace('by ', '') || '';
+                card.outerHTML = renderPollCard(poll, creatorName);
+            }
+        }
+
+        function votePoll(pollId, optionIndex) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'vote_poll', poll_id: pollId, option_index: optionIndex }));
+            }
+        }
+
+        function closePoll(pollId) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'close_poll', poll_id: pollId }));
+            }
+        }
+
+        // ==============================================
+        // Channel Permissions
+        // ==============================================
+        async function showChannelPermissions() {
+            hideContextMenus();
+            if (!contextMenuChannelId) return;
+            const ch = channelsList.find(c => c.id === contextMenuChannelId);
+            if (!ch) return;
+
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'perms-modal';
+            modal.innerHTML = `
+                <div class="modal" style="width:380px;">
+                    <h3>Channel Permissions: #${escapeHtml(ch.name)}</h3>
+                    <div style="margin-bottom:12px;">
+                        <label style="display:block;margin-bottom:6px;color:var(--text-secondary);font-size:0.85rem;">Visibility</label>
+                        <select id="perm-visibility" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                            <option value="public" ${ch.visibility !== 'private' ? 'selected' : ''}>Public</option>
+                            <option value="private" ${ch.visibility === 'private' ? 'selected' : ''}>Private</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label style="display:block;margin-bottom:6px;color:var(--text-secondary);font-size:0.85rem;">Mode</label>
+                        <select id="perm-mode" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                            <option value="open" ${ch.mode !== 'readonly' ? 'selected' : ''}>Open</option>
+                            <option value="readonly" ${ch.mode === 'readonly' ? 'selected' : ''}>Read-only</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button onclick="document.getElementById('perms-modal').remove()" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;">Cancel</button>
+                        <button onclick="saveChannelPermissions(${ch.id})" style="padding:6px 14px;background:var(--accent-color);border:none;border-radius:6px;color:white;cursor:pointer;">Save</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        }
+
+        async function saveChannelPermissions(channelId) {
+            const visibility = document.getElementById('perm-visibility').value;
+            const mode = document.getElementById('perm-mode').value;
+            try {
+                const res = await fetch(`/api/chat/channels/${channelId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ visibility, mode })
+                });
+                if (res.ok) {
+                    showToast('Permissions updated');
+                    document.getElementById('perms-modal')?.remove();
+                    loadChannels();
+                } else {
+                    const err = await res.json();
+                    showToast(err.error || 'Failed to update permissions', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to update permissions', 'error');
+            }
+        }
+
+        async function showChannelMembers() {
+            hideContextMenus();
+            if (!contextMenuChannelId) return;
+            const ch = channelsList.find(c => c.id === contextMenuChannelId);
+            if (!ch) return;
+
+            let membersHtml = '<div style="color:var(--text-muted);padding:8px;">Loading...</div>';
+            try {
+                const res = await fetch(`/api/chat/channels/${contextMenuChannelId}/members`, { credentials: 'include' });
+                if (res.ok) {
+                    const data = await res.json();
+                    const members = data.members || [];
+                    if (members.length === 0) {
+                        membersHtml = '<div style="color:var(--text-muted);padding:8px;">No members (public channel)</div>';
+                    } else {
+                        membersHtml = members.map(m => `
+                            <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;">
+                                <span>${escapeHtml(m.username || 'User ' + m.user_id)} <span style="color:var(--text-muted);font-size:0.8rem;">${m.role || 'member'}</span></span>
+                                <button onclick="removeChannelMember(${contextMenuChannelId}, ${m.user_id})" style="padding:2px 8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-muted);cursor:pointer;font-size:0.8rem;">Remove</button>
+                            </div>`).join('');
+                    }
+                }
+            } catch (e) {}
+
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'members-modal';
+            modal.innerHTML = `
+                <div class="modal" style="width:380px;">
+                    <h3>Members: #${escapeHtml(ch.name)}</h3>
+                    <div id="members-list" style="max-height:300px;overflow-y:auto;margin-bottom:12px;">${membersHtml}</div>
+                    <div style="display:flex;gap:6px;margin-bottom:12px;">
+                        <input type="text" id="add-member-username" placeholder="Username to add"
+                               style="flex:1;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                        <select id="add-member-role" style="padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                            <option value="member">Member</option>
+                            <option value="moderator">Moderator</option>
+                        </select>
+                        <button onclick="addChannelMember(${contextMenuChannelId})" style="padding:6px 12px;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">Add</button>
+                    </div>
+                    <div style="text-align:right;">
+                        <button onclick="document.getElementById('members-modal').remove()" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;">Close</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        }
+
+        async function addChannelMember(channelId) {
+            const usernameInput = document.getElementById('add-member-username');
+            const username = usernameInput.value.trim();
+            if (!username) return;
+            const role = document.getElementById('add-member-role').value;
+
+            // Need to look up user ID by username — use the online users or search
+            // For simplicity, search all users via admin API or use the known users
+            try {
+                // Try to find user from online list first
+                let userId = null;
+                for (const [uid, u] of onlineUsers) {
+                    if (u.username === username || u.nickname === username) { userId = uid; break; }
+                }
+                if (!userId) {
+                    showToast('User not found in online users. Try their exact username.', 'error');
+                    return;
+                }
+                const res = await fetch(`/api/chat/channels/${channelId}/members`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ user_id: userId, role })
+                });
+                if (res.ok) {
+                    showToast('Member added');
+                    usernameInput.value = '';
+                    document.getElementById('members-modal')?.remove();
+                    showChannelMembers(); // Refresh
+                } else {
+                    const err = await res.json();
+                    showToast(err.error || 'Failed to add member', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to add member', 'error');
+            }
+        }
+
+        async function removeChannelMember(channelId, userId) {
+            try {
+                const res = await fetch(`/api/chat/channels/${channelId}/members/${userId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                if (res.ok) {
+                    showToast('Member removed');
+                    document.getElementById('members-modal')?.remove();
+                    showChannelMembers();
+                } else {
+                    const err = await res.json();
+                    showToast(err.error || 'Failed to remove member', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to remove member', 'error');
+            }
         }
 
         function handleChannelRenamed(data) {

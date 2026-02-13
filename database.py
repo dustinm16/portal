@@ -736,6 +736,108 @@ MIGRATIONS = [
     "ALTER TABLE dm_messages ADD COLUMN attachment_name TEXT",
     "ALTER TABLE dm_messages ADD COLUMN attachment_size INTEGER",
     "ALTER TABLE dm_messages ADD COLUMN attachment_type TEXT",
+    # User blocking
+    """CREATE TABLE IF NOT EXISTS user_blocks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        blocked_user_id INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (blocked_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(user_id, blocked_user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_user_blocks_user ON user_blocks(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_user_id)",
+    # Polls
+    """CREATE TABLE IF NOT EXISTS chat_polls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        message_id INTEGER,
+        user_id INTEGER NOT NULL,
+        question TEXT NOT NULL,
+        options TEXT NOT NULL,
+        allow_multiple INTEGER DEFAULT 0,
+        anonymous_votes INTEGER DEFAULT 0,
+        expires_at TEXT,
+        is_closed INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_polls_channel ON chat_polls(channel_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_polls_message ON chat_polls(message_id)",
+    """CREATE TABLE IF NOT EXISTS chat_poll_votes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        poll_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        option_index INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (poll_id) REFERENCES chat_polls(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(poll_id, user_id, option_index)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_poll_votes_poll ON chat_poll_votes(poll_id)",
+    # Audit log
+    """CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,
+        actor_id INTEGER NOT NULL,
+        actor_username TEXT NOT NULL,
+        target_id INTEGER,
+        target_type TEXT,
+        target_name TEXT,
+        details TEXT,
+        channel_id INTEGER,
+        channel_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)",
+    # Auto-moderation
+    """CREATE TABLE IF NOT EXISTS automod_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        config TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER DEFAULT 1,
+        action TEXT NOT NULL DEFAULT 'delete',
+        action_duration INTEGER,
+        created_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    """CREATE TABLE IF NOT EXISTS automod_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        channel_id INTEGER,
+        message_text TEXT,
+        action_taken TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (rule_id) REFERENCES automod_rules(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_automod_actions_rule ON automod_actions(rule_id)",
+    # Per-channel permissions
+    "ALTER TABLE chat_channels ADD COLUMN visibility TEXT DEFAULT 'public'",
+    "ALTER TABLE chat_channels ADD COLUMN mode TEXT DEFAULT 'open'",
+    """CREATE TABLE IF NOT EXISTS channel_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        role TEXT DEFAULT 'member',
+        added_by INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL,
+        UNIQUE(channel_id, user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_channel_members_channel ON channel_members(channel_id)",
+    "CREATE INDEX IF NOT EXISTS idx_channel_members_user ON channel_members(user_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2630,6 +2732,415 @@ class Database:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    # =============================================
+    # User blocking operations
+    # =============================================
+
+    async def block_user(self, user_id: int, blocked_user_id: int) -> bool:
+        """Block a user."""
+        try:
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO user_blocks (user_id, blocked_user_id) VALUES (?, ?)",
+                (user_id, blocked_user_id)
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    async def unblock_user(self, user_id: int, blocked_user_id: int) -> bool:
+        """Unblock a user."""
+        cursor = await self.conn.execute(
+            "DELETE FROM user_blocks WHERE user_id = ? AND blocked_user_id = ?",
+            (user_id, blocked_user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_blocked_users(self, user_id: int) -> list[int]:
+        """Get list of user IDs blocked by this user."""
+        cursor = await self.conn.execute(
+            "SELECT blocked_user_id FROM user_blocks WHERE user_id = ?", (user_id,)
+        )
+        return [row["blocked_user_id"] for row in await cursor.fetchall()]
+
+    async def is_blocked_bidirectional(self, user_id: int, target_user_id: int) -> bool:
+        """Check if either user has blocked the other."""
+        cursor = await self.conn.execute(
+            """SELECT 1 FROM user_blocks
+               WHERE (user_id = ? AND blocked_user_id = ?)
+               OR (user_id = ? AND blocked_user_id = ?)""",
+            (user_id, target_user_id, target_user_id, user_id)
+        )
+        return (await cursor.fetchone()) is not None
+
+    # =============================================
+    # Poll operations
+    # =============================================
+
+    async def create_poll(self, channel_id: int, user_id: int, question: str,
+                          options: list, allow_multiple: bool = False,
+                          anonymous_votes: bool = False, expires_minutes: int = None,
+                          message_id: int = None) -> int:
+        """Create a poll."""
+        expires_at = None
+        if expires_minutes:
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)).isoformat()
+        cursor = await self.conn.execute(
+            """INSERT INTO chat_polls (channel_id, message_id, user_id, question, options,
+               allow_multiple, anonymous_votes, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, message_id, user_id, json.dumps(options),
+             1 if allow_multiple else 0, 1 if anonymous_votes else 0, expires_at)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_poll(self, poll_id: int) -> Optional[dict]:
+        """Get a poll with vote counts."""
+        cursor = await self.conn.execute("SELECT * FROM chat_polls WHERE id = ?", (poll_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        poll = dict(row)
+        poll["options_list"] = json.loads(poll["options"])
+        # Get vote counts per option
+        cursor = await self.conn.execute(
+            """SELECT option_index, COUNT(*) as count, GROUP_CONCAT(user_id) as voter_ids
+               FROM chat_poll_votes WHERE poll_id = ? GROUP BY option_index""",
+            (poll_id,)
+        )
+        vote_rows = await cursor.fetchall()
+        vote_map = {}
+        for vr in vote_rows:
+            vote_map[vr["option_index"]] = {
+                "count": vr["count"],
+                "voter_ids": [int(x) for x in vr["voter_ids"].split(",")] if vr["voter_ids"] else []
+            }
+        total = sum(v["count"] for v in vote_map.values())
+        options_data = []
+        for i, text in enumerate(poll["options_list"]):
+            v = vote_map.get(i, {"count": 0, "voter_ids": []})
+            opt = {"text": text, "index": i, "count": v["count"]}
+            if not poll["anonymous_votes"]:
+                opt["voter_ids"] = v["voter_ids"]
+            options_data.append(opt)
+        poll["options_data"] = options_data
+        poll["total_votes"] = total
+        # Check expiry
+        if poll["expires_at"]:
+            exp = poll["expires_at"]
+            if not exp.endswith("Z") and "+" not in exp:
+                exp += "+00:00"
+            try:
+                if datetime.fromisoformat(exp) < datetime.now(timezone.utc):
+                    poll["is_closed"] = 1
+            except Exception:
+                pass
+        return poll
+
+    async def vote_poll(self, poll_id: int, user_id: int, option_index: int) -> bool:
+        """Vote on a poll. Returns True if vote was recorded."""
+        poll = await self.get_poll(poll_id)
+        if not poll or poll["is_closed"]:
+            return False
+        if option_index < 0 or option_index >= len(poll["options_list"]):
+            return False
+        if not poll["allow_multiple"]:
+            # Single vote: remove existing votes for this user, then add new one
+            await self.conn.execute(
+                "DELETE FROM chat_poll_votes WHERE poll_id = ? AND user_id = ?",
+                (poll_id, user_id)
+            )
+        try:
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO chat_poll_votes (poll_id, user_id, option_index) VALUES (?, ?, ?)",
+                (poll_id, user_id, option_index)
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    async def unvote_poll(self, poll_id: int, user_id: int, option_index: int) -> bool:
+        """Remove a vote from a poll."""
+        cursor = await self.conn.execute(
+            "DELETE FROM chat_poll_votes WHERE poll_id = ? AND user_id = ? AND option_index = ?",
+            (poll_id, user_id, option_index)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def close_poll(self, poll_id: int) -> bool:
+        """Close a poll."""
+        cursor = await self.conn.execute(
+            "UPDATE chat_polls SET is_closed = 1 WHERE id = ?", (poll_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_poll_by_message(self, message_id: int) -> Optional[dict]:
+        """Get a poll by its associated message ID."""
+        cursor = await self.conn.execute(
+            "SELECT id FROM chat_polls WHERE message_id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            return await self.get_poll(row["id"])
+        return None
+
+    # =============================================
+    # Audit log operations
+    # =============================================
+
+    async def create_audit_entry(self, action: str, actor_id: int, actor_username: str,
+                                  target_id: int = None, target_type: str = None,
+                                  target_name: str = None, details: dict = None,
+                                  channel_id: int = None, channel_name: str = None) -> int:
+        """Create an audit log entry."""
+        cursor = await self.conn.execute(
+            """INSERT INTO audit_log (action, actor_id, actor_username, target_id, target_type,
+               target_name, details, channel_id, channel_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (action, actor_id, actor_username, target_id, target_type, target_name,
+             json.dumps(details) if details else None, channel_id, channel_name)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_audit_log(self, limit: int = 50, offset: int = 0,
+                             action: str = None, actor_id: int = None,
+                             channel_id: int = None, since: str = None) -> list[dict]:
+        """Get audit log entries with optional filters."""
+        conditions = []
+        params = []
+        if action:
+            conditions.append("action = ?")
+            params.append(action)
+        if actor_id:
+            conditions.append("actor_id = ?")
+            params.append(actor_id)
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        if since:
+            conditions.append("created_at >= ?")
+            params.append(since)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        params.extend([limit, offset])
+        cursor = await self.conn.execute(
+            f"SELECT * FROM audit_log{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            params
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_audit_log_count(self, action: str = None, actor_id: int = None,
+                                   channel_id: int = None, since: str = None) -> int:
+        """Get total count of audit log entries with filters."""
+        conditions = []
+        params = []
+        if action:
+            conditions.append("action = ?")
+            params.append(action)
+        if actor_id:
+            conditions.append("actor_id = ?")
+            params.append(actor_id)
+        if channel_id:
+            conditions.append("channel_id = ?")
+            params.append(channel_id)
+        if since:
+            conditions.append("created_at >= ?")
+            params.append(since)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        cursor = await self.conn.execute(f"SELECT COUNT(*) as cnt FROM audit_log{where}", params)
+        row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
+    async def cleanup_old_audit_log(self, days: int = 90) -> int:
+        """Delete audit log entries older than N days."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM audit_log WHERE created_at < ?", (cutoff,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    # =============================================
+    # Auto-moderation operations
+    # =============================================
+
+    async def get_automod_rules(self, enabled_only: bool = False) -> list[dict]:
+        """Get auto-moderation rules."""
+        if enabled_only:
+            cursor = await self.conn.execute("SELECT * FROM automod_rules WHERE enabled = 1 ORDER BY id")
+        else:
+            cursor = await self.conn.execute("SELECT * FROM automod_rules ORDER BY id")
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def create_automod_rule(self, type: str, name: str, config: dict,
+                                   action: str, created_by: int,
+                                   action_duration: int = None) -> int:
+        """Create an auto-moderation rule."""
+        cursor = await self.conn.execute(
+            """INSERT INTO automod_rules (type, name, config, action, action_duration, created_by)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (type, name, json.dumps(config), action, action_duration, created_by)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def update_automod_rule(self, rule_id: int, **kwargs) -> bool:
+        """Update an auto-moderation rule."""
+        allowed = {"name", "config", "enabled", "action", "action_duration", "type"}
+        updates = {}
+        for k, v in kwargs.items():
+            if k in allowed:
+                updates[k] = json.dumps(v) if k == "config" and isinstance(v, dict) else v
+        if not updates:
+            return False
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [rule_id]
+        cursor = await self.conn.execute(
+            f"UPDATE automod_rules SET {set_clause} WHERE id = ?", values
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_automod_rule(self, rule_id: int) -> bool:
+        """Delete an auto-moderation rule."""
+        cursor = await self.conn.execute("DELETE FROM automod_rules WHERE id = ?", (rule_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def create_automod_action(self, rule_id: int, user_id: int,
+                                     channel_id: int, message_text: str,
+                                     action_taken: str) -> int:
+        """Log an auto-moderation action."""
+        cursor = await self.conn.execute(
+            """INSERT INTO automod_actions (rule_id, user_id, channel_id, message_text, action_taken)
+               VALUES (?, ?, ?, ?, ?)""",
+            (rule_id, user_id, channel_id, message_text[:500] if message_text else None, action_taken)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_automod_actions(self, limit: int = 50, offset: int = 0,
+                                   rule_id: int = None, user_id: int = None) -> list[dict]:
+        """Get auto-moderation action log."""
+        conditions = []
+        params = []
+        if rule_id:
+            conditions.append("a.rule_id = ?")
+            params.append(rule_id)
+        if user_id:
+            conditions.append("a.user_id = ?")
+            params.append(user_id)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        params.extend([limit, offset])
+        cursor = await self.conn.execute(
+            f"""SELECT a.*, r.name as rule_name, r.type as rule_type, u.username
+                FROM automod_actions a
+                LEFT JOIN automod_rules r ON a.rule_id = r.id
+                LEFT JOIN users u ON a.user_id = u.id
+                {where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?""",
+            params
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def cleanup_old_automod_actions(self, days: int = 30) -> int:
+        """Delete automod actions older than N days."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute("DELETE FROM automod_actions WHERE created_at < ?", (cutoff,))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    # =============================================
+    # Per-channel permission operations
+    # =============================================
+
+    async def add_channel_member(self, channel_id: int, user_id: int,
+                                  role: str = "member", added_by: int = None) -> bool:
+        """Add a member to a channel."""
+        try:
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO channel_members (channel_id, user_id, role, added_by) VALUES (?, ?, ?, ?)",
+                (channel_id, user_id, role, added_by)
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    async def remove_channel_member(self, channel_id: int, user_id: int) -> bool:
+        """Remove a member from a channel."""
+        cursor = await self.conn.execute(
+            "DELETE FROM channel_members WHERE channel_id = ? AND user_id = ?",
+            (channel_id, user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_channel_members(self, channel_id: int) -> list[dict]:
+        """Get all members of a channel."""
+        cursor = await self.conn.execute(
+            """SELECT cm.*, u.username, u.nickname
+               FROM channel_members cm
+               JOIN users u ON cm.user_id = u.id
+               WHERE cm.channel_id = ?
+               ORDER BY cm.role DESC, u.username""",
+            (channel_id,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def is_channel_member(self, channel_id: int, user_id: int) -> bool:
+        """Check if a user is a member of a channel."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM channel_members WHERE channel_id = ? AND user_id = ?",
+            (channel_id, user_id)
+        )
+        return (await cursor.fetchone()) is not None
+
+    async def get_channel_member_role(self, channel_id: int, user_id: int) -> Optional[str]:
+        """Get a user's role in a channel."""
+        cursor = await self.conn.execute(
+            "SELECT role FROM channel_members WHERE channel_id = ? AND user_id = ?",
+            (channel_id, user_id)
+        )
+        row = await cursor.fetchone()
+        return row["role"] if row else None
+
+    async def get_accessible_channels(self, user_id: int, user_role: str) -> list[dict]:
+        """Get channels visible to a user (public + private where member)."""
+        if user_role in ("admin", "superadmin"):
+            return await self.get_chat_channels()
+        cursor = await self.conn.execute(
+            """SELECT c.*, u.username as created_by_username
+               FROM chat_channels c
+               LEFT JOIN users u ON c.created_by = u.id
+               WHERE c.visibility = 'public' OR c.visibility IS NULL
+               OR c.id IN (SELECT channel_id FROM channel_members WHERE user_id = ?)
+               ORDER BY c.is_default DESC, c.name""",
+            (user_id,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def can_send_in_channel(self, channel_id: int, user_id: int, user_role: str) -> bool:
+        """Check if user can send messages in a channel."""
+        if user_role in ("admin", "superadmin", "moderator"):
+            return True
+        cursor = await self.conn.execute("SELECT * FROM chat_channels WHERE id = ?", (channel_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        channel = dict(row)
+        if channel.get("visibility") == "private":
+            if not await self.is_channel_member(channel_id, user_id):
+                return False
+        if channel.get("mode") == "readonly":
+            member_role = await self.get_channel_member_role(channel_id, user_id)
+            if member_role != "moderator":
+                return False
+        return True
+
     # VOD Storage operations
     async def get_vod_storage(self, user_id: int) -> Optional[dict]:
         """Get VOD storage config for a user."""
@@ -2741,7 +3252,7 @@ class Database:
 
     async def update_chat_channel(self, channel_id: int, **kwargs) -> bool:
         """Update a chat channel."""
-        allowed_fields = {"name", "description", "topic", "category", "slowmode_seconds"}
+        allowed_fields = {"name", "description", "topic", "category", "slowmode_seconds", "visibility", "mode"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False

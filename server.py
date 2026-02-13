@@ -7757,6 +7757,169 @@ _slowmode_last_msg: dict[tuple[int, int], float] = {}
 # DM WebSocket tracking: user_id -> set of ws connections for DM delivery
 dm_user_connections: dict[int, set] = {}
 
+# Automod rule cache
+_automod_rules_cache: list = []
+_automod_cache_time: float = 0
+_AUTOMOD_CACHE_TTL = 30  # seconds
+
+
+async def audit_log(action: str, actor_id: int, actor_username: str, **kwargs) -> None:
+    """Create an audit log entry. Never raises — failures are logged silently."""
+    try:
+        await db.create_audit_entry(
+            action=action,
+            actor_id=actor_id,
+            actor_username=actor_username,
+            target_id=kwargs.get("target_id"),
+            target_type=kwargs.get("target_type"),
+            target_name=kwargs.get("target_name"),
+            details=kwargs.get("details"),
+            channel_id=kwargs.get("channel_id"),
+            channel_name=kwargs.get("channel_name"),
+        )
+    except Exception as e:
+        logger.error(f"[AuditLog] Failed to log {action}: {e}")
+
+
+async def _get_automod_rules() -> list:
+    """Get automod rules with caching."""
+    global _automod_rules_cache, _automod_cache_time
+    now = monotonic()
+    if now - _automod_cache_time > _AUTOMOD_CACHE_TTL:
+        _automod_rules_cache = await db.get_automod_rules(enabled_only=True)
+        _automod_cache_time = now
+    return _automod_rules_cache
+
+
+def _check_word_filter(text: str, config: dict) -> bool:
+    """Check if message matches a word filter rule."""
+    words = config.get("words", [])
+    match_mode = config.get("match_mode", "contains")
+    text_lower = text.lower()
+    for word in words:
+        word_lower = word.lower()
+        if match_mode == "exact":
+            if word_lower in text_lower.split():
+                return True
+        elif match_mode == "regex":
+            try:
+                if re.search(word, text, re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+        else:  # contains
+            if word_lower in text_lower:
+                return True
+    return False
+
+
+def _check_link_filter(text: str, config: dict) -> bool:
+    """Check if message contains blocked links."""
+    urls = re.findall(r'https?://([^\s/]+)', text)
+    if not urls:
+        return False
+    if config.get("block_all", False):
+        allow_list = [d.lower() for d in config.get("allow_list", [])]
+        for url in urls:
+            if url.lower() not in allow_list:
+                return True
+        return False
+    block_list = [d.lower() for d in config.get("block_list", [])]
+    for url in urls:
+        if url.lower() in block_list:
+            return True
+    return False
+
+
+def _check_caps_filter(text: str, config: dict) -> bool:
+    """Check if message has excessive caps."""
+    min_length = config.get("min_length", 10)
+    if len(text) < min_length:
+        return False
+    alpha = [c for c in text if c.isalpha()]
+    if not alpha:
+        return False
+    caps_pct = sum(1 for c in alpha if c.isupper()) / len(alpha) * 100
+    return caps_pct > config.get("max_caps_percent", 70)
+
+
+def _check_mention_spam(text: str, config: dict) -> bool:
+    """Check if message has too many @mentions."""
+    mentions = re.findall(r'@[\w\- ]+', text)
+    return len(mentions) > config.get("max_mentions", 5)
+
+
+async def check_automod(text: str, user_id: int, channel_id: int, channel_name: str) -> dict | None:
+    """Check message against automod rules. Returns action dict if triggered, None if clean."""
+    rules = await _get_automod_rules()
+    for rule in rules:
+        try:
+            config = json.loads(rule["config"]) if isinstance(rule["config"], str) else rule["config"]
+        except (json.JSONDecodeError, TypeError):
+            continue
+        triggered = False
+        rule_type = rule["type"]
+        if rule_type == "word_filter":
+            triggered = _check_word_filter(text, config)
+        elif rule_type == "link_filter":
+            triggered = _check_link_filter(text, config)
+        elif rule_type == "caps_filter":
+            triggered = _check_caps_filter(text, config)
+        elif rule_type == "mention_spam":
+            triggered = _check_mention_spam(text, config)
+        if triggered:
+            try:
+                await db.create_automod_action(
+                    rule_id=rule["id"],
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    message_text=text[:500],
+                    action_taken=rule["action"]
+                )
+            except Exception:
+                pass
+            await audit_log(
+                "automod_trigger", 0, "AutoMod",
+                target_id=user_id, target_type="user",
+                details=json.dumps({"rule": rule["name"], "action": rule["action"]}),
+                channel_id=channel_id, channel_name=channel_name
+            )
+            return {
+                "action": rule["action"],
+                "duration": rule.get("action_duration", 300),
+                "rule_name": rule["name"],
+                "rule_id": rule["id"]
+            }
+    return None
+
+
+def _format_poll_for_client(poll: dict, user_id: int = None) -> dict:
+    """Transform DB poll dict to frontend-friendly format."""
+    if not poll:
+        return poll
+    votes = {}
+    my_votes = []
+    for opt in poll.get("options_data", []):
+        votes[opt["index"]] = opt["count"]
+        if user_id and user_id in opt.get("voter_ids", []):
+            my_votes.append(opt["index"])
+    result = {
+        "id": poll["id"],
+        "channel_id": poll["channel_id"],
+        "message_id": poll.get("message_id"),
+        "user_id": poll["user_id"],
+        "question": poll["question"],
+        "options": poll.get("options", "[]"),
+        "allow_multiple": poll.get("allow_multiple"),
+        "anonymous_votes": poll.get("anonymous_votes"),
+        "is_closed": poll.get("is_closed", 0),
+        "expires_at": poll.get("expires_at"),
+        "total_votes": poll.get("total_votes", 0),
+        "votes": votes,
+        "my_votes": my_votes,
+    }
+    return result
+
 
 async def _parse_mentions(text: str) -> set[int]:
     """Parse @mentions from message text, return set of mentioned user IDs."""
@@ -7781,12 +7944,14 @@ async def _parse_mentions(text: str) -> set[int]:
 
 
 async def http_get_chat_channels(request: web.Request) -> web.Response:
-    """Get all chat channels."""
+    """Get all chat channels (filtered by user access)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
-    channels = await db.get_chat_channels()
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    channels = await db.get_accessible_channels(token.user_id, user_role)
     # Enrich with stream association data
     for ch in channels:
         stream = await db.get_stream_by_chat_channel(ch["id"])
@@ -7833,6 +7998,19 @@ async def http_create_chat_channel(request: web.Request) -> web.Response:
     if category and len(category) > 32:
         return web.json_response({"error": "Category name too long (max 32 chars)"}, status=400)
 
+    visibility = data.get("visibility", "public").strip()
+    mode = data.get("mode", "open").strip()
+    if visibility not in ("public", "private"):
+        return web.json_response({"error": "Visibility must be 'public' or 'private'"}, status=400)
+    if mode not in ("open", "readonly"):
+        return web.json_response({"error": "Mode must be 'open' or 'readonly'"}, status=400)
+
+    # Only moderator+ can create private/readonly channels
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    if (visibility == "private" or mode == "readonly") and user_role not in ("admin", "superadmin", "moderator"):
+        return web.json_response({"error": "Moderator access required for private/readonly channels"}, status=403)
+
     # Check if exists
     existing = await db.get_chat_channel_by_name(name)
     if existing:
@@ -7840,27 +8018,49 @@ async def http_create_chat_channel(request: web.Request) -> web.Response:
 
     channel_id = await db.create_chat_channel(name, description, token.user_id, category=category)
 
+    # Set visibility/mode if non-default
+    if visibility != "public" or mode != "open":
+        await db.update_chat_channel(channel_id, visibility=visibility, mode=mode)
+
+    # Auto-add creator as channel moderator for private channels
+    if visibility == "private":
+        await db.add_channel_member(channel_id, token.user_id, role="moderator", added_by=token.user_id)
+
+    await audit_log("channel_create", token.user_id, user["username"] if user else "unknown",
+                    target_id=channel_id, target_type="channel", target_name=name,
+                    details=json.dumps({"visibility": visibility, "mode": mode}))
+
     return web.json_response({
         "id": channel_id,
         "name": name,
         "description": description,
-        "category": category
+        "category": category,
+        "visibility": visibility,
+        "mode": mode
     }, status=201)
 
 
 async def http_update_chat_channel(request: web.Request) -> web.Response:
-    """Update a chat channel (admin only, cannot modify defaults or stream channels)."""
+    """Update a chat channel (moderator+ or channel-moderator, cannot modify defaults or stream channels)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
 
-    # Require admin role
+    # Require moderator+ role or channel moderator
     user = await db.get_user_by_id(token.user_id)
     if not user:
         return web.json_response({"error": "User not found"}, status=404)
     role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
-    if role not in ("admin", "superadmin"):
-        return web.json_response({"error": "Admin access required"}, status=403)
+    is_mod = role in ("admin", "superadmin", "moderator")
+    if not is_mod:
+        # Check if user is channel moderator
+        try:
+            chan_id = int(request.match_info["id"])
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid channel ID"}, status=400)
+        ch_role = await db.get_channel_member_role(chan_id, token.user_id)
+        if ch_role != "moderator":
+            return web.json_response({"error": "Moderator access required"}, status=403)
 
     try:
         channel_id = int(request.match_info["id"])
@@ -7883,10 +8083,22 @@ async def http_update_chat_channel(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    # Prevent changing visibility on default or stream channels
+    if "visibility" in data and channel.get("is_default"):
+        return web.json_response({"error": "Cannot change visibility of default channels"}, status=400)
+    if "visibility" in data and data["visibility"] not in ("public", "private"):
+        return web.json_response({"error": "Visibility must be 'public' or 'private'"}, status=400)
+    if "mode" in data and data["mode"] not in ("open", "readonly"):
+        return web.json_response({"error": "Mode must be 'open' or 'readonly'"}, status=400)
+
     old_name = channel["name"]
     success = await db.update_chat_channel(channel_id, **data)
     if not success:
         return web.json_response({"error": "No updates applied"}, status=400)
+
+    await audit_log("channel_update", token.user_id, user["username"],
+                    target_id=channel_id, target_type="channel", target_name=old_name,
+                    details=json.dumps({k: v for k, v in data.items() if k in ("name", "description", "category", "slowmode_seconds", "visibility", "mode")}))
 
     # If name was changed, broadcast rename and move chat_rooms entry
     new_name = data.get("name")
@@ -7931,6 +8143,9 @@ async def http_delete_chat_channel(request: web.Request) -> web.Response:
     success = await db.delete_chat_channel(channel_id)
     if not success:
         return web.json_response({"error": "Failed to delete channel"}, status=500)
+
+    await audit_log("channel_delete", token.user_id, "admin",
+                    target_id=channel_id, target_type="channel", target_name=channel["name"])
 
     # Notify connected users and clean up
     channel_name = channel["name"]
@@ -7981,6 +8196,10 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
             "cleared_by": user["username"],
             "message_count": deleted_count
         })
+
+    await audit_log("channel_clear", token.user_id, user["username"],
+                    target_id=channel_id, target_type="channel", target_name=channel_name,
+                    details=json.dumps({"deleted_count": deleted_count}))
 
     return web.json_response({
         "success": True,
@@ -8225,6 +8444,449 @@ async def http_get_chat_thread(request: web.Request) -> web.Response:
     return web.json_response({"thread": chain})
 
 
+# =============================================================================
+# User Blocking API
+# =============================================================================
+
+async def http_get_blocked_users(request: web.Request) -> web.Response:
+    """Get list of users blocked by the current user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    blocked = await db.get_blocked_users(token.user_id)
+    return web.json_response({"blocked": blocked})
+
+
+async def http_block_user(request: web.Request) -> web.Response:
+    """Block a user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        target_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+    if target_id == token.user_id:
+        return web.json_response({"error": "Cannot block yourself"}, status=400)
+    target = await db.get_user_by_id(target_id)
+    if not target:
+        return web.json_response({"error": "User not found"}, status=404)
+    await db.block_user(token.user_id, target_id)
+    return web.json_response({"success": True})
+
+
+async def http_unblock_user(request: web.Request) -> web.Response:
+    """Unblock a user."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        target_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+    await db.unblock_user(token.user_id, target_id)
+    return web.json_response({"success": True})
+
+
+# =============================================================================
+# Audit Log API
+# =============================================================================
+
+async def http_get_audit_log(request: web.Request) -> web.Response:
+    """Get audit log entries (moderator+ only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role not in ("admin", "superadmin", "moderator"):
+        return web.json_response({"error": "Moderator access required"}, status=403)
+
+    try:
+        limit = int(request.query.get("limit", 50))
+        offset = int(request.query.get("offset", 0))
+    except (ValueError, TypeError):
+        limit, offset = 50, 0
+    limit = min(limit, 200)
+
+    filters = {}
+    if request.query.get("action"):
+        filters["action"] = request.query["action"]
+    if request.query.get("actor_id"):
+        try:
+            filters["actor_id"] = int(request.query["actor_id"])
+        except (ValueError, TypeError):
+            pass
+    if request.query.get("channel_id"):
+        try:
+            filters["channel_id"] = int(request.query["channel_id"])
+        except (ValueError, TypeError):
+            pass
+    if request.query.get("since"):
+        filters["since"] = request.query["since"]
+
+    entries = await db.get_audit_log(limit=limit, offset=offset, **filters)
+    total = await db.get_audit_log_count(**filters)
+    return web.json_response({"entries": entries, "total": total})
+
+
+# =============================================================================
+# Auto-Moderation API (admin only)
+# =============================================================================
+
+_AUTOMOD_RULE_TYPES = {"word_filter", "spam_filter", "link_filter", "caps_filter", "mention_spam"}
+_AUTOMOD_ACTIONS = {"warn", "delete", "timeout", "mute"}
+
+
+async def http_get_automod_rules(request: web.Request) -> web.Response:
+    """Get all automod rules (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    rules = await db.get_automod_rules()
+    return web.json_response({"rules": rules})
+
+
+async def http_create_automod_rule(request: web.Request) -> web.Response:
+    """Create an automod rule (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role not in ("admin", "superadmin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    rule_type = data.get("type", "").strip()
+    name = data.get("name", "").strip()
+    action = data.get("action", "delete").strip()
+    config = data.get("config", {})
+
+    if rule_type not in _AUTOMOD_RULE_TYPES:
+        return web.json_response({"error": f"Invalid rule type. Must be one of: {', '.join(_AUTOMOD_RULE_TYPES)}"}, status=400)
+    if not name or len(name) > 100:
+        return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
+    if action not in _AUTOMOD_ACTIONS:
+        return web.json_response({"error": f"Invalid action. Must be one of: {', '.join(_AUTOMOD_ACTIONS)}"}, status=400)
+
+    # Validate regex patterns in word_filter
+    if rule_type == "word_filter" and config.get("match_mode") == "regex":
+        for word in config.get("words", []):
+            try:
+                re.compile(word)
+            except re.error as e:
+                return web.json_response({"error": f"Invalid regex pattern '{word}': {e}"}, status=400)
+
+    rule_id = await db.create_automod_rule(
+        type=rule_type,
+        name=name,
+        config=config,
+        action=action,
+        action_duration=data.get("action_duration"),
+        created_by=token.user_id
+    )
+
+    # Invalidate cache
+    global _automod_cache_time
+    _automod_cache_time = 0
+
+    await audit_log("automod_rule_create", token.user_id, user["username"],
+                    target_id=rule_id, target_type="automod_rule", target_name=name)
+
+    return web.json_response({"id": rule_id, "success": True}, status=201)
+
+
+async def http_update_automod_rule(request: web.Request) -> web.Response:
+    """Update an automod rule (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role not in ("admin", "superadmin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    try:
+        rule_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid rule ID"}, status=400)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    if "type" in data and data["type"] not in _AUTOMOD_RULE_TYPES:
+        return web.json_response({"error": "Invalid rule type"}, status=400)
+    if "action" in data and data["action"] not in _AUTOMOD_ACTIONS:
+        return web.json_response({"error": "Invalid action"}, status=400)
+
+    # Validate regex if updating word_filter config
+    if "config" in data:
+        config = data["config"]
+        if isinstance(config, dict) and config.get("match_mode") == "regex":
+            for word in config.get("words", []):
+                try:
+                    re.compile(word)
+                except re.error as e:
+                    return web.json_response({"error": f"Invalid regex: {e}"}, status=400)
+        if isinstance(config, dict):
+            data["config"] = json.dumps(config)
+
+    success = await db.update_automod_rule(rule_id, **{k: v for k, v in data.items() if k in ("type", "name", "config", "enabled", "action", "action_duration")})
+    if not success:
+        return web.json_response({"error": "Rule not found or no changes"}, status=404)
+
+    global _automod_cache_time
+    _automod_cache_time = 0
+
+    await audit_log("automod_rule_update", token.user_id, user["username"],
+                    target_id=rule_id, target_type="automod_rule")
+
+    return web.json_response({"success": True})
+
+
+async def http_delete_automod_rule(request: web.Request) -> web.Response:
+    """Delete an automod rule (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role not in ("admin", "superadmin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    try:
+        rule_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid rule ID"}, status=400)
+
+    success = await db.delete_automod_rule(rule_id)
+    if not success:
+        return web.json_response({"error": "Rule not found"}, status=404)
+
+    global _automod_cache_time
+    _automod_cache_time = 0
+
+    await audit_log("automod_rule_delete", token.user_id, user["username"],
+                    target_id=rule_id, target_type="automod_rule")
+
+    return web.json_response({"success": True})
+
+
+async def http_get_automod_actions(request: web.Request) -> web.Response:
+    """Get automod action log (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+    if role not in ("admin", "superadmin"):
+        return web.json_response({"error": "Admin access required"}, status=403)
+
+    try:
+        limit = int(request.query.get("limit", 50))
+        offset = int(request.query.get("offset", 0))
+    except (ValueError, TypeError):
+        limit, offset = 50, 0
+    limit = min(limit, 200)
+
+    actions = await db.get_automod_actions(limit=limit, offset=offset)
+    return web.json_response({"actions": actions})
+
+
+# =============================================================================
+# Channel Members / Permissions API
+# =============================================================================
+
+async def http_get_channel_members(request: web.Request) -> web.Response:
+    """Get members of a channel (members + moderator+ can view)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        channel_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid channel ID"}, status=400)
+
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or "user") if user else "user"
+    is_mod = user_role in ("admin", "superadmin", "moderator")
+    is_member = await db.is_channel_member(channel_id, token.user_id)
+
+    if not is_mod and not is_member:
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    members = await db.get_channel_members(channel_id)
+    return web.json_response({"members": members})
+
+
+async def http_add_channel_member(request: web.Request) -> web.Response:
+    """Add a member to a channel (admin, moderator+, or channel-moderator)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        channel_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid channel ID"}, status=400)
+
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    # Auth: admin/moderator+ or channel moderator
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or "user") if user else "user"
+    is_mod = user_role in ("admin", "superadmin", "moderator")
+    ch_role = await db.get_channel_member_role(channel_id, token.user_id)
+    if not is_mod and ch_role != "moderator":
+        return web.json_response({"error": "Moderator access required"}, status=403)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    try:
+        target_id = int(data.get("user_id", 0))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid user_id"}, status=400)
+
+    target = await db.get_user_by_id(target_id)
+    if not target:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    member_role = data.get("role", "member")
+    if member_role not in ("member", "moderator"):
+        return web.json_response({"error": "Role must be 'member' or 'moderator'"}, status=400)
+
+    # Only admin+ can set channel moderator role
+    if member_role == "moderator" and not is_mod:
+        return web.json_response({"error": "Admin access required to set moderator role"}, status=403)
+
+    await db.add_channel_member(channel_id, target_id, role=member_role, added_by=token.user_id)
+
+    await audit_log("channel_member_add", token.user_id, user["username"] if user else "unknown",
+                    target_id=target_id, target_type="user",
+                    target_name=target["username"],
+                    channel_id=channel_id, channel_name=channel["name"],
+                    details=json.dumps({"role": member_role}))
+
+    return web.json_response({"success": True}, status=201)
+
+
+async def http_remove_channel_member(request: web.Request) -> web.Response:
+    """Remove a member from a channel."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        channel_id = int(request.match_info["id"])
+        target_id = int(request.match_info["user_id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or "user") if user else "user"
+    is_mod = user_role in ("admin", "superadmin", "moderator")
+    ch_role = await db.get_channel_member_role(channel_id, token.user_id)
+
+    # Users can leave channels themselves
+    if target_id == token.user_id:
+        await db.remove_channel_member(channel_id, target_id)
+        return web.json_response({"success": True})
+
+    # Otherwise need mod/channel-mod access
+    if not is_mod and ch_role != "moderator":
+        return web.json_response({"error": "Moderator access required"}, status=403)
+
+    await db.remove_channel_member(channel_id, target_id)
+
+    target = await db.get_user_by_id(target_id)
+    await audit_log("channel_member_remove", token.user_id, user["username"] if user else "unknown",
+                    target_id=target_id, target_type="user",
+                    target_name=target["username"] if target else str(target_id),
+                    channel_id=channel_id, channel_name=channel["name"])
+
+    return web.json_response({"success": True})
+
+
+async def http_update_channel_member_role(request: web.Request) -> web.Response:
+    """Update a channel member's role (admin/moderator+ only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        channel_id = int(request.match_info["id"])
+        target_id = int(request.match_info["user_id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or "user") if user else "user"
+    if user_role not in ("admin", "superadmin", "moderator"):
+        return web.json_response({"error": "Moderator access required"}, status=403)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    new_role = data.get("role", "member")
+    if new_role not in ("member", "moderator"):
+        return web.json_response({"error": "Role must be 'member' or 'moderator'"}, status=400)
+
+    # Remove and re-add with new role
+    await db.remove_channel_member(channel_id, target_id)
+    await db.add_channel_member(channel_id, target_id, role=new_role, added_by=token.user_id)
+
+    target_user = await db.get_user_by_id(target_id)
+    await audit_log("channel_member_role", token.user_id, user["username"] if user else "unknown",
+                    target_id=target_id, target_type="user",
+                    target_name=target_user["username"] if target_user else str(target_id),
+                    channel_id=channel_id, channel_name=channel["name"],
+                    details=json.dumps({"new_role": new_role}))
+
+    return web.json_response({"success": True})
+
+
 async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     """Handle chat WebSocket connections."""
     token = await authenticate_request(request)
@@ -8393,6 +9055,17 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
                             continue
 
+                        # Check channel visibility (private channels require membership or mod+)
+                        ch_visibility = channel.get("visibility", "public")
+                        if ch_visibility == "private" and user_role not in ("admin", "superadmin"):
+                            is_member = await db.is_channel_member(channel["id"], user_id)
+                            if not is_member:
+                                await ws.send_json({
+                                    "type": "error",
+                                    "message": "This channel is private"
+                                })
+                                continue
+
                         # Join new channel (use channel name from DB)
                         current_channel = channel["name"]
                         if current_channel not in chat_rooms:
@@ -8400,12 +9073,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         chat_rooms[current_channel].add(user_entry)
 
                         # Send channel info (include stream data if this is a stream channel)
+                        can_send = await db.can_send_in_channel(channel["id"], user_id, user_role)
                         channel_info = {
                             "type": "channel_info",
                             "id": channel["id"],
                             "name": channel["name"],
                             "description": channel.get("description"),
-                            "topic": channel.get("topic")
+                            "topic": channel.get("topic"),
+                            "visibility": channel.get("visibility", "public"),
+                            "mode": channel.get("mode", "open"),
+                            "can_send": can_send
                         }
                         if stream:
                             channel_info["stream_id"] = stream["id"]
@@ -8622,6 +9299,60 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 })
                             continue
 
+                        # Auto-moderation check (mod+ bypass)
+                        if message_text and user_role not in ("admin", "superadmin", "moderator"):
+                            automod_result = await check_automod(message_text, user_id, channel["id"], current_channel)
+                            if automod_result:
+                                am_action = automod_result["action"]
+                                if am_action == "warn":
+                                    await ws.send_json({
+                                        "type": "error",
+                                        "error_code": "automod",
+                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
+                                    })
+                                    continue
+                                elif am_action == "delete":
+                                    await ws.send_json({
+                                        "type": "error",
+                                        "error_code": "automod",
+                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
+                                    })
+                                    continue
+                                elif am_action == "timeout":
+                                    await db.create_chat_timeout(user_id, 0, "timeout", channel["id"],
+                                                                 f"AutoMod: {automod_result['rule_name']}",
+                                                                 automod_result.get("duration", 300))
+                                    await ws.send_json({
+                                        "type": "error",
+                                        "error_code": "timeout",
+                                        "message": f"You were timed out by auto-moderation ({automod_result['rule_name']})"
+                                    })
+                                    await broadcast_to_channel(current_channel, {
+                                        "type": "user_timed_out",
+                                        "user_id": user_id,
+                                        "username": my_state.get("nickname") or username,
+                                        "duration": automod_result.get("duration", 300),
+                                        "reason": f"AutoMod: {automod_result['rule_name']}",
+                                        "moderator": "AutoMod"
+                                    })
+                                    continue
+                                elif am_action == "mute":
+                                    await db.create_chat_timeout(user_id, 0, "mute", channel["id"],
+                                                                 f"AutoMod: {automod_result['rule_name']}")
+                                    await ws.send_json({
+                                        "type": "error",
+                                        "error_code": "muted",
+                                        "message": f"You were muted by auto-moderation ({automod_result['rule_name']})"
+                                    })
+                                    await broadcast_to_channel(current_channel, {
+                                        "type": "user_muted",
+                                        "user_id": user_id,
+                                        "username": my_state.get("nickname") or username,
+                                        "reason": f"AutoMod: {automod_result['rule_name']}",
+                                        "moderator": "AutoMod"
+                                    })
+                                    continue
+
                         # Rate limit: max N messages per window
                         now = monotonic()
                         chat_msg_times[:] = [t for t in chat_msg_times if now - t < chat_rate_window]
@@ -8648,6 +9379,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     "cooldown_remaining": remaining
                                 })
                                 continue
+
+                        # Channel permission check (readonly channels: only mod+/channel-mod can send)
+                        can_send = await db.can_send_in_channel(channel["id"], user_id, user_role)
+                        if not can_send:
+                            await ws.send_json({
+                                "type": "error",
+                                "error_code": "readonly",
+                                "message": "This channel is read-only"
+                            })
+                            continue
 
                         # Handle reply_to
                         reply_to_id = data.get("reply_to")
@@ -8769,6 +9510,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "message_id": message_id,
                                 "deleted_by": user_id
                             })
+                            if is_mod:
+                                channel_obj = await db.get_chat_channel_by_name(current_channel)
+                                await audit_log("message_delete", user_id, username,
+                                                target_id=message_id, target_type="message",
+                                                channel_id=channel_obj["id"] if channel_obj else None,
+                                                channel_name=current_channel)
 
                     elif msg_type == "react":
                         if not current_channel:
@@ -8856,6 +9603,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": msg_author,
                                 "pinned_by": display_name
                             })
+                            await audit_log("pin_message", user_id, username,
+                                            target_id=message_id, target_type="message",
+                                            channel_name=current_channel)
 
                     elif msg_type == "unpin_message":
                         if not current_channel:
@@ -8877,6 +9627,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "type": "message_unpinned",
                                 "message_id": message_id
                             })
+                            await audit_log("unpin_message", user_id, username,
+                                            target_id=message_id, target_type="message",
+                                            channel_name=current_channel)
 
                     elif msg_type == "timeout_user":
                         if not current_channel:
@@ -8920,6 +9673,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             f"You were timed out in #{current_channel}",
                             f"Duration: {duration}s" + (f" — {reason}" if reason else ""),
                             {"channel": current_channel})
+                        await audit_log("user_timeout", user_id, username,
+                                        target_id=target_user_id, target_type="user",
+                                        target_name=target_name,
+                                        channel_name=current_channel,
+                                        details=json.dumps({"duration": duration, "reason": reason}))
 
                     elif msg_type == "mute_user":
                         if not current_channel:
@@ -8960,6 +9718,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             f"You were muted in #{current_channel}",
                             reason or "No reason given",
                             {"channel": current_channel})
+                        await audit_log("user_mute", user_id, username,
+                                        target_id=target_user_id, target_type="user",
+                                        target_name=target_name,
+                                        channel_name=current_channel,
+                                        details=json.dumps({"reason": reason}))
 
                     elif msg_type == "unmute_user":
                         if not current_channel:
@@ -8989,6 +9752,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": target_name,
                                 "moderator": display_name
                             })
+                            await audit_log("user_unmute", user_id, username,
+                                            target_id=target_user_id, target_type="user",
+                                            target_name=target_name, channel_name=current_channel)
 
                     elif msg_type == "mark_read":
                         if not current_channel:
@@ -9003,6 +9769,182 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if channel:
                             await db.update_read_position(user_id, channel["id"], message_id)
+
+                    # ==============================================
+                    # User Blocking (WS)
+                    # ==============================================
+                    elif msg_type == "block_user":
+                        target_uid = data.get("target_user_id")
+                        if not target_uid:
+                            continue
+                        try:
+                            target_uid = int(target_uid)
+                        except (ValueError, TypeError):
+                            continue
+                        if target_uid == user_id:
+                            await ws.send_json({"type": "error", "message": "Cannot block yourself"})
+                            continue
+                        await db.block_user(user_id, target_uid)
+                        await ws.send_json({"type": "user_blocked", "user_id": target_uid})
+
+                    elif msg_type == "unblock_user":
+                        target_uid = data.get("target_user_id")
+                        if not target_uid:
+                            continue
+                        try:
+                            target_uid = int(target_uid)
+                        except (ValueError, TypeError):
+                            continue
+                        await db.unblock_user(user_id, target_uid)
+                        await ws.send_json({"type": "user_unblocked", "user_id": target_uid})
+
+                    # ==============================================
+                    # Polls (WS)
+                    # ==============================================
+                    elif msg_type == "create_poll":
+                        if not current_channel:
+                            continue
+                        # Check timeout/mute
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+                        timeout_info = await db.is_user_timed_out(user_id, channel["id"])
+                        if timeout_info:
+                            await ws.send_json({"type": "error", "message": "You are timed out or muted"})
+                            continue
+
+                        question = data.get("question", "").strip()
+                        options = data.get("options", [])
+                        allow_multiple = bool(data.get("allow_multiple", False))
+                        anonymous_votes = bool(data.get("anonymous_votes", False))
+                        duration = data.get("duration")  # seconds, optional
+
+                        if not question or len(question) > 500:
+                            await ws.send_json({"type": "error", "message": "Question required (max 500 chars)"})
+                            continue
+                        if not isinstance(options, list) or len(options) < 2 or len(options) > 10:
+                            await ws.send_json({"type": "error", "message": "Need 2-10 options"})
+                            continue
+                        # Validate option strings
+                        clean_options = []
+                        for opt in options:
+                            opt_str = str(opt).strip()
+                            if not opt_str or len(opt_str) > 200:
+                                await ws.send_json({"type": "error", "message": "Each option must be 1-200 chars"})
+                                break
+                            clean_options.append(opt_str)
+                        else:
+                            # All options valid
+                            expires_minutes = None
+                            if duration:
+                                try:
+                                    dur_secs = int(duration)
+                                    if 60 <= dur_secs <= 604800:
+                                        expires_minutes = max(1, dur_secs // 60)
+                                except (ValueError, TypeError):
+                                    pass
+
+                            # Create a message for the poll
+                            display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
+                            msg_id = await db.create_chat_message(
+                                channel["id"], user_id, username,
+                                f"📊 Poll: {question}",
+                                anonymous=my_state["anonymous"]
+                            )
+
+                            poll_id = await db.create_poll(
+                                channel_id=channel["id"],
+                                message_id=msg_id,
+                                user_id=user_id,
+                                question=question,
+                                options=clean_options,
+                                allow_multiple=allow_multiple,
+                                anonymous_votes=anonymous_votes,
+                                expires_minutes=expires_minutes
+                            )
+
+                            poll_data = _format_poll_for_client(await db.get_poll(poll_id), user_id)
+                            await broadcast_to_channel(current_channel, {
+                                "type": "poll_created",
+                                "poll": poll_data,
+                                "message_id": msg_id,
+                                "user_id": user_id,
+                                "username": display_name,
+                                "created_at": datetime.now(timezone.utc).isoformat()
+                            })
+
+                    elif msg_type == "vote_poll":
+                        poll_id = data.get("poll_id")
+                        option_index = data.get("option_index")
+                        if poll_id is None or option_index is None:
+                            continue
+                        try:
+                            poll_id = int(poll_id)
+                            option_index = int(option_index)
+                        except (ValueError, TypeError):
+                            continue
+
+                        poll = await db.get_poll(poll_id)
+                        if not poll:
+                            await ws.send_json({"type": "error", "message": "Poll not found"})
+                            continue
+                        if poll.get("is_closed"):
+                            await ws.send_json({"type": "error", "message": "Poll is closed"})
+                            continue
+                        if poll.get("expires_at"):
+                            try:
+                                exp = datetime.fromisoformat(poll["expires_at"].replace("Z", "+00:00"))
+                                if datetime.now(timezone.utc) > exp:
+                                    await ws.send_json({"type": "error", "message": "Poll has expired"})
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                        options = json.loads(poll["options"]) if isinstance(poll["options"], str) else poll["options"]
+                        if option_index < 0 or option_index >= len(options):
+                            await ws.send_json({"type": "error", "message": "Invalid option"})
+                            continue
+
+                        success = await db.vote_poll(poll_id, user_id, option_index)
+                        if success:
+                            updated_poll = _format_poll_for_client(await db.get_poll(poll_id))
+                            ch_name = None
+                            ch = await db.get_chat_channel(poll["channel_id"])
+                            if ch:
+                                ch_name = ch["name"]
+                            if ch_name and ch_name in chat_rooms:
+                                await broadcast_to_channel(ch_name, {
+                                    "type": "poll_updated",
+                                    "poll": updated_poll
+                                })
+                        else:
+                            await ws.send_json({"type": "error", "message": "Already voted (multi-vote not allowed)"})
+
+                    elif msg_type == "close_poll":
+                        poll_id = data.get("poll_id")
+                        if not poll_id:
+                            continue
+                        try:
+                            poll_id = int(poll_id)
+                        except (ValueError, TypeError):
+                            continue
+                        poll = await db.get_poll(poll_id)
+                        if not poll:
+                            await ws.send_json({"type": "error", "message": "Poll not found"})
+                            continue
+                        # Only creator or mod+ can close
+                        is_creator = poll["user_id"] == user_id
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if not is_creator and not is_mod:
+                            await ws.send_json({"type": "error", "message": "Only poll creator or moderators can close polls"})
+                            continue
+                        await db.close_poll(poll_id)
+                        updated_poll = _format_poll_for_client(await db.get_poll(poll_id))
+                        ch = await db.get_chat_channel(poll["channel_id"])
+                        if ch and ch["name"] in chat_rooms:
+                            await broadcast_to_channel(ch["name"], {
+                                "type": "poll_closed",
+                                "poll": updated_poll
+                            })
 
                     elif msg_type == "ban":
                         # Stream owner can ban a user from chat
@@ -9071,6 +10013,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
 
                             logger.info(f"User {banned_username} banned from stream {stream['name']} by {username}")
+                            await audit_log("user_ban", user_id, username,
+                                            target_id=target_user_id, target_type="user",
+                                            target_name=banned_username,
+                                            channel_name=current_channel,
+                                            details=json.dumps({"reason": reason, "stream": stream["name"]}))
                         else:
                             await ws.send_json({"type": "error", "message": "User may already be banned"})
 
@@ -9111,6 +10058,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": banned_username
                             })
                             logger.info(f"User {banned_username} unbanned from stream {stream['name']} by {username}")
+                            await audit_log("user_unban", user_id, username,
+                                            target_id=target_user_id, target_type="user",
+                                            target_name=banned_username,
+                                            channel_name=current_channel)
                         else:
                             await ws.send_json({"type": "error", "message": "Ban not found"})
 
@@ -9293,6 +10244,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             if target_user_id == user_id:
                                 await ws.send_json({"type": "error", "message": "Cannot DM yourself"})
                                 continue
+                            # Block check for DMs
+                            if await db.is_blocked_bidirectional(user_id, target_user_id):
+                                await ws.send_json({"type": "error", "message": "Cannot message this user"})
+                                continue
                             target = await db.get_user_by_id(target_user_id)
                             if not target:
                                 await ws.send_json({"type": "error", "message": "User not found"})
@@ -9351,6 +10306,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         except (ValueError, TypeError):
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
+                            continue
+                        # Block check for DMs
+                        dm_participants = await db.get_dm_participant_ids(conv_id)
+                        dm_blocked = False
+                        for pid in dm_participants:
+                            if pid != user_id and await db.is_blocked_bidirectional(user_id, pid):
+                                dm_blocked = True
+                                break
+                        if dm_blocked:
+                            await ws.send_json({"type": "error", "message": "Cannot message this user"})
                             continue
                         text = data.get("message", "").strip()
                         image_url = data.get("image_url")
@@ -9677,6 +10642,8 @@ async def http_create_dm_conversation(request: web.Request) -> web.Response:
             return web.json_response({"error": "Invalid user_id"}, status=400)
         if target_id == token.user_id:
             return web.json_response({"error": "Cannot DM yourself"}, status=400)
+        if await db.is_blocked_bidirectional(token.user_id, target_id):
+            return web.json_response({"error": "Cannot message this user"}, status=403)
         target = await db.get_user_by_id(target_id)
         if not target:
             return web.json_response({"error": "User not found"}, status=404)
@@ -10679,6 +11646,12 @@ async def http_update_user_role(request: web.Request) -> web.Response:
 
     logger.info(f"Role changed for user {target_user['username']} from {target_role} to {new_role} by user {token.user_id}")
 
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("role_change", token.user_id, actor["username"] if actor else "unknown",
+                    target_id=user_id, target_type="user",
+                    target_name=target_user["username"],
+                    details=json.dumps({"old_role": target_role, "new_role": new_role}))
+
     return web.json_response({
         "id": user_id,
         "username": target_user["username"],
@@ -11137,6 +12110,17 @@ def create_app() -> web.Application:
     app.router.add_get("/api/chat/link-preview", http_link_preview)
     app.router.add_get("/api/chat/thread/{id}", http_get_chat_thread)
 
+    # Channel Members / Permissions
+    app.router.add_get("/api/chat/channels/{id}/members", http_get_channel_members)
+    app.router.add_post("/api/chat/channels/{id}/members", http_add_channel_member)
+    app.router.add_delete("/api/chat/channels/{id}/members/{user_id}", http_remove_channel_member)
+    app.router.add_put("/api/chat/channels/{id}/members/{user_id}", http_update_channel_member_role)
+
+    # User Blocking
+    app.router.add_get("/api/users/blocked", http_get_blocked_users)
+    app.router.add_post("/api/users/{id}/block", http_block_user)
+    app.router.add_delete("/api/users/{id}/block", http_unblock_user)
+
     # Voice chat
     app.router.add_get("/api/voice/ice-servers", http_voice_ice_servers)
 
@@ -11152,6 +12136,16 @@ def create_app() -> web.Application:
     # Message Search
     app.router.add_get("/api/chat/search", http_search_messages)
     app.router.add_post("/api/chat/search/rebuild", http_rebuild_search_index)
+
+    # Audit Log
+    app.router.add_get("/api/admin/audit-log", http_get_audit_log)
+
+    # Auto-Moderation
+    app.router.add_get("/api/admin/automod", http_get_automod_rules)
+    app.router.add_post("/api/admin/automod", http_create_automod_rule)
+    app.router.add_put("/api/admin/automod/{id}", http_update_automod_rule)
+    app.router.add_delete("/api/admin/automod/{id}", http_delete_automod_rule)
+    app.router.add_get("/api/admin/automod/actions", http_get_automod_actions)
 
     # Data Retention
     app.router.add_get("/api/admin/retention", http_get_retention_config)
@@ -11406,6 +12400,26 @@ class PortalServer:
                     total += d
                 except Exception as e:
                     logger.error(f"[Retention] Timeout cleanup failed: {e}")
+
+                # Audit log
+                try:
+                    audit_days = int(config.get("retention_audit_log_days", 90))
+                    if audit_days > 0:
+                        d = await db.cleanup_old_audit_log(days=audit_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Cleaned {d} audit log entries older than {audit_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Audit log cleanup failed: {e}")
+
+                # Automod actions
+                try:
+                    d = await db.cleanup_old_automod_actions(days=30)
+                    if d > 0:
+                        logger.info(f"[Retention] Cleaned {d} automod actions older than 30 days")
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Automod actions cleanup failed: {e}")
 
                 # VACUUM
                 try:

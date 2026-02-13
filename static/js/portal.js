@@ -909,7 +909,7 @@ const NotificationBell = {
 
     async loadNotifications() {
         try {
-            const data = await Portal.api('/api/notifications');
+            const data = await Portal.api('/api/notifications?unread=1');
             const list = document.getElementById('notif-list');
             const notifications = data.notifications || [];
             if (notifications.length === 0) {
@@ -918,10 +918,9 @@ const NotificationBell = {
             }
             list.innerHTML = notifications.slice(0, 20).map(n => {
                 const timeAgo = Portal.formatRelativeTime ? Portal.formatRelativeTime(n.created_at) : '';
-                const unreadClass = n.is_read ? '' : ' notif-unread';
                 const dataStr = typeof n.data === 'string' ? n.data : JSON.stringify(n.data || {});
                 const safeData = dataStr.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                return `<div class="notif-item${unreadClass}" onclick="NotificationBell.clickNotification(${n.id}, '${safeData}')">
+                return `<div class="notif-item notif-unread" id="notif-${n.id}" onclick="NotificationBell.clickNotification(${n.id}, '${safeData}')">
                     <div class="notif-title">${this.escapeHtml(n.title)}</div>
                     <div class="notif-message">${this.escapeHtml(n.message || '')}</div>
                     <div class="notif-time">${timeAgo}</div>
@@ -947,8 +946,13 @@ const NotificationBell = {
             await Portal.api(`/api/notifications/${id}/read`, { method: 'POST' });
             this._unreadCount = Math.max(0, this._unreadCount - 1);
             this.updateBadge();
-            const item = this._dropdown.querySelector(`[onclick*="clickNotification(${id}"]`);
-            if (item) item.classList.remove('notif-unread');
+            const item = document.getElementById(`notif-${id}`);
+            if (item) item.remove();
+            // Show empty state if no more notifications
+            const list = document.getElementById('notif-list');
+            if (list && !list.querySelector('.notif-item')) {
+                list.innerHTML = '<div class="notif-empty">No notifications</div>';
+            }
         } catch (e) { /* ignore */ }
     },
 
@@ -957,7 +961,8 @@ const NotificationBell = {
             await Portal.api('/api/notifications/read-all', { method: 'POST' });
             this._unreadCount = 0;
             this.updateBadge();
-            this._dropdown.querySelectorAll('.notif-unread').forEach(el => el.classList.remove('notif-unread'));
+            const list = document.getElementById('notif-list');
+            if (list) list.innerHTML = '<div class="notif-empty">No notifications</div>';
         } catch (e) { /* ignore */ }
     },
 
