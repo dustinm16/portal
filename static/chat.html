@@ -2766,8 +2766,8 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=27"></script>
-    <script src="/static/js/voice.js?v=1"></script>
+    <script src="/static/js/portal.js?v=29"></script>
+    <script src="/static/js/voice.js?v=2"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -3341,6 +3341,15 @@
                     currentView = 'dm';
                     currentDmConversationId = data.conversation.id;
                     renderDmView(data.conversation, data.messages);
+                    // Clear unread badge and mark as read
+                    if (dmUnreadCounts[data.conversation.id]) {
+                        delete dmUnreadCounts[data.conversation.id];
+                        renderDmList();
+                    }
+                    if (data.messages && data.messages.length > 0) {
+                        const lastMsg = data.messages[data.messages.length - 1];
+                        ws.send(JSON.stringify({ type: 'dm_mark_read', conversation_id: data.conversation.id, message_id: lastMsg.id }));
+                    }
                     break;
                 case 'dm_message':
                     if (currentView === 'dm' && currentDmConversationId === data.conversation_id) {
@@ -5603,7 +5612,9 @@
             if (VoiceChat.isInVoice()) {
                 VoiceChat.leave();
             } else {
-                VoiceChat.join();
+                // Pass DM room identifier when in DM view
+                const room = (currentView === 'dm' && currentDmConversationId) ? `dm:${currentDmConversationId}` : undefined;
+                VoiceChat.join(room);
             }
         }
 
@@ -5781,8 +5792,8 @@
             const prefix = conversation.type === 'group' ? '' : '@';
             document.getElementById('channel-name').textContent = prefix + displayName;
             document.getElementById('channel-topic').textContent = conversation.type === 'group' ? `Group DM - ${conversation.participants.length} members` : 'Direct Message';
-            // Hide voice and stream controls
-            document.getElementById('voice-join-btn').style.display = 'none';
+            // Show voice button for DM calls, hide stream/clear controls
+            document.getElementById('voice-join-btn').style.display = '';
             document.getElementById('watch-stream-btn').style.display = 'none';
             document.getElementById('clear-channel-btn').style.display = 'none';
             // Hide pinned banner
@@ -5851,14 +5862,8 @@
             const results = document.getElementById('dm-user-results');
             if (query.length < 1) { results.innerHTML = ''; return; }
             try {
-                const resp = await fetch('/api/users', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
-                if (!resp.ok) return;
-                const data = await resp.json();
-                const users = (data.users || data || []).filter(u =>
-                    u.id !== currentUser?.id &&
-                    !dmSelectedUsers.find(s => s.id === u.id) &&
-                    (u.username.toLowerCase().includes(query.toLowerCase()) || (u.nickname || '').toLowerCase().includes(query.toLowerCase()))
-                );
+                const data = await Portal.api(`/api/chat/users?q=${encodeURIComponent(query)}`);
+                const users = (data.users || []).filter(u => !dmSelectedUsers.find(s => s.id === u.id));
                 results.innerHTML = users.slice(0, 10).map(u => `
                     <div class="dm-user-result" onclick="selectDmUser(${u.id}, '${escapeHtml(u.nickname || u.username)}')" style="padding: 0.4rem 0.5rem; cursor: pointer; border-radius: 4px; color: var(--text-primary);">
                         ${escapeHtml(u.nickname || u.username)} <span style="color: var(--text-muted);">@${escapeHtml(u.username)}</span>

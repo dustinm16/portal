@@ -478,6 +478,93 @@ CREATE TABLE notifications (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- User blocking (bidirectional DM gate)
+CREATE TABLE user_blocks (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    blocked_user_id INTEGER NOT NULL,
+    created_at TEXT,
+    UNIQUE(user_id, blocked_user_id)
+);
+
+-- Chat polls (inline voting)
+CREATE TABLE chat_polls (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER,
+    user_id INTEGER NOT NULL,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL,            -- JSON array of option strings
+    allow_multiple INTEGER DEFAULT 0,
+    anonymous_votes INTEGER DEFAULT 0,
+    expires_at TEXT,
+    is_closed INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE chat_poll_votes (
+    id INTEGER PRIMARY KEY,
+    poll_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    option_index INTEGER NOT NULL,
+    created_at TEXT,
+    UNIQUE(poll_id, user_id, option_index)
+);
+
+-- Audit log (all moderation actions)
+CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY,
+    action TEXT NOT NULL,
+    actor_id INTEGER,
+    actor_username TEXT,
+    target_id INTEGER,
+    target_type TEXT,
+    target_name TEXT,
+    details TEXT DEFAULT '{}',
+    channel_id INTEGER,
+    channel_name TEXT,
+    ip_address TEXT,
+    created_at TEXT
+);
+
+-- Auto-moderation rules and trigger log
+CREATE TABLE automod_rules (
+    id INTEGER PRIMARY KEY,
+    type TEXT NOT NULL,               -- word_filter, spam_filter, link_filter, caps_filter, mention_spam
+    name TEXT NOT NULL,
+    config TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER DEFAULT 1,
+    action TEXT NOT NULL DEFAULT 'delete',  -- warn, delete, timeout, mute
+    action_duration INTEGER,
+    created_by INTEGER,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE automod_actions (
+    id INTEGER PRIMARY KEY,
+    rule_id INTEGER,
+    user_id INTEGER,
+    channel_id INTEGER,
+    message_text TEXT,
+    action_taken TEXT,
+    created_at TEXT
+);
+
+-- Per-channel permissions: visibility (public/private), mode (open/readonly)
+-- ALTER TABLE chat_channels ADD COLUMN visibility TEXT DEFAULT 'public';
+-- ALTER TABLE chat_channels ADD COLUMN mode TEXT DEFAULT 'open';
+
+CREATE TABLE channel_members (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',       -- member, moderator
+    added_by INTEGER,
+    created_at TEXT,
+    UNIQUE(channel_id, user_id)
+);
+
 -- App settings (key-value, used for data retention config, encryption version, etc.)
 CREATE TABLE settings (
     key TEXT PRIMARY KEY,
@@ -647,18 +734,26 @@ DELETE /api/vods/{filename}          - Delete VOD file
 ### Chat
 
 ```
-GET  /api/chat/channels              - List channels (with unread counts)
-POST /api/chat/channels              - Create channel
-PUT  /api/chat/channels/:id          - Update channel
+GET  /api/chat/channels              - List channels (filtered by access)
+POST /api/chat/channels              - Create channel (with visibility/mode)
+PUT  /api/chat/channels/:id          - Update channel (moderator+)
 DELETE /api/chat/channels/:id        - Delete channel
 POST /api/chat/channels/:id/clear    - Clear history (superadmin)
+GET  /api/chat/channels/:id/members  - List channel members
+POST /api/chat/channels/:id/members  - Add channel member (moderator+)
+DELETE /api/chat/channels/:id/members/:uid - Remove member
+PUT  /api/chat/channels/:id/members/:uid  - Update member role
+GET  /api/chat/users                 - Search users for DMs (all auth users)
 POST /api/chat/upload                - Upload chat image
 GET  /api/chat/link-preview          - Fetch OpenGraph metadata for URL
 GET  /api/chat/thread/:id            - Get reply chain for a message
+GET  /api/users/blocked              - List blocked users
+POST /api/users/:id/block            - Block a user
+DELETE /api/users/:id/block          - Unblock a user
 WS   /ws/chat                        - Chat WebSocket (text + voice signaling)
 ```
 
-Chat features: emoji reactions (toggle per-message), message editing (5-min window), pinned messages (mod/admin), unread tracking (per-channel badges), @mention autocomplete, link previews (OpenGraph), thread expansion (reply chain panel).
+Chat features: emoji reactions (toggle per-message), message editing (5-min window), pinned messages (mod/admin), unread tracking (per-channel badges), @mention autocomplete, link previews (OpenGraph), thread expansion (reply chain panel), spoiler tags (`||text||`), message headers (`# ## ###`), inline polls (create/vote/close via WS), user blocking (bidirectional DM gate). Per-channel permissions: visibility (public/private), mode (open/readonly), channel members with roles (member/moderator).
 
 ### Direct Messages
 
@@ -690,7 +785,7 @@ GET  /api/voice/ice-servers          - ICE server config (STUN/TURN)
 WS   /ws/chat                        - Voice signaling (piggybacks on chat WS)
 ```
 
-Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively.
+Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively. Voice works in both channels and DMs — DM voice uses room identifier `dm:{conversation_id}`.
 
 ### System Info
 
@@ -823,6 +918,26 @@ Configurable retention policies:
 - **auto_vacuum** (default true) — VACUUM database after cleanup
 
 Setting any value to `0` disables cleanup for that category. A unified background task runs on the configured interval, cleaning up: old chat messages, DM messages, notifications, activity log entries, expired JWT tokens, expired API keys, and service logs. The `/run` endpoint triggers an immediate cleanup cycle.
+
+### Audit Log (Moderator+)
+
+```
+GET  /api/admin/audit-log              - Query audit log (filters: action, actor, channel, since)
+```
+
+All moderation actions are logged: message_delete, pin/unpin, timeout/mute/unmute/ban/unban, channel CRUD, role changes, automod triggers, channel member management. Default 90-day retention.
+
+### Auto-Moderation (Admin)
+
+```
+GET    /api/admin/automod              - List automod rules
+POST   /api/admin/automod              - Create rule
+PUT    /api/admin/automod/:id          - Update rule
+DELETE /api/admin/automod/:id          - Delete rule
+GET    /api/admin/automod/actions      - View trigger log
+```
+
+5 rule types: `word_filter` (blocked words, exact/contains/regex), `spam_filter` (rate-based), `link_filter` (allow/block lists), `caps_filter` (max caps %), `mention_spam` (max @mentions). 4 actions: `warn`, `delete`, `timeout`, `mute`. Rules cached 30s. Moderator+ bypass all automod checks.
 
 ### SEO & Public Endpoints
 

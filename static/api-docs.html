@@ -351,6 +351,9 @@
                     <li><a href="#direct-messages">Direct Messages</a></li>
                     <li><a href="#message-search">Message Search</a></li>
                     <li><a href="#notifications">Notifications</a></li>
+                    <li><a href="#user-blocking">User Blocking</a></li>
+                    <li><a href="#polls">Polls</a></li>
+                    <li><a href="#channel-permissions">Channel Permissions</a></li>
                 </ul>
                 <h4>Files &amp; System</h4>
                 <ul>
@@ -374,6 +377,8 @@
                         <li><a href="#file-manager">File Manager</a></li>
                         <li><a href="#sftp-vod">SFTP VOD Storage</a></li>
                         <li><a href="#data-retention">Data Retention</a></li>
+                        <li><a href="#audit-log">Audit Log</a></li>
+                        <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
                 </div>
             </nav>
@@ -2495,7 +2500,20 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 {<span class="string">"type"</span>: <span class="string">"mark_read"</span>, <span class="string">"message_id"</span>: <span class="number">50</span>}
 
 <span class="comment">// Typing indicator</span>
-{<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}</pre>
+{<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}
+
+<span class="comment">// Block/unblock a user (hides their messages for you)</span>
+{<span class="string">"type"</span>: <span class="string">"block_user"</span>, <span class="string">"user_id"</span>: <span class="number">5</span>}
+{<span class="string">"type"</span>: <span class="string">"unblock_user"</span>, <span class="string">"user_id"</span>: <span class="number">5</span>}
+
+<span class="comment">// Create a poll (2-10 options, optional duration in minutes)</span>
+{<span class="string">"type"</span>: <span class="string">"create_poll"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>, <span class="string">"question"</span>: <span class="string">"Favorite language?"</span>, <span class="string">"options"</span>: [<span class="string">"Python"</span>, <span class="string">"JavaScript"</span>, <span class="string">"Rust"</span>], <span class="string">"allow_multiple"</span>: <span class="keyword">false</span>, <span class="string">"anonymous_votes"</span>: <span class="keyword">false</span>, <span class="string">"duration"</span>: <span class="number">60</span>}
+
+<span class="comment">// Vote on a poll (option_index is 0-based)</span>
+{<span class="string">"type"</span>: <span class="string">"vote_poll"</span>, <span class="string">"poll_id"</span>: <span class="number">1</span>, <span class="string">"option_index"</span>: <span class="number">0</span>}
+
+<span class="comment">// Close a poll (creator or moderator+)</span>
+{<span class="string">"type"</span>: <span class="string">"close_poll"</span>, <span class="string">"poll_id"</span>: <span class="number">1</span>}</pre>
                 </div>
 
                 <h4>Server Messages</h4>
@@ -2542,6 +2560,19 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Pinned messages list (sent on channel join)</span>
 {<span class="string">"type"</span>: <span class="string">"pinned_messages"</span>, <span class="string">"messages"</span>: [{<span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Important info"</span>, <span class="string">"pinned_by"</span>: <span class="number">1</span>, <span class="string">"pinned_at"</span>: <span class="string">"..."</span>}]}
+
+<span class="comment">// User blocked/unblocked confirmation</span>
+{<span class="string">"type"</span>: <span class="string">"user_blocked"</span>, <span class="string">"user_id"</span>: <span class="number">5</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
+{<span class="string">"type"</span>: <span class="string">"user_unblocked"</span>, <span class="string">"user_id"</span>: <span class="number">5</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}
+
+<span class="comment">// Poll created (includes poll data inline with the message)</span>
+{<span class="string">"type"</span>: <span class="string">"poll_created"</span>, <span class="string">"message"</span>: {...}, <span class="string">"poll"</span>: {<span class="string">"id"</span>: <span class="number">1</span>, <span class="string">"question"</span>: <span class="string">"Favorite language?"</span>, <span class="string">"options"</span>: [<span class="string">"Python"</span>, <span class="string">"JavaScript"</span>, <span class="string">"Rust"</span>], <span class="string">"votes"</span>: {}, <span class="string">"total_votes"</span>: <span class="number">0</span>}}
+
+<span class="comment">// Poll updated (after a vote)</span>
+{<span class="string">"type"</span>: <span class="string">"poll_updated"</span>, <span class="string">"poll_id"</span>: <span class="number">1</span>, <span class="string">"votes"</span>: {<span class="string">"0"</span>: <span class="number">3</span>, <span class="string">"1"</span>: <span class="number">5</span>, <span class="string">"2"</span>: <span class="number">2</span>}, <span class="string">"total_votes"</span>: <span class="number">10</span>}
+
+<span class="comment">// Poll closed (by creator or moderator)</span>
+{<span class="string">"type"</span>: <span class="string">"poll_closed"</span>, <span class="string">"poll_id"</span>: <span class="number">1</span>}
 
 <span class="comment">// Rate limit error (5 messages per 5 seconds)</span>
 {<span class="string">"type"</span>: <span class="string">"error"</span>, <span class="string">"message"</span>: <span class="string">"Slow down! You're sending messages too fast."</span>}</pre>
@@ -3342,8 +3373,8 @@ ws.send(JSON.stringify({
                     <tr><th>Type</th><th>Fields</th><th>Description</th></tr>
                     <tr>
                         <td><span class="param-name">voice_join</span></td>
-                        <td>&mdash;</td>
-                        <td>Join voice in the current text channel</td>
+                        <td>room (optional)</td>
+                        <td>Join voice in the current text channel, or pass <code>room: "dm:{conversation_id}"</code> for DM voice</td>
                     </tr>
                     <tr>
                         <td><span class="param-name">voice_leave</span></td>
@@ -3834,6 +3865,208 @@ ws.send(JSON.stringify({
 <pre>{
   <span class="string">"success"</span>: <span class="keyword">true</span>,
   <span class="string">"count"</span>: <span class="number">5</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- User Blocking -->
+                <h2 id="user-blocking">User Blocking</h2>
+                <p>Block other users to hide their messages and prevent them from sending you DMs. Blocking is bidirectional for DMs &mdash; neither party can message the other while a block is active.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/users/blocked</span>
+                        <span class="endpoint-desc">List your blocked users</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the list of users you have blocked. Scoped to the authenticated user.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"blocked_users"</span>: [
+    {<span class="string">"id"</span>: <span class="number">5</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"blocked_at"</span>: <span class="string">"2026-02-13T10:00:00"</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/users/{id}/block</span>
+                        <span class="endpoint-desc">Block a user</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Block a user by their ID. You cannot block yourself. Blocked users' messages are hidden in chat and DMs are prevented bidirectionally.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/users/{id}/block</span>
+                        <span class="endpoint-desc">Unblock a user</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Remove a user from your block list.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>WebSocket Integration</h3>
+                <p>Blocking can also be managed via the <code>/ws/chat</code> WebSocket. Send <code>block_user</code> or <code>unblock_user</code> messages and receive confirmation events. Blocked users' messages are filtered client-side.</p>
+
+                <!-- Polls -->
+                <h2 id="polls">Polls</h2>
+                <p>Create inline polls in chat channels. Polls support 2-10 options, optional multi-vote, anonymous voting, and time limits. All poll operations use the <code>/ws/chat</code> WebSocket.</p>
+
+                <h3>Poll Constraints</h3>
+                <table class="param-table">
+                    <tr><th>Field</th><th>Limit</th></tr>
+                    <tr><td>Question length</td><td>500 characters max</td></tr>
+                    <tr><td>Option count</td><td>2-10 options</td></tr>
+                    <tr><td>Option length</td><td>200 characters max per option</td></tr>
+                    <tr><td>Duration</td><td>Optional, in minutes (poll auto-closes when expired)</td></tr>
+                </table>
+
+                <h3>WebSocket Messages</h3>
+                <p>Polls are created, voted on, and closed via the chat WebSocket. See the <a href="#chat">Chat WebSocket API</a> section for the full message format. Key message types:</p>
+                <table class="param-table">
+                    <tr><th>Client Type</th><th>Description</th><th>Auth</th></tr>
+                    <tr><td><code>create_poll</code></td><td>Create a new poll in a channel</td><td>Any user (timeout/mute checked)</td></tr>
+                    <tr><td><code>vote_poll</code></td><td>Cast a vote (option_index is 0-based)</td><td>Any user</td></tr>
+                    <tr><td><code>close_poll</code></td><td>Close a poll early</td><td>Poll creator or Moderator+</td></tr>
+                </table>
+                <table class="param-table">
+                    <tr><th>Server Type</th><th>Description</th></tr>
+                    <tr><td><code>poll_created</code></td><td>New poll broadcast with message and poll data</td></tr>
+                    <tr><td><code>poll_updated</code></td><td>Updated vote counts after a vote</td></tr>
+                    <tr><td><code>poll_closed</code></td><td>Poll has been closed</td></tr>
+                </table>
+
+                <!-- Channel Permissions -->
+                <h2 id="channel-permissions">Channel Permissions</h2>
+                <p>Control channel visibility and send permissions. Channels can be <strong>public</strong> (visible to all) or <strong>private</strong> (members only), and <strong>open</strong> (everyone can send) or <strong>readonly</strong> (only moderators and channel moderators can send).</p>
+
+                <h3>Channel Properties</h3>
+                <table class="param-table">
+                    <tr><th>Field</th><th>Values</th><th>Description</th></tr>
+                    <tr><td><code>visibility</code></td><td><code>public</code> / <code>private</code></td><td>Who can see and join the channel</td></tr>
+                    <tr><td><code>mode</code></td><td><code>open</code> / <code>readonly</code></td><td>Who can send messages</td></tr>
+                </table>
+
+                <h3>Chat User Search</h3>
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/users</span>
+                        <span class="endpoint-desc">Search users for DMs and member management</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Lightweight user search accessible to all authenticated users. Returns basic info only (id, username, nickname). Used for DM creation and channel member management.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><td><code>q</code></td><td>Search query (matches username or nickname, case-insensitive)</td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"users"</span>: [
+    {<span class="string">"id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>},
+    {<span class="string">"id"</span>: <span class="number">3</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"nickname"</span>: <span class="keyword">null</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>Channel Members</h3>
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/members</span>
+                        <span class="endpoint-desc">List channel members</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List members of a channel. Visible to channel members and moderators+.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"members"</span>: [
+    {<span class="string">"user_id"</span>: <span class="number">2</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"role"</span>: <span class="string">"moderator"</span>, <span class="string">"added_at"</span>: <span class="string">"2026-02-13T10:00:00"</span>},
+    {<span class="string">"user_id"</span>: <span class="number">3</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"role"</span>: <span class="string">"member"</span>, <span class="string">"added_at"</span>: <span class="string">"2026-02-13T10:05:00"</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/members</span>
+                        <span class="endpoint-desc">Add a channel member</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Add a user as a member of a private channel. Requires admin, channel creator, or channel moderator role.</p>
+                        <h4>Request Body</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"user_id"</span>: <span class="number">5</span>
+}</pre>
+                        </div>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/members/{user_id}</span>
+                        <span class="endpoint-desc">Update member role</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Change a channel member's role (<code>member</code> or <code>moderator</code>). Requires admin or channel creator.</p>
+                        <h4>Request Body</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"role"</span>: <span class="string">"moderator"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/members/{user_id}</span>
+                        <span class="endpoint-desc">Remove a channel member</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Remove a user from a private channel. Requires admin, channel creator, or channel moderator role.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"success"</span>: <span class="keyword">true</span>
 }</pre>
                         </div>
                     </div>
@@ -4702,6 +4935,191 @@ ws.send(JSON.stringify({
                     </div>
                 </div>
 
+                <!-- Audit Log -->
+                <h2 id="audit-log">Audit Log <span class="badge-admin">MODERATOR+</span></h2>
+                <p>View a chronological record of all moderation actions performed on the server. Includes message deletions, user timeouts/mutes/bans, channel operations, role changes, and automod triggers. Available to moderators and above.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/audit-log</span>
+                        <span class="endpoint-desc">Get audit log entries</span>
+                        <span class="badge-admin">MOD+</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns paginated audit log entries with optional filters. IP addresses are not included in the response for privacy.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><code>limit</code></td><td>int</td><td>Max entries to return (default: 50, max: 200)</td></tr>
+                            <tr><td><code>offset</code></td><td>int</td><td>Pagination offset (default: 0)</td></tr>
+                            <tr><td><code>action</code></td><td>string</td><td>Filter by action type (e.g. <code>message_delete</code>, <code>user_timeout</code>)</td></tr>
+                            <tr><td><code>actor_id</code></td><td>int</td><td>Filter by actor (who performed the action)</td></tr>
+                            <tr><td><code>channel_id</code></td><td>int</td><td>Filter by channel</td></tr>
+                            <tr><td><code>since</code></td><td>string</td><td>ISO 8601 datetime — only entries after this time</td></tr>
+                        </table>
+                        <h4>Action Types</h4>
+                        <table class="param-table">
+                            <tr><th>Action</th><th>Description</th></tr>
+                            <tr><td><code>message_delete</code></td><td>Message deleted by moderator</td></tr>
+                            <tr><td><code>pin_message</code> / <code>unpin_message</code></td><td>Message pinned/unpinned</td></tr>
+                            <tr><td><code>user_timeout</code></td><td>User timed out from chat</td></tr>
+                            <tr><td><code>user_mute</code> / <code>user_unmute</code></td><td>User muted/unmuted</td></tr>
+                            <tr><td><code>user_ban</code> / <code>user_unban</code></td><td>User banned/unbanned</td></tr>
+                            <tr><td><code>channel_create</code> / <code>channel_update</code> / <code>channel_delete</code></td><td>Channel operations</td></tr>
+                            <tr><td><code>channel_clear</code></td><td>All messages cleared from channel</td></tr>
+                            <tr><td><code>role_change</code></td><td>User role updated</td></tr>
+                            <tr><td><code>channel_member_add</code> / <code>channel_member_remove</code> / <code>channel_member_role</code></td><td>Channel membership changes</td></tr>
+                            <tr><td><code>automod_trigger</code></td><td>Auto-moderation rule triggered</td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"entries"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"action"</span>: <span class="string">"message_delete"</span>,
+      <span class="string">"actor_id"</span>: <span class="number">1</span>,
+      <span class="string">"actor_username"</span>: <span class="string">"admin"</span>,
+      <span class="string">"target_id"</span>: <span class="number">42</span>,
+      <span class="string">"target_type"</span>: <span class="string">"message"</span>,
+      <span class="string">"target_name"</span>: <span class="string">"bob"</span>,
+      <span class="string">"details"</span>: {<span class="string">"reason"</span>: <span class="string">"Spam"</span>},
+      <span class="string">"channel_id"</span>: <span class="number">1</span>,
+      <span class="string">"channel_name"</span>: <span class="string">"general"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-13T10:00:00"</span>
+    }
+  ],
+  <span class="string">"total"</span>: <span class="number">156</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Auto-Moderation -->
+                <h2 id="automod">Auto-Moderation <span class="badge-admin">ADMIN</span></h2>
+                <p>Configure automatic message filtering rules that run before messages are saved. Moderators and above bypass all automod rules. Triggers are logged to the audit log.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/automod</span>
+                        <span class="endpoint-desc">List automod rules</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all configured auto-moderation rules.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"rules"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"type"</span>: <span class="string">"word_filter"</span>,
+      <span class="string">"name"</span>: <span class="string">"Profanity Filter"</span>,
+      <span class="string">"config"</span>: {<span class="string">"words"</span>: [<span class="string">"badword"</span>], <span class="string">"match_mode"</span>: <span class="string">"contains"</span>},
+      <span class="string">"enabled"</span>: <span class="keyword">true</span>,
+      <span class="string">"action"</span>: <span class="string">"delete"</span>,
+      <span class="string">"action_duration"</span>: <span class="keyword">null</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/automod</span>
+                        <span class="endpoint-desc">Create automod rule</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create a new auto-moderation rule. Regex patterns are validated on creation.</p>
+                        <h4>Rule Types</h4>
+                        <table class="param-table">
+                            <tr><th>Type</th><th>Config Fields</th><th>Description</th></tr>
+                            <tr><td><code>word_filter</code></td><td>words[], match_mode (exact/contains/regex)</td><td>Block messages containing specific words</td></tr>
+                            <tr><td><code>spam_filter</code></td><td>max_messages, window_seconds, max_duplicates</td><td>Rate-based spam detection</td></tr>
+                            <tr><td><code>link_filter</code></td><td>allow_list[], block_list[], block_all</td><td>URL filtering</td></tr>
+                            <tr><td><code>caps_filter</code></td><td>max_caps_percent, min_length</td><td>Excessive caps detection</td></tr>
+                            <tr><td><code>mention_spam</code></td><td>max_mentions</td><td>Too many @mentions in one message</td></tr>
+                        </table>
+                        <h4>Actions</h4>
+                        <table class="param-table">
+                            <tr><th>Action</th><th>Description</th></tr>
+                            <tr><td><code>warn</code></td><td>Send private error message to user</td></tr>
+                            <tr><td><code>delete</code></td><td>Block the message from being sent</td></tr>
+                            <tr><td><code>timeout</code></td><td>Auto-timeout the user (uses action_duration in minutes)</td></tr>
+                            <tr><td><code>mute</code></td><td>Auto-mute the user</td></tr>
+                        </table>
+                        <h4>Request Body</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"type"</span>: <span class="string">"word_filter"</span>,
+  <span class="string">"name"</span>: <span class="string">"Profanity Filter"</span>,
+  <span class="string">"config"</span>: {<span class="string">"words"</span>: [<span class="string">"spam"</span>, <span class="string">"scam"</span>], <span class="string">"match_mode"</span>: <span class="string">"contains"</span>},
+  <span class="string">"enabled"</span>: <span class="keyword">true</span>,
+  <span class="string">"action"</span>: <span class="string">"delete"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/automod/{id}</span>
+                        <span class="endpoint-desc">Update automod rule</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update an existing auto-moderation rule. All fields are optional; only provided fields are updated.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/admin/automod/{id}</span>
+                        <span class="endpoint-desc">Delete automod rule</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Permanently delete an auto-moderation rule.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/automod/actions</span>
+                        <span class="endpoint-desc">View automod trigger log</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns recent auto-moderation triggers showing which rules were triggered, by whom, and what action was taken.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"actions"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"rule_id"</span>: <span class="number">1</span>,
+      <span class="string">"rule_name"</span>: <span class="string">"Profanity Filter"</span>,
+      <span class="string">"user_id"</span>: <span class="number">5</span>,
+      <span class="string">"username"</span>: <span class="string">"bob"</span>,
+      <span class="string">"channel_id"</span>: <span class="number">1</span>,
+      <span class="string">"action_taken"</span>: <span class="string">"delete"</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-13T10:00:00"</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2>Rate Limits</h2>
@@ -4734,7 +5152,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=27"></script>
+    <script src="/static/js/portal.js?v=29"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

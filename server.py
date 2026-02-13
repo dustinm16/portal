@@ -7943,6 +7943,32 @@ async def _parse_mentions(text: str) -> set[int]:
     return mentioned_user_ids
 
 
+async def http_chat_users(request: web.Request) -> web.Response:
+    """List users for DM search (any authenticated user, returns basic info only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    query = request.query.get("q", "").strip().lower()
+    users = await db.get_all_users()
+    results = []
+    for u in users:
+        if u["id"] == token.user_id:
+            continue
+        uname = (u.get("username") or "").lower()
+        nname = (u.get("nickname") or "").lower()
+        if query and query not in uname and query not in nname:
+            continue
+        results.append({
+            "id": u["id"],
+            "username": u["username"],
+            "nickname": u.get("nickname"),
+        })
+        if len(results) >= 20:
+            break
+    return web.json_response({"users": results})
+
+
 async def http_get_chat_channels(request: web.Request) -> web.Response:
     """Get all chat channels (filtered by user access)."""
     token = await authenticate_request(request)
@@ -8912,6 +8938,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     user_id = user["id"]
     user_role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
     current_channel = None
+    voice_room = None  # Track which voice room user is in (channel name or "dm:{conv_id}")
 
     # Mutable state dict - HTTP handlers update this directly
     _avatar = {}
@@ -9027,15 +9054,17 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         # Leave current channel
                         if current_channel and current_channel in chat_rooms:
-                            # Auto-leave voice in old channel
-                            if current_channel in voice_state and user_id in voice_state[current_channel]:
-                                del voice_state[current_channel][user_id]
-                                await broadcast_to_channel(current_channel, {
-                                    "type": "voice_user_left",
-                                    "user_id": user_id
-                                })
-                                if not voice_state[current_channel]:
-                                    del voice_state[current_channel]
+                            # Auto-leave voice in old room
+                            if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
+                                del voice_state[voice_room][user_id]
+                                leave_msg = {"type": "voice_user_left", "user_id": user_id}
+                                if voice_room.startswith("dm:"):
+                                    await broadcast_to_voice_room(voice_room, leave_msg)
+                                else:
+                                    await broadcast_to_channel(voice_room, leave_msg)
+                                if not voice_state[voice_room]:
+                                    del voice_state[voice_room]
+                                voice_room = None
 
                             chat_rooms[current_channel].discard(user_entry)
                             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
@@ -10096,7 +10125,20 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     # Voice Chat Signaling
                     # =========================================================
                     elif msg_type == "voice_join":
-                        if not current_channel:
+                        # Determine voice room: channel name or dm:{conv_id}
+                        requested_room = data.get("room")
+                        if requested_room and requested_room.startswith("dm:"):
+                            try:
+                                dm_conv_id = int(requested_room.split(":", 1)[1])
+                            except (ValueError, IndexError):
+                                continue
+                            if not await db.is_dm_participant(dm_conv_id, user_id):
+                                await ws.send_json({"type": "error", "message": "Not a participant"})
+                                continue
+                            target_room = requested_room
+                        elif current_channel:
+                            target_room = current_channel
+                        else:
                             await ws.send_json({"type": "error", "message": "Join a channel first"})
                             continue
 
@@ -10112,19 +10154,20 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         # Add to voice state
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                        if current_channel not in voice_state:
-                            voice_state[current_channel] = {}
-                        voice_state[current_channel][user_id] = {
+                        if target_room not in voice_state:
+                            voice_state[target_room] = {}
+                        voice_state[target_room][user_id] = {
                             "ws": ws,
                             "username": display_name,
                             "muted": False,
                             "deafened": False,
                             "speaking": False
                         }
+                        voice_room = target_room
 
                         # Send current voice users to joiner
                         voice_users = []
-                        for vid, vdata in voice_state[current_channel].items():
+                        for vid, vdata in voice_state[voice_room].items():
                             voice_users.append({
                                 "user_id": vid,
                                 "username": vdata["username"],
@@ -10134,41 +10177,53 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
                         await ws.send_json({
                             "type": "voice_state",
-                            "channel": current_channel,
+                            "channel": voice_room,
                             "users": voice_users
                         })
 
-                        # Broadcast to channel that user joined voice
-                        await broadcast_to_channel(current_channel, {
-                            "type": "voice_user_joined",
-                            "user_id": user_id,
-                            "username": display_name
-                        }, exclude=ws)
-
-                        # Broadcast updated users list with voice state
-                        await broadcast_users_list(current_channel)
-                        logger.info(f"[Voice] {display_name} joined voice in #{current_channel}")
+                        # Broadcast join to room participants
+                        if voice_room.startswith("dm:"):
+                            await broadcast_to_voice_room(voice_room, {
+                                "type": "voice_user_joined",
+                                "user_id": user_id,
+                                "username": display_name
+                            }, exclude=ws)
+                        else:
+                            await broadcast_to_channel(voice_room, {
+                                "type": "voice_user_joined",
+                                "user_id": user_id,
+                                "username": display_name
+                            }, exclude=ws)
+                            await broadcast_users_list(voice_room)
+                        logger.info(f"[Voice] {display_name} joined voice in {voice_room}")
 
                     elif msg_type == "voice_leave":
-                        if not current_channel:
+                        if not voice_room:
                             continue
-                        if current_channel in voice_state and user_id in voice_state[current_channel]:
-                            del voice_state[current_channel][user_id]
-                            await broadcast_to_channel(current_channel, {
-                                "type": "voice_user_left",
-                                "user_id": user_id
-                            })
-                            if not voice_state[current_channel]:
-                                del voice_state[current_channel]
-                            await broadcast_users_list(current_channel)
+                        if voice_room in voice_state and user_id in voice_state[voice_room]:
+                            del voice_state[voice_room][user_id]
+                            if voice_room.startswith("dm:"):
+                                await broadcast_to_voice_room(voice_room, {
+                                    "type": "voice_user_left",
+                                    "user_id": user_id
+                                })
+                            else:
+                                await broadcast_to_channel(voice_room, {
+                                    "type": "voice_user_left",
+                                    "user_id": user_id
+                                })
+                                await broadcast_users_list(voice_room)
+                            if not voice_state[voice_room]:
+                                del voice_state[voice_room]
                             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                            logger.info(f"[Voice] {display_name} left voice in #{current_channel}")
+                            logger.info(f"[Voice] {display_name} left voice in {voice_room}")
+                        voice_room = None
 
                     elif msg_type == "voice_signal":
                         # Forward WebRTC signaling to target user
                         target_user_id = data.get("target_user_id")
                         signal_data = data.get("signal")
-                        if not target_user_id or not signal_data:
+                        if not target_user_id or not signal_data or not voice_room:
                             continue
 
                         try:
@@ -10177,8 +10232,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
 
                         # Find target in voice state
-                        if current_channel in voice_state and target_user_id in voice_state[current_channel]:
-                            target_ws = voice_state[current_channel][target_user_id]["ws"]
+                        if voice_room in voice_state and target_user_id in voice_state[voice_room]:
+                            target_ws = voice_state[voice_room][target_user_id]["ws"]
                             try:
                                 if not target_ws.closed:
                                     await target_ws.send_json({
@@ -10191,41 +10246,41 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "voice_mute":
                         muted = bool(data.get("muted", False))
-                        if current_channel in voice_state and user_id in voice_state[current_channel]:
-                            voice_state[current_channel][user_id]["muted"] = muted
-                            await broadcast_to_channel(current_channel, {
-                                "type": "voice_mute_changed",
-                                "user_id": user_id,
-                                "muted": muted
-                            })
+                        if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
+                            voice_state[voice_room][user_id]["muted"] = muted
+                            bcast = {"type": "voice_mute_changed", "user_id": user_id, "muted": muted}
+                            if voice_room.startswith("dm:"):
+                                await broadcast_to_voice_room(voice_room, bcast)
+                            else:
+                                await broadcast_to_channel(voice_room, bcast)
 
                     elif msg_type == "voice_deafen":
                         deafened = bool(data.get("deafened", False))
-                        if current_channel in voice_state and user_id in voice_state[current_channel]:
-                            voice_state[current_channel][user_id]["deafened"] = deafened
-                            await broadcast_to_channel(current_channel, {
-                                "type": "voice_deafen_changed",
-                                "user_id": user_id,
-                                "deafened": deafened
-                            })
+                        if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
+                            voice_state[voice_room][user_id]["deafened"] = deafened
+                            bcast = {"type": "voice_deafen_changed", "user_id": user_id, "deafened": deafened}
+                            if voice_room.startswith("dm:"):
+                                await broadcast_to_voice_room(voice_room, bcast)
+                            else:
+                                await broadcast_to_channel(voice_room, bcast)
 
                     elif msg_type == "voice_speaking":
                         speaking = bool(data.get("speaking", False))
-                        if current_channel in voice_state and user_id in voice_state[current_channel]:
+                        if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
                             # Rate-limit speaking broadcasts (max 1 per 100ms)
-                            rate_key = (current_channel, user_id)
+                            rate_key = (voice_room, user_id)
                             now = monotonic()
                             last = _voice_speaking_last.get(rate_key, 0)
                             if now - last < 0.1:
                                 continue
                             _voice_speaking_last[rate_key] = now
 
-                            voice_state[current_channel][user_id]["speaking"] = speaking
-                            await broadcast_to_channel(current_channel, {
-                                "type": "voice_speaking_changed",
-                                "user_id": user_id,
-                                "speaking": speaking
-                            })
+                            voice_state[voice_room][user_id]["speaking"] = speaking
+                            bcast = {"type": "voice_speaking_changed", "user_id": user_id, "speaking": speaking}
+                            if voice_room.startswith("dm:"):
+                                await broadcast_to_voice_room(voice_room, bcast)
+                            else:
+                                await broadcast_to_channel(voice_room, bcast)
 
                     # ==============================================
                     # Direct Message handlers
@@ -10519,7 +10574,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         else:
             _online_users[user_id] = count
 
-        # Clean up voice state (remove from any channel)
+        # Clean up voice state (remove from any room)
         for vc in list(voice_state.keys()):
             vc_users = voice_state.get(vc)
             if vc_users is None:
@@ -10527,11 +10582,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             if user_id in vc_users:
                 del vc_users[user_id]
                 try:
-                    await broadcast_to_channel(vc, {
-                        "type": "voice_user_left",
-                        "user_id": user_id
-                    })
-                    await broadcast_users_list(vc)
+                    leave_msg = {"type": "voice_user_left", "user_id": user_id}
+                    if vc.startswith("dm:"):
+                        await broadcast_to_voice_room(vc, leave_msg)
+                    else:
+                        await broadcast_to_channel(vc, leave_msg)
+                        await broadcast_users_list(vc)
                 except Exception:
                     pass
                 if not vc_users:
@@ -11039,6 +11095,20 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None):
 
     # Clean up dead connections
     chat_rooms[channel] -= dead_connections
+
+
+async def broadcast_to_voice_room(room: str, message: dict, exclude=None):
+    """Broadcast a message to all users in a voice room."""
+    if room not in voice_state:
+        return
+    for vid, vdata in list(voice_state[room].items()):
+        vws = vdata.get("ws")
+        if vws and vws != exclude:
+            try:
+                if not vws.closed:
+                    await vws.send_json(message)
+            except Exception:
+                pass
 
 
 async def send_notification(user_id: int, type: str, title: str,
@@ -12101,6 +12171,7 @@ def create_app() -> web.Application:
     app.router.add_get("/watch/{id}", http_watch_stream_page)
 
     # Chat API
+    app.router.add_get("/api/chat/users", http_chat_users)
     app.router.add_get("/api/chat/channels", http_get_chat_channels)
     app.router.add_post("/api/chat/channels", http_create_chat_channel)
     app.router.add_put("/api/chat/channels/{id}", http_update_chat_channel)

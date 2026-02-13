@@ -1790,6 +1790,105 @@ DM signaling piggybacks on the existing `/ws/chat` WebSocket connection. No sepa
 
 ---
 
+### User Blocking
+
+Users can block other users. Blocking prevents DM communication in both directions.
+
+#### GET /api/users/blocked
+List user IDs the current user has blocked.
+
+**Response:**
+```json
+{ "blocked": [1, 5, 12] }
+```
+
+#### POST /api/users/{id}/block
+Block a user. Cannot block yourself.
+
+**Response:** `{ "success": true }`
+
+#### DELETE /api/users/{id}/block
+Unblock a user.
+
+**Response:** `{ "success": true }`
+
+**Enforcement:**
+- Blocked users' messages are collapsed in chat (click-to-reveal)
+- DM creation is blocked bidirectionally
+- DM messages are blocked bidirectionally
+
+---
+
+### Polls
+
+Inline polls in chat channels. Created via WebSocket, voted on in real-time.
+
+**WebSocket Message Types:**
+- `create_poll` — Create a poll: `{ type: "create_poll", question, options: ["A","B"], allow_multiple?, anonymous_votes?, duration_seconds? }`
+- `vote_poll` — Vote: `{ type: "vote_poll", poll_id, option_index }`
+- `close_poll` — Close (creator or mod+): `{ type: "close_poll", poll_id }`
+
+**Broadcast Types:**
+- `poll_created` — New poll with message
+- `poll_updated` — Vote count changed
+- `poll_closed` — Poll closed
+
+**Constraints:**
+- Question: max 500 chars
+- Options: 2-10, max 200 chars each
+- Duration: optional, in seconds
+- Only creator or mod+ can close
+
+---
+
+### Channel Permissions
+
+Channels support visibility and mode settings for access control.
+
+**Fields on channels:**
+- `visibility`: `public` (default) or `private` — private channels require membership
+- `mode`: `open` (default) or `readonly` — readonly channels only allow mod+/channel-moderator to send
+
+#### GET /api/chat/channels/{id}/members
+List members of a channel. Accessible to members and moderator+.
+
+**Response:**
+```json
+{ "members": [{ "id": 1, "channel_id": 5, "user_id": 10, "role": "moderator", "username": "alice" }] }
+```
+
+#### POST /api/chat/channels/{id}/members
+Add a member to a channel. Requires moderator+ or channel-moderator.
+
+**Request:** `{ "user_id": 10, "role": "member" }`
+
+#### DELETE /api/chat/channels/{id}/members/{user_id}
+Remove a member. Users can remove themselves; moderator+ can remove others.
+
+#### PUT /api/chat/channels/{id}/members/{user_id}
+Update a member's channel role. Requires moderator+.
+
+**Request:** `{ "role": "moderator" }`
+
+**Channel roles:** `member` (can view/send), `moderator` (can manage members)
+
+---
+
+### Chat User Search
+
+#### GET /api/chat/users
+Search users for DM creation. Available to all authenticated users. Returns basic info only (id, username, nickname).
+
+**Query Parameters:**
+- `q` — Search query (matches username or nickname)
+
+**Response:**
+```json
+{ "users": [{ "id": 1, "username": "alice", "nickname": "Alice" }] }
+```
+
+---
+
 ### Message Search
 
 Full-text search across chat messages (both channel messages and DMs). Uses SQLite FTS5 for efficient indexing. Search results are filtered by the user's access: channel messages from channels the user can see, and DM messages from conversations the user participates in.
@@ -1883,9 +1982,11 @@ Rebuild the FTS5 search index from encrypted messages. Decrypts all messages, to
 
 ### Voice Chat
 
-Live voice chat uses WebRTC P2P mesh (2-10 users per channel). The server acts purely as a signaling relay — no audio is processed or stored server-side. Audio is encrypted via WebRTC DTLS-SRTP.
+Live voice chat uses WebRTC P2P mesh (2-10 users per room). The server acts purely as a signaling relay — no audio is processed or stored server-side. Audio is encrypted via WebRTC DTLS-SRTP.
 
 Voice signaling piggybacks on the existing `/ws/chat` WebSocket. No separate WebSocket connection is needed.
+
+**Voice rooms:** Voice works in both channels and DMs. For channels, the room is the channel name. For DMs, pass `room: "dm:{conversation_id}"` in the `voice_join` message.
 
 #### GET /api/voice/ice-servers
 Get ICE server configuration for WebRTC peer connections.
@@ -1909,6 +2010,7 @@ TURN server is optional — only included if configured via environment variable
 **Client → Server:**
 ```json
 {"type": "voice_join"}
+{"type": "voice_join", "room": "dm:42"}
 {"type": "voice_leave"}
 {"type": "voice_signal", "target_user_id": 5, "signal": {"type": "offer", "sdp": "..."}}
 {"type": "voice_signal", "target_user_id": 5, "signal": {"type": "answer", "sdp": "..."}}
@@ -3099,6 +3201,72 @@ Trigger immediate data cleanup cycle.
   }
 }
 ```
+
+---
+
+### Audit Log (Moderator+)
+
+View log of all moderation actions. Entries are automatically created for: message_delete, pin/unpin_message, timeout/mute/unmute/ban/unban, channel CRUD, role changes, automod triggers, channel member management.
+
+#### GET /api/admin/audit-log
+Query audit log with optional filters.
+
+**Query Parameters:**
+- `limit` (default 50, max 100), `offset` (default 0)
+- `action` — Filter by action type
+- `actor_id` — Filter by who performed the action
+- `channel_id` — Filter by channel
+- `since` — ISO datetime cutoff
+
+**Response:**
+```json
+{
+  "entries": [{
+    "id": 1, "action": "message_delete", "actor_id": 10,
+    "actor_username": "admin", "target_id": 5, "target_type": "message",
+    "target_name": null, "details": "{}", "channel_id": 1,
+    "channel_name": "general", "created_at": "2026-02-13 19:00:00"
+  }],
+  "total": 42
+}
+```
+
+**Retention:** Configurable, default 90 days.
+
+---
+
+### Auto-Moderation (Admin)
+
+Automated message filtering with 5 rule types and 4 action types. Moderator+ bypass automod.
+
+#### GET /api/admin/automod
+List all automod rules.
+
+#### POST /api/admin/automod
+Create a new rule.
+
+**Request:**
+```json
+{
+  "type": "word_filter",
+  "name": "Bad Words",
+  "config": { "words": ["badword"], "match_mode": "contains" },
+  "action": "delete",
+  "action_duration": null
+}
+```
+
+**Rule types:** `word_filter`, `spam_filter`, `link_filter`, `caps_filter`, `mention_spam`
+**Actions:** `warn`, `delete`, `timeout`, `mute`
+
+#### PUT /api/admin/automod/{id}
+Update a rule.
+
+#### DELETE /api/admin/automod/{id}
+Delete a rule.
+
+#### GET /api/admin/automod/actions
+View automod trigger log.
 
 ---
 

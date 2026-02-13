@@ -109,7 +109,7 @@
                 "name": "Is Open Relay Portal a Discord alternative?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, and WebRTC voice chat — all self-hosted on your own infrastructure. Unlike Discord, your messages are encrypted at rest and you own all your data."
+                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, polls, user blocking, spoiler tags, per-channel permissions (public/private, open/read-only), auto-moderation, audit logging, and WebRTC voice chat (channels and DMs) — all self-hosted on your own infrastructure. Unlike Discord, your messages are encrypted at rest and you own all your data."
                 }
             },
             {
@@ -407,6 +407,9 @@
                     <li><a href="#chat">Community Chat</a></li>
                     <li><a href="#direct-messages">Direct Messages</a></li>
                     <li><a href="#message-search">Message Search</a></li>
+                    <li><a href="#user-blocking">User Blocking</a></li>
+                    <li><a href="#polls">Polls</a></li>
+                    <li><a href="#channel-permissions">Channel Permissions</a></li>
                     <li><a href="#notifications">Notifications</a></li>
                     <li><a href="#ssh-keys">SSH Keys</a></li>
                     <li><a href="#api-keys">API Keys & Auth</a></li>
@@ -415,6 +418,8 @@
                     <ul>
                         <li><a href="#admin-features">Admin Features</a></li>
                         <li><a href="#system-monitor">System Monitor</a></li>
+                        <li><a href="#audit-log">Audit Log</a></li>
+                        <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
                 <h4>Tools</h4>
                 <ul>
@@ -793,7 +798,8 @@
 
                 <h3>Message Features</h3>
                 <ul>
-                    <li><strong>Markdown</strong> &mdash; Use <code>**bold**</code>, <code>*italic*</code>, <code>`code`</code>, and <code>~~strikethrough~~</code></li>
+                    <li><strong>Markdown</strong> &mdash; Use <code>**bold**</code>, <code>*italic*</code>, <code>`code`</code>, <code>~~strikethrough~~</code>, and <code>||spoiler||</code> (click to reveal)</li>
+                    <li><strong>Headers</strong> &mdash; Use <code># Heading</code>, <code>## Subheading</code>, and <code>### Small Heading</code> for message structure</li>
                     <li><strong>@Mentions</strong> &mdash; Type <code>@</code> to open an autocomplete dropdown filtered by your input. Select with arrow keys and Enter/Tab, or click a suggestion.</li>
                     <li><strong>Replies &amp; Threads</strong> &mdash; Click the reply icon to respond to a message. Click any reply preview to open a thread panel showing the full reply chain.</li>
                     <li><strong>Emoji Reactions</strong> &mdash; React to any message with emoji. Right-click a message and choose "React" to pick an emoji, or click an existing reaction pill to toggle yours.</li>
@@ -826,6 +832,7 @@
                     <li><strong>Push-to-Talk</strong> &mdash; Hold a key (default: Space) to transmit. Rebind the key in voice settings.</li>
                     <li><strong>Speaking Indicators</strong> &mdash; Users in voice show a green highlight when speaking, with mute/deafen icons in the user list.</li>
                     <li><strong>Watch Page</strong> &mdash; Voice chat is also available in the stream watch page sidebar for coordinated viewing.</li>
+                    <li><strong>DM Voice</strong> &mdash; Start a voice call directly in any DM conversation (1:1 or group). Works the same as channel voice with all the same controls.</li>
                 </ul>
 
                 <!-- Direct Messages -->
@@ -920,6 +927,39 @@
                 <div class="alert alert-warning">
                     <strong>Rate limit:</strong> Search is limited to 10 queries per minute per user to prevent abuse.
                 </div>
+
+                <!-- User Blocking -->
+                <h2 id="user-blocking">User Blocking</h2>
+                <p>Block users to hide their messages and prevent DM communication.</p>
+                <ul>
+                    <li><strong>Hide Messages</strong> &mdash; Messages from blocked users are collapsed in chat channels. Click to optionally reveal.</li>
+                    <li><strong>DM Prevention</strong> &mdash; Blocking is bidirectional for DMs &mdash; neither party can message the other while a block is active.</li>
+                    <li><strong>Easy Management</strong> &mdash; Right-click any message to block/unblock the sender, or manage your block list via the REST API.</li>
+                    <li><strong>Personal Preference</strong> &mdash; Blocking is per-user and does not require admin intervention. Admins cannot override personal blocks.</li>
+                </ul>
+
+                <!-- Polls -->
+                <h2 id="polls">Polls</h2>
+                <p>Create inline polls in any chat channel to gather opinions and make decisions collaboratively.</p>
+                <ul>
+                    <li><strong>Quick Creation</strong> &mdash; Click the poll button next to the emoji picker. Add a question, 2-10 options, and optional settings.</li>
+                    <li><strong>Multi-Vote</strong> &mdash; Optionally allow users to vote for multiple options.</li>
+                    <li><strong>Anonymous Voting</strong> &mdash; Hide voter identities when privacy matters.</li>
+                    <li><strong>Time Limits</strong> &mdash; Set an optional duration in minutes for the poll to auto-close.</li>
+                    <li><strong>Live Results</strong> &mdash; Vote counts update in real-time for all participants.</li>
+                    <li><strong>Close Control</strong> &mdash; Poll creators and moderators can close a poll early.</li>
+                </ul>
+
+                <!-- Channel Permissions -->
+                <h2 id="channel-permissions">Channel Permissions</h2>
+                <p>Fine-grained control over who can see and post in each channel.</p>
+                <ul>
+                    <li><strong>Public / Private</strong> &mdash; Public channels are visible to everyone. Private channels require explicit membership &mdash; non-members can't see or join them.</li>
+                    <li><strong>Open / Read-Only</strong> &mdash; Open channels let all members post. Read-only channels restrict posting to moderators and channel moderators.</li>
+                    <li><strong>Channel Members</strong> &mdash; Admins, creators, and channel moderators can add and remove members from private channels.</li>
+                    <li><strong>Channel Moderators</strong> &mdash; Promote members to channel moderator for per-channel moderation control without granting server-wide mod powers.</li>
+                    <li><strong>Visual Indicators</strong> &mdash; Private channels show a lock icon; read-only channels show a muted speaker icon.</li>
+                </ul>
 
                 <!-- Notifications -->
                 <h3 id="notifications">Notifications</h3>
@@ -1213,6 +1253,36 @@
                 <p>View network interfaces (IPs, MAC, speed, TX/RX bytes) and all listening ports with associated processes.</p>
                 </div>
 
+                <!-- Audit Log -->
+                <h2 id="audit-log">Audit Log</h2>
+                <p>A complete, searchable record of all moderation actions on the server. Available to moderators and above in the Admin Panel.</p>
+                <ul>
+                    <li><strong>Comprehensive Tracking</strong> &mdash; Every mod action is logged: message deletions, timeouts, mutes, bans, channel operations, role changes, and automod triggers.</li>
+                    <li><strong>Filterable</strong> &mdash; Filter by action type, actor, channel, or date range to find specific events.</li>
+                    <li><strong>Paginated</strong> &mdash; Browse through the full history with pagination support.</li>
+                    <li><strong>Auto-Cleanup</strong> &mdash; Configurable retention period (default: 90 days) via the Data Retention settings.</li>
+                    <li><strong>Privacy</strong> &mdash; IP addresses are logged for security but not exposed in the API response.</li>
+                </ul>
+
+                <!-- Auto-Moderation -->
+                <h2 id="automod">Auto-Moderation</h2>
+                <p>Automated message filtering rules that protect chat channels without requiring moderators to be online. Configure rules in the Admin Panel &rarr; Settings tab.</p>
+                <ul>
+                    <li><strong>Word Filter</strong> &mdash; Block messages containing specific words or patterns. Supports exact match, contains, and regex modes.</li>
+                    <li><strong>Spam Filter</strong> &mdash; Detect rapid-fire or duplicate messages with configurable rate limits and duplicate thresholds.</li>
+                    <li><strong>Link Filter</strong> &mdash; Control URL posting with allow/block lists or block all links entirely.</li>
+                    <li><strong>Caps Filter</strong> &mdash; Prevent excessive caps lock usage above a configurable percentage threshold.</li>
+                    <li><strong>Mention Spam</strong> &mdash; Limit the number of @mentions per message to prevent notification abuse.</li>
+                </ul>
+                <h3>Automod Actions</h3>
+                <ul>
+                    <li><strong>Warn</strong> &mdash; Send a private error message to the user</li>
+                    <li><strong>Delete</strong> &mdash; Silently block the message from being sent</li>
+                    <li><strong>Timeout</strong> &mdash; Automatically timeout the user for a configurable duration</li>
+                    <li><strong>Mute</strong> &mdash; Automatically mute the user</li>
+                </ul>
+                <p>Moderators, admins, and superadmins bypass all automod rules. All triggers are logged to the audit log.</p>
+
                 <!-- File Manager -->
                 <h2 id="file-manager">File Manager</h2>
                 <p>Browse and manage files through the web interface. The File Manager page (<code>/files</code>) provides Remote Files (SFTP) access for all users. Server file management is available in the Admin Panel &rarr; Files tab (admin only).</p>
@@ -1289,7 +1359,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=28"></script>
+    <script src="/static/js/portal.js?v=29"></script>
     <script>
         // Prevent Portal.fetch from redirecting to login on 401 (this is a public page)
         const _originalPortalFetch = Portal.fetch.bind(Portal);

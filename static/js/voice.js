@@ -74,7 +74,7 @@ const VoiceChat = (() => {
         }
     }
 
-    async function join() {
+    async function join(room) {
         if (_inVoice) return;
         try {
             _localStream = await navigator.mediaDevices.getUserMedia({
@@ -90,9 +90,11 @@ const VoiceChat = (() => {
             return;
         }
 
-        // Send join to server
+        // Send join to server (with optional room for DM voice)
         if (_ws && _ws.readyState === WebSocket.OPEN) {
-            _ws.send(JSON.stringify({ type: 'voice_join' }));
+            const msg = { type: 'voice_join' };
+            if (room) msg.room = room;
+            _ws.send(JSON.stringify(msg));
         }
         _inVoice = true;
         _muted = false;
