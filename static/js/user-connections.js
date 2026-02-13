@@ -1248,59 +1248,41 @@ async function connectTo(connectionId) {
             return;
         }
 
-        switch (type) {
-            case 'sftp':
-                window.open(`/files#sftp-${connectionId}`, '_blank');
-                break;
-            case 'ssh':
-            case 'terminal':
-                window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600');
-                break;
-            case 'vnc':
-            case 'rdp':
-                window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                break;
-            case 'spice':
-                window.open(`/spice/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                break;
-            case 'proxmox':
-                window.open(`/proxmox/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                break;
-            case 'github':
-                window.open(`/github/connect?connection=${connectionId}`, '_blank', 'width=1400,height=900');
-                break;
-            case 'http_proxy':
-            case 'http':
-            case 'https':
-                window.open(`/proxy/${connectionId}`, '_blank');
-                break;
-            case 'mediamtx':
-            case 'stream':
-                window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                break;
-            case 'home_assistant':
-            case 'portainer':
-            case 'truenas':
-            case 'pfsense':
-            case 'jupyter':
-            case 'grafana':
-            case 'prometheus':
-                window.open(`/proxy/${connectionId}`, '_blank');
-                break;
-            case 'database':
-            case 'redis':
-            case 'mongodb':
-            case 'elasticsearch':
-            case 'telnet':
-            case 'minecraft_rcon':
-            case 'tcp_tunnel':
-            case 'secure_tunnel':
-            case 'vpn_tunnel':
-            case 'custom':
-                Portal.toast(`${conn.name}: ${conn.host}:${conn.port}`, 'info');
-                break;
-            default:
-                Portal.toast(`${conn.name || 'Connection'}: ${conn.host}:${conn.port}`, 'info');
+        // Check if this type uses the http_proxy plugin (covers 40+ web UI types)
+        const typeInfo = connectionTypes[type];
+        const isHttpProxy = typeInfo ? typeInfo.plugin === 'http_proxy' : false;
+
+        if (isHttpProxy) {
+            window.open(`/proxy/${connectionId}`, '_blank');
+        } else {
+            switch (type) {
+                case 'sftp':
+                    window.open(`/files#sftp-${connectionId}`, '_blank');
+                    break;
+                case 'ssh':
+                case 'terminal':
+                    window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600');
+                    break;
+                case 'vnc':
+                case 'rdp':
+                    window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                    break;
+                case 'spice':
+                    window.open(`/spice/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                    break;
+                case 'proxmox':
+                    window.open(`/proxmox/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                    break;
+                case 'github':
+                    window.open(`/github/connect?connection=${connectionId}`, '_blank', 'width=1400,height=900');
+                    break;
+                case 'mediamtx':
+                case 'stream':
+                    window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
+                    break;
+                default:
+                    Portal.toast(`${conn.name || 'Connection'}: ${conn.host}:${conn.port}`, 'info');
+            }
         }
     } catch (error) {
         console.error('[Connections] Error connecting:', error);

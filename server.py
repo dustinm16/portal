@@ -587,7 +587,25 @@ async def http_authenticated_upload(request: web.Request) -> web.Response:
     if not content_type:
         content_type = "application/octet-stream"
 
-    return web.FileResponse(filepath, headers={"Content-Type": content_type})
+    # Security: only allow safe types to render inline.
+    # HTML, SVG, JS, CSS, XML etc. could execute scripts in portal's origin (stored XSS).
+    SAFE_INLINE_TYPES = {
+        "image/jpeg", "image/png", "image/gif", "image/webp",
+        "video/mp4", "video/webm",
+        "audio/mpeg", "audio/ogg",
+        "application/pdf",
+    }
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+    }
+    if content_type not in SAFE_INLINE_TYPES:
+        # Force download — never render as active content
+        content_type = "application/octet-stream"
+        fname = filepath.name
+        headers["Content-Disposition"] = f'attachment; filename="{fname}"'
+
+    headers["Content-Type"] = content_type
+    return web.FileResponse(filepath, headers=headers)
 
 
 async def http_create_token(request: web.Request) -> web.Response:
@@ -2494,6 +2512,7 @@ async def http_create_rtmp_token(request: web.Request) -> web.Response:
     return web.json_response({
         "token": rtmp_token,
         "expires_in": Config.RTMP_TOKEN_EXPIRY_MINUTES * 60,
+        "grace_seconds": Config.RTMP_TOKEN_GRACE_SECONDS,
         "rtmp_url": rtmp_url,
     })
 
@@ -3251,23 +3270,38 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             if token_record["revoked"]:
                 logger.warning(f"Revoked RTMP token from {ip}")
                 return web.json_response({"error": "Token revoked"}, status=401)
-            expires = datetime.fromisoformat(token_record["expires_at"])
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            if expires < datetime.now(timezone.utc):
-                logger.warning(f"Expired RTMP token from {ip}")
-                return web.json_response({"error": "Token expired"}, status=401)
-            # Grace period: allow re-auth within window after first use (OBS reconnect)
             if token_record["used"]:
-                used_at = datetime.fromisoformat(token_record["used_at"])
-                if used_at.tzinfo is None:
-                    used_at = used_at.replace(tzinfo=timezone.utc)
+                # IP-bound reconnect: verify IP matches
+                bound_ip = token_record.get("bound_ip")
+                if bound_ip and bound_ip != ip:
+                    logger.warning(f"RTMP token IP mismatch: bound={bound_ip}, got {ip}")
+                    return web.json_response({"error": "Token bound to different IP"}, status=401)
+                # Rolling grace window from last activity
+                last_active_str = token_record.get("last_active_at") or token_record.get("used_at")
+                last_active = datetime.fromisoformat(last_active_str)
+                if last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
                 grace = timedelta(seconds=Config.RTMP_TOKEN_GRACE_SECONDS)
-                if datetime.now(timezone.utc) - used_at > grace:
-                    logger.warning(f"RTMP token grace period expired from {ip}")
-                    return web.json_response({"error": "Token already used"}, status=401)
+                if datetime.now(timezone.utc) - last_active > grace:
+                    logger.warning(f"RTMP token grace period expired from {ip} (last active {last_active_str})")
+                    return web.json_response({"error": "Token expired (reconnect grace period)"}, status=401)
+                # Refresh activity timestamp for rolling window
+                await db.refresh_rtmp_token_activity(token_record["id"])
+                # Bind IP on reconnect if not yet bound (pre-migration tokens)
+                if not bound_ip:
+                    await db.mark_rtmp_token_used(token_record["id"], ip)
+                logger.info(f"RTMP token reconnect from bound IP {ip}")
             else:
-                await db.mark_rtmp_token_used(token_record["id"])
+                # First use: check creation expiry window
+                expires = datetime.fromisoformat(token_record["expires_at"])
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if expires < datetime.now(timezone.utc):
+                    logger.warning(f"Expired RTMP token from {ip}")
+                    return web.json_response({"error": "Token expired"}, status=401)
+                # Bind to IP and mark as used
+                await db.mark_rtmp_token_used(token_record["id"], ip)
+                logger.info(f"RTMP token bound to IP {ip}")
             # Verify stream has rtmp_enabled
             if not token_record.get("rtmp_enabled"):
                 logger.warning(f"RTMP token for stream with RTMP disabled from {ip}")
@@ -3396,8 +3430,13 @@ async def http_stream_event(request: web.Request) -> web.Response:
         if stream_key.startswith("rtmp_"):
             token_hash = hashlib.sha256(stream_key.encode()).hexdigest()
             token_record = await db.get_rtmp_token(token_hash)
-            if token_record and token_record.get("stream_key"):
-                stream = await db.get_stream_by_key(token_record["stream_key"])
+            if token_record:
+                # Refresh activity so reconnect grace starts from disconnect moment
+                await db.refresh_rtmp_token_activity(token_record["id"])
+                if token_record.get("stream_key"):
+                    stream = await db.get_stream_by_key(token_record["stream_key"])
+                else:
+                    stream = None
             else:
                 stream = None
         else:
@@ -7636,6 +7675,248 @@ async def http_github_page(request: web.Request) -> web.Response:
 
     html = load_static_file("github.html")
     return web.Response(text=html, content_type="text/html")
+
+
+async def http_proxy_connection(request: web.Request) -> web.Response:
+    """Reverse proxy for user HTTP connections.
+
+    Forwards all HTTP requests to the target service, rewriting URLs
+    so that navigation stays within the /proxy/{conn_id}/ path.
+    Also handles WebSocket upgrades for real-time web UIs.
+    """
+    from urllib.parse import urlparse
+
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    conn_id_str = request.match_info.get("conn_id")
+    try:
+        conn_id = int(conn_id_str)
+    except (ValueError, TypeError):
+        return web.Response(status=400, text="Invalid connection ID")
+
+    connection = await db.get_user_connection(conn_id, token.user_id)
+    if not connection:
+        return web.Response(status=404, text="Connection not found")
+
+    conn_type = connection.get("type", "custom")
+    type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
+
+    if type_info.get("plugin") != "http_proxy":
+        return web.Response(status=400, text="Not an HTTP proxy connection")
+
+    config = connection.get("config", {})
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
+
+    # Build target URL
+    host = connection.get("host")
+    default_port = type_info.get("default_port", 80)
+    port = connection.get("port") or config.get("port") or default_port
+    if not config.get("target_url"):
+        # Use HTTPS for types that default to 443 or are explicitly HTTPS
+        https_types = {"https", "portainer", "truenas", "pfsense", "nextcloud", "cockpit"}
+        scheme = "https" if (conn_type in https_types or port == 443) else "http"
+        config["target_url"] = f"{scheme}://{host}:{port}"
+
+    target_url = config["target_url"].rstrip("/")
+    verify_ssl = config.get("verify_ssl", False)
+    timeout_s = config.get("timeout", 60)
+    proxy_prefix = f"/proxy/{conn_id}"
+
+    parsed_target = urlparse(target_url)
+    target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
+
+    # Handle WebSocket upgrade
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        ws_scheme = "wss" if parsed_target.scheme == "https" else "ws"
+        ws_path = request.match_info.get("path", "")
+        ws_query = request.query_string
+        ws_url = f"{ws_scheme}://{parsed_target.netloc}/{ws_path}"
+        if ws_query:
+            ws_url = f"{ws_url}?{ws_query}"
+
+        try:
+            connector = aiohttp.TCPConnector(ssl=verify_ssl)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.ws_connect(ws_url) as upstream:
+                    async def _fwd_client():
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await upstream.send_str(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                await upstream.send_bytes(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                                break
+
+                    async def _fwd_upstream():
+                        async for msg in upstream:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await ws.send_str(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                await ws.send_bytes(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                                break
+
+                    await asyncio.gather(_fwd_client(), _fwd_upstream())
+        except Exception as e:
+            logger.error(f"Proxy WS {conn_id} error: {e}")
+        return ws
+
+    # Build upstream URL
+    path = request.match_info.get("path", "")
+    query = request.query_string
+    upstream_url = f"{target_url}/{path}" if path else f"{target_url}/"
+    if query:
+        upstream_url = f"{upstream_url}?{query}"
+
+    # Prepare headers
+    fwd_headers = {}
+    for key, value in request.headers.items():
+        k = key.lower()
+        if k in ("host", "content-length", "transfer-encoding"):
+            continue
+        fwd_headers[key] = value
+
+    fwd_headers["Host"] = parsed_target.netloc
+    fwd_headers["X-Forwarded-For"] = request.remote or ""
+    fwd_headers["X-Forwarded-Proto"] = "https"
+    fwd_headers["X-Real-IP"] = request.remote or ""
+
+    if config.get("auth_header"):
+        fwd_headers["Authorization"] = config["auth_header"]
+    for k, v in config.get("extra_headers", {}).items():
+        fwd_headers[k] = v
+
+    # Record connection usage
+    await db.record_connection_usage(conn_id, token.user_id)
+
+    try:
+        connector = aiohttp.TCPConnector(ssl=verify_ssl)
+        async with aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=timeout_s),
+            auto_decompress=True
+        ) as session:
+            body = await request.read() if request.body_exists else None
+
+            async with session.request(
+                method=request.method,
+                url=upstream_url,
+                headers=fwd_headers,
+                data=body,
+                allow_redirects=False
+            ) as resp:
+                response_body = await resp.read()
+
+                # Build response headers
+                resp_headers = {}
+                for key, value in resp.headers.items():
+                    k = key.lower()
+                    if k in ("transfer-encoding", "connection", "keep-alive",
+                             "proxy-authenticate", "proxy-authorization",
+                             "te", "trailers", "upgrade",
+                             "content-security-policy", "x-frame-options",
+                             "content-encoding", "content-length"):
+                        continue
+
+                    # Rewrite Location headers for redirects
+                    if k == "location":
+                        loc = value
+                        if loc.startswith(target_origin):
+                            loc = proxy_prefix + loc[len(target_origin):]
+                        elif loc.startswith("/"):
+                            loc = proxy_prefix + loc
+                        resp_headers[key] = loc
+                        continue
+
+                    # Rewrite Set-Cookie Path
+                    if k == "set-cookie":
+                        value = re.sub(r'(?i)path=/', f'Path={proxy_prefix}/', value, count=1)
+
+                    resp_headers[key] = value
+
+                # Rewrite URLs in text responses
+                content_type = resp.headers.get("Content-Type", "")
+                if any(t in content_type for t in ("text/html", "text/css", "javascript")):
+                    try:
+                        charset = "utf-8"
+                        if "charset=" in content_type:
+                            charset = content_type.split("charset=")[1].split(";")[0].strip()
+                        text = response_body.decode(charset)
+
+                        # Replace absolute target URLs
+                        text = text.replace(target_origin, proxy_prefix)
+
+                        if "text/html" in content_type:
+                            # Rewrite root-relative URLs in HTML attributes
+                            text = re.sub(
+                                r'((?:href|src|action)\s*=\s*["\'])/',
+                                rf'\1{proxy_prefix}/',
+                                text
+                            )
+
+                            # Inject JS to intercept fetch/XHR/WebSocket for root-relative paths
+                            inject_js = (
+                                f'<script>(function(){{'
+                                f'var B="{proxy_prefix}";'
+                                f'var F=window.fetch;window.fetch=function(u,o){{'
+                                f'if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(B))u=B+u;'
+                                f'return F.call(this,u,o)}};'
+                                f'var X=XMLHttpRequest.prototype.open;'
+                                f'XMLHttpRequest.prototype.open=function(m,u){{'
+                                f'if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(B))'
+                                f'arguments[1]=B+u;return X.apply(this,arguments)}};'
+                                f'var W=window.WebSocket;window.WebSocket=function(u,p){{'
+                                f'if(typeof u==="string"){{'
+                                f'var r=u.match(/^wss?:\\/\\/[^/]+(\\/.*)$/);'
+                                f'if(r&&!r[1].startsWith(B))u=u.replace(r[1],B+r[1])}}'
+                                f'return new W(u,p)}};'
+                                f'window.WebSocket.prototype=W.prototype;'
+                                f'window.WebSocket.CONNECTING=W.CONNECTING;'
+                                f'window.WebSocket.OPEN=W.OPEN;'
+                                f'window.WebSocket.CLOSING=W.CLOSING;'
+                                f'window.WebSocket.CLOSED=W.CLOSED;'
+                                f'}})();</script>'
+                            )
+                            # Inject after <head> or at start
+                            if "<head>" in text:
+                                text = text.replace("<head>", f"<head>{inject_js}", 1)
+                            elif "<HEAD>" in text:
+                                text = text.replace("<HEAD>", f"<HEAD>{inject_js}", 1)
+                            elif "<html" in text.lower():
+                                text = inject_js + text
+                            else:
+                                text = inject_js + text
+
+                        response_body = text.encode(charset)
+                    except Exception:
+                        pass
+
+                return web.Response(
+                    status=resp.status,
+                    headers=resp_headers,
+                    body=response_body
+                )
+
+    except aiohttp.ClientError as e:
+        logger.error(f"Proxy connection {conn_id} error: {e}")
+        return web.Response(
+            status=502,
+            content_type="text/html",
+            text=f"<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:2rem'>"
+                 f"<h2>Cannot reach upstream service</h2>"
+                 f"<p>{type(e).__name__}: Could not connect to {connection.get('name', 'service')}</p>"
+                 f"<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
+                 f"</body></html>"
+        )
 
 
 async def http_admin_page(request: web.Request) -> web.Response:
@@ -11961,6 +12242,7 @@ async def security_headers_middleware(request: web.Request, handler):
             "font-src 'self' https://cdn.jsdelivr.net; "
             "connect-src 'self' wss:; "
             "media-src 'self' blob:; "
+            "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
             "worker-src 'self' blob:; "
             "frame-ancestors 'self'; "
             "base-uri 'self'; "
@@ -12226,6 +12508,10 @@ def create_app() -> web.Application:
     app.router.add_get("/spice/{service_id}", http_spice_page)
     app.router.add_get("/proxmox/{service_id}", http_proxmox_page)
     app.router.add_get("/github/{service_id}", http_github_page)
+    # User connection reverse proxy (all HTTP methods + WebSocket)
+    app.router.add_route("*", "/proxy/{conn_id}", http_proxy_connection)
+    app.router.add_route("*", "/proxy/{conn_id}/{path:.*}", http_proxy_connection)
+
     app.router.add_get("/admin", http_admin_page)
     app.router.add_get("/admin/", http_admin_page)  # Handle trailing slash
     app.router.add_get("/docs", http_api_docs_page)

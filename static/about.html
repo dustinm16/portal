@@ -612,6 +612,7 @@
                     <li><strong>Auth Method</strong> &mdash; Password or SSH key (for SSH connections)</li>
                 </ul>
                 <p>When you select a preset, documentation links appear below the dropdown &mdash; one linking to the software's official documentation and one linking to the <a href="/guides">Portal Setup Guide</a> for that connection type.</p>
+                <p><strong>Web UI connections</strong> (HTTP Proxy, Home Assistant, Grafana, Plex, and 40+ other types) are fully reverse-proxied through the portal. All navigation, API calls, and WebSocket traffic are intercepted and routed through <code>/proxy/{id}/</code>, so you can browse the remote web interface without exposing it directly to the internet.</p>
 
                 <h3>Connection Types</h3>
                 <p>Open Relay Portal supports <strong>75 connection types</strong> out of the box, covering remote access, web panels, databases, media servers, dev tools, monitoring, automation, file/photo management, security, and networking. The most common types are listed below &mdash; see the <a href="/guides">Guides</a> page for detailed setup instructions for each connection type.</p>
@@ -822,7 +823,8 @@
                     <li><strong>Message Editing</strong> &mdash; Edit your own messages within 5 minutes of sending. Right-click and select "Edit" to modify inline. Edited messages show an <em>(edited)</em> indicator.</li>
                     <li><strong>Pinned Messages</strong> &mdash; Moderators and admins can pin important messages. A pinned banner at the top of chat shows the count and expands to reveal all pinned messages.</li>
                     <li><strong>Link Previews</strong> &mdash; URLs in messages automatically generate preview cards with title, description, and thumbnail from OpenGraph metadata.</li>
-                    <li><strong>Image Sharing</strong> &mdash; Upload images via the attachment button or paste from clipboard</li>
+                    <li><strong>YouTube Embeds</strong> &mdash; YouTube links are automatically embedded as inline video players (privacy-enhanced mode via youtube-nocookie.com).</li>
+                    <li><strong>Image Sharing</strong> &mdash; Upload images via the attachment button or paste from clipboard. Uploaded files are sanitized &mdash; only safe types render inline; HTML/JS/SVG are forced to download to prevent XSS.</li>
                     <li><strong>Anonymous Mode</strong> &mdash; Post messages without revealing your identity</li>
                 </ul>
 

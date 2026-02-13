@@ -501,7 +501,7 @@ async function generateRtmpToken(streamId) {
                     <input type="text" value="${escapeHtml(data.token)}" readonly id="rtmp-token-input">
                     <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${escapeHtml(data.token)}')">Copy</button>
                 </div>
-                <small class="warning-text">Single-use token. Generate a new one for each streaming session.</small>
+                <small class="warning-text">Token binds to your IP on first use. Reconnects allowed within ${Math.floor((data.grace_seconds || 300) / 60)} min of disconnect.</small>
             </div>
             <div id="rtmp-token-countdown" style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;"></div>
         `;

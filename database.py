@@ -838,6 +838,9 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_channel_members_channel ON channel_members(channel_id)",
     "CREATE INDEX IF NOT EXISTS idx_channel_members_user ON channel_members(user_id)",
+    # RTMP token IP binding and reconnect grace
+    "ALTER TABLE rtmp_tokens ADD COLUMN bound_ip TEXT",
+    "ALTER TABLE rtmp_tokens ADD COLUMN last_active_at TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2531,11 +2534,21 @@ class Database:
             return result
         return None
 
-    async def mark_rtmp_token_used(self, token_id: int) -> bool:
-        """Mark an RTMP token as used."""
+    async def mark_rtmp_token_used(self, token_id: int, ip: str) -> bool:
+        """Mark an RTMP token as used and bind to the connecting IP."""
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
-            "UPDATE rtmp_tokens SET used = 1, used_at = ? WHERE id = ?",
+            "UPDATE rtmp_tokens SET used = 1, used_at = ?, bound_ip = ?, last_active_at = ? WHERE id = ?",
+            (now, ip, now, token_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def refresh_rtmp_token_activity(self, token_id: int) -> bool:
+        """Update last_active_at for rolling reconnect grace window."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "UPDATE rtmp_tokens SET last_active_at = ? WHERE id = ?",
             (now, token_id)
         )
         await self.conn.commit()
@@ -2551,24 +2564,38 @@ class Database:
         return cursor.rowcount
 
     async def cleanup_expired_rtmp_tokens(self) -> int:
-        """Delete tokens that expired more than 1 hour ago."""
+        """Delete tokens that are no longer usable.
+
+        - Unused tokens: delete if expired more than 1 hour ago
+        - Used tokens: delete if last activity more than 1 hour ago
+        - Revoked tokens: always delete
+        """
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         cursor = await self.conn.execute(
-            "DELETE FROM rtmp_tokens WHERE expires_at < ?",
-            (cutoff,)
+            """DELETE FROM rtmp_tokens WHERE
+               revoked = 1 OR
+               (used = 0 AND expires_at < ?) OR
+               (used = 1 AND (last_active_at < ? OR (last_active_at IS NULL AND used_at < ?)))""",
+            (cutoff, cutoff, cutoff)
         )
         await self.conn.commit()
         return cursor.rowcount
 
     async def get_active_rtmp_tokens(self, stream_id: int) -> list[dict]:
-        """Get active (non-expired, non-revoked) tokens for a stream."""
+        """Get active (usable) tokens for a stream."""
         now = datetime.now(timezone.utc).isoformat()
+        from config import Config
+        grace_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=Config.RTMP_TOKEN_GRACE_SECONDS)).isoformat()
         cursor = await self.conn.execute(
-            """SELECT id, created_at, expires_at, used, used_at
+            """SELECT id, created_at, expires_at, used, used_at, bound_ip, last_active_at
                FROM rtmp_tokens
-               WHERE stream_id = ? AND revoked = 0 AND expires_at > ?
+               WHERE stream_id = ? AND revoked = 0
+               AND (
+                   (used = 0 AND expires_at > ?) OR
+                   (used = 1 AND (last_active_at > ? OR (last_active_at IS NULL AND used_at > ?)))
+               )
                ORDER BY created_at DESC""",
-            (stream_id, now)
+            (stream_id, now, grace_cutoff, grace_cutoff)
         )
         return [dict(row) for row in await cursor.fetchall()]
 

@@ -36,7 +36,7 @@ The internet's communication infrastructure is centralized. Discord owns your ch
 RTMPS ingress with HLS playback. Stream from OBS, use hardware encoding (NVENC/AMF/x264), automatic VOD recording to your own storage. No platform cut, no algorithm, no ToS surprises.
 
 ### Encrypted Chat
-Real-time messaging with Fernet encryption at rest. Channels, replies, threads, reactions, @mentions, image embeds, link previews, pinned messages. Everything Discord does, except you own the database.
+Real-time messaging with Fernet encryption at rest. Channels, replies, threads, reactions, @mentions, image embeds, link previews, YouTube embeds, pinned messages. Everything Discord does, except you own the database.
 
 ### Direct Messages
 Private 1:1 and group DMs (up to 10 participants), all encrypted at rest. Reactions, replies, editing, typing indicators, unread badges, mute — the same features as channel chat, delivered in real-time via WebSocket. Offline users get persistent notifications.
@@ -48,7 +48,7 @@ Full-text search across channels and DMs powered by FTS5. Filter by user, date r
 WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
 
 ### Remote Access
-SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 75 connection types supported across 17 categories, with setup guides for each. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. No VPN required.
+SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 75 connection types supported across 17 categories, with setup guides for each. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. HTTP/HTTPS connections are fully reverse-proxied through the portal with URL rewriting, so you can browse web UIs (Home Assistant, Grafana, Plex, etc.) without exposing them directly. No VPN required.
 
 ### File Management
 Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI. Commander-style dual-pane file manager when multiple SFTP connections exist, enabling drag-and-drop transfers between remote hosts.
@@ -203,6 +203,7 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Zero-knowledge voice** — WebRTC DTLS-SRTP, audio never touches the server
 - **Path traversal protection** — File manager validates all paths with `Path.resolve()`
 - **Input validation** — All user input sanitized, no shell injection vectors
+- **Upload content security** — Uploaded files sanitized: only safe types (images, video, audio, PDF) render inline; HTML/JS/SVG forced to download to prevent stored XSS
 - **API credential redaction** — Passwords and keys never returned from API endpoints
 - **Stream key encryption** — SHA-256 hashed for lookups, encrypted at rest
 - **Rate limiting** — Per-IP request throttling on all endpoints

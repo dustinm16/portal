@@ -985,6 +985,7 @@ GET /terminal            - Terminal UI
 GET /vnc                 - VNC viewer
 GET /spice               - SPICE viewer
 GET /proxmox             - Proxmox dashboard
+*   /proxy/:conn_id/{path} - HTTP reverse proxy for user connections (all methods + WebSocket)
 GET /watch/:id           - Stream viewer (HLS)
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (public; admin sections server-stripped for non-admins)
@@ -1040,7 +1041,7 @@ class PluginBase:
 | tcp_tunnel | Generic TCP | - |
 | secure_tunnel | Encrypted tunnel | - |
 | vpn_tunnel | VPN bridge | - |
-| http_proxy | HTTP reverse proxy | 80 |
+| http_proxy | HTTP reverse proxy (full URL rewriting, JS interception, WebSocket relay) | 80 |
 
 ---
 
@@ -1107,12 +1108,12 @@ Open Relay Portal is designed with privacy and security as core principles:
 15. **Stream Auth** - Default-deny for unmatched actions; read/playback auth handled by Portal's HLS proxy
 16. **No Session Recording** - Privacy-first design, no session logging
 17. **WebSocket Security** - All WebSocket connections use WSS (TLS encrypted)
-18. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving)
+18. **Authenticated Uploads** - Chat images/uploads require authentication (route intercepted before static file serving); only safe MIME types (images, video, audio, PDF) render inline; HTML/JS/SVG/CSS/XML forced to `application/octet-stream` with `Content-Disposition: attachment` to prevent stored XSS; `X-Content-Type-Options: nosniff` on all uploaded file responses
 19. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
 20. **Stream Hash Redaction** - Internal `stream_key_hash` and `public_key_hash` stripped from all API responses (open, public, non-owner individual stream endpoints)
 21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
 22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
-23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; single-use with a configurable grace period for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
+23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; IP-bound on first use with rolling grace period (5 min default) for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
 24. **Certificate Management** - Admin-only cert operations (upload, generation, Let's Encrypt); private keys never exposed via API; cert/key pair validation before activation; file permissions 0o600 on private keys
 25. **File Manager Security** - Path traversal prevention via `Path.resolve()` + root check; blocked files list (`.env`, credentials); symlinks resolved and checked; configurable root directory; upload size limits enforced server-side
 26. **SFTP Browser Security** - Per-user connection ownership enforced on every request; only SSH/SFTP connection types eligible; SFTP connections are ephemeral (opened per-request, closed after); no path traversal possible (remote filesystem)
@@ -1121,6 +1122,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 29. **Registration Validation** - Username: 3-32 chars, alphanumeric + underscores only; Password: min 8 chars. Server-side validation with client-side preview.
 30. **Remember Me Sessions** - Login with `remember_me` extends session from 24 hours to 30 days. Cookie attributes (`max-age`, `httponly`, `secure`, `samesite=strict`) set accordingly.
 31. **Server-Side Content Stripping** - API documentation page admin-only sections (admin endpoints, system management, vulnerability scanner, etc.) are removed server-side for non-admin users by parsing and stripping `<div class="admin-only">` blocks. Non-admin users never receive admin API documentation in the HTML response. User-facing API documentation is public.
+32. **Reverse Proxy Isolation** - HTTP proxy connections strip upstream CSP/X-Frame-Options to prevent conflicts; injected JS intercepts `fetch()`, `XMLHttpRequest`, and `WebSocket` to route through proxy prefix; `Location` headers and `Set-Cookie Path` rewritten to prevent cookie/redirect leakage outside proxy scope; connection ownership verified on every request
 
 ### Public (Unauthenticated) Pages
 

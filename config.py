@@ -79,7 +79,7 @@ class Config:
     RTMP_PLAIN_ENABLED: bool = os.getenv("RTMP_PLAIN_ENABLED", "false").lower() == "true"
     RTMP_PLAIN_PORT: int = int(os.getenv("RTMP_PLAIN_PORT", "1935"))
     RTMP_TOKEN_EXPIRY_MINUTES: int = int(os.getenv("RTMP_TOKEN_EXPIRY_MINUTES", "15"))
-    RTMP_TOKEN_GRACE_SECONDS: int = int(os.getenv("RTMP_TOKEN_GRACE_SECONDS", "30"))
+    RTMP_TOKEN_GRACE_SECONDS: int = int(os.getenv("RTMP_TOKEN_GRACE_SECONDS", "300"))
 
     # Certificate Management
     CERT_METHOD: str = os.getenv("CERT_METHOD", "")  # letsencrypt, selfsigned, custom
