@@ -2789,7 +2789,7 @@ class Database:
         cursor = await self.conn.execute(
             """INSERT INTO chat_polls (channel_id, message_id, user_id, question, options,
                allow_multiple, anonymous_votes, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, message_id, user_id, json.dumps(options),
+            (channel_id, message_id, user_id, question, json.dumps(options),
              1 if allow_multiple else 0, 1 if anonymous_votes else 0, expires_at)
         )
         await self.conn.commit()
