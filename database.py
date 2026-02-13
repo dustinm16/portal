@@ -710,6 +710,32 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON invite_codes(code)",
     "CREATE INDEX IF NOT EXISTS idx_invite_codes_active ON invite_codes(is_active)",
     "ALTER TABLE users ADD COLUMN invite_code_id INTEGER REFERENCES invite_codes(id)",
+    # Discord parity: slowmode, channel categories, timeouts, file attachments
+    "ALTER TABLE chat_channels ADD COLUMN slowmode_seconds INTEGER DEFAULT 0",
+    "ALTER TABLE chat_channels ADD COLUMN category TEXT",
+    """CREATE TABLE IF NOT EXISTS chat_timeouts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        channel_id INTEGER,
+        moderator_id INTEGER NOT NULL,
+        type TEXT NOT NULL DEFAULT 'timeout',
+        reason TEXT,
+        expires_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE CASCADE,
+        FOREIGN KEY (moderator_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_timeouts_user ON chat_timeouts(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_timeouts_channel ON chat_timeouts(channel_id)",
+    "ALTER TABLE chat_messages ADD COLUMN attachment_url TEXT",
+    "ALTER TABLE chat_messages ADD COLUMN attachment_name TEXT",
+    "ALTER TABLE chat_messages ADD COLUMN attachment_size INTEGER",
+    "ALTER TABLE chat_messages ADD COLUMN attachment_type TEXT",
+    "ALTER TABLE dm_messages ADD COLUMN attachment_url TEXT",
+    "ALTER TABLE dm_messages ADD COLUMN attachment_name TEXT",
+    "ALTER TABLE dm_messages ADD COLUMN attachment_size INTEGER",
+    "ALTER TABLE dm_messages ADD COLUMN attachment_type TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2507,6 +2533,103 @@ class Database:
         row = await cursor.fetchone()
         return self._decrypt_stream_keys(dict(row)) if row else None
 
+    # Chat timeout/mute operations
+    async def create_chat_timeout(self, user_id: int, moderator_id: int,
+                                   type: str = 'timeout', channel_id: int = None,
+                                   reason: str = None, duration_seconds: int = None) -> int:
+        """Create a timeout or mute. duration_seconds=None means indefinite (mute)."""
+        expires_at = None
+        if duration_seconds:
+            expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)).isoformat()
+        # Remove any existing timeout/mute for this user+channel first
+        if channel_id:
+            await self.conn.execute(
+                "DELETE FROM chat_timeouts WHERE user_id = ? AND (channel_id = ? OR channel_id IS NULL)",
+                (user_id, channel_id)
+            )
+        else:
+            await self.conn.execute(
+                "DELETE FROM chat_timeouts WHERE user_id = ?", (user_id,)
+            )
+        cursor = await self.conn.execute(
+            """INSERT INTO chat_timeouts (user_id, channel_id, moderator_id, type, reason, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, channel_id, moderator_id, type, reason, expires_at)
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def remove_chat_timeout(self, user_id: int, channel_id: int = None) -> bool:
+        """Remove active timeouts/mutes for a user."""
+        if channel_id:
+            cursor = await self.conn.execute(
+                "DELETE FROM chat_timeouts WHERE user_id = ? AND (channel_id = ? OR channel_id IS NULL)",
+                (user_id, channel_id)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "DELETE FROM chat_timeouts WHERE user_id = ?", (user_id,)
+            )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def is_user_timed_out(self, user_id: int, channel_id: int = None) -> Optional[dict]:
+        """Check if user has an active timeout/mute. Returns record or None."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            """SELECT * FROM chat_timeouts
+               WHERE user_id = ? AND (channel_id IS NULL OR channel_id = ?)
+               AND (expires_at IS NULL OR expires_at > ?)
+               ORDER BY created_at DESC LIMIT 1""",
+            (user_id, channel_id, now)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_chat_timeouts(self, channel_id: int = None) -> list[dict]:
+        """Get all active timeouts/mutes."""
+        now = datetime.now(timezone.utc).isoformat()
+        if channel_id:
+            cursor = await self.conn.execute(
+                """SELECT t.*, u.username as target_username, m.username as moderator_username
+                   FROM chat_timeouts t
+                   JOIN users u ON t.user_id = u.id
+                   JOIN users m ON t.moderator_id = m.id
+                   WHERE (t.channel_id = ? OR t.channel_id IS NULL)
+                   AND (t.expires_at IS NULL OR t.expires_at > ?)
+                   ORDER BY t.created_at DESC""",
+                (channel_id, now)
+            )
+        else:
+            cursor = await self.conn.execute(
+                """SELECT t.*, u.username as target_username, m.username as moderator_username
+                   FROM chat_timeouts t
+                   JOIN users u ON t.user_id = u.id
+                   JOIN users m ON t.moderator_id = m.id
+                   WHERE t.expires_at IS NULL OR t.expires_at > ?
+                   ORDER BY t.created_at DESC""",
+                (now,)
+            )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def cleanup_expired_timeouts(self) -> int:
+        """Delete expired timeouts. Returns count deleted."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM chat_timeouts WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (now,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def get_user_by_nickname(self, nickname: str) -> Optional[dict]:
+        """Get a user by nickname (case-insensitive)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM users WHERE LOWER(nickname) = LOWER(?)", (nickname,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
     # VOD Storage operations
     async def get_vod_storage(self, user_id: int) -> Optional[dict]:
         """Get VOD storage config for a user."""
@@ -2607,18 +2730,18 @@ class Database:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def create_chat_channel(self, name: str, description: str = None, created_by: int = None) -> int:
+    async def create_chat_channel(self, name: str, description: str = None, created_by: int = None, category: str = None) -> int:
         """Create a new chat channel."""
         cursor = await self.conn.execute(
-            "INSERT INTO chat_channels (name, description, created_by) VALUES (?, ?, ?)",
-            (name, description, created_by)
+            "INSERT INTO chat_channels (name, description, created_by, category) VALUES (?, ?, ?, ?)",
+            (name, description, created_by, category)
         )
         await self.conn.commit()
         return cursor.lastrowid
 
     async def update_chat_channel(self, channel_id: int, **kwargs) -> bool:
         """Update a chat channel."""
-        allowed_fields = {"name", "description", "topic"}
+        allowed_fields = {"name", "description", "topic", "category", "slowmode_seconds"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False
@@ -2653,7 +2776,11 @@ class Database:
         reply_to: int = None,
         image_url: str = None,
         reply_preview_username: str = None,
-        reply_preview_text: str = None
+        reply_preview_text: str = None,
+        attachment_url: str = None,
+        attachment_name: str = None,
+        attachment_size: int = None,
+        attachment_type: str = None
     ) -> int:
         """Create a new chat message (encrypted)."""
         plaintext = message
@@ -2661,17 +2788,18 @@ class Database:
         encrypted_preview = encrypt_message(reply_preview_text) if reply_preview_text else None
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
+        has_attachment = 1 if (image_url or attachment_url) else 0
         cursor = await self.conn.execute(
-            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url, reply_preview_username, reply_preview_text)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url, reply_preview_username, encrypted_preview)
+            """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url, reply_preview_username, reply_preview_text, attachment_url, attachment_name, attachment_size, attachment_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, user_id, username, encrypted_message, message_type, created_at, int(anonymous), reply_to, image_url, reply_preview_username, encrypted_preview, attachment_url, attachment_name, attachment_size, attachment_type)
         )
         msg_id = cursor.lastrowid
         await self.conn.commit()
         # Index for full-text search
         await self.index_message_for_search(
             msg_id, plaintext, "channel", channel_id, user_id, username,
-            1 if image_url else 0, created_at
+            has_attachment, created_at
         )
         return msg_id
 

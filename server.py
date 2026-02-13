@@ -439,18 +439,11 @@ async def http_favicon(request: web.Request) -> web.Response:
 async def http_robots_txt(request: web.Request) -> web.Response:
     """Serve robots.txt for search engine crawling."""
     hostname = Config.HOSTNAME or request.host
-    body = f"""User-agent: *
-# Public pages
-Allow: /login
-Allow: /live
-Allow: /about
-Allow: /guides
-Allow: /api-docs
-# Static assets (CSS/JS for rendering)
-Allow: /static/css/
-Allow: /static/js/
-# Block everything else
-Disallow: /api/
+
+    # Shared disallow list — auth-required routes and static HTML files
+    # Cloudflare prepends User-agent: * / Allow: / plus AI bot blocks,
+    # so our Allow lines are redundant. Only Disallow rules matter here.
+    disallow_paths = """Disallow: /api/
 Disallow: /ws/
 Disallow: /admin
 Disallow: /dashboard
@@ -478,97 +471,34 @@ Disallow: /static/proxmox.html
 Disallow: /static/mediamtx.html
 Disallow: /static/spice.html
 Disallow: /static/sysmon.html
-Disallow: /static/unauthorized.html
+Disallow: /static/unauthorized.html"""
+
+    body = f"""# Cloudflare prepends managed rules: User-agent: * / Allow: /
+# and blocks AI training bots (GPTBot, ClaudeBot, CCBot, etc.)
+# Our rules below restrict auth-required paths.
+
+# Default rules for all crawlers
+User-agent: *
+{disallow_paths}
 Crawl-delay: 2
 
-# Googlebot (no crawl-delay — Google ignores it, uses Search Console settings)
+# Googlebot — no crawl-delay (Google ignores it, uses Search Console)
 User-agent: Googlebot
-Allow: /login
-Allow: /live
-Allow: /about
-Allow: /guides
-Allow: /api-docs
-Allow: /static/css/
-Allow: /static/js/
-Disallow: /api/
-Disallow: /ws/
-Disallow: /admin
-Disallow: /dashboard
-Disallow: /chat
-Disallow: /streams
-Disallow: /files
-Disallow: /watch
-Disallow: /static/uploads/
-Disallow: /static/admin.html
-Disallow: /static/index.html
-Disallow: /static/chat.html
-Disallow: /static/streams.html
-Disallow: /static/files.html
+{disallow_paths}
 
-# Bing
+# Bingbot
 User-agent: Bingbot
-Allow: /login
-Allow: /live
-Allow: /about
-Allow: /guides
-Allow: /api-docs
-Allow: /static/css/
-Allow: /static/js/
-Disallow: /api/
-Disallow: /ws/
-Disallow: /admin
-Disallow: /dashboard
-Disallow: /chat
-Disallow: /streams
-Disallow: /files
-Disallow: /watch
-Disallow: /static/uploads/
-Disallow: /static/admin.html
-Disallow: /static/index.html
-Disallow: /static/chat.html
-Disallow: /static/streams.html
-Disallow: /static/files.html
+{disallow_paths}
 Crawl-delay: 3
 
-# DuckDuckGo (uses Bing index, but respects its own robots rules)
+# DuckDuckBot
 User-agent: DuckDuckBot
-Allow: /login
-Allow: /live
-Allow: /about
-Allow: /guides
-Allow: /api-docs
-Allow: /static/css/
-Allow: /static/js/
-Disallow: /api/
-Disallow: /ws/
-Disallow: /admin
-Disallow: /dashboard
-Disallow: /chat
-Disallow: /streams
-Disallow: /files
-Disallow: /watch
-Disallow: /static/uploads/
-Disallow: /static/admin.html
+{disallow_paths}
+Crawl-delay: 2
 
 # Yandex
 User-agent: Yandex
-Allow: /login
-Allow: /live
-Allow: /about
-Allow: /guides
-Allow: /api-docs
-Allow: /static/css/
-Allow: /static/js/
-Disallow: /api/
-Disallow: /ws/
-Disallow: /admin
-Disallow: /dashboard
-Disallow: /chat
-Disallow: /streams
-Disallow: /files
-Disallow: /watch
-Disallow: /static/uploads/
-Disallow: /static/admin.html
+{disallow_paths}
 Crawl-delay: 5
 
 Sitemap: https://{hostname}/sitemap.xml
@@ -7821,9 +7751,33 @@ chat_user_state: dict[int, dict] = {}
 voice_state: dict[str, dict[int, dict]] = {}
 # Rate-limit speaking broadcasts: (channel, user_id) -> last_broadcast_time
 _voice_speaking_last: dict[tuple, float] = {}
+# Slowmode tracking: (channel_id, user_id) -> monotonic timestamp of last message
+_slowmode_last_msg: dict[tuple[int, int], float] = {}
 
 # DM WebSocket tracking: user_id -> set of ws connections for DM delivery
 dm_user_connections: dict[int, set] = {}
+
+
+async def _parse_mentions(text: str) -> set[int]:
+    """Parse @mentions from message text, return set of mentioned user IDs."""
+    pattern = r'@([\w\- ]+?)(?=\s*[@\n]|[.,!?;:\)\]}>]|\s*$)'
+    mentioned_names = set(re.findall(pattern, text))
+    if not mentioned_names:
+        return set()
+
+    mentioned_user_ids = set()
+    for name in mentioned_names:
+        name = name.strip()
+        if not name:
+            continue
+        user = await db.get_user_by_username(name)
+        if user:
+            mentioned_user_ids.add(user["id"])
+            continue
+        user = await db.get_user_by_nickname(name)
+        if user:
+            mentioned_user_ids.add(user["id"])
+    return mentioned_user_ids
 
 
 async def http_get_chat_channels(request: web.Request) -> web.Response:
@@ -7862,6 +7816,7 @@ async def http_create_chat_channel(request: web.Request) -> web.Response:
 
     name = data.get("name", "").strip().lower()
     description = data.get("description", "").strip()
+    category = data.get("category", "").strip() or None
 
     if not name:
         return web.json_response({"error": "Channel name is required"}, status=400)
@@ -7875,17 +7830,21 @@ async def http_create_chat_channel(request: web.Request) -> web.Response:
     if len(name) > 32:
         return web.json_response({"error": "Channel name too long (max 32 chars)"}, status=400)
 
+    if category and len(category) > 32:
+        return web.json_response({"error": "Category name too long (max 32 chars)"}, status=400)
+
     # Check if exists
     existing = await db.get_chat_channel_by_name(name)
     if existing:
         return web.json_response({"error": "Channel already exists"}, status=409)
 
-    channel_id = await db.create_chat_channel(name, description, token.user_id)
+    channel_id = await db.create_chat_channel(name, description, token.user_id, category=category)
 
     return web.json_response({
         "id": channel_id,
         "name": name,
-        "description": description
+        "description": description,
+        "category": category
     }, status=201)
 
 
@@ -8030,40 +7989,59 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
 
 
 async def http_upload_chat_image(request: web.Request) -> web.Response:
-    """Upload an image for chat embedding."""
+    """Upload a file for chat (images + documents + archives + code)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    ALLOWED_TYPES = {
+        "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
+        "application/pdf": ".pdf", "text/plain": ".txt", "text/markdown": ".md", "text/csv": ".csv",
+        "application/zip": ".zip", "application/gzip": ".gz",
+        "application/x-tar": ".tar", "application/x-7z-compressed": ".7z",
+        "application/json": ".json", "application/xml": ".xml",
+        "text/html": ".html", "text/css": ".css", "text/javascript": ".js",
+        "application/x-python": ".py", "text/x-python": ".py",
+        "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "video/mp4": ".mp4", "video/webm": ".webm",
+        "application/octet-stream": None,  # allow if extension is valid
+    }
+    ALLOWED_EXTENSIONS = {
+        ".jpg", ".jpeg", ".png", ".gif", ".webp",
+        ".pdf", ".txt", ".md", ".csv", ".log",
+        ".zip", ".gz", ".tar", ".7z",
+        ".json", ".xml", ".html", ".css", ".js", ".py", ".go", ".rs", ".sh",
+        ".mp3", ".ogg", ".mp4", ".webm",
+        ".conf", ".cfg", ".ini", ".yaml", ".yml", ".toml",
+    }
 
     try:
         reader = await request.multipart()
         field = await reader.next()
 
-        if field is None or field.name != "image":
-            return web.json_response({"error": "No image file provided"}, status=400)
+        if field is None or field.name not in ("image", "file"):
+            return web.json_response({"error": "No file provided"}, status=400)
 
-        content_type = field.headers.get(aiohttp.hdrs.CONTENT_TYPE, "")
-        if not content_type.startswith("image/"):
-            return web.json_response({"error": "File must be an image"}, status=400)
+        content_type = field.headers.get(aiohttp.hdrs.CONTENT_TYPE, "application/octet-stream")
+        original_filename = field.filename or "unknown"
+        ext = Path(original_filename).suffix.lower()
 
-        ext_map = {
-            "image/jpeg": ".jpg",
-            "image/png": ".png",
-            "image/gif": ".gif",
-            "image/webp": ".webp",
-        }
-        ext = ext_map.get(content_type)
-        if not ext:
-            return web.json_response({"error": "Unsupported image format"}, status=400)
+        # Validate file type
+        if content_type not in ALLOWED_TYPES and ext not in ALLOWED_EXTENSIONS:
+            return web.json_response({"error": f"File type not allowed: {content_type} ({ext})"}, status=400)
 
-        filename = f"{uuid.uuid4().hex}{ext}"
+        # Determine extension
+        file_ext = ALLOWED_TYPES.get(content_type) or ext or ".bin"
+        is_image = content_type.startswith("image/")
+
+        # Size limits: 5MB for images, 25MB for other files
+        max_size = 5 * 1024 * 1024 if is_image else 25 * 1024 * 1024
+
+        filename = f"{uuid.uuid4().hex}{file_ext}"
         upload_dir = Path(__file__).parent / "static" / "uploads" / "chat"
         upload_dir.mkdir(parents=True, exist_ok=True)
         filepath = upload_dir / filename
 
         size = 0
-        max_size = 5 * 1024 * 1024  # 5MB
-
         with open(filepath, "wb") as f:
             while True:
                 chunk = await field.read_chunk()
@@ -8073,14 +8051,21 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
                 if size > max_size:
                     f.close()
                     filepath.unlink()
-                    return web.json_response({"error": "File too large (max 5MB)"}, status=400)
+                    limit_mb = max_size // (1024 * 1024)
+                    return web.json_response({"error": f"File too large (max {limit_mb}MB)"}, status=400)
                 f.write(chunk)
 
-        image_url = f"/static/uploads/chat/{filename}"
-        return web.json_response({"url": image_url})
+        file_url = f"/static/uploads/chat/{filename}"
+        return web.json_response({
+            "url": file_url,
+            "filename": original_filename,
+            "size": size,
+            "content_type": content_type,
+            "is_image": is_image
+        })
 
     except Exception as e:
-        logger.error(f"Chat image upload error: {e}")
+        logger.error(f"Chat file upload error: {e}")
         return web.json_response({"error": "Upload failed"}, status=500)
 
 
@@ -8576,13 +8561,31 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         message_text = data.get("message", "").strip()
                         image_url = data.get("image_url", "").strip() or None
+                        attachment_url = data.get("attachment_url", "").strip() or None
+                        attachment_name = data.get("attachment_name", "").strip() or None
+                        attachment_size = data.get("attachment_size")
+                        attachment_type = data.get("attachment_type", "").strip() or None
 
                         # Validate image_url if provided
                         if image_url and not image_url.startswith("/static/uploads/chat/"):
                             image_url = None
 
-                        # Must have text or image
-                        if not message_text and not image_url:
+                        # Validate attachment_url if provided
+                        if attachment_url and not attachment_url.startswith("/static/uploads/chat/"):
+                            attachment_url = None
+                            attachment_name = None
+                            attachment_size = None
+                            attachment_type = None
+
+                        # Validate attachment_size
+                        if attachment_size is not None:
+                            try:
+                                attachment_size = int(attachment_size)
+                            except (ValueError, TypeError):
+                                attachment_size = None
+
+                        # Must have text, image, or attachment
+                        if not message_text and not image_url and not attachment_url:
                             continue
                         if len(message_text) > 4000:
                             continue
@@ -8600,6 +8603,25 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
                             continue
 
+                        # Check if user is timed out or muted
+                        timeout_info = await db.is_user_timed_out(user_id, channel["id"])
+                        if timeout_info:
+                            if timeout_info["type"] == "mute":
+                                await ws.send_json({
+                                    "type": "error",
+                                    "error_code": "muted",
+                                    "message": "You are muted in this channel"
+                                })
+                            else:
+                                expires = timeout_info.get("expires_at", "")
+                                await ws.send_json({
+                                    "type": "error",
+                                    "error_code": "timeout",
+                                    "message": f"You are timed out until {expires}",
+                                    "expires_at": expires
+                                })
+                            continue
+
                         # Rate limit: max N messages per window
                         now = monotonic()
                         chat_msg_times[:] = [t for t in chat_msg_times if now - t < chat_rate_window]
@@ -8610,6 +8632,22 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
                             continue
                         chat_msg_times.append(monotonic())
+
+                        # Slowmode check (mods/admins bypass)
+                        slowmode_secs = channel.get("slowmode_seconds") or 0
+                        if slowmode_secs > 0 and user_role not in ("admin", "superadmin", "moderator"):
+                            sm_key = (channel["id"], user_id)
+                            last_msg_time = _slowmode_last_msg.get(sm_key, 0)
+                            now_sm = monotonic()
+                            if now_sm - last_msg_time < slowmode_secs:
+                                remaining = int(slowmode_secs - (now_sm - last_msg_time)) + 1
+                                await ws.send_json({
+                                    "type": "error",
+                                    "error_code": "slowmode",
+                                    "message": f"Slowmode active. Wait {remaining}s before sending another message.",
+                                    "cooldown_remaining": remaining
+                                })
+                                continue
 
                         # Handle reply_to
                         reply_to_id = data.get("reply_to")
@@ -8643,8 +8681,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             reply_to=reply_to_id,
                             image_url=image_url,
                             reply_preview_username=reply_preview["username"] if reply_preview else None,
-                            reply_preview_text=reply_preview["message"] if reply_preview else None
+                            reply_preview_text=reply_preview["message"] if reply_preview else None,
+                            attachment_url=attachment_url,
+                            attachment_name=attachment_name,
+                            attachment_size=attachment_size,
+                            attachment_type=attachment_type
                         )
+
+                        # Update slowmode tracker
+                        if slowmode_secs > 0:
+                            _slowmode_last_msg[(channel["id"], user_id)] = monotonic()
 
                         # Broadcast to channel (display: Anon > Nickname > Username)
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
@@ -8665,7 +8711,33 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             broadcast_payload["reply_preview"] = reply_preview
                         if image_url:
                             broadcast_payload["image_url"] = image_url
+                        if attachment_url:
+                            broadcast_payload["attachment_url"] = attachment_url
+                            broadcast_payload["attachment_name"] = attachment_name
+                            broadcast_payload["attachment_size"] = attachment_size
+                            broadcast_payload["attachment_type"] = attachment_type
                         await broadcast_to_channel(current_channel, broadcast_payload)
+
+                        # Send @mention notifications
+                        if message_text and not my_state["anonymous"]:
+                            try:
+                                mentioned_ids = await _parse_mentions(message_text)
+                                if mentioned_ids:
+                                    channel_viewer_ids = set()
+                                    if current_channel in chat_rooms:
+                                        channel_viewer_ids = {entry[1] for entry in chat_rooms[current_channel]}
+                                    for mid in mentioned_ids:
+                                        if mid == user_id or mid in channel_viewer_ids:
+                                            continue
+                                        preview = message_text[:80] + "..." if len(message_text) > 80 else message_text
+                                        await send_notification(
+                                            mid, "mention",
+                                            f"{display_name} mentioned you in #{current_channel}",
+                                            preview,
+                                            {"channel": current_channel, "channel_id": channel["id"], "message_id": msg_id}
+                                        )
+                            except Exception as e:
+                                logger.error(f"Mention notification error: {e}")
 
                     elif msg_type == "typing":
                         if current_channel:
@@ -8804,6 +8876,118 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await broadcast_to_channel(current_channel, {
                                 "type": "message_unpinned",
                                 "message_id": message_id
+                            })
+
+                    elif msg_type == "timeout_user":
+                        if not current_channel:
+                            continue
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if not is_mod:
+                            await ws.send_json({"type": "error", "message": "Moderator access required"})
+                            continue
+                        target_user_id = data.get("target_user_id") or data.get("user_id")
+                        duration = data.get("duration", 300)
+                        reason = data.get("reason", "")
+                        if not target_user_id:
+                            continue
+                        try:
+                            target_user_id = int(target_user_id)
+                            duration = int(duration)
+                        except (ValueError, TypeError):
+                            continue
+                        target_user = await db.get_user_by_id(target_user_id)
+                        if not target_user:
+                            continue
+                        target_role = target_user.get("role") or "user"
+                        if get_role_level(target_role) >= get_role_level(user_role):
+                            await ws.send_json({"type": "error", "message": "Cannot timeout users with equal or higher role"})
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+                        await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
+                        display_name = my_state.get("nickname") or username
+                        target_name = target_user.get("nickname") or target_user["username"]
+                        await broadcast_to_channel(current_channel, {
+                            "type": "user_timed_out",
+                            "user_id": target_user_id,
+                            "username": target_name,
+                            "duration": duration,
+                            "reason": reason,
+                            "moderator": display_name
+                        })
+                        await send_notification(target_user_id, "timeout",
+                            f"You were timed out in #{current_channel}",
+                            f"Duration: {duration}s" + (f" — {reason}" if reason else ""),
+                            {"channel": current_channel})
+
+                    elif msg_type == "mute_user":
+                        if not current_channel:
+                            continue
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if not is_mod:
+                            await ws.send_json({"type": "error", "message": "Moderator access required"})
+                            continue
+                        target_user_id = data.get("target_user_id") or data.get("user_id")
+                        reason = data.get("reason", "")
+                        if not target_user_id:
+                            continue
+                        try:
+                            target_user_id = int(target_user_id)
+                        except (ValueError, TypeError):
+                            continue
+                        target_user = await db.get_user_by_id(target_user_id)
+                        if not target_user:
+                            continue
+                        target_role = target_user.get("role") or "user"
+                        if get_role_level(target_role) >= get_role_level(user_role):
+                            await ws.send_json({"type": "error", "message": "Cannot mute users with equal or higher role"})
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+                        await db.create_chat_timeout(target_user_id, user_id, "mute", channel["id"], reason)
+                        display_name = my_state.get("nickname") or username
+                        target_name = target_user.get("nickname") or target_user["username"]
+                        await broadcast_to_channel(current_channel, {
+                            "type": "user_muted",
+                            "user_id": target_user_id,
+                            "username": target_name,
+                            "reason": reason,
+                            "moderator": display_name
+                        })
+                        await send_notification(target_user_id, "mute",
+                            f"You were muted in #{current_channel}",
+                            reason or "No reason given",
+                            {"channel": current_channel})
+
+                    elif msg_type == "unmute_user":
+                        if not current_channel:
+                            continue
+                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        if not is_mod:
+                            await ws.send_json({"type": "error", "message": "Moderator access required"})
+                            continue
+                        target_user_id = data.get("target_user_id") or data.get("user_id")
+                        if not target_user_id:
+                            continue
+                        try:
+                            target_user_id = int(target_user_id)
+                        except (ValueError, TypeError):
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel:
+                            continue
+                        removed = await db.remove_chat_timeout(target_user_id, channel["id"])
+                        if removed:
+                            target_user = await db.get_user_by_id(target_user_id)
+                            target_name = (target_user.get("nickname") or target_user["username"]) if target_user else "Unknown"
+                            display_name = my_state.get("nickname") or username
+                            await broadcast_to_channel(current_channel, {
+                                "type": "user_unmuted",
+                                "user_id": target_user_id,
+                                "username": target_name,
+                                "moderator": display_name
                             })
 
                     elif msg_type == "mark_read":
@@ -11213,6 +11397,15 @@ class PortalServer:
                     total += d
                 except Exception as e:
                     logger.error(f"[Retention] Invite code cleanup failed: {e}")
+
+                # Expired chat timeouts
+                try:
+                    d = await db.cleanup_expired_timeouts()
+                    if d > 0:
+                        logger.info(f"[Retention] Cleaned {d} expired chat timeouts")
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Timeout cleanup failed: {e}")
 
                 # VACUUM
                 try:

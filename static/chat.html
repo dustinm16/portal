@@ -2165,6 +2165,62 @@
                 min-width: 0;
             }
         }
+
+        /* Slowmode badge */
+        .slowmode-badge {
+            font-size: 0.7rem;
+            margin-left: 4px;
+            opacity: 0.6;
+        }
+
+        /* Attachment file card */
+        .attachment-file {
+            margin-top: 0.5rem;
+            display: inline-block;
+        }
+
+        .attachment-file a {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: var(--text-primary);
+            text-decoration: none;
+            transition: background 0.2s;
+            max-width: 320px;
+        }
+
+        .attachment-file a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .attachment-icon {
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .attachment-info {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .attachment-name {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--accent-blue);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .attachment-size {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
     </style>
 </head>
 <body>
@@ -2339,7 +2395,7 @@
             <div class="image-upload-preview" id="image-upload-preview">
                 <img id="image-preview-thumb" src="" alt="Preview">
                 <div class="image-upload-info">
-                    <div>Image ready to send</div>
+                    <div id="upload-preview-label">File ready to send</div>
                     <small id="image-preview-size"></small>
                 </div>
                 <button class="image-cancel-btn" onclick="cancelImageUpload()">&times;</button>
@@ -2357,8 +2413,8 @@
                     <div class="emoji-picker" id="emoji-picker">
                         <div class="emoji-grid" id="emoji-grid"></div>
                     </div>
-                    <button class="emoji-btn" onclick="triggerImageUpload()" title="Upload image">📎</button>
-                    <input type="file" id="image-file-input" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none;" onchange="handleFileSelect(event)">
+                    <button class="emoji-btn" onclick="triggerImageUpload()" title="Upload file">📎</button>
+                    <input type="file" id="image-file-input" accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.txt,.md,.csv,.zip,.gz,.tar,.7z,.json,.xml,.html,.css,.js,.py,.go,.rs,.sh,.mp3,.ogg,.mp4,.webm,.log,.yaml,.yml,.toml,.conf,.cfg,.ini" style="display:none;" onchange="handleFileSelect(event)">
                     <input type="text" id="chat-input" placeholder="Type a message... (supports **bold**, *italic*, `code`, ~~strike~~)" autocomplete="off">
                     <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20">
@@ -2406,6 +2462,11 @@
                 <div class="form-group">
                     <label for="channel-description">Description (optional)</label>
                     <input type="text" id="channel-description" placeholder="What's this channel about?">
+                </div>
+                <div class="form-group">
+                    <label for="channel-category">Category (optional)</label>
+                    <input type="text" id="channel-category" placeholder="e.g. Gaming, Development, Music" maxlength="32">
+                    <small style="color: var(--text-muted);">Channels with the same category are grouped together</small>
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('create-channel-modal')">Cancel</button>
@@ -2490,6 +2551,12 @@
         <div class="context-menu-item" id="edit-menu-item" onclick="startEditMessage()" style="display:none;">✏️ Edit</div>
         <div class="context-menu-item" id="pin-menu-item" onclick="pinMessage()" style="display:none;">📌 Pin</div>
         <div class="context-menu-item" id="unpin-menu-item" onclick="unpinMessage()" style="display:none;">📌 Unpin</div>
+        <div class="context-menu-separator" id="mod-separator" style="display:none;"></div>
+        <div class="context-menu-item" id="timeout-5m-item" style="display:none;">⏱ Timeout 5m</div>
+        <div class="context-menu-item" id="timeout-30m-item" style="display:none;">⏱ Timeout 30m</div>
+        <div class="context-menu-item" id="timeout-1h-item" style="display:none;">⏱ Timeout 1h</div>
+        <div class="context-menu-item" id="mute-item" style="display:none;">🔇 Mute</div>
+        <div class="context-menu-item" id="unmute-item" style="display:none;">🔊 Unmute</div>
         <div class="context-menu-separator" id="delete-separator" style="display:none;"></div>
         <div class="context-menu-item danger" id="delete-menu-item" onclick="deleteMessage()" style="display:none;">🗑️ Delete</div>
     </div>
@@ -2502,8 +2569,21 @@
     <!-- Channel Context Menu -->
     <div class="context-menu" id="channel-context-menu">
         <div class="context-menu-item" onclick="renameChannel()">✏️ Rename</div>
+        <div class="context-menu-item" onclick="showSetCategoryPrompt()">📁 Set Category</div>
+        <div class="context-menu-item" onclick="showSetSlowmodeMenu()">⏱ Set Slowmode</div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" onclick="deleteChannel()">🗑️ Delete Channel</div>
+    </div>
+
+    <!-- Slowmode submenu -->
+    <div class="context-menu" id="slowmode-menu">
+        <div class="context-menu-item" onclick="setSlowmode(0)">Off</div>
+        <div class="context-menu-item" onclick="setSlowmode(5)">5 seconds</div>
+        <div class="context-menu-item" onclick="setSlowmode(10)">10 seconds</div>
+        <div class="context-menu-item" onclick="setSlowmode(30)">30 seconds</div>
+        <div class="context-menu-item" onclick="setSlowmode(60)">1 minute</div>
+        <div class="context-menu-item" onclick="setSlowmode(120)">2 minutes</div>
+        <div class="context-menu-item" onclick="setSlowmode(300)">5 minutes</div>
     </div>
 
     <!-- Rename Channel Modal -->
@@ -2567,6 +2647,8 @@
         let channelsList = []; // cache for context menu checks
         let knownChatNames = new Set(); // all names seen in messages + online users
         let pendingImageUrl = null; // uploaded image URL waiting to be sent
+        let pendingAttachment = null; // {url, name, size, type, is_image}
+        let slowmodeCooldownTimer = null; // timer for slowmode countdown
 
         // DM state
         let currentView = 'channel'; // 'channel' or 'dm'
@@ -2804,6 +2886,8 @@
 
         let offlineCollapsed = false;
 
+        const collapsedCategories = new Set(JSON.parse(localStorage.getItem('collapsedCategories') || '[]'));
+
         function renderChannels(channels) {
             channelsList = channels;
             const list = document.getElementById('channel-list');
@@ -2815,13 +2899,33 @@
 
             let html = '';
 
-            // Regular channels
-            if (regular.length) {
-                html += `<div class="channel-group-header">Channels <span class="group-count">${regular.length}</span></div>`;
+            // Group regular channels by category
+            const uncategorized = regular.filter(ch => !ch.category);
+            const categories = {};
+            regular.filter(ch => ch.category).forEach(ch => {
+                if (!categories[ch.category]) categories[ch.category] = [];
+                categories[ch.category].push(ch);
+            });
+
+            // Uncategorized channels
+            if (uncategorized.length) {
+                html += `<div class="channel-group-header">Channels <span class="group-count">${uncategorized.length}</span></div>`;
                 html += `<div class="channel-group-items">`;
-                html += regular.map(ch => renderChannelItem(ch, '')).join('');
+                html += uncategorized.map(ch => renderChannelItem(ch, '')).join('');
                 html += `</div>`;
             }
+
+            // Category groups (sorted alphabetically, collapsible)
+            Object.keys(categories).sort().forEach(cat => {
+                const catChannels = categories[cat];
+                const collapsed = collapsedCategories.has(cat);
+                html += `<div class="channel-group-header collapsible${collapsed ? ' collapsed' : ''}" onclick="toggleCategory('${escapeHtml(cat)}')">
+                    <span><span class="collapse-icon">&#9660;</span>${escapeHtml(cat)} <span class="group-count">${catChannels.length}</span></span>
+                </div>`;
+                html += `<div class="channel-group-items${collapsed ? ' collapsed' : ''}" data-category="${escapeHtml(cat)}">`;
+                html += catChannels.map(ch => renderChannelItem(ch, '')).join('');
+                html += `</div>`;
+            });
 
             // Live stream channels
             if (live.length) {
@@ -2852,15 +2956,26 @@
             list.innerHTML = html;
         }
 
+        function toggleCategory(cat) {
+            if (collapsedCategories.has(cat)) {
+                collapsedCategories.delete(cat);
+            } else {
+                collapsedCategories.add(cat);
+            }
+            localStorage.setItem('collapsedCategories', JSON.stringify([...collapsedCategories]));
+            renderChannels(channelsList);
+        }
+
         function renderChannelItem(ch, extraClass) {
             const unread = unreadCounts.get(ch.name) || 0;
             const badgeHtml = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
+            const slowBadge = ch.slowmode_seconds > 0 ? `<span class="slowmode-badge" title="Slowmode: ${ch.slowmode_seconds}s">&#9201;</span>` : '';
             return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
                      data-is-stream="${ch.is_stream_channel || false}"
                      data-stream-live="${ch.stream_is_live || false}">
-                    ${escapeHtml(ch.name)}${badgeHtml}
+                    ${escapeHtml(ch.name)}${slowBadge}${badgeHtml}
                 </div>`;
         }
 
@@ -3088,7 +3203,22 @@
                     renderDmList();
                     break;
                 case 'error':
-                    alert(data.message);
+                    if (data.error_code === 'slowmode') {
+                        startSlowmodeCooldown(data.cooldown_remaining || 5);
+                    } else if (data.error_code === 'timeout' || data.error_code === 'muted') {
+                        showToast(data.message, 'error');
+                    } else {
+                        showToast(data.message || 'An error occurred', 'error');
+                    }
+                    break;
+                case 'user_timed_out':
+                    appendSystemMessage(`${data.username} was timed out by ${data.moderator}${data.reason ? ': ' + data.reason : ''}`);
+                    break;
+                case 'user_muted':
+                    appendSystemMessage(`${data.username} was muted by ${data.moderator}${data.reason ? ': ' + data.reason : ''}`);
+                    break;
+                case 'user_unmuted':
+                    appendSystemMessage(`${data.username} was unmuted by ${data.moderator}`);
                     break;
                 default:
                     // Delegate voice_* messages to VoiceChat
@@ -3183,7 +3313,7 @@
                         ${data.edited_at ? '<span class="edited-indicator">(edited)</span>' : ''}
                         ${data.is_pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}
                     </div>
-                    <div class="message-text">${data.message ? formatMessage(data.message) : ''}${data.image_url ? `<br><img class="message-image" src="${escapeHtml(data.image_url)}" alt="image" onclick="openLightbox('${escapeHtml(data.image_url)}')" loading="lazy">` : ''}</div>
+                    <div class="message-text">${data.message ? formatMessage(data.message) : ''}${data.image_url ? `<br><img class="message-image" src="${escapeHtml(data.image_url)}" alt="image" onclick="openLightbox('${escapeHtml(data.image_url)}')" loading="lazy">` : ''}${data.attachment_url && !data.attachment_type?.startsWith('image/') ? `<div class="attachment-file"><a href="${escapeHtml(data.attachment_url)}" target="_blank" download="${escapeHtml(data.attachment_name || 'file')}"><span class="attachment-icon">${getFileIcon(data.attachment_type || '')}</span><span class="attachment-info"><span class="attachment-name">${escapeHtml(data.attachment_name || 'File')}</span><span class="attachment-size">${formatFileSize(data.attachment_size || 0)}</span></span></a></div>` : ''}</div>
                     ${reactionsHtml}
                 </div>
             `;
@@ -3870,7 +4000,7 @@
             const input = document.getElementById('chat-input');
             const message = input.value.trim();
 
-            if ((!message && !pendingImageUrl) || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if ((!message && !pendingImageUrl && !pendingAttachment) || !ws || ws.readyState !== WebSocket.OPEN) return;
 
             if (currentView === 'dm' && currentDmConversationId) {
                 // Send DM message
@@ -3881,6 +4011,12 @@
                 };
                 if (replyToId) payload.reply_to = replyToId;
                 if (pendingImageUrl) payload.image_url = pendingImageUrl;
+                if (pendingAttachment) {
+                    payload.attachment_url = pendingAttachment.url;
+                    payload.attachment_name = pendingAttachment.name;
+                    payload.attachment_size = pendingAttachment.size;
+                    payload.attachment_type = pendingAttachment.type;
+                }
                 ws.send(JSON.stringify(payload));
                 input.value = '';
                 cancelReply();
@@ -3901,6 +4037,13 @@
 
             if (pendingImageUrl) {
                 payload.image_url = pendingImageUrl;
+            }
+
+            if (pendingAttachment) {
+                payload.attachment_url = pendingAttachment.url;
+                payload.attachment_name = pendingAttachment.name;
+                payload.attachment_size = pendingAttachment.size;
+                payload.attachment_type = pendingAttachment.type;
             }
 
             ws.send(JSON.stringify(payload));
@@ -4000,13 +4143,17 @@
 
             const name = document.getElementById('channel-name-input').value.trim().toLowerCase();
             const description = document.getElementById('channel-description').value.trim();
+            const category = document.getElementById('channel-category').value.trim();
+
+            const body = { name, description };
+            if (category) body.category = category;
 
             try {
                 const response = await fetch('/api/chat/channels', {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, description })
+                    body: JSON.stringify(body)
                 });
 
                 if (!response.ok) {
@@ -4017,6 +4164,7 @@
                 closeModal('create-channel-modal');
                 document.getElementById('channel-name-input').value = '';
                 document.getElementById('channel-description').value = '';
+                document.getElementById('channel-category').value = '';
 
                 await loadChannels();
                 switchChannel(name);
@@ -4380,6 +4528,7 @@
         function hideContextMenus() {
             document.getElementById('message-context-menu').classList.remove('show');
             document.getElementById('channel-context-menu').classList.remove('show');
+            document.getElementById('slowmode-menu').classList.remove('show');
         }
 
         // Message context menu
@@ -4410,6 +4559,22 @@
             const showPin = isMod && currentView !== 'dm';
             document.getElementById('pin-menu-item').style.display = showPin && !isPinned ? '' : 'none';
             document.getElementById('unpin-menu-item').style.display = showPin && isPinned ? '' : 'none';
+
+            // Show/hide timeout/mute options (mods only, not own messages, channel view)
+            const canModerate = isMod && !isOwner && currentView !== 'dm' && contextMenuMessageUserId;
+            const modSep = document.getElementById('mod-separator');
+            const msgUsername = msgEl.querySelector('.message-username')?.textContent || 'user';
+            modSep.style.display = canModerate ? '' : 'none';
+            ['timeout-5m-item', 'timeout-30m-item', 'timeout-1h-item', 'mute-item', 'unmute-item'].forEach(id => {
+                document.getElementById(id).style.display = canModerate ? '' : 'none';
+            });
+            if (canModerate) {
+                document.getElementById('timeout-5m-item').onclick = () => timeoutUser(contextMenuMessageUserId, msgUsername, 300);
+                document.getElementById('timeout-30m-item').onclick = () => timeoutUser(contextMenuMessageUserId, msgUsername, 1800);
+                document.getElementById('timeout-1h-item').onclick = () => timeoutUser(contextMenuMessageUserId, msgUsername, 3600);
+                document.getElementById('mute-item').onclick = () => muteUser(contextMenuMessageUserId, msgUsername);
+                document.getElementById('unmute-item').onclick = () => unmuteUser(contextMenuMessageUserId);
+            }
 
             showContextMenu('message-context-menu', e.clientX, e.clientY);
         });
@@ -4578,6 +4743,143 @@
             }
         }
 
+        // Slowmode functions
+        function showSetSlowmodeMenu() {
+            const channelMenu = document.getElementById('channel-context-menu');
+            const rect = channelMenu.getBoundingClientRect();
+            const slowMenu = document.getElementById('slowmode-menu');
+            slowMenu.style.left = (rect.right + 2) + 'px';
+            slowMenu.style.top = rect.top + 'px';
+            slowMenu.classList.add('show');
+            // Keep within viewport
+            const smRect = slowMenu.getBoundingClientRect();
+            if (smRect.right > window.innerWidth) {
+                slowMenu.style.left = (rect.left - smRect.width - 2) + 'px';
+            }
+            if (smRect.bottom > window.innerHeight) {
+                slowMenu.style.top = (window.innerHeight - smRect.height - 5) + 'px';
+            }
+        }
+
+        async function setSlowmode(seconds) {
+            hideContextMenus();
+            if (!contextMenuChannelId) return;
+            try {
+                const response = await fetch(`/api/chat/channels/${contextMenuChannelId}`, {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ slowmode_seconds: seconds })
+                });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to set slowmode');
+                }
+                await loadChannels();
+                showToast(seconds > 0 ? `Slowmode set to ${seconds}s` : 'Slowmode disabled', 'success');
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        function startSlowmodeCooldown(seconds) {
+            const sendBtn = document.getElementById('send-btn');
+            const sendLabel = sendBtn.querySelector('.send-label');
+            sendBtn.disabled = true;
+            let remaining = Math.ceil(seconds);
+            if (sendLabel) sendLabel.textContent = remaining + 's';
+
+            if (slowmodeCooldownTimer) clearInterval(slowmodeCooldownTimer);
+            slowmodeCooldownTimer = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(slowmodeCooldownTimer);
+                    slowmodeCooldownTimer = null;
+                    sendBtn.disabled = false;
+                    if (sendLabel) sendLabel.textContent = 'Send';
+                } else {
+                    if (sendLabel) sendLabel.textContent = remaining + 's';
+                }
+            }, 1000);
+        }
+
+        // Category functions
+        async function showSetCategoryPrompt() {
+            hideContextMenus();
+            if (!contextMenuChannelId) return;
+            const ch = channelsList.find(c => c.id === contextMenuChannelId);
+            const category = prompt('Enter category name (leave empty to remove):', ch?.category || '');
+            if (category === null) return; // cancelled
+            try {
+                const response = await fetch(`/api/chat/channels/${contextMenuChannelId}`, {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ category: category.trim() || null })
+                });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to set category');
+                }
+                await loadChannels();
+                showToast(category.trim() ? `Category set to "${category.trim()}"` : 'Category removed', 'success');
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        // Toast notification helper
+        function showToast(message, type = 'info') {
+            if (typeof Portal !== 'undefined' && Portal.toast) {
+                Portal.toast(message, type);
+            } else {
+                // Fallback inline toast
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:8px 16px;border-radius:6px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid rgba(255,255,255,0.1);z-index:10000;font-size:0.875rem;';
+                toast.textContent = message;
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 3000);
+            }
+        }
+
+        // Timeout/mute functions
+        function timeoutUser(userId, username, duration) {
+            hideContextMenus();
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const reason = prompt(`Timeout ${username} for ${duration >= 60 ? (duration/60) + ' minute(s)' : duration + ' seconds'}. Reason (optional):`);
+            if (reason === null) return; // cancelled
+            ws.send(JSON.stringify({
+                type: 'timeout_user',
+                channel: currentChannel,
+                target_user_id: userId,
+                duration: duration,
+                reason: reason || undefined
+            }));
+        }
+
+        function muteUser(userId, username) {
+            hideContextMenus();
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const reason = prompt(`Mute ${username} indefinitely. Reason (optional):`);
+            if (reason === null) return;
+            ws.send(JSON.stringify({
+                type: 'mute_user',
+                channel: currentChannel,
+                target_user_id: userId,
+                reason: reason || undefined
+            }));
+        }
+
+        function unmuteUser(userId) {
+            hideContextMenus();
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({
+                type: 'unmute_user',
+                channel: currentChannel,
+                target_user_id: userId
+            }));
+        }
+
         function handleChannelRenamed(data) {
             if (currentChannel === data.old_name) {
                 currentChannel = data.new_name;
@@ -4603,7 +4905,7 @@
 
         function handleFileSelect(event) {
             const file = event.target.files[0];
-            if (file) uploadImage(file);
+            if (file) uploadFile(file);
             event.target.value = ''; // Reset so same file can be re-selected
         }
 
@@ -4616,24 +4918,38 @@
                 if (item.type.startsWith('image/')) {
                     e.preventDefault();
                     const file = item.getAsFile();
-                    if (file) await uploadImage(file);
+                    if (file) await uploadFile(file);
                     return;
                 }
             }
         });
 
-        async function uploadImage(file) {
-            if (!file.type.startsWith('image/')) {
-                alert('Only image files are supported');
-                return;
-            }
-            if (file.size > 5 * 1024 * 1024) {
-                alert('Image too large (max 5MB)');
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        function getFileIcon(contentType) {
+            if (contentType.startsWith('image/')) return '🖼️';
+            if (contentType.startsWith('audio/')) return '🎵';
+            if (contentType.startsWith('video/')) return '🎬';
+            if (contentType === 'application/pdf') return '📄';
+            if (contentType.includes('zip') || contentType.includes('tar') || contentType.includes('gz') || contentType.includes('7z')) return '📦';
+            if (contentType.includes('json') || contentType.includes('xml') || contentType.includes('javascript') || contentType.includes('python')) return '💻';
+            return '📎';
+        }
+
+        async function uploadFile(file) {
+            const isImage = file.type.startsWith('image/');
+            const maxSize = isImage ? 5 * 1024 * 1024 : 25 * 1024 * 1024;
+            if (file.size > maxSize) {
+                alert(`File too large (max ${isImage ? '5MB' : '25MB'})`);
                 return;
             }
 
             const formData = new FormData();
-            formData.append('image', file);
+            formData.append(isImage ? 'image' : 'file', file);
 
             try {
                 const response = await fetch('/api/chat/upload', {
@@ -4648,25 +4964,45 @@
                 }
 
                 const result = await response.json();
-                pendingImageUrl = result.url;
 
-                // Show preview
-                const preview = document.getElementById('image-upload-preview');
-                document.getElementById('image-preview-thumb').src = result.url;
-                const sizeKB = Math.round(file.size / 1024);
-                document.getElementById('image-preview-size').textContent = `${file.name || 'Pasted image'} (${sizeKB}KB)`;
-                preview.classList.add('show');
+                if (result.is_image) {
+                    pendingImageUrl = result.url;
+                    pendingAttachment = null;
+                    // Show image preview
+                    const preview = document.getElementById('image-upload-preview');
+                    document.getElementById('image-preview-thumb').src = result.url;
+                    document.getElementById('image-preview-thumb').style.display = '';
+                    document.getElementById('upload-preview-label').textContent = 'Image ready to send';
+                    document.getElementById('image-preview-size').textContent = `${file.name || 'Pasted image'} (${formatFileSize(file.size)})`;
+                    preview.classList.add('show');
+                } else {
+                    pendingImageUrl = null;
+                    pendingAttachment = {
+                        url: result.url,
+                        name: result.filename,
+                        size: result.size,
+                        type: result.content_type
+                    };
+                    // Show file preview
+                    const preview = document.getElementById('image-upload-preview');
+                    document.getElementById('image-preview-thumb').style.display = 'none';
+                    document.getElementById('upload-preview-label').textContent = `${getFileIcon(result.content_type)} ${result.filename}`;
+                    document.getElementById('image-preview-size').textContent = formatFileSize(result.size);
+                    preview.classList.add('show');
+                }
 
                 document.getElementById('chat-input').focus();
             } catch (error) {
-                console.error('Image upload failed:', error);
-                alert(error.message || 'Failed to upload image');
+                console.error('File upload failed:', error);
+                alert(error.message || 'Failed to upload file');
             }
         }
 
         function cancelImageUpload() {
             pendingImageUrl = null;
+            pendingAttachment = null;
             document.getElementById('image-upload-preview').classList.remove('show');
+            document.getElementById('image-preview-thumb').style.display = '';
         }
 
         function openLightbox(url) {
