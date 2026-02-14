@@ -353,8 +353,11 @@
         .role-admin { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
         .role-moderator { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
         .role-user { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
-        /* Hide auth-only nav items and show sign-in by default; JS toggles on auth check */
-        .navbar-menu .auth-nav {
+        /* Hide auth-only nav items and show sign-in by default; JS adds .authenticated to toggle */
+        .navbar-menu:not(.authenticated) .auth-nav {
+            display: none;
+        }
+        .navbar-menu.authenticated .unauth-nav {
             display: none;
         }
         .navbar-menu .unauth-nav {
@@ -1343,6 +1346,8 @@
                 <h3>Access Controls</h3>
                 <ul>
                     <li><strong>Role-Based Access</strong> &mdash; Four-tier role system controlling feature access.</li>
+                    <li><strong>Opaque Connection IDs</strong> &mdash; Connections use URL-safe tokens instead of sequential integers, preventing enumeration.</li>
+                    <li><strong>Proxy Isolation</strong> &mdash; Embedded browser strips Portal session cookies and auth headers from upstream requests. Proxied content runs in a sandboxed iframe.</li>
                     <li><strong>Rate Limiting</strong> &mdash; Per-IP rate limiting on all endpoints to prevent abuse.</li>
                     <li><strong>Localhost Blocking</strong> &mdash; User connections cannot target local addresses (127.0.0.1, ::1).</li>
                     <li><strong>CSRF Protection</strong> &mdash; Secure cookie attributes prevent cross-site request forgery.</li>
@@ -1407,8 +1412,7 @@
                     document.getElementById('username-display').textContent = user.nickname || user.username;
 
                     // Show authenticated navbar items, hide sign-in
-                    document.querySelectorAll('.auth-nav').forEach(el => el.style.display = '');
-                    document.querySelectorAll('.unauth-nav').forEach(el => el.style.display = 'none');
+                    document.querySelector('.navbar-menu').classList.add('authenticated');
 
                     // Show admin UI elements if user is admin
                     if (Portal.isAdmin(user)) {
@@ -1420,7 +1424,7 @@
                 }
             } catch (e) {}
 
-            // CSS defaults handle unauthenticated state (auth-nav hidden, unauth-nav shown)
+            // CSS defaults handle unauthenticated state (.authenticated class absent = auth-nav hidden)
 
             // Sidebar scroll tracking
             const navLinks = document.querySelectorAll('.docs-nav a[href^="#"]');

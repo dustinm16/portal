@@ -206,10 +206,12 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Upload content security** — Uploaded files sanitized: only safe types (images, video, audio, PDF) render inline; HTML/JS/SVG forced to download to prevent stored XSS
 - **API credential redaction** — Passwords and keys never returned from API endpoints
 - **Stream key encryption** — SHA-256 hashed for lookups, encrypted at rest
+- **Opaque connection IDs** — URL-safe tokens replace sequential integers, preventing enumeration
+- **Proxy isolation** — Embedded browser strips session cookies and auth headers from upstream requests; sandboxed iframe
 - **Rate limiting** — Per-IP request throttling on all endpoints
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model (28 documented security features).
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model.
 
 ## Streaming
 

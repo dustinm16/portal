@@ -1139,11 +1139,20 @@ The following pages are accessible without login:
 |------|---------|
 | `/login` | Login/registration page |
 | `/live` | Public live streams browser |
-| `/about` | Feature guide and documentation (all features visible including admin docs; unauthenticated navbar with Sign In) |
-| `/guides` | Connection setup guides for 75+ connection types |
-| `/api-docs` | API documentation (admin endpoints stripped server-side for non-admin users) |
+| `/about` | Feature guide and documentation (all features visible; adaptive navbar — authenticated users see full nav, visitors see Sign In) |
+| `/guides` | Connection setup guides for 75+ connection types (adaptive navbar) |
+| `/api-docs` | API documentation (admin endpoints stripped server-side for non-admin users; adaptive navbar) |
 | `/robots.txt` | Search engine robots directives |
 | `/sitemap.xml` | XML sitemap for search engines |
+
+### Adaptive Navbar on Public Pages
+
+Public pages (`/about`, `/guides`, `/api-docs`) use an adaptive navbar that shows different navigation depending on authentication state:
+
+- **Unauthenticated**: Shows only "About" (active) and "Sign In" link
+- **Authenticated**: Shows full nav (Dashboard, Chat, Streams, API Docs, About, Guides, username, Logout)
+
+Implementation uses a CSS class toggle — `.navbar-menu .auth-nav` items are hidden by default via `.navbar-menu:not(.authenticated) .auth-nav { display: none }`. On page load, JS fetches `/api/me`; if authenticated, it adds the `.authenticated` class to `.navbar-menu`, which shows auth-nav items and hides the Sign In link via `.navbar-menu.authenticated .unauth-nav { display: none }`.
 
 ---
 

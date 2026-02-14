@@ -28,8 +28,11 @@
     <title>API Documentation — Open Relay Portal | REST API Reference</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <style>
-        /* Hide auth-only nav items and show sign-in by default; JS toggles on auth check */
-        .navbar-menu .auth-nav {
+        /* Hide auth-only nav items and show sign-in by default; JS adds .authenticated to toggle */
+        .navbar-menu:not(.authenticated) .auth-nav {
+            display: none;
+        }
+        .navbar-menu.authenticated .unauth-nav {
             display: none;
         }
         .navbar-menu .unauth-nav {
@@ -5270,8 +5273,7 @@ X-RateLimit-Reset: 1704067200</pre>
                     document.getElementById('username-display').textContent = user.nickname || user.username;
 
                     // Show authenticated navbar items, hide sign-in
-                    document.querySelectorAll('.auth-nav').forEach(el => el.style.display = '');
-                    document.querySelectorAll('.unauth-nav').forEach(el => el.style.display = 'none');
+                    document.querySelector('.navbar-menu').classList.add('authenticated');
 
                     // Show admin-only sections if user is admin
                     if (Portal.isAdmin(user)) {
