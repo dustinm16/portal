@@ -84,7 +84,7 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 ## Screenshots
 
 ![Dashboard](docs/screenshots/dashboard.png)
-*Dashboard — Services, connections, streams, and system stats at a glance*
+*Dashboard — My Connections, Quick Add bar, services, streams, and system stats*
 
 ![Chat](docs/screenshots/chat.png)
 *Encrypted Chat — Channels, reactions, threads, @mentions, voice chat*
@@ -92,11 +92,14 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 ![Direct Messages](docs/screenshots/dms.png)
 *Direct Messages — Private 1:1 and group DMs with encryption at rest*
 
+![Embedded Browser](docs/screenshots/browser.png)
+*Embedded Browser — Tabbed browsing with address bar, navigation controls, and multi-site proxy*
+
 ![Admin Panel](docs/screenshots/admin.png)
-*Admin Panel — Server stats, traffic metrics, user management*
+*Admin Panel — Server stats, traffic metrics, Shodan scanner, system resources*
 
 ![File Manager](docs/screenshots/files.png)
-*File Manager — Browse server files or remote SFTP connections*
+*File Manager — Browse and manage server files (Admin Panel tab)*
 
 ![System Monitor](docs/screenshots/sysmon.png)
 *System Monitor — Processes, systemd services, network interfaces (Admin Panel tab)*
