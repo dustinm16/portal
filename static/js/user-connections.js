@@ -966,7 +966,7 @@ async function submitConnection(event) {
     const type = document.getElementById('connection-type').value;
     const name = document.getElementById('connection-name').value.trim();
     const host = document.getElementById('connection-host').value.trim();
-    const port = parseInt(document.getElementById('connection-port').value) || null;
+    const port = parseInt(document.getElementById('connection-port').value, 10) || null;
     const icon = document.getElementById('connection-icon').value;
 
     if (!name) {

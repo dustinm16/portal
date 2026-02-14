@@ -843,6 +843,11 @@ MIGRATIONS = [
     "ALTER TABLE rtmp_tokens ADD COLUMN last_active_at TEXT",
     # Opaque connection IDs - UUID column for external-facing URLs
     "ALTER TABLE user_connections ADD COLUMN uuid TEXT",
+    # Performance indexes for common queries
+    "CREATE INDEX IF NOT EXISTS idx_chat_timeouts_user_expires ON chat_timeouts(user_id, expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_channels_visibility ON chat_channels(visibility)",
+    "CREATE INDEX IF NOT EXISTS idx_dm_participants_user_left ON dm_participants(user_id, left_at)",
+    "CREATE INDEX IF NOT EXISTS idx_automod_rules_enabled ON automod_rules(enabled)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -907,6 +912,8 @@ class Database:
 
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
+        await self._connection.execute("PRAGMA journal_mode = WAL")
+        await self._connection.execute("PRAGMA busy_timeout = 5000")
         await self._connection.execute("PRAGMA foreign_keys = ON")
         await self._connection.executescript(SCHEMA)
         await self._connection.commit()

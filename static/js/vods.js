@@ -314,7 +314,7 @@ async function downloadArchive(files) {
 
         if (!response.ok) {
             const data = await response.json().catch(() => ({}));
-            alert(data.error || 'Failed to create archive');
+            Portal.toast(data.error || 'Failed to create archive', 'error');
             return;
         }
 
@@ -333,7 +333,7 @@ async function downloadArchive(files) {
         URL.revokeObjectURL(url);
     } catch (err) {
         console.error('Archive download failed:', err);
-        alert('Failed to download archive');
+        Portal.toast('Failed to download archive', 'error');
     }
 }
 
@@ -356,7 +356,7 @@ async function deleteSession(sessionKey) {
             if (!response.ok) errors++;
         } catch { errors++; }
     }
-    if (errors > 0) alert(`${errors} file(s) could not be deleted.`);
+    if (errors > 0) Portal.toast(`${errors} file(s) could not be deleted`, 'error');
     loadVods();
 }
 
@@ -378,7 +378,7 @@ async function deleteSelectedVods() {
             if (!response.ok) errors++;
         } catch { errors++; }
     }
-    if (errors > 0) alert(`${errors} file(s) could not be deleted.`);
+    if (errors > 0) Portal.toast(`${errors} file(s) could not be deleted`, 'error');
     vodSelected.clear();
     loadVods();
 }
@@ -400,11 +400,11 @@ async function deleteVod(encodedFilename, displayName) {
             method: 'DELETE', credentials: 'include'
         });
         const data = await response.json();
-        if (!response.ok) { alert(data.error || 'Failed to delete VOD'); return; }
+        if (!response.ok) { Portal.toast(data.error || 'Failed to delete VOD', 'error'); return; }
         loadVods();
     } catch (err) {
         console.error('Failed to delete VOD:', err);
-        alert('Failed to delete VOD');
+        Portal.toast('Failed to delete VOD', 'error');
     }
 }
 

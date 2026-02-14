@@ -379,8 +379,8 @@ const Portal = {
      */
     validatePort(value) {
         if (value === '' || value === null || value === undefined) return null;
-        const port = parseInt(value);
-        if (isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+        const port = Number(value);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
         return null;
     },
 

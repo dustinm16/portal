@@ -573,9 +573,9 @@ async def http_authenticated_upload(request: web.Request) -> web.Response:
     if not token:
         return web.Response(status=401, text="Unauthorized")
 
-    rel_path = request.match_info["path"]
+    rel_path = request.match_info.get("path", "")
     # Prevent directory traversal
-    if ".." in rel_path or rel_path.startswith("/"):
+    if not rel_path or ".." in rel_path or rel_path.startswith("/"):
         return web.Response(status=400, text="Bad request")
 
     filepath = STATIC_DIR / "uploads" / rel_path
@@ -1351,7 +1351,7 @@ async def http_create_invite_code(request: web.Request) -> web.Response:
 
     try:
         data = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     code_type = data.get("type", "single_use")
@@ -2629,7 +2629,7 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
             if old_path.exists() and "uploads/thumbnails" in str(old_path):
                 try:
                     old_path.unlink()
-                except Exception:
+                except OSError:
                     pass
 
         # Update database with new thumbnail URL
@@ -2671,7 +2671,7 @@ async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
         if old_path.exists() and "uploads/thumbnails" in str(old_path):
             try:
                 old_path.unlink()
-            except Exception:
+            except OSError:
                 pass
 
     # Clear thumbnail URL in database
@@ -3265,7 +3265,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
         # Ensure stream goes offline even if VOD finalization fails
         try:
             await db.set_stream_live(stream_id, False)
-        except Exception:
+        except (OSError, ValueError):
             pass
 
 
@@ -4535,10 +4535,10 @@ async def http_download_vod(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    filename = request.match_info["filename"]
+    filename = request.match_info.get("filename", "")
 
     # Security: prevent path traversal
-    if ".." in filename or filename.startswith("/"):
+    if not filename or ".." in filename or filename.startswith("/"):
         return web.json_response({"error": "Invalid filename"}, status=400)
     if not filename.lower().endswith(".mkv"):
         return web.json_response({"error": "Only MKV files can be downloaded"}, status=400)
@@ -4754,10 +4754,10 @@ async def http_delete_vod(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    filename = request.match_info["filename"]
+    filename = request.match_info.get("filename", "")
 
     # Security: prevent path traversal
-    if ".." in filename or filename.startswith("/"):
+    if not filename or ".." in filename or filename.startswith("/"):
         return web.json_response({"error": "Invalid filename"}, status=400)
     if not filename.lower().endswith(".mkv"):
         return web.json_response({"error": "Only MKV files can be deleted"}, status=400)
@@ -5565,7 +5565,9 @@ async def http_sysmon_service_status(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    name = request.match_info["name"]
+    name = request.match_info.get("name", "")
+    if not name:
+        return web.json_response({"error": "Service name required"}, status=400)
     status = system_monitor.get_service_status(name)
     if not status:
         return web.json_response({"error": "Service not found"}, status=404)
@@ -5580,7 +5582,9 @@ async def http_sysmon_service_logs(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    name = request.match_info["name"]
+    name = request.match_info.get("name", "")
+    if not name:
+        return web.json_response({"error": "Service name required"}, status=400)
     try:
         lines = int(request.query.get("lines", "50"))
     except (ValueError, TypeError):
@@ -5598,7 +5602,9 @@ async def http_sysmon_service_control(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    name = request.match_info["name"]
+    name = request.match_info.get("name", "")
+    if not name:
+        return web.json_response({"error": "Service name required"}, status=400)
     try:
         data = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -8273,7 +8279,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     text = inject_js + text
 
                         response_body = text.encode(charset)
-                    except Exception:
+                    except (UnicodeDecodeError, UnicodeEncodeError, LookupError):
                         pass
 
                 # Set permissive CSP for proxied content (upstream sites need their own scripts)
@@ -8590,8 +8596,8 @@ async def check_automod(text: str, user_id: int, channel_id: int, channel_name: 
                     message_text=text[:500],
                     action_taken=rule["action"]
                 )
-            except Exception:
-                pass
+            except (ValueError, KeyError, TypeError) as e:
+                logger.warning(f"Failed to create automod action: {e}")
             await audit_log(
                 "automod_trigger", 0, "AutoMod",
                 target_id=user_id, target_type="user",
@@ -9704,7 +9710,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             "conversations": dm_convs,
             "unread_counts": dm_unread
         })
-    except Exception:
+    except (ConnectionError, ConnectionResetError, TypeError):
         pass
 
     try:
@@ -10955,7 +10961,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         "from_user_id": user_id,
                                         "signal": signal_data
                                     })
-                            except Exception:
+                            except (ConnectionError, ConnectionResetError, TypeError):
                                 pass
 
                     elif msg_type == "voice_mute":
@@ -11319,7 +11325,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     else:
                         await broadcast_to_channel(vc, leave_msg)
                         await broadcast_users_list(vc)
-                except Exception:
+                except (ConnectionError, ConnectionResetError, TypeError, KeyError):
                     pass
                 if not vc_users:
                     voice_state.pop(vc, None)
@@ -11662,7 +11668,7 @@ async def http_set_retention_config(request: web.Request) -> web.Response:
         return web.json_response({"error": "Superadmin required"}, status=403)
     try:
         data = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
     await db.set_retention_config(data)
     config = await db.get_retention_config()
@@ -11737,7 +11743,8 @@ async def _broadcast_to_dm(conversation_id: int, message: dict, exclude_user_id:
     """Broadcast a message to all online participants of a DM conversation."""
     try:
         participants = await db.get_dm_participant_ids(conversation_id)
-    except Exception:
+    except (OSError, ValueError) as e:
+        logger.warning("Failed to get DM participants for %s: %s", conversation_id, e)
         return
     for uid in participants:
         if uid == exclude_user_id:
@@ -11749,7 +11756,7 @@ async def _broadcast_to_dm(conversation_id: int, message: dict, exclude_user_id:
                     await raw.send_json(message)
                 else:
                     dead.add(raw)
-            except Exception:
+            except (ConnectionError, ConnectionResetError, TypeError):
                 dead.add(raw)
         if dead and uid in dm_user_connections:
             dm_user_connections[uid] -= dead
@@ -11764,7 +11771,7 @@ async def _send_dm_to_user(user_id: int, message: dict):
                 await raw.send_json(message)
             else:
                 dead.add(raw)
-        except Exception:
+        except (ConnectionError, ConnectionResetError, TypeError):
             dead.add(raw)
     if dead and user_id in dm_user_connections:
         dm_user_connections[user_id] -= dead
@@ -11821,7 +11828,7 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None):
                 await ws.send_json(message)
             else:
                 dead_connections.add(entry)
-        except Exception:
+        except (ConnectionError, ConnectionResetError, TypeError):
             dead_connections.add(entry)
 
     # Clean up dead connections
@@ -11838,7 +11845,7 @@ async def broadcast_to_voice_room(room: str, message: dict, exclude=None):
             try:
                 if not vws.closed:
                     await vws.send_json(message)
-            except Exception:
+            except (ConnectionError, ConnectionResetError, TypeError):
                 pass
 
 
@@ -11867,7 +11874,7 @@ async def send_notification(user_id: int, type: str, title: str,
                     await ws.send_json(payload)
                 else:
                     dead.add(ws)
-            except Exception:
+            except (ConnectionError, ConnectionResetError, TypeError):
                 dead.add(ws)
         notification_subscribers[user_id] -= dead
 
@@ -13233,6 +13240,20 @@ class PortalServer:
                 except Exception as e:
                     logger.error(f"[Retention] Automod actions cleanup failed: {e}")
 
+                # In-memory cache cleanup
+                try:
+                    now_mono = monotonic()
+                    stale = [k for k, v in _slowmode_last_msg.items() if now_mono - v > 3600]
+                    for k in stale:
+                        del _slowmode_last_msg[k]
+                    stale = [k for k, v in _voice_speaking_last.items() if now_mono - v > 300]
+                    for k in stale:
+                        del _voice_speaking_last[k]
+                    if stale:
+                        logger.debug("[Retention] Cleaned stale in-memory rate-limit entries")
+                except Exception as e:
+                    logger.error(f"[Retention] In-memory cleanup failed: {e}")
+
                 # VACUUM
                 try:
                     if config.get("auto_vacuum", "true") == "true":
@@ -13272,7 +13293,7 @@ class PortalServer:
                             if resp.status != 200:
                                 continue
                             data = await resp.json()
-                except Exception:
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
                     continue
 
                 # Update viewer counts for each active path

@@ -216,10 +216,10 @@ async function createStream(event) {
             Portal.toast('Stream created', 'success');
             setTimeout(() => closeModal('create-stream-modal'), 800);
             loadUserStreams();
-            const data = await response.json();
-            showStreamDetails(data.stream.id);
+            const data = await response.json().catch(() => ({}));
+            if (data.stream) showStreamDetails(data.stream.id);
         } else {
-            const error = await response.json();
+            const error = await response.json().catch(() => ({}));
             Portal.toast(error.error || 'Failed to create stream', 'error');
         }
     } catch (error) {
@@ -373,7 +373,7 @@ async function showStreamDetails(streamId) {
 
     } catch (error) {
         console.error('Failed to load stream details:', error);
-        alert('Failed to load stream details');
+        Portal.toast('Failed to load stream details', 'error');
     }
 }
 
@@ -406,22 +406,21 @@ async function copyToClipboard(text) {
  */
 async function toggleStreamPublic(streamId, isPublic) {
     try {
-        const response = await fetch(`/api/streams/${streamId}`, {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
             body: JSON.stringify({ is_public: isPublic })
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            alert(error.error || 'Failed to update stream');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to update stream', 'error');
         } else {
             loadUserStreams();
         }
     } catch (error) {
         console.error('Failed to update stream:', error);
-        alert('Failed to update stream');
+        Portal.toast('Failed to update stream', 'error');
     }
 }
 
@@ -431,22 +430,21 @@ async function toggleStreamUnauthenticated(streamId, allowed) {
         const body = { allow_unauthenticated: allowed };
         if (allowed) body.is_public = true;
 
-        const response = await fetch(`/api/streams/${streamId}`, {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
             body: JSON.stringify(body)
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            alert(error.error || 'Failed to update stream');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to update stream', 'error');
         } else {
             loadUserStreams();
         }
     } catch (error) {
         console.error('Failed to update stream:', error);
-        alert('Failed to update stream');
+        Portal.toast('Failed to update stream', 'error');
     }
 }
 
@@ -455,22 +453,21 @@ async function toggleStreamUnauthenticated(streamId, allowed) {
  */
 async function toggleStreamRtmp(streamId, enabled) {
     try {
-        const response = await fetch(`/api/streams/${streamId}`, {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
             body: JSON.stringify({ rtmp_enabled: enabled ? 1 : 0 })
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            alert(error.error || 'Failed to update stream');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to update stream', 'error');
         }
         // Refresh the modal to show/hide token section
         showStreamDetails(streamId);
     } catch (error) {
         console.error('Failed to toggle RTMP:', error);
-        alert('Failed to update stream');
+        Portal.toast('Failed to update stream', 'error');
     }
 }
 
@@ -526,7 +523,7 @@ async function generateRtmpToken(streamId) {
 
     } catch (error) {
         console.error('Failed to generate RTMP token:', error);
-        alert(error.message || 'Failed to generate RTMP token');
+        Portal.toast(error.message || 'Failed to generate RTMP token', 'error');
     }
 }
 
@@ -539,13 +536,13 @@ async function uploadThumbnail(streamId, input) {
 
     // Validate file type
     if (!file.type.startsWith('image/')) {
-        alert('Please select an image file');
+        Portal.toast('Please select an image file', 'error');
         return;
     }
 
     // Validate file size (5MB)
     if (file.size > 5 * 1024 * 1024) {
-        alert('Image must be less than 5MB');
+        Portal.toast('Image must be less than 5MB', 'error');
         return;
     }
 
@@ -553,24 +550,22 @@ async function uploadThumbnail(streamId, input) {
     formData.append('thumbnail', file);
 
     try {
-        const response = await fetch(`/api/streams/${streamId}/thumbnail`, {
+        const response = await Portal.fetch(`/api/streams/${streamId}/thumbnail`, {
             method: 'POST',
-            credentials: 'same-origin',
             body: formData
         });
 
         if (response.ok) {
-            const data = await response.json();
             // Refresh the modal to show new thumbnail
             showStreamDetails(streamId);
             loadUserStreams();
         } else {
-            const error = await response.json();
-            alert(error.error || 'Failed to upload thumbnail');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to upload thumbnail', 'error');
         }
     } catch (error) {
         console.error('Failed to upload thumbnail:', error);
-        alert('Failed to upload thumbnail');
+        Portal.toast('Failed to upload thumbnail', 'error');
     }
 
     // Clear the input
@@ -584,21 +579,20 @@ async function deleteThumbnail(streamId) {
     if (!confirm('Remove the thumbnail?')) return;
 
     try {
-        const response = await fetch(`/api/streams/${streamId}/thumbnail`, {
-            method: 'DELETE',
-            credentials: 'same-origin'
+        const response = await Portal.fetch(`/api/streams/${streamId}/thumbnail`, {
+            method: 'DELETE'
         });
 
         if (response.ok) {
             showStreamDetails(streamId);
             loadUserStreams();
         } else {
-            const error = await response.json();
-            alert(error.error || 'Failed to remove thumbnail');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to remove thumbnail', 'error');
         }
     } catch (error) {
         console.error('Failed to remove thumbnail:', error);
-        alert('Failed to remove thumbnail');
+        Portal.toast('Failed to remove thumbnail', 'error');
     }
 }
 
@@ -611,20 +605,19 @@ async function regenerateStreamKey(streamId) {
     }
 
     try {
-        const response = await fetch(`/api/streams/${streamId}/regenerate-key`, {
-            method: 'POST',
-            credentials: 'same-origin'
+        const response = await Portal.fetch(`/api/streams/${streamId}/regenerate-key`, {
+            method: 'POST'
         });
 
         if (response.ok) {
             showStreamDetails(streamId);
         } else {
-            const error = await response.json();
-            alert(error.error || 'Failed to regenerate key');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to regenerate key', 'error');
         }
     } catch (error) {
         console.error('Failed to regenerate key:', error);
-        alert('Failed to regenerate key');
+        Portal.toast('Failed to regenerate key', 'error');
     }
 }
 
@@ -645,20 +638,19 @@ async function deleteStream(streamId) {
     }
 
     try {
-        const response = await fetch(`/api/streams/${streamId}`, {
-            method: 'DELETE',
-            credentials: 'same-origin'
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
+            method: 'DELETE'
         });
 
         if (response.ok) {
             loadUserStreams();
         } else {
-            const error = await response.json();
-            alert(error.error || 'Failed to delete stream');
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to delete stream', 'error');
         }
     } catch (error) {
         console.error('Failed to delete stream:', error);
-        alert('Failed to delete stream');
+        Portal.toast('Failed to delete stream', 'error');
     }
 }
 

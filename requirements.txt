@@ -1,14 +1,14 @@
 # Core dependencies
-aiohttp>=3.9
-PyJWT>=2.8
-aiosqlite>=0.19
-python-dotenv>=1.0
-argon2-cffi>=23.1
-pyotp>=2.9.0
-aiofiles>=23.0
-asyncssh>=2.14
-cryptography>=41.0
-psutil>=5.9
+aiohttp>=3.9,<4
+PyJWT>=2.8,<3
+aiosqlite>=0.19,<1
+python-dotenv>=1.0,<2
+argon2-cffi>=23.1,<26
+pyotp>=2.9,<3
+aiofiles>=23.0,<26
+asyncssh>=2.14,<3
+cryptography>=41.0,<47
+psutil>=5.9,<8
 
 # Optional: faster event loop (Linux only, not required)
 # uvloop>=0.19; sys_platform != 'win32'
