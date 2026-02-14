@@ -1185,7 +1185,7 @@ async def _create_default_connections(user_id: int) -> None:
             conn_type="http_proxy",
             host="duckduckgo.com",
             port=443,
-            config="{}",
+            config=json.dumps({"browser_mode": True}),
             icon="globe",
             portal_access=1,
             api_access=0
@@ -7769,11 +7769,14 @@ async def http_browser_page(request: web.Request) -> web.Response:
 
     proxy_path = f"/proxy/{conn_id}"
 
+    browser_mode = config.get("browser_mode", False)
+
     html = load_static_file("browser.html")
     html = html.replace("{{CONNECTION_ID}}", conn_id)
     html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Browser"))
     html = html.replace("{{PROXY_PATH}}", proxy_path)
     html = html.replace("{{TARGET_DISPLAY}}", target_display)
+    html = html.replace("{{BROWSER_MODE}}", "true" if browser_mode else "false")
 
     return web.Response(text=html, content_type="text/html")
 
@@ -7813,6 +7816,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
             config = {}
 
     # Build target URL
+    browser_mode = config.get("browser_mode", False)
     host = connection.get("host")
     default_port = type_info.get("default_port", 80)
     port = connection.get("port") or config.get("port") or default_port
@@ -7827,10 +7831,29 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         else:
             config["target_url"] = f"{scheme}://{host}:{port}"
 
-    target_url = config["target_url"].rstrip("/")
     verify_ssl = config.get("verify_ssl", False)
     timeout_s = config.get("timeout", 60)
-    proxy_prefix = f"/proxy/{conn_uuid}"
+    proxy_base = f"/proxy/{conn_uuid}"
+
+    # Browser mode: extract target URL from path for multi-site navigation
+    raw_path = request.match_info.get("path", "")
+    if browser_mode and (raw_path.startswith("http://") or raw_path.startswith("https://")):
+        # Full URL in path — navigate to external site
+        browse_query = request.query_string
+        browse_full = f"{raw_path}?{browse_query}" if browse_query else raw_path
+        parsed_browse = urlparse(browse_full)
+        browse_host = parsed_browse.hostname or ""
+        if is_blocked_host(browse_host):
+            return web.Response(status=403, text="Access to local addresses not allowed")
+        target_origin = f"{parsed_browse.scheme}://{parsed_browse.netloc}"
+        target_url = target_origin
+        config["target_url"] = target_url
+    else:
+        target_url = config["target_url"].rstrip("/")
+
+    parsed_target = urlparse(target_url)
+    target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
+    proxy_prefix = f"{proxy_base}/{target_origin}" if browser_mode else proxy_base
 
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
@@ -7841,11 +7864,17 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         await ws.prepare(request)
 
         ws_scheme = "wss" if parsed_target.scheme == "https" else "ws"
-        ws_path = request.match_info.get("path", "")
+        ws_raw_path = request.match_info.get("path", "")
         ws_query = request.query_string
-        ws_url = f"{ws_scheme}://{parsed_target.netloc}/{ws_path}"
-        if ws_query:
-            ws_url = f"{ws_url}?{ws_query}"
+        if browser_mode and (ws_raw_path.startswith("http://") or ws_raw_path.startswith("https://")):
+            ws_parsed = urlparse(f"{ws_raw_path}?{ws_query}" if ws_query else ws_raw_path)
+            ws_url = f"{ws_scheme}://{ws_parsed.netloc}{ws_parsed.path}"
+            if ws_parsed.query:
+                ws_url = f"{ws_url}?{ws_parsed.query}"
+        else:
+            ws_url = f"{ws_scheme}://{parsed_target.netloc}/{ws_raw_path}"
+            if ws_query:
+                ws_url = f"{ws_url}?{ws_query}"
 
         try:
             connector = aiohttp.TCPConnector(ssl=verify_ssl)
@@ -7877,9 +7906,18 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     # Build upstream URL
     path = request.match_info.get("path", "")
     query = request.query_string
-    upstream_url = f"{target_url}/{path}" if path else f"{target_url}/"
-    if query:
-        upstream_url = f"{upstream_url}?{query}"
+    if browser_mode and (path.startswith("http://") or path.startswith("https://")):
+        # Browser mode: full URL already parsed above, extract just the path portion
+        parsed_browse = urlparse(f"{path}?{query}" if query else path)
+        upstream_path = parsed_browse.path.lstrip("/")
+        upstream_url = f"{target_url}/{upstream_path}" if upstream_path else f"{target_url}/"
+        if parsed_browse.query:
+            upstream_url = f"{upstream_url}?{parsed_browse.query}"
+        query = ""  # Already included
+    else:
+        upstream_url = f"{target_url}/{path}" if path else f"{target_url}/"
+        if query:
+            upstream_url = f"{upstream_url}?{query}"
 
     # Prepare headers — strip Portal auth and sensitive headers
     fwd_headers = {}
@@ -7923,7 +7961,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 url=upstream_url,
                 headers=fwd_headers,
                 data=body,
-                allow_redirects=True,
+                allow_redirects=not browser_mode,
                 max_redirects=10
             ) as resp:
                 response_body = await resp.read()
@@ -7942,24 +7980,31 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                     # Rewrite Location headers for redirects
                     if k == "location":
                         loc = value
-                        if loc.startswith(target_origin):
-                            loc = proxy_prefix + loc[len(target_origin):]
-                        elif loc.startswith("/"):
-                            loc = proxy_prefix + loc
-                        elif loc.startswith("http://") or loc.startswith("https://"):
-                            # External redirect — rewrite to proxy path
-                            from urllib.parse import urlparse as _up
-                            redir_parsed = _up(loc)
-                            redir_path = redir_parsed.path or "/"
-                            if redir_parsed.query:
-                                redir_path += "?" + redir_parsed.query
-                            loc = proxy_prefix + redir_path
+                        if browser_mode:
+                            # Browser mode: encode full URL in proxy path
+                            if loc.startswith("/"):
+                                loc = f"{proxy_base}/{target_origin}{loc}"
+                            elif loc.startswith("http://") or loc.startswith("https://"):
+                                loc = f"{proxy_base}/{loc}"
+                        else:
+                            if loc.startswith(target_origin):
+                                loc = proxy_prefix + loc[len(target_origin):]
+                            elif loc.startswith("/"):
+                                loc = proxy_prefix + loc
+                            elif loc.startswith("http://") or loc.startswith("https://"):
+                                from urllib.parse import urlparse as _up
+                                redir_parsed = _up(loc)
+                                redir_path = redir_parsed.path or "/"
+                                if redir_parsed.query:
+                                    redir_path += "?" + redir_parsed.query
+                                loc = proxy_prefix + redir_path
                         resp_headers[key] = loc
                         continue
 
                     # Rewrite Set-Cookie Path
                     if k == "set-cookie":
-                        value = re.sub(r'(?i)path=/', f'Path={proxy_prefix}/', value, count=1)
+                        cookie_prefix = proxy_prefix if not browser_mode else proxy_base
+                        value = re.sub(r'(?i)path=/', f'Path={cookie_prefix}/', value, count=1)
 
                     resp_headers[key] = value
 
@@ -7972,125 +8017,232 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                             charset = content_type.split("charset=")[1].split(";")[0].strip()
                         text = response_body.decode(charset)
 
-                        # Replace absolute target URLs everywhere (HTML, CSS, JS, JSON)
-                        text = text.replace(target_origin, proxy_prefix)
-                        # Also handle protocol-relative //host:port → root-relative path
-                        text = text.replace(f"//{parsed_target.netloc}", proxy_prefix)
-                        # If redirects were followed, also replace the final URL's origin
-                        final_url = str(resp.url)
-                        final_parsed = urlparse(final_url)
-                        final_origin = f"{final_parsed.scheme}://{final_parsed.netloc}"
-                        if final_origin != target_origin:
-                            text = text.replace(final_origin, proxy_prefix)
-                            text = text.replace(f"//{final_parsed.netloc}", proxy_prefix)
+                        if browser_mode:
+                            # Browser mode: rewrite target origin → proxy_prefix (which includes origin in path)
+                            text = text.replace(target_origin, proxy_prefix)
+                            text = text.replace(f"//{parsed_target.netloc}", proxy_prefix)
 
-                        # Escaped prefix for regex negative lookahead
-                        esc_pfx = re.escape(proxy_prefix[1:])  # e.g. "proxy/11"
+                            esc_base = re.escape(proxy_base[1:])
 
-                        if "text/css" in content_type:
-                            # Rewrite url(/...) in CSS (skip // and already-proxied)
-                            text = re.sub(
-                                rf'url\(\s*(["\']?)/(?!/|{esc_pfx})',
-                                rf'url(\1{proxy_prefix}/',
-                                text
-                            )
+                            if "text/css" in content_type:
+                                # Rewrite url(/...) to include target origin
+                                text = re.sub(
+                                    rf'url\(\s*(["\']?)/(?!/|{esc_base})',
+                                    rf'url(\1{proxy_prefix}/',
+                                    text
+                                )
 
-                        if "text/html" in content_type:
-                            # Rewrite root-relative URLs in HTML attrs (skip // and already-proxied)
-                            text = re.sub(
-                                rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])/(?!/|{esc_pfx})',
-                                rf'\1{proxy_prefix}/',
-                                text
-                            )
-                            # Rewrite url(/...) in inline styles (skip // and already-proxied)
-                            text = re.sub(
-                                rf'url\(\s*(["\']?)/(?!/|{esc_pfx})',
-                                rf'url(\1{proxy_prefix}/',
-                                text
-                            )
-                            # Rewrite meta refresh redirects
-                            text = re.sub(
-                                r'(content\s*=\s*["\']\d+\s*;\s*url\s*=\s*)/',
-                                rf'\1{proxy_prefix}/',
-                                text,
-                                flags=re.IGNORECASE
-                            )
+                            if "text/html" in content_type:
+                                # Rewrite absolute external URLs in HTML attrs → proxy path
+                                text = re.sub(
+                                    rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])(https?://)',
+                                    rf'\1{proxy_base}/\2',
+                                    text
+                                )
+                                # Fix double-rewriting: proxy_base/proxy_base → proxy_base
+                                double_prefix = f"{proxy_base}/{proxy_base}/"
+                                while double_prefix in text:
+                                    text = text.replace(double_prefix, f"{proxy_base}/")
+                                # Rewrite protocol-relative //host in HTML attrs
+                                text = re.sub(
+                                    rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])//(?!{esc_base})',
+                                    rf'\1{proxy_base}/https://',
+                                    text
+                                )
+                                # Rewrite root-relative URLs in HTML attrs
+                                text = re.sub(
+                                    rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])/(?!/|{esc_base})',
+                                    rf'\1{proxy_prefix}/',
+                                    text
+                                )
+                                # Rewrite url(/...) in inline styles
+                                text = re.sub(
+                                    rf'url\(\s*(["\']?)/(?!/|{esc_base})',
+                                    rf'url(\1{proxy_prefix}/',
+                                    text
+                                )
+                                # Meta refresh redirects
+                                text = re.sub(
+                                    r'(content\s*=\s*["\']\d+\s*;\s*url\s*=\s*)/',
+                                    rf'\1{proxy_prefix}/',
+                                    text,
+                                    flags=re.IGNORECASE
+                                )
 
-                            # Comprehensive JS interceptor — catches all browser request APIs
-                            inject_js = (
-                                f'<script>(function(){{"use strict";'
-                                f'var B="{proxy_prefix}";'
-                                f'var TO="{target_origin}";'
-                                f'var FO="{final_origin}";'
-                                # Helper: rewrite a URL string
-                                f'function R(u){{if(typeof u!=="string")return u;'
-                                f'if(u.startsWith(TO))return B+u.slice(TO.length);'
-                                f'if(FO!==TO&&u.startsWith(FO))return B+u.slice(FO.length);'
-                                f'if(u.startsWith("/")&&!u.startsWith(B)&&!u.startsWith("//"))return B+u;'
-                                f'return u}}'
-                                # fetch()
-                                f'var _f=window.fetch;window.fetch=function(u,o){{'
-                                f'if(typeof u==="string")u=R(u);'
-                                f'else if(u instanceof Request)u=new Request(R(u.url),u);'
-                                f'return _f.call(this,u,o)}};'
-                                # XMLHttpRequest.open()
-                                f'var _xo=XMLHttpRequest.prototype.open;'
-                                f'XMLHttpRequest.prototype.open=function(){{'
-                                f'if(arguments.length>1)arguments[1]=R(arguments[1]);'
-                                f'return _xo.apply(this,arguments)}};'
-                                # WebSocket
-                                f'var _W=window.WebSocket;'
-                                f'function PW(u,p){{if(typeof u==="string"){{'
-                                f'var m=u.match(/^(wss?:\\/\\/[^/]+)(\\/.*)$/);'
-                                f'if(m&&!m[2].startsWith(B))u=m[1]+B+m[2]}}'
-                                f'if(p!==undefined)return new _W(u,p);return new _W(u)}};'
-                                f'PW.prototype=_W.prototype;PW.CONNECTING=0;PW.OPEN=1;PW.CLOSING=2;PW.CLOSED=3;'
-                                f'window.WebSocket=PW;'
-                                # EventSource
-                                f'if(window.EventSource){{var _E=window.EventSource;'
-                                f'window.EventSource=function(u,o){{return new _E(R(u),o)}};'
-                                f'window.EventSource.prototype=_E.prototype}}'
-                                # window.open()
-                                f'var _wo=window.open;window.open=function(u){{arguments[0]=R(u);return _wo.apply(this,arguments)}};'
-                                # navigator.sendBeacon()
-                                f'if(navigator.sendBeacon){{var _sb=navigator.sendBeacon.bind(navigator);'
-                                f'navigator.sendBeacon=function(u,d){{return _sb(R(u),d)}}}}'
-                                # Intercept link clicks and form submissions
-                                f'document.addEventListener("click",function(e){{'
-                                f'var a=e.target.closest("a[href]");'
-                                f'if(a&&a.href){{'
-                                f'var h=a.getAttribute("href");'
-                                f'if(h&&h.startsWith("/")&&!h.startsWith(B))a.setAttribute("href",B+h)'
-                                f'}}}},true);'
-                                f'document.addEventListener("submit",function(e){{'
-                                f'var f=e.target;if(f.action){{'
-                                f'var u=new URL(f.action,location.href);'
-                                f'if(u.pathname.startsWith("/")&&!u.pathname.startsWith(B))'
-                                f'f.action=B+u.pathname+u.search'
-                                f'}}}},true);'
-                                # MutationObserver for dynamically added elements
-                                f'new MutationObserver(function(ms){{ms.forEach(function(m){{'
-                                f'm.addedNodes.forEach(function(n){{if(n.nodeType!==1)return;'
-                                f'var els=n.querySelectorAll?[n].concat(Array.from(n.querySelectorAll("[src],[href],[action],[data],[poster],[formaction]"))):[n];'
-                                f'els.forEach(function(el){{'
-                                f'["src","href","action","data","poster","formaction"].forEach(function(a){{'
-                                f'var v=el.getAttribute&&el.getAttribute(a);'
-                                f'if(v&&v.startsWith("/")&&!v.startsWith(B)&&!v.startsWith("//"))el.setAttribute(a,B+v)'
-                                f'}})}})}})}})}}).observe(document.documentElement,{{childList:true,subtree:true}});'
-                                # Override history.pushState/replaceState to keep URL in proxy scope
-                                f'var _ps=history.pushState;history.pushState=function(s,t,u){{return _ps.call(this,s,t,u?R(u):u)}};'
-                                f'var _rs=history.replaceState;history.replaceState=function(s,t,u){{return _rs.call(this,s,t,u?R(u):u)}};'
-                                f'}})();</script>'
-                            )
-                            # Inject after <head> (or at very start if no <head>)
-                            head_idx = text.lower().find("<head")
-                            if head_idx >= 0:
-                                close_idx = text.find(">", head_idx)
-                                if close_idx >= 0:
-                                    insert_at = close_idx + 1
-                                    text = text[:insert_at] + inject_js + text[insert_at:]
-                            else:
-                                text = inject_js + text
+                                # Browser-mode JS interceptor: rewrites ALL URLs through proxy
+                                inject_js = (
+                                    f'<script>(function(){{"use strict";'
+                                    f'var B="{proxy_base}";'
+                                    f'var O="{target_origin}";'
+                                    # Helper: rewrite a URL string
+                                    f'function R(u){{if(typeof u!=="string")return u;'
+                                    f'if(u.startsWith("http://")||u.startsWith("https://"))return B+"/"+u;'
+                                    f'if(u.startsWith("//"))return B+"/https:"+u;'
+                                    f'if(u.startsWith("/")&&!u.startsWith(B))return B+"/"+O+u;'
+                                    f'return u}}'
+                                    # fetch()
+                                    f'var _f=window.fetch;window.fetch=function(u,o){{'
+                                    f'if(typeof u==="string")u=R(u);'
+                                    f'else if(u instanceof Request)u=new Request(R(u.url),u);'
+                                    f'return _f.call(this,u,o)}};'
+                                    # XMLHttpRequest.open()
+                                    f'var _xo=XMLHttpRequest.prototype.open;'
+                                    f'XMLHttpRequest.prototype.open=function(){{'
+                                    f'if(arguments.length>1)arguments[1]=R(arguments[1]);'
+                                    f'return _xo.apply(this,arguments)}};'
+                                    # WebSocket
+                                    f'var _W=window.WebSocket;'
+                                    f'function PW(u,p){{if(typeof u==="string"){{'
+                                    f'if(u.startsWith("wss://")||u.startsWith("ws://"))'
+                                    f'u="wss://"+location.host+B+"/"+u.replace("wss://","https://").replace("ws://","http://")}}'
+                                    f'if(p!==undefined)return new _W(u,p);return new _W(u)}};'
+                                    f'PW.prototype=_W.prototype;PW.CONNECTING=0;PW.OPEN=1;PW.CLOSING=2;PW.CLOSED=3;'
+                                    f'window.WebSocket=PW;'
+                                    # EventSource
+                                    f'if(window.EventSource){{var _E=window.EventSource;'
+                                    f'window.EventSource=function(u,o){{return new _E(R(u),o)}};'
+                                    f'window.EventSource.prototype=_E.prototype}}'
+                                    # window.open()
+                                    f'var _wo=window.open;window.open=function(u){{arguments[0]=R(u);return _wo.apply(this,arguments)}};'
+                                    # navigator.sendBeacon()
+                                    f'if(navigator.sendBeacon){{var _sb=navigator.sendBeacon.bind(navigator);'
+                                    f'navigator.sendBeacon=function(u,d){{return _sb(R(u),d)}}}}'
+                                    # Intercept link clicks and form submissions
+                                    f'document.addEventListener("click",function(e){{'
+                                    f'var a=e.target.closest("a[href]");'
+                                    f'if(a){{var h=a.getAttribute("href");if(h)a.setAttribute("href",R(h))}}'
+                                    f'}},true);'
+                                    f'document.addEventListener("submit",function(e){{'
+                                    f'var f=e.target;if(f.action)f.action=R(f.action)'
+                                    f'}},true);'
+                                    # MutationObserver for dynamically added elements
+                                    f'new MutationObserver(function(ms){{ms.forEach(function(m){{'
+                                    f'm.addedNodes.forEach(function(n){{if(n.nodeType!==1)return;'
+                                    f'var els=n.querySelectorAll?[n].concat(Array.from(n.querySelectorAll("[src],[href],[action],[data],[poster],[formaction]"))):[n];'
+                                    f'els.forEach(function(el){{'
+                                    f'["src","href","action","data","poster","formaction"].forEach(function(a){{'
+                                    f'var v=el.getAttribute&&el.getAttribute(a);'
+                                    f'if(v)el.setAttribute(a,R(v))'
+                                    f'}})}})}})}})}}).observe(document.documentElement,{{childList:true,subtree:true}});'
+                                    # Override history.pushState/replaceState
+                                    f'var _ps=history.pushState;history.pushState=function(s,t,u){{return _ps.call(this,s,t,u?R(u):u)}};'
+                                    f'var _rs=history.replaceState;history.replaceState=function(s,t,u){{return _rs.call(this,s,t,u?R(u):u)}};'
+                                    f'}})();</script>'
+                                )
+                                head_idx = text.lower().find("<head")
+                                if head_idx >= 0:
+                                    close_idx = text.find(">", head_idx)
+                                    if close_idx >= 0:
+                                        insert_at = close_idx + 1
+                                        text = text[:insert_at] + inject_js + text[insert_at:]
+                                else:
+                                    text = inject_js + text
+
+                        else:
+                            # Standard single-site proxy mode
+                            text = text.replace(target_origin, proxy_prefix)
+                            text = text.replace(f"//{parsed_target.netloc}", proxy_prefix)
+                            final_url = str(resp.url)
+                            final_parsed = urlparse(final_url)
+                            final_origin = f"{final_parsed.scheme}://{final_parsed.netloc}"
+                            if final_origin != target_origin:
+                                text = text.replace(final_origin, proxy_prefix)
+                                text = text.replace(f"//{final_parsed.netloc}", proxy_prefix)
+
+                            esc_pfx = re.escape(proxy_prefix[1:])
+
+                            if "text/css" in content_type:
+                                text = re.sub(
+                                    rf'url\(\s*(["\']?)/(?!/|{esc_pfx})',
+                                    rf'url(\1{proxy_prefix}/',
+                                    text
+                                )
+
+                            if "text/html" in content_type:
+                                text = re.sub(
+                                    rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])/(?!/|{esc_pfx})',
+                                    rf'\1{proxy_prefix}/',
+                                    text
+                                )
+                                text = re.sub(
+                                    rf'url\(\s*(["\']?)/(?!/|{esc_pfx})',
+                                    rf'url(\1{proxy_prefix}/',
+                                    text
+                                )
+                                text = re.sub(
+                                    r'(content\s*=\s*["\']\d+\s*;\s*url\s*=\s*)/',
+                                    rf'\1{proxy_prefix}/',
+                                    text,
+                                    flags=re.IGNORECASE
+                                )
+
+                                final_url = str(resp.url)
+                                final_parsed = urlparse(final_url)
+                                final_origin = f"{final_parsed.scheme}://{final_parsed.netloc}"
+
+                                inject_js = (
+                                    f'<script>(function(){{"use strict";'
+                                    f'var B="{proxy_prefix}";'
+                                    f'var TO="{target_origin}";'
+                                    f'var FO="{final_origin}";'
+                                    f'function R(u){{if(typeof u!=="string")return u;'
+                                    f'if(u.startsWith(TO))return B+u.slice(TO.length);'
+                                    f'if(FO!==TO&&u.startsWith(FO))return B+u.slice(FO.length);'
+                                    f'if(u.startsWith("/")&&!u.startsWith(B)&&!u.startsWith("//"))return B+u;'
+                                    f'return u}}'
+                                    f'var _f=window.fetch;window.fetch=function(u,o){{'
+                                    f'if(typeof u==="string")u=R(u);'
+                                    f'else if(u instanceof Request)u=new Request(R(u.url),u);'
+                                    f'return _f.call(this,u,o)}};'
+                                    f'var _xo=XMLHttpRequest.prototype.open;'
+                                    f'XMLHttpRequest.prototype.open=function(){{'
+                                    f'if(arguments.length>1)arguments[1]=R(arguments[1]);'
+                                    f'return _xo.apply(this,arguments)}};'
+                                    f'var _W=window.WebSocket;'
+                                    f'function PW(u,p){{if(typeof u==="string"){{'
+                                    f'var m=u.match(/^(wss?:\\/\\/[^/]+)(\\/.*)$/);'
+                                    f'if(m&&!m[2].startsWith(B))u=m[1]+B+m[2]}}'
+                                    f'if(p!==undefined)return new _W(u,p);return new _W(u)}};'
+                                    f'PW.prototype=_W.prototype;PW.CONNECTING=0;PW.OPEN=1;PW.CLOSING=2;PW.CLOSED=3;'
+                                    f'window.WebSocket=PW;'
+                                    f'if(window.EventSource){{var _E=window.EventSource;'
+                                    f'window.EventSource=function(u,o){{return new _E(R(u),o)}};'
+                                    f'window.EventSource.prototype=_E.prototype}}'
+                                    f'var _wo=window.open;window.open=function(u){{arguments[0]=R(u);return _wo.apply(this,arguments)}};'
+                                    f'if(navigator.sendBeacon){{var _sb=navigator.sendBeacon.bind(navigator);'
+                                    f'navigator.sendBeacon=function(u,d){{return _sb(R(u),d)}}}}'
+                                    f'document.addEventListener("click",function(e){{'
+                                    f'var a=e.target.closest("a[href]");'
+                                    f'if(a&&a.href){{'
+                                    f'var h=a.getAttribute("href");'
+                                    f'if(h&&h.startsWith("/")&&!h.startsWith(B))a.setAttribute("href",B+h)'
+                                    f'}}}},true);'
+                                    f'document.addEventListener("submit",function(e){{'
+                                    f'var f=e.target;if(f.action){{'
+                                    f'var u=new URL(f.action,location.href);'
+                                    f'if(u.pathname.startsWith("/")&&!u.pathname.startsWith(B))'
+                                    f'f.action=B+u.pathname+u.search'
+                                    f'}}}},true);'
+                                    f'new MutationObserver(function(ms){{ms.forEach(function(m){{'
+                                    f'm.addedNodes.forEach(function(n){{if(n.nodeType!==1)return;'
+                                    f'var els=n.querySelectorAll?[n].concat(Array.from(n.querySelectorAll("[src],[href],[action],[data],[poster],[formaction]"))):[n];'
+                                    f'els.forEach(function(el){{'
+                                    f'["src","href","action","data","poster","formaction"].forEach(function(a){{'
+                                    f'var v=el.getAttribute&&el.getAttribute(a);'
+                                    f'if(v&&v.startsWith("/")&&!v.startsWith(B)&&!v.startsWith("//"))el.setAttribute(a,B+v)'
+                                    f'}})}})}})}})}}).observe(document.documentElement,{{childList:true,subtree:true}});'
+                                    f'var _ps=history.pushState;history.pushState=function(s,t,u){{return _ps.call(this,s,t,u?R(u):u)}};'
+                                    f'var _rs=history.replaceState;history.replaceState=function(s,t,u){{return _rs.call(this,s,t,u?R(u):u)}};'
+                                    f'}})();</script>'
+                                )
+                                head_idx = text.lower().find("<head")
+                                if head_idx >= 0:
+                                    close_idx = text.find(">", head_idx)
+                                    if close_idx >= 0:
+                                        insert_at = close_idx + 1
+                                        text = text[:insert_at] + inject_js + text[insert_at:]
+                                else:
+                                    text = inject_js + text
 
                         response_body = text.encode(charset)
                     except Exception:

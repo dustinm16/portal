@@ -254,6 +254,7 @@
         const connectionId = '{{CONNECTION_ID}}';
         const proxyBase = '{{PROXY_PATH}}';
         const targetDisplay = '{{TARGET_DISPLAY}}';
+        const browserMode = {{BROWSER_MODE}};
         const frame = document.getElementById('browser-frame');
         const urlInput = document.getElementById('url-input');
         const statusEl = document.getElementById('connection-status');
@@ -270,11 +271,25 @@
         }
 
         function proxyPathToDisplay(proxyUrl) {
-            // Convert /proxy/{id}/some/path → targetHost/some/path
             try {
                 const url = new URL(proxyUrl, window.location.origin);
                 const path = url.pathname;
                 const prefix = proxyBase + '/';
+                if (browserMode) {
+                    // Browser mode: /proxy/{id}/https://example.com/path → https://example.com/path
+                    if (path.startsWith(prefix)) {
+                        const remainder = path.slice(prefix.length);
+                        // Check if it looks like a full URL (https://...)
+                        if (remainder.match(/^https?:\/\//)) {
+                            let display = remainder;
+                            if (url.search) display += url.search;
+                            if (url.hash) display += url.hash;
+                            return display;
+                        }
+                    }
+                    return targetDisplay + '/';
+                }
+                // Standard mode: /proxy/{id}/path → targetDisplay/path
                 if (path.startsWith(prefix)) {
                     return targetDisplay + '/' + path.slice(prefix.length);
                 } else if (path === proxyBase) {
@@ -285,11 +300,22 @@
         }
 
         function displayToProxyPath(display) {
-            // Convert targetHost/some/path → /proxy/{id}/some/path
+            if (browserMode) {
+                // Browser mode: full URL → /proxy/{id}/https://example.com/path
+                if (display.startsWith('http://') || display.startsWith('https://'))
+                    return proxyBase + '/' + display;
+                // Bare hostname like "example.com" or "example.com/path"
+                if (display.match(/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/))
+                    return proxyBase + '/https://' + display;
+                // Relative path → use current target origin
+                if (display.startsWith('/'))
+                    return proxyBase + '/' + targetDisplay + display;
+                return proxyBase + '/' + display;
+            }
+            // Standard mode
             if (display.startsWith(targetDisplay)) {
                 return proxyBase + '/' + display.slice(targetDisplay.length).replace(/^\/+/, '');
             }
-            // If they typed a relative path
             if (display.startsWith('/')) {
                 return proxyBase + display;
             }
@@ -339,6 +365,15 @@
         }
 
         function openExternal() {
+            if (browserMode) {
+                // Open the actual URL, not the proxied one
+                const display = urlInput.value;
+                if (display.startsWith('http://') || display.startsWith('https://'))
+                    window.open(display, '_blank');
+                else
+                    window.open('https://' + display, '_blank');
+                return;
+            }
             try {
                 window.open(frame.contentWindow.location.href, '_blank');
             } catch {

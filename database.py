@@ -944,8 +944,19 @@ class Database:
         await self._seed_default_connections()
 
     async def _seed_default_connections(self) -> None:
-        """Add default Web Browser connection to users who don't have one."""
+        """One-time: add default Web Browser connection and enable browser_mode on existing ones."""
         try:
+            # Check if this migration already ran
+            cursor = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = 'default_connections_seeded'"
+            )
+            row = await cursor.fetchone()
+            if row:
+                return  # Already done
+
+            browser_config = encrypt_config('{"browser_mode": true}')
+
+            # Create for users who don't have one
             cursor = await self._connection.execute(
                 """SELECT u.id FROM users u
                    WHERE u.id NOT IN (
@@ -956,15 +967,25 @@ class Database:
             rows = await cursor.fetchall()
             for row in rows:
                 uuid_val = _secrets.token_urlsafe(12)
-                encrypted_config = encrypt_config('{}')
                 await self._connection.execute(
                     """INSERT INTO user_connections
                        (user_id, name, type, host, port, config, icon, portal_access, api_access, uuid)
                        VALUES (?, 'Web Browser', 'http_proxy', 'duckduckgo.com', 443, ?, 'globe', 1, 0, ?)""",
-                    (row["id"], encrypted_config, uuid_val)
+                    (row["id"], browser_config, uuid_val)
                 )
-            if rows:
-                await self._connection.commit()
+
+            # Update existing Web Browser connections to have browser_mode config
+            await self._connection.execute(
+                """UPDATE user_connections SET config = ?
+                   WHERE name = 'Web Browser' AND type = 'http_proxy' AND host = 'duckduckgo.com'""",
+                (browser_config,)
+            )
+
+            # Mark as done so it doesn't re-run
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('default_connections_seeded', '1')"
+            )
+            await self._connection.commit()
         except Exception:
             pass  # Table may not exist yet on first run
 
