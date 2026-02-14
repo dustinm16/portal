@@ -8102,16 +8102,24 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'if(window.EventSource){{var _E=window.EventSource;'
                                     f'window.EventSource=function(u,o){{return new _E(R(u),o)}};'
                                     f'window.EventSource.prototype=_E.prototype}}'
-                                    # window.open()
-                                    f'var _wo=window.open;window.open=function(u){{arguments[0]=R(u);return _wo.apply(this,arguments)}};'
+                                    # window.open() — send to parent as new tab
+                                    f'window.open=function(u){{if(u){{var ru=R(u);'
+                                    f'try{{window.top.postMessage({{type:"openTab",url:ru}},"*")}}catch{{}}'
+                                    f'}}return null}};'
                                     # navigator.sendBeacon()
                                     f'if(navigator.sendBeacon){{var _sb=navigator.sendBeacon.bind(navigator);'
                                     f'navigator.sendBeacon=function(u,d){{return _sb(R(u),d)}}}}'
-                                    # Intercept link clicks and form submissions
+                                    # Intercept link clicks — target=_blank opens in new tab
                                     f'document.addEventListener("click",function(e){{'
                                     f'var a=e.target.closest("a[href]");'
-                                    f'if(a){{var h=a.getAttribute("href");if(h)a.setAttribute("href",R(h))}}'
-                                    f'}},true);'
+                                    f'if(a){{var h=a.getAttribute("href");'
+                                    f'var t=a.getAttribute("target");'
+                                    f'if(h){{var rh=R(h);'
+                                    f'if(t==="_blank"||e.ctrlKey||e.metaKey||e.button===1){{'
+                                    f'e.preventDefault();e.stopPropagation();'
+                                    f'try{{window.top.postMessage({{type:"openTab",url:rh}},"*")}}catch{{}}'
+                                    f'return}}a.setAttribute("href",rh)}}'
+                                    f'}}}},true);'
                                     f'document.addEventListener("submit",function(e){{'
                                     f'var f=e.target;if(f.action)f.action=R(f.action)'
                                     f'}},true);'

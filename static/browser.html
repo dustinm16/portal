@@ -140,18 +140,119 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
         }
-        #browser-frame {
+
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            align-items: flex-end;
+            background: var(--bg-primary, #0d1117);
+            border-bottom: 1px solid var(--card-border, #30363d);
+            height: 36px;
+            padding: 0 4px;
+            gap: 2px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            flex-shrink: 0;
+            scrollbar-width: none;
+        }
+        .tab-bar::-webkit-scrollbar { display: none; }
+        .tab {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            height: 30px;
+            padding: 0 12px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-bottom: none;
+            border-radius: 8px 8px 0 0;
+            color: var(--text-secondary, #8b949e);
+            font-size: 0.75rem;
+            cursor: pointer;
+            white-space: nowrap;
+            max-width: 200px;
+            min-width: 60px;
+            flex-shrink: 0;
+            transition: all 0.15s;
+            user-select: none;
+        }
+        .tab:hover {
+            background: var(--bg-secondary, #1c2128);
+            color: var(--text-primary, #c9d1d9);
+        }
+        .tab.active {
+            background: var(--card-bg, #161b22);
+            border-color: var(--card-border, #30363d);
+            color: var(--text-primary, #c9d1d9);
+        }
+        .tab .tab-title {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 1;
+            min-width: 0;
+        }
+        .tab .tab-close {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity 0.1s, background 0.1s;
+            flex-shrink: 0;
+        }
+        .tab:hover .tab-close, .tab.active .tab-close {
+            opacity: 0.6;
+        }
+        .tab .tab-close:hover {
+            opacity: 1;
+            background: rgba(248,81,73,0.2);
+            color: var(--accent-red, #f85149);
+        }
+        .tab-new {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: var(--text-secondary, #8b949e);
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: all 0.15s;
+            margin-bottom: 2px;
+        }
+        .tab-new:hover {
+            background: var(--bg-secondary, #1c2128);
+            color: var(--text-primary, #c9d1d9);
+        }
+
+        .frame-container {
+            position: relative;
+            flex: 1;
+            overflow: hidden;
+        }
+        .frame-container iframe {
+            position: absolute;
+            top: 0; left: 0;
             width: 100%;
-            height: calc(100vh - 50px);
+            height: 100%;
             border: none;
             background: #fff;
+        }
+        .frame-container iframe.hidden-tab {
+            visibility: hidden;
+            pointer-events: none;
         }
         .browser-error {
             display: none;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: calc(100vh - 50px);
+            height: 100%;
             text-align: center;
             gap: 16px;
             padding: 2rem;
@@ -171,6 +272,11 @@
             margin: 0;
             max-width: 400px;
         }
+        /* Full-height layout */
+        body {
+            display: flex;
+            flex-direction: column;
+        }
         /* Responsive */
         @media (max-width: 600px) {
             .browser-header {
@@ -183,6 +289,7 @@
             .browser-controls #status-text {
                 display: none;
             }
+            .tab { max-width: 120px; padding: 0 8px; }
         }
     </style>
 </head>
@@ -238,15 +345,23 @@
         </div>
     </header>
 
-    <iframe id="browser-frame" src="{{PROXY_PATH}}/" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <div class="tab-bar" id="tab-bar">
+        <button class="tab-new" onclick="addTab()" title="New Tab (Ctrl+T)">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+        </button>
+    </div>
 
-    <div class="browser-error" id="browser-error">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
-        </svg>
-        <h2>Connection Failed</h2>
-        <p id="error-message">Could not reach the upstream service. Check that the target host is running and accessible.</p>
-        <button class="btn btn-primary" onclick="reconnect()">Retry Connection</button>
+    <div class="frame-container" id="frame-container">
+        <div class="browser-error" id="browser-error">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+            <h2>Connection Failed</h2>
+            <p id="error-message">Could not reach the upstream service. Check that the target host is running and accessible.</p>
+            <button class="btn btn-primary" onclick="reconnect()">Retry Connection</button>
+        </div>
     </div>
 
     <script src="/static/js/portal.js?v=29"></script>
@@ -255,19 +370,26 @@
         const proxyBase = '{{PROXY_PATH}}';
         const targetDisplay = '{{TARGET_DISPLAY}}';
         const browserMode = {{BROWSER_MODE}};
-        const frame = document.getElementById('browser-frame');
         const urlInput = document.getElementById('url-input');
         const statusEl = document.getElementById('connection-status');
-        const statusText = document.getElementById('status-text');
+        const statusTextEl = document.getElementById('status-text');
         const errorEl = document.getElementById('browser-error');
+        const tabBar = document.getElementById('tab-bar');
+        const frameContainer = document.getElementById('frame-container');
 
-        // Navigation history
-        const history = { stack: [proxyBase + '/'], index: 0 };
+        // Tab state
+        let tabs = [];
+        let activeTabId = null;
+        let tabIdCounter = 0;
         let urlPollInterval = null;
 
         function setStatus(state, text) {
             statusEl.className = 'connection-status ' + state;
-            statusText.textContent = text;
+            statusTextEl.textContent = text;
+        }
+
+        function getHomeSrc() {
+            return proxyBase + '/';
         }
 
         function proxyPathToDisplay(proxyUrl) {
@@ -276,10 +398,8 @@
                 const path = url.pathname;
                 const prefix = proxyBase + '/';
                 if (browserMode) {
-                    // Browser mode: /proxy/{id}/https://example.com/path → https://example.com/path
                     if (path.startsWith(prefix)) {
                         const remainder = path.slice(prefix.length);
-                        // Check if it looks like a full URL (https://...)
                         if (remainder.match(/^https?:\/\//)) {
                             let display = remainder;
                             if (url.search) display += url.search;
@@ -289,7 +409,6 @@
                     }
                     return targetDisplay + '/';
                 }
-                // Standard mode: /proxy/{id}/path → targetDisplay/path
                 if (path.startsWith(prefix)) {
                     return targetDisplay + '/' + path.slice(prefix.length);
                 } else if (path === proxyBase) {
@@ -301,18 +420,14 @@
 
         function displayToProxyPath(display) {
             if (browserMode) {
-                // Browser mode: full URL → /proxy/{id}/https://example.com/path
                 if (display.startsWith('http://') || display.startsWith('https://'))
                     return proxyBase + '/' + display;
-                // Bare hostname like "example.com" or "example.com/path"
                 if (display.match(/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/))
                     return proxyBase + '/https://' + display;
-                // Relative path → use current target origin
                 if (display.startsWith('/'))
                     return proxyBase + '/' + targetDisplay + display;
                 return proxyBase + '/' + display;
             }
-            // Standard mode
             if (display.startsWith(targetDisplay)) {
                 return proxyBase + '/' + display.slice(targetDisplay.length).replace(/^\/+/, '');
             }
@@ -322,13 +437,160 @@
             return proxyBase + '/' + display;
         }
 
+        function getActiveTab() {
+            return tabs.find(t => t.id === activeTabId);
+        }
+
+        function getActiveFrame() {
+            const tab = getActiveTab();
+            return tab ? tab.iframe : null;
+        }
+
+        // --- Tab title extraction ---
+        function extractTitle(iframe) {
+            try {
+                const doc = iframe.contentDocument || iframe.contentWindow.document;
+                if (doc && doc.title) return doc.title.substring(0, 40);
+            } catch {}
+            // Fallback: extract hostname from URL
+            try {
+                const loc = iframe.contentWindow.location;
+                const path = loc.pathname;
+                const prefix = proxyBase + '/';
+                if (path.startsWith(prefix)) {
+                    const remainder = path.slice(prefix.length);
+                    const m = remainder.match(/^https?:\/\/([^/]+)/);
+                    if (m) return m[1];
+                }
+            } catch {}
+            return 'New Tab';
+        }
+
+        // --- Tab management ---
+        function addTab(url) {
+            const id = ++tabIdCounter;
+            const iframe = document.createElement('iframe');
+            iframe.className = 'hidden-tab';
+            iframe.sandbox = 'allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox';
+            iframe.src = url || getHomeSrc();
+            frameContainer.appendChild(iframe);
+
+            const tab = { id, iframe, title: 'New Tab' };
+            tabs.push(tab);
+
+            // Listen for load events to update title
+            iframe.addEventListener('load', function() {
+                tab.title = extractTitle(iframe);
+                renderTabs();
+                if (tab.id === activeTabId) {
+                    onActiveTabLoad();
+                }
+            });
+
+            iframe.addEventListener('error', function() {
+                if (tab.id === activeTabId) {
+                    setStatus('disconnected', 'Error');
+                    errorEl.style.display = 'flex';
+                }
+            });
+
+            switchTab(id);
+            renderTabs();
+            return id;
+        }
+
+        function closeTab(id) {
+            const idx = tabs.findIndex(t => t.id === id);
+            if (idx === -1) return;
+            if (tabs.length === 1) {
+                // Last tab — navigate home instead of closing
+                tabs[0].iframe.src = getHomeSrc();
+                return;
+            }
+            const tab = tabs[idx];
+            tab.iframe.remove();
+            tabs.splice(idx, 1);
+
+            if (activeTabId === id) {
+                // Switch to adjacent tab
+                const newIdx = Math.min(idx, tabs.length - 1);
+                switchTab(tabs[newIdx].id);
+            }
+            renderTabs();
+        }
+
+        function switchTab(id) {
+            activeTabId = id;
+            tabs.forEach(t => {
+                if (t.id === id) {
+                    t.iframe.classList.remove('hidden-tab');
+                } else {
+                    t.iframe.classList.add('hidden-tab');
+                }
+            });
+            errorEl.style.display = 'none';
+            updateUrlBar();
+            renderTabs();
+        }
+
+        function renderTabs() {
+            // Remove old tab elements (keep the + button)
+            const newBtn = tabBar.querySelector('.tab-new');
+            tabBar.querySelectorAll('.tab').forEach(el => el.remove());
+
+            tabs.forEach(tab => {
+                const el = document.createElement('div');
+                el.className = 'tab' + (tab.id === activeTabId ? ' active' : '');
+                el.innerHTML = `<span class="tab-title">${escapeHtml(tab.title)}</span>` +
+                    `<span class="tab-close" title="Close tab">` +
+                    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12">` +
+                    `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></span>`;
+
+                el.addEventListener('click', (e) => {
+                    if (e.target.closest('.tab-close')) {
+                        e.stopPropagation();
+                        closeTab(tab.id);
+                    } else {
+                        switchTab(tab.id);
+                    }
+                });
+
+                // Middle-click to close
+                el.addEventListener('mousedown', (e) => {
+                    if (e.button === 1) {
+                        e.preventDefault();
+                        closeTab(tab.id);
+                    }
+                });
+
+                tabBar.insertBefore(el, newBtn);
+            });
+        }
+
+        function escapeHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        // --- URL bar + navigation ---
         function updateUrlBar() {
+            const frame = getActiveFrame();
+            if (!frame) return;
             try {
                 const loc = frame.contentWindow.location;
                 const path = loc.pathname + loc.search + loc.hash;
                 urlInput.value = proxyPathToDisplay(path);
-            } catch {
-                // Cross-origin — can't read
+            } catch {}
+
+            // Update tab title
+            const tab = getActiveTab();
+            if (tab) {
+                const newTitle = extractTitle(frame);
+                if (newTitle !== tab.title) {
+                    tab.title = newTitle;
+                    renderTabs();
+                }
             }
         }
 
@@ -344,29 +606,60 @@
             }
         }
 
-        // Navigation buttons
+        function onActiveTabLoad() {
+            const frame = getActiveFrame();
+            if (!frame) return;
+            try {
+                const doc = frame.contentDocument || frame.contentWindow.document;
+                if (doc && doc.title && doc.title.includes('Cannot reach')) {
+                    setStatus('disconnected', 'Error');
+                    errorEl.style.display = 'flex';
+                    return;
+                }
+                setStatus('connected', 'Connected');
+                updateUrlBar();
+                startUrlPolling();
+
+                doc.addEventListener('click', function() {
+                    setTimeout(updateUrlBar, 100);
+                });
+                frame.contentWindow.addEventListener('popstate', function() {
+                    setTimeout(updateUrlBar, 50);
+                });
+            } catch {
+                setStatus('connected', 'Connected');
+            }
+        }
+
+        // Navigation
         function goBack() {
+            const frame = getActiveFrame();
+            if (!frame) return;
             try { frame.contentWindow.history.back(); } catch {}
         }
 
         function goForward() {
+            const frame = getActiveFrame();
+            if (!frame) return;
             try { frame.contentWindow.history.forward(); } catch {}
         }
 
         function refreshPage() {
+            const frame = getActiveFrame();
+            if (!frame) return;
             try { frame.contentWindow.location.reload(); } catch {
                 frame.src = frame.src;
             }
         }
 
         function navigateTo(display) {
-            const proxyPath = displayToProxyPath(display);
-            frame.src = proxyPath;
+            const frame = getActiveFrame();
+            if (!frame) return;
+            frame.src = displayToProxyPath(display);
         }
 
         function openExternal() {
             if (browserMode) {
-                // Open the actual URL, not the proxied one
                 const display = urlInput.value;
                 if (display.startsWith('http://') || display.startsWith('https://'))
                     window.open(display, '_blank');
@@ -374,28 +667,35 @@
                     window.open('https://' + display, '_blank');
                 return;
             }
+            const frame = getActiveFrame();
             try {
                 window.open(frame.contentWindow.location.href, '_blank');
             } catch {
-                window.open(frame.src, '_blank');
+                if (frame) window.open(frame.src, '_blank');
             }
         }
 
         function disconnect() {
             stopUrlPolling();
-            frame.src = 'about:blank';
+            tabs.forEach(t => t.iframe.src = 'about:blank');
             setStatus('disconnected', 'Disconnected');
             window.close();
-            // If window.close() didn't work (not opened by script), go to dashboard
             setTimeout(() => { window.location.href = '/dashboard'; }, 200);
         }
 
         function reconnect() {
             errorEl.style.display = 'none';
-            frame.style.display = 'block';
-            frame.src = proxyBase + '/';
+            const frame = getActiveFrame();
+            if (frame) frame.src = getHomeSrc();
             setStatus('connecting', 'Connecting');
         }
+
+        // Open a URL in a new tab (called from JS interceptor via postMessage)
+        window.addEventListener('message', function(e) {
+            if (e.data && e.data.type === 'openTab' && e.data.url) {
+                addTab(e.data.url);
+            }
+        });
 
         // URL bar keyboard nav
         urlInput.addEventListener('keydown', function(e) {
@@ -410,65 +710,47 @@
             }
         });
 
-        // Select all on focus
         urlInput.addEventListener('focus', function() {
             setTimeout(() => this.select(), 0);
         });
 
-        // Iframe load handler
-        frame.addEventListener('load', function() {
-            try {
-                const doc = frame.contentDocument || frame.contentWindow.document;
-                // Check for error responses
-                if (doc && doc.title && doc.title.includes('Cannot reach')) {
-                    setStatus('disconnected', 'Error');
-                    frame.style.display = 'none';
-                    errorEl.style.display = 'flex';
-                    return;
-                }
-                setStatus('connected', 'Connected');
-                updateUrlBar();
-                startUrlPolling();
-
-                // Intercept link clicks inside iframe to update URL bar
-                doc.addEventListener('click', function() {
-                    setTimeout(updateUrlBar, 100);
-                });
-                // Listen for popstate inside iframe
-                frame.contentWindow.addEventListener('popstate', function() {
-                    setTimeout(updateUrlBar, 50);
-                });
-            } catch {
-                // Cross-origin — still connected but can't inspect
-                setStatus('connected', 'Connected');
-            }
-        });
-
-        frame.addEventListener('error', function() {
-            setStatus('disconnected', 'Error');
-            frame.style.display = 'none';
-            errorEl.style.display = 'flex';
-        });
-
         // Keyboard shortcuts
         document.addEventListener('keydown', function(e) {
-            // Alt+Left = Back, Alt+Right = Forward
             if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goBack(); }
             if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); goForward(); }
-            // Ctrl/Cmd+R = Refresh (when not focused in iframe)
-            if ((e.ctrlKey || e.metaKey) && e.key === 'r' && document.activeElement !== frame) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'r' && document.activeElement.tagName !== 'IFRAME') {
                 e.preventDefault();
                 refreshPage();
             }
-            // Ctrl/Cmd+L = Focus URL bar
             if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
                 e.preventDefault();
                 urlInput.focus();
             }
+            // Ctrl+T = new tab
+            if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+                e.preventDefault();
+                addTab();
+            }
+            // Ctrl+W = close tab
+            if ((e.ctrlKey || e.metaKey) && e.key === 'w') {
+                e.preventDefault();
+                if (activeTabId) closeTab(activeTabId);
+            }
+            // Ctrl+Tab / Ctrl+Shift+Tab = next/prev tab
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Tab') {
+                e.preventDefault();
+                const idx = tabs.findIndex(t => t.id === activeTabId);
+                if (e.shiftKey) {
+                    switchTab(tabs[(idx - 1 + tabs.length) % tabs.length].id);
+                } else {
+                    switchTab(tabs[(idx + 1) % tabs.length].id);
+                }
+            }
         });
 
-        // Initial load status
+        // Initialize with first tab
         setStatus('connecting', 'Connecting');
+        addTab();
     </script>
 </body>
 </html>
