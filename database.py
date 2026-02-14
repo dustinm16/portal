@@ -841,6 +841,8 @@ MIGRATIONS = [
     # RTMP token IP binding and reconnect grace
     "ALTER TABLE rtmp_tokens ADD COLUMN bound_ip TEXT",
     "ALTER TABLE rtmp_tokens ADD COLUMN last_active_at TEXT",
+    # Opaque connection IDs - UUID column for external-facing URLs
+    "ALTER TABLE user_connections ADD COLUMN uuid TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -935,6 +937,9 @@ class Database:
         # Re-encrypt all data with machine-bound keys (one-time migration)
         await self._migrate_encryption_to_machine_key()
 
+        # Generate UUIDs for any connections that don't have one
+        await self._populate_connection_uuids()
+
     async def _migrate_service_logs_fk(self) -> None:
         """Fix service_logs FK: managed_services(id) -> services(id)."""
         try:
@@ -991,6 +996,29 @@ class Database:
             )
         if rows:
             await self._connection.commit()
+
+    async def _populate_connection_uuids(self) -> None:
+        """Generate UUIDs for any connections that don't have one (migration)."""
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id FROM user_connections WHERE uuid IS NULL"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                uuid_val = _secrets.token_urlsafe(12)
+                await self._connection.execute(
+                    "UPDATE user_connections SET uuid = ? WHERE id = ?",
+                    (uuid_val, row["id"])
+                )
+            if rows:
+                await self._connection.commit()
+            # Create unique index (idempotent)
+            await self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_connections_uuid ON user_connections(uuid)"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass  # Column may not exist yet on first run
 
     async def _migrate_encrypt_configs(self) -> None:
         """Encrypt any plaintext config fields (one-time migration).
@@ -2099,17 +2127,18 @@ class Database:
         icon: str = "link",
         portal_access: int = 1,
         api_access: int = 0
-    ) -> int:
-        """Create a new user connection and return its ID."""
+    ) -> str:
+        """Create a new user connection and return its UUID."""
+        uuid_val = _secrets.token_urlsafe(12)
         encrypted_config = encrypt_config(config) if config else "{}"
         cursor = await self.conn.execute(
             """INSERT INTO user_connections
-               (user_id, name, type, host, port, config, ssh_key_id, icon, portal_access, api_access)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, name, conn_type, host, port, encrypted_config, ssh_key_id, icon, portal_access, api_access)
+               (user_id, name, type, host, port, config, ssh_key_id, icon, portal_access, api_access, uuid)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, conn_type, host, port, encrypted_config, ssh_key_id, icon, portal_access, api_access, uuid_val)
         )
         await self.conn.commit()
-        return cursor.lastrowid
+        return uuid_val
 
     async def get_user_connection(self, conn_id: int, user_id: int) -> Optional[dict]:
         """Get a user connection by ID (must be owned by user)."""
@@ -2119,6 +2148,27 @@ class Database:
                LEFT JOIN ssh_keys sk ON uc.ssh_key_id = sk.id
                WHERE uc.id = ? AND uc.user_id = ?""",
             (conn_id, user_id)
+        )
+        row = await cursor.fetchone()
+        if row:
+            conn = dict(row)
+            import json
+            try:
+                raw_config = conn.get("config", "{}")
+                conn["config"] = json.loads(decrypt_config(raw_config))
+            except (json.JSONDecodeError, Exception):
+                conn["config"] = {}
+            return conn
+        return None
+
+    async def get_user_connection_by_uuid(self, uuid: str, user_id: int) -> Optional[dict]:
+        """Get a user connection by UUID (must be owned by user)."""
+        cursor = await self.conn.execute(
+            """SELECT uc.*, sk.name as ssh_key_name, sk.fingerprint as ssh_key_fingerprint
+               FROM user_connections uc
+               LEFT JOIN ssh_keys sk ON uc.ssh_key_id = sk.id
+               WHERE uc.uuid = ? AND uc.user_id = ?""",
+            (uuid, user_id)
         )
         row = await cursor.fetchone()
         if row:

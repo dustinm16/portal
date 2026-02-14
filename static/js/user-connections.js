@@ -649,12 +649,12 @@ function renderConnections() {
         return `
             <div class="connection-card" data-connection-id="${conn.id}">
                 <div class="connection-card-actions">
-                    <button class="btn-icon" onclick="event.stopPropagation(); editConnection(${conn.id})" title="Edit">
+                    <button class="btn-icon" onclick="event.stopPropagation(); editConnection('${conn.id}')" title="Edit">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                     </button>
-                    <button class="btn-icon btn-icon-danger" onclick="event.stopPropagation(); confirmDeleteConnection(${conn.id}, '${escapeHtml(conn.name).replace(/'/g, "\\'")}')" title="Delete">
+                    <button class="btn-icon btn-icon-danger" onclick="event.stopPropagation(); confirmDeleteConnection('${conn.id}', '${escapeHtml(conn.name).replace(/'/g, "\\'")}')" title="Delete">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                         </svg>
@@ -664,7 +664,7 @@ function renderConnections() {
                 <div class="connection-name">${escapeHtml(conn.name)}</div>
                 <div class="connection-type">${typeInfo.name}</div>
                 <div class="connection-host">${escapeHtml(conn.host)}${conn.port ? ':' + conn.port : ''}</div>
-                <button class="btn btn-primary btn-sm connection-connect-btn" onclick="event.stopPropagation(); connectTo(${conn.id})">
+                <button class="btn btn-primary btn-sm connection-connect-btn" onclick="event.stopPropagation(); connectTo('${conn.id}')">
                     Connect
                 </button>
             </div>

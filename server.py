@@ -1827,6 +1827,13 @@ def is_blocked_host(host: str) -> bool:
 _SENSITIVE_CONFIG_FIELDS = {"password", "private_key", "private_key_path", "auth_header", "psk"}
 
 
+def _externalize_connection(conn: dict) -> dict:
+    """Swap internal integer ID for the external UUID in a connection dict."""
+    if "uuid" in conn:
+        conn["id"] = conn.pop("uuid")
+    return conn
+
+
 def redact_connection_config(connection: dict) -> dict:
     """Redact sensitive fields from a connection dict for API responses.
 
@@ -2085,7 +2092,7 @@ async def http_list_user_connections(request: web.Request) -> web.Response:
             connections = await db.get_user_connections(token.user_id)
 
         return web.json_response({
-            "connections": [redact_connection_config(c) for c in connections]
+            "connections": [_externalize_connection(redact_connection_config(c)) for c in connections]
         })
     except Exception as e:
         logger.error(f"Failed to list connections: {e}")
@@ -2098,15 +2105,15 @@ async def http_get_user_connection(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    conn_id = request.match_info.get("id")
-    if not conn_id or not conn_id.isdigit():
+    conn_uuid = request.match_info.get("id")
+    if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    connection = await db.get_user_connection(int(conn_id), token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
 
-    return web.json_response(redact_connection_config(connection))
+    return web.json_response(_externalize_connection(redact_connection_config(connection)))
 
 
 async def http_update_user_connection(request: web.Request) -> web.Response:
@@ -2115,8 +2122,8 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    conn_id = request.match_info.get("id")
-    if not conn_id or not conn_id.isdigit():
+    conn_uuid = request.match_info.get("id")
+    if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
     try:
@@ -2140,26 +2147,30 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
             "error": "Local server access not allowed for user connections"
         }, status=403)
 
+    # Resolve UUID to internal connection
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    int_id = connection["id"]
+
     # Merge incoming config with existing config to preserve fields not in the form
     # (e.g., passwords, private keys, and other sensitive fields that are not shown during edit)
     config = data.get("config", {})
     if isinstance(config, dict):
-        existing = await db.get_user_connection(int(conn_id), token.user_id)
-        if existing:
-            existing_config = existing.get("config", {})
-            if isinstance(existing_config, str):
-                existing_config = json.loads(existing_config) if existing_config else {}
-            if isinstance(existing_config, dict):
-                # Existing config provides defaults; incoming config overrides
-                merged = {**existing_config, **config}
-                data["config"] = merged
+        existing_config = connection.get("config", {})
+        if isinstance(existing_config, str):
+            existing_config = json.loads(existing_config) if existing_config else {}
+        if isinstance(existing_config, dict):
+            # Existing config provides defaults; incoming config overrides
+            merged = {**existing_config, **config}
+            data["config"] = merged
 
     try:
-        if await db.update_user_connection(int(conn_id), token.user_id, **data):
-            logger.info(f"Connection {conn_id} updated by user {token.user_id}")
+        if await db.update_user_connection(int_id, token.user_id, **data):
+            logger.info(f"Connection {conn_uuid} updated by user {token.user_id}")
             return web.json_response({"status": "updated"})
         else:
-            return web.json_response({"error": "Connection not found or no changes"}, status=404)
+            return web.json_response({"error": "No changes"}, status=404)
     except Exception as e:
         if "UNIQUE constraint" in str(e):
             return web.json_response({"error": "Connection with this name already exists"}, status=400)
@@ -2173,12 +2184,16 @@ async def http_delete_user_connection(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    conn_id = request.match_info.get("id")
-    if not conn_id or not conn_id.isdigit():
+    conn_uuid = request.match_info.get("id")
+    if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    if await db.delete_user_connection(int(conn_id), token.user_id):
-        logger.info(f"Connection {conn_id} deleted by user {token.user_id}")
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+
+    if await db.delete_user_connection(connection["id"], token.user_id):
+        logger.info(f"Connection {conn_uuid} deleted by user {token.user_id}")
         return web.json_response({"status": "deleted"})
     else:
         return web.json_response({"error": "Connection not found"}, status=404)
@@ -2190,11 +2205,15 @@ async def http_toggle_connection_pin(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    conn_id = request.match_info.get("id")
-    if not conn_id or not conn_id.isdigit():
+    conn_uuid = request.match_info.get("id")
+    if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    result = await db.toggle_connection_pin(int(conn_id), token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+
+    result = await db.toggle_connection_pin(connection["id"], token.user_id)
     if result is None:
         return web.json_response({"error": "Connection not found"}, status=404)
     return web.json_response({"is_pinned": result})
@@ -2226,13 +2245,16 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
-    conn_id = request.match_info.get("id")
-    if not conn_id or not conn_id.isdigit():
+    conn_uuid = request.match_info.get("id")
+    if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    connection = await db.get_user_connection(int(conn_id), token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
+
+    # Record usage
+    await db.record_connection_usage(connection["id"], token.user_id)
 
     # Get SSH key public key if associated
     ssh_public_key = None
@@ -2243,9 +2265,9 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
             ssh_public_key = key["public_key"]
 
     return web.json_response({
-        "connection": connection,
+        "connection": _externalize_connection(connection),
         "ssh_public_key": ssh_public_key,
-        "websocket_url": f"/ws/user-connection/{conn_id}"
+        "websocket_url": f"/ws/user-connection/{conn_uuid}"
     })
 
 
@@ -6039,12 +6061,11 @@ async def http_sftp_vod_rename(request: web.Request) -> web.Response:
 
 async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     """Helper: get user connection and establish SFTP. Returns (conn, sftp, error_response)."""
-    try:
-        conn_id = int(request.match_info["conn_id"])
-    except (ValueError, KeyError):
+    conn_uuid = request.match_info.get("conn_id", "")
+    if not conn_uuid:
         return None, None, web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    connection = await db.get_user_connection(conn_id, token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
         return None, None, web.json_response({"error": "Connection not found"}, status=404)
 
@@ -7041,22 +7062,24 @@ async def handle_user_connection_ws(
     client_ip: str
 ) -> None:
     """Handle WebSocket for user-defined connections using plugin system."""
-    # Extract connection ID from path
-    match = re.match(r"^/ws/user-connection/(\d+)$", path)
+    # Extract connection UUID from path
+    match = re.match(r"^/ws/user-connection/([A-Za-z0-9_-]+)$", path)
     if not match:
         await ws.send_json({"type": "error", "message": "Invalid connection path"})
         await ws.close(code=4004, message=b"Invalid path")
         return
 
-    conn_id = int(match.group(1))
+    conn_uuid = match.group(1)
 
     # Fetch connection (ensures user owns it)
-    connection = await db.get_user_connection(conn_id, token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
-        logger.warning(f"User {token.user_id} tried to access non-existent connection {conn_id}")
+        logger.warning(f"User {token.user_id} tried to access non-existent connection {conn_uuid}")
         await ws.send_json({"type": "error", "message": "Connection not found"})
         await ws.close(code=4004, message=b"Connection not found")
         return
+
+    conn_id = connection["id"]  # Internal integer ID for traffic_metrics
 
     # Record connection usage
     await db.record_connection_usage(conn_id, token.user_id)
@@ -7138,19 +7161,24 @@ async def handle_relay_ws(
     logger.debug(f"handle_relay_ws called with path: {path}")
 
     # Check for /ws/terminal/{id}, /ws/vnc/{id}, /ws/media/{id}, /ws/spice/{id}, /ws/proxmox/{id} patterns
+    # IDs can be integer service IDs or alphanumeric connection UUIDs
     service = None
-    terminal_match = re.match(r"^/ws/terminal/(\d+)$", path)
-    vnc_match = re.match(r"^/ws/vnc/(\d+)$", path)
-    media_match = re.match(r"^/ws/media/(\d+)$", path)
-    spice_match = re.match(r"^/ws/spice/(\d+)$", path)
-    proxmox_match = re.match(r"^/ws/proxmox/(\d+)$", path)
+    _ws_id_re = r"([A-Za-z0-9_-]+)"
+    terminal_match = re.match(rf"^/ws/terminal/{_ws_id_re}$", path)
+    vnc_match = re.match(rf"^/ws/vnc/{_ws_id_re}$", path)
+    media_match = re.match(rf"^/ws/media/{_ws_id_re}$", path)
+    spice_match = re.match(rf"^/ws/spice/{_ws_id_re}$", path)
+    proxmox_match = re.match(rf"^/ws/proxmox/{_ws_id_re}$", path)
 
     if terminal_match or vnc_match or media_match or spice_match or proxmox_match:
         match = terminal_match or vnc_match or media_match or spice_match or proxmox_match
-        service_id = int(match.group(1))
-        logger.debug(f"Looking up service by ID: {service_id}")
-        service = await db.get_service_by_id(service_id)
-        logger.debug(f"Service lookup result: {service}")
+        matched_id = match.group(1)
+        # Only look up services by integer IDs; UUID-style IDs are user connections
+        if matched_id.isdigit():
+            service_id = int(matched_id)
+            logger.debug(f"Looking up service by ID: {service_id}")
+            service = await db.get_service_by_id(service_id)
+            logger.debug(f"Service lookup result: {service}")
     else:
         # Find matching service by path
         logger.debug(f"Looking up service by path: {path}")
@@ -7162,11 +7190,15 @@ async def handle_relay_ws(
         # the ID is actually a user connection (not a service).
         match = terminal_match or vnc_match or media_match or spice_match or proxmox_match
         if match:
-            conn_id = int(match.group(1))
-            user_conn = await db.get_user_connection(conn_id, token.user_id)
+            potential_id = match.group(1)
+            # Try as user connection UUID first, then integer ID for backwards compat
+            user_conn = await db.get_user_connection_by_uuid(potential_id, token.user_id)
+            if not user_conn and potential_id.isdigit():
+                user_conn = await db.get_user_connection(int(potential_id), token.user_id)
             if user_conn:
-                logger.info(f"Redirecting /ws path to user connection {conn_id} for user {token.user_id}")
-                await handle_user_connection_ws(ws, f"/ws/user-connection/{conn_id}", token, client_ip)
+                conn_uuid = user_conn.get("uuid", potential_id)
+                logger.info(f"Redirecting /ws path to user connection {conn_uuid} for user {token.user_id}")
+                await handle_user_connection_ws(ws, f"/ws/user-connection/{conn_uuid}", token, client_ip)
                 return
 
         logger.warning(f"No service found for path: {path}")
@@ -7468,10 +7500,10 @@ async def http_terminal_page(request: web.Request) -> web.Response:
         html = html.replace("{{WS_PATH}}", ws_path)
         return web.Response(text=html, content_type="text/html")
 
-    # Check for user connection mode: /terminal/connect?connection={id}
+    # Check for user connection mode: /terminal/connect?connection={uuid}
     conn_id = request.query.get("connection") if service_id == "connect" else None
-    if conn_id and conn_id.isdigit():
-        connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if conn_id:
+        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         conn_type = connection.get("type", "")
@@ -7512,10 +7544,10 @@ async def http_vnc_page(request: web.Request) -> web.Response:
 
     service_id = request.match_info.get("service_id", "")
 
-    # Check for user connection mode: /vnc/connect?connection={id}
+    # Check for user connection mode: /vnc/connect?connection={uuid}
     conn_id = request.query.get("connection") if service_id == "connect" else None
-    if conn_id and conn_id.isdigit():
-        connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if conn_id:
+        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("vnc.html")
@@ -7550,8 +7582,8 @@ async def http_media_page(request: web.Request) -> web.Response:
 
     # Check for user connection mode
     conn_id = request.query.get("connection") if service_id == "connect" else None
-    if conn_id and conn_id.isdigit():
-        connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if conn_id:
+        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("mediamtx.html")
@@ -7584,10 +7616,10 @@ async def http_spice_page(request: web.Request) -> web.Response:
 
     service_id = request.match_info.get("service_id", "")
 
-    # Check for user connection mode: /spice/connect?connection={id}
+    # Check for user connection mode: /spice/connect?connection={uuid}
     conn_id = request.query.get("connection") if service_id == "connect" else None
-    if conn_id and conn_id.isdigit():
-        connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if conn_id:
+        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("spice.html")
@@ -7622,8 +7654,8 @@ async def http_proxmox_page(request: web.Request) -> web.Response:
 
     # Check for user connection mode
     conn_id = request.query.get("connection") if service_id == "connect" else None
-    if conn_id and conn_id.isdigit():
-        connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if conn_id:
+        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("proxmox.html")
@@ -7658,8 +7690,8 @@ async def http_github_page(request: web.Request) -> web.Response:
 
     # Check for user connection mode
     conn_id = request.query.get("connection") if service_id == "connect" else None
-    if conn_id and conn_id.isdigit():
-        connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if conn_id:
+        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("github.html")
@@ -7684,10 +7716,10 @@ async def http_browser_page(request: web.Request) -> web.Response:
         raise web.HTTPFound("/login")
 
     conn_id = request.query.get("connection", "")
-    if not conn_id or not conn_id.isdigit():
+    if not conn_id:
         return web.Response(status=400, text="Missing connection parameter")
 
-    connection = await db.get_user_connection(int(conn_id), token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
     if not connection:
         return web.Response(status=404, text="Connection not found")
 
@@ -7739,13 +7771,11 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     if not token:
         raise web.HTTPFound("/login")
 
-    conn_id_str = request.match_info.get("conn_id")
-    try:
-        conn_id = int(conn_id_str)
-    except (ValueError, TypeError):
+    conn_uuid = request.match_info.get("conn_id", "")
+    if not conn_uuid:
         return web.Response(status=400, text="Invalid connection ID")
 
-    connection = await db.get_user_connection(conn_id, token.user_id)
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
         return web.Response(status=404, text="Connection not found")
 
@@ -7780,7 +7810,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     target_url = config["target_url"].rstrip("/")
     verify_ssl = config.get("verify_ssl", False)
     timeout_s = config.get("timeout", 60)
-    proxy_prefix = f"/proxy/{conn_id}"
+    proxy_prefix = f"/proxy/{conn_uuid}"
 
     parsed_target = urlparse(target_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"

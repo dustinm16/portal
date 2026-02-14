@@ -509,10 +509,10 @@ async function loadInlineConnections() {
                     ${usageText ? `<span class="connection-time" title="${useCount} uses">Used ${usageText}</span>` : '<span class="connection-time">Never used</span>'}
                 </div>
                 <div class="connection-actions">
-                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo(${conn.id})">
+                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo('${conn.id}')">
                         Connect
                     </button>
-                    <button class="btn btn-sm ${isPinned ? 'btn-primary' : 'btn-secondary'}" onclick="togglePin(${conn.id})" title="${isPinned ? 'Unpin' : 'Pin'}">
+                    <button class="btn btn-sm ${isPinned ? 'btn-primary' : 'btn-secondary'}" onclick="togglePin('${conn.id}')" title="${isPinned ? 'Unpin' : 'Pin'}">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="${isPinned ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                         </svg>

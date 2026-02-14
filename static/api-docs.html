@@ -842,6 +842,10 @@
                 <h2 id="connections">User Connections</h2>
                 <p>User Connections are personal remote access points that you configure for your own use. Unlike Services (admin-configured), connections are private to each user.</p>
 
+                <div class="alert alert-info">
+                    <strong>Connection IDs:</strong> Connection IDs are opaque URL-safe tokens (e.g., <code>aB3x_kLm9pQ2rStU</code>), not sequential integers. Use the <code>id</code> field returned by the API for all operations.
+                </div>
+
                 <div class="alert alert-warning">
                     <strong>Security:</strong> User connections cannot target localhost or local network addresses (127.x.x.x, ::1, etc.) for security reasons.
                 </div>
@@ -4606,7 +4610,7 @@ ws.send(JSON.stringify({
                         <h4>Path Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">connection_id</span></td><td><span class="param-type">integer</span></td><td>Connection ID <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">connection_id</span></td><td><span class="param-type">string</span></td><td>Connection ID (opaque token) <span class="param-required">required</span></td></tr>
                             <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Path to proxy to the backend service</td></tr>
                         </table>
                         <h4>Behavior</h4>
