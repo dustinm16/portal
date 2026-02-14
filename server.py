@@ -8074,8 +8074,15 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'<script>(function(){{"use strict";'
                                     f'var B="{proxy_base}";'
                                     f'var O="{target_origin}";'
+                                    f'var P=location.origin;'
                                     # Helper: rewrite a URL string
                                     f'function R(u){{if(typeof u!=="string")return u;'
+                                    # Already rewritten — starts with proxy base
+                                    f'if(u.startsWith(B+"/"))return u;'
+                                    f'if(u.startsWith(P+B+"/"))return u.slice(P.length);'
+                                    # Absolute URL — strip portal origin if present, then wrap
+                                    f'if(u.startsWith(P+"/"))return B+"/"+O+u.slice(P.length);'
+                                    f'if(u.startsWith(P))return B+"/"+O+u.slice(P.length);'
                                     f'if(u.startsWith("http://")||u.startsWith("https://"))return B+"/"+u;'
                                     f'if(u.startsWith("//"))return B+"/https:"+u;'
                                     f'if(u.startsWith("/")&&!u.startsWith(B))return B+"/"+O+u;'
@@ -8121,8 +8128,16 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'return}}a.setAttribute("href",rh)}}'
                                     f'}}}},true);'
                                     f'document.addEventListener("submit",function(e){{'
-                                    f'var f=e.target;if(f.action)f.action=R(f.action)'
-                                    f'}},true);'
+                                    f'var f=e.target;if(f.tagName==="FORM"){{'
+                                    f'var a=f.getAttribute("action");'
+                                    f'if(a){{f.action=R(a)}}'
+                                    f'else{{f.action=R(location.pathname+location.search)}}'
+                                    f'}}}},true);'
+                                    # Override Location.prototype.assign/replace
+                                    f'var _la=Location.prototype.assign;'
+                                    f'Location.prototype.assign=function(u){{return _la.call(this,R(u))}};'
+                                    f'var _lr=Location.prototype.replace;'
+                                    f'Location.prototype.replace=function(u){{return _lr.call(this,R(u))}};'
                                     # MutationObserver for dynamically added elements
                                     f'new MutationObserver(function(ms){{ms.forEach(function(m){{'
                                     f'm.addedNodes.forEach(function(n){{if(n.nodeType!==1)return;'

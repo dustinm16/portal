@@ -2435,7 +2435,7 @@
 
             <section id="guide-http_proxy">
                 <h3>HTTP Proxy</h3>
-                <p>Generic HTTP reverse proxy for any web-based service. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal. Portal forwards HTTP requests to the target, handling TLS termination.</p>
+                <p>Generic HTTP reverse proxy for any web-based service. This connection type opens in Portal's embedded browser with tabbed browsing, multi-site navigation, address bar, and full TLS encryption through the portal. Portal forwards HTTP requests to the target, handling TLS termination. A default "Web Browser" connection with DuckDuckGo as homepage is created automatically for all users.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>http_proxy</code></td></tr>
                     <tr><th>Default Port</th><td><code>80</code></td></tr>
@@ -2452,13 +2452,23 @@
                     <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
                     <li>Select <strong>HTTP Proxy</strong> type</li>
                     <li>Enter host and port of the target service</li>
-                    <li>Access the service through Portal's proxy URL</li>
+                    <li>Click <strong>Connect</strong> to open the embedded browser</li>
                 </ol>
+                <h4>Browser Mode</h4>
+                <p>Connections with <code>browser_mode</code> enabled (like the default Web Browser) support multi-site navigation — navigate to any website by typing a URL in the address bar or following links. Features include:</p>
+                <ul>
+                    <li><strong>Tabbed browsing</strong> — Ctrl+T (new tab), Ctrl+W (close), Ctrl+Tab (switch)</li>
+                    <li><strong>Address bar</strong> — type full URLs, bare hostnames, or relative paths</li>
+                    <li><strong>Navigation</strong> — back/forward (Alt+arrows), refresh (Ctrl+R), focus URL bar (Ctrl+L)</li>
+                    <li><strong>Link handling</strong> — Ctrl+click or middle-click opens in a new tab</li>
+                </ul>
                 <h4>Security Considerations</h4>
                 <ul>
                     <li>Portal handles TLS termination — browser-to-Portal is always encrypted</li>
+                    <li>Portal session cookies and auth headers are stripped from upstream requests</li>
+                    <li>Browser-mode targets cannot access localhost or private IPs</li>
+                    <li>Connection IDs use opaque tokens — no sequential enumeration possible</li>
                     <li>Configure the target service to trust Portal's IP as a proxy</li>
-                    <li>Set appropriate CORS and CSP headers on the target if needed</li>
                 </ul>
             </section>
 

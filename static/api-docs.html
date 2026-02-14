@@ -4575,7 +4575,7 @@ ws.send(JSON.stringify({
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2 id="embedded-browser">Embedded Browser</h2>
-                <p>Portal's embedded browser provides a full browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar showing the current proxied path, and TLS enforcement for secure communication with backend services.</p>
+                <p>Portal's embedded browser provides a tabbed browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar, tabbed browsing (Ctrl+T/W/Tab), and multi-site navigation for browser-mode connections. A default "Web Browser" connection with DuckDuckGo as homepage is created for all users. Connection IDs use opaque string tokens.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
@@ -4584,17 +4584,19 @@ ws.send(JSON.stringify({
                         <span class="endpoint-desc">Open embedded browser for HTTP proxy connection</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Opens the embedded browser page for browsing a remote web service through Portal. Requires authentication. The connection must use the <code>http_proxy</code> plugin type (includes <code>http</code>, <code>https</code>, <code>http_proxy</code>, and all web panel connection types such as Home Assistant, Grafana, Portainer, etc.).</p>
+                        <p>Opens the embedded browser page for browsing a remote web service through Portal. Requires authentication. The connection must use the <code>http_proxy</code> plugin type (includes <code>http</code>, <code>https</code>, <code>http_proxy</code>, and all web panel connection types such as Home Assistant, Grafana, Portainer, etc.). Connections with <code>browser_mode: true</code> support multi-site navigation to any website.</p>
                         <h4>Query Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">connection</span></td><td><span class="param-type">integer</span></td><td>Connection ID <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">connection</span></td><td><span class="param-type">string</span></td><td>Connection ID (opaque token) <span class="param-required">required</span></td></tr>
                         </table>
                         <h4>Notes</h4>
                         <ul>
                             <li>This is the user-facing page for HTTP/HTTPS connections. When users click <strong>Connect</strong> on a web-type connection, they are directed here.</li>
+                            <li>Supports tabbed browsing (Ctrl+T new tab, Ctrl+W close, Ctrl+Tab switch), keyboard shortcuts (Alt+arrows, Ctrl+L, Ctrl+R), and middle-click to close tabs.</li>
+                            <li>Browser-mode connections can navigate to any website. The address bar accepts full URLs, bare hostnames (auto-prefixed with https://), and relative paths.</li>
                             <li>All proxied traffic is routed internally through <code>/proxy/{connection_id}/{path}</code>. Users should use <code>/browser?connection={id}</code> rather than accessing <code>/proxy/</code> directly.</li>
-                            <li>The embedded browser rewrites links and intercepts navigation to keep all traffic within Portal's proxy layer.</li>
+                            <li>The embedded browser rewrites links and intercepts navigation (forms, fetch, XHR, WebSocket, Location.assign/replace, history API) to keep all traffic within Portal's proxy layer.</li>
                         </ul>
                     </div>
                 </div>
@@ -4618,6 +4620,9 @@ ws.send(JSON.stringify({
                             <li>Forwards all HTTP methods (GET, POST, PUT, DELETE, etc.) to the backend</li>
                             <li>Proxies WebSocket upgrade requests for real-time features</li>
                             <li>Enforces TLS for connections to HTTPS backends</li>
+                            <li>In browser mode, the path encodes the full target URL (e.g., <code>/proxy/{id}/https://example.com/page</code>) for multi-site navigation</li>
+                            <li>Localhost and private IPs are blocked for browser-mode targets</li>
+                            <li>Portal session cookies and Authorization headers are stripped from upstream requests</li>
                             <li>Requires authentication &mdash; only the connection owner can access their proxy routes</li>
                         </ul>
                     </div>

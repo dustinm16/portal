@@ -640,14 +640,18 @@ GET  /api/ssh-keys/all          - All keys (admin)
 
 ### User Connections (Personal)
 
+Connection IDs are opaque, URL-safe string tokens (not sequential integers).
+
 ```
 GET  /api/connections           - List user's connections
-POST /api/connections           - Create connection
-GET  /api/connections/:id       - Get connection details
-PUT  /api/connections/:id       - Update connection
-DELETE /api/connections/:id     - Delete connection
-GET  /api/connections/:id/connect - Get connection info + WS URL
+POST /api/connections           - Create connection (returns opaque ID)
+GET  /api/connections/{id}      - Get connection details
+PUT  /api/connections/{id}      - Update connection
+DELETE /api/connections/{id}    - Delete connection
+GET  /api/connections/{id}/connect - Get connection info + WS URL
 GET  /api/connections/types     - Available connection types
+GET  /browser?connection={id}   - Embedded browser (tabbed, multi-site navigation)
+*    /proxy/{id}/{path}         - HTTP reverse proxy (all methods + WebSocket)
 ```
 
 ### Services (Admin) - Unified API
@@ -969,7 +973,7 @@ WS /ws/terminal/local           - Local terminal (admin, ?shell= for shell selec
 WS /ws/terminal/:id             - Terminal session (falls back to user-connection if no service)
 WS /ws/vnc/:id                  - VNC connection
 WS /ws/spice/:id                - SPICE connection
-WS /ws/user-connection/:id      - User connection relay (?shell= override for SSH)
+WS /ws/user-connection/{id}     - User connection relay (opaque ID, ?shell= override for SSH)
 WS /ws/{path}                   - Service relay (catch-all)
 ```
 
@@ -986,8 +990,8 @@ GET /terminal            - Terminal UI
 GET /vnc                 - VNC viewer
 GET /spice               - SPICE viewer
 GET /proxmox             - Proxmox dashboard
-GET /browser              - Embedded HTTP browser (?connection={id}, navigation controls, address bar)
-*   /proxy/:conn_id/{path} - HTTP reverse proxy for user connections (all methods + WebSocket)
+GET /browser              - Embedded HTTP browser (tabbed, multi-site navigation, ?connection={id})
+*   /proxy/{id}/{path}     - HTTP reverse proxy for user connections (all methods + WebSocket, browser_mode for multi-site)
 GET /watch/:id           - Stream viewer (HLS)
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (public; admin sections server-stripped for non-admins)
@@ -1124,7 +1128,8 @@ Open Relay Portal is designed with privacy and security as core principles:
 29. **Registration Validation** - Username: 3-32 chars, alphanumeric + underscores only; Password: min 8 chars. Server-side validation with client-side preview.
 30. **Remember Me Sessions** - Login with `remember_me` extends session from 24 hours to 30 days. Cookie attributes (`max-age`, `httponly`, `secure`, `samesite=strict`) set accordingly.
 31. **Server-Side Content Stripping** - API documentation page admin-only sections (admin endpoints, system management, vulnerability scanner, etc.) are removed server-side for non-admin users by parsing and stripping `<div class="admin-only">` blocks. Non-admin users never receive admin API documentation in the HTML response. User-facing API documentation is public.
-32. **Reverse Proxy Isolation** - HTTP proxy connections open in an embedded browser (`/browser?connection={id}`) with sandboxed iframe; Portal session cookies and `Authorization` headers stripped from upstream requests; proxied HTML receives permissive CSP (`default-src * 'unsafe-inline' 'unsafe-eval'`) with `frame-ancestors 'self'` to prevent external embedding; upstream CSP/X-Frame-Options stripped to prevent conflicts; injected JS intercepts `fetch()`, `XMLHttpRequest`, and `WebSocket` to route through proxy prefix (handles both original and redirected origins); default port omission and protocol-relative URL handling in rewriter; double-rewrite prevention; `Location` headers and `Set-Cookie Path` rewritten to prevent cookie/redirect leakage outside proxy scope; connection ownership verified on every request
+32. **Reverse Proxy Isolation** - HTTP proxy connections open in an embedded browser (`/browser?connection={id}`) with sandboxed iframe and tabbed browsing; Portal session cookies and `Authorization` headers stripped from upstream requests; proxied HTML receives permissive CSP (`default-src * 'unsafe-inline' 'unsafe-eval'`) with `frame-ancestors 'self'` to prevent external embedding; upstream CSP/X-Frame-Options stripped to prevent conflicts; injected JS intercepts `fetch()`, `XMLHttpRequest`, `WebSocket`, form submissions (raw `getAttribute("action")`), `Location.prototype.assign/replace`, `history.pushState/replaceState`, link clicks, and `MutationObserver` for dynamic elements; portal-origin detection prevents self-proxying loops; `Location` headers and `Set-Cookie Path` rewritten; browser-mode enables multi-site navigation with URL-in-path format (`/proxy/{id}/https://example.com/`); localhost/private IPs blocked for browser-mode targets; connection ownership verified on every request via opaque IDs
+33. **Opaque Connection IDs** - User connection IDs are URL-safe random tokens (`secrets.token_urlsafe(12)`, 96 bits of entropy) instead of sequential integers; prevents enumeration of total connections and predictable URLs; integer PKs retained internally for DB joins and traffic metrics
 
 ### Public (Unauthenticated) Pages
 

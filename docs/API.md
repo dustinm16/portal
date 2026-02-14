@@ -706,6 +706,8 @@ Delete user (superadmin only).
 
 ### User Connections
 
+> **Opaque IDs:** Connection IDs are opaque, URL-safe string tokens (e.g., `aB3x_kLm9pQ2rStU`). They are not sequential integers. Use the `id` field returned by the API in all subsequent requests.
+
 #### GET /api/connections
 List user's remote connections. Sensitive config fields (passwords, private keys) are **redacted** — replaced with boolean `has_<field>` flags.
 
@@ -714,7 +716,7 @@ List user's remote connections. Sensitive config fields (passwords, private keys
 {
   "connections": [
     {
-      "id": 1,
+      "id": "aB3x_kLm9pQ2rStU",
       "name": "Home Server",
       "type": "ssh",
       "host": "192.168.1.100",
@@ -783,13 +785,13 @@ Create a new connection.
 
 ---
 
-#### GET /api/connections/:id
-Get connection details. Sensitive config fields are redacted (same as list endpoint).
+#### GET /api/connections/{id}
+Get connection details. `{id}` is the opaque string token. Sensitive config fields are redacted (same as list endpoint).
 
 ---
 
-#### PUT /api/connections/:id
-Update connection. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
+#### PUT /api/connections/{id}
+Update connection. `{id}` is the opaque string token. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
 
 **Request:**
 ```json
@@ -813,8 +815,8 @@ Update connection. Config fields are merged server-side with existing config —
 
 ---
 
-#### DELETE /api/connections/:id
-Delete connection.
+#### DELETE /api/connections/{id}
+Delete connection. `{id}` is the opaque string token.
 
 ---
 
@@ -853,6 +855,22 @@ Get available connection types with schemas.
   }
 }
 ```
+
+---
+
+#### GET /browser?connection={id}
+Open the embedded browser for an HTTP proxy connection. `{id}` is the opaque connection token. The connection must use the `http_proxy` plugin type.
+
+The embedded browser provides tabbed browsing, navigation controls (back/forward/refresh), an address bar, and keyboard shortcuts (Ctrl+T new tab, Ctrl+W close tab, Ctrl+Tab switch tabs, Alt+arrows navigate, Ctrl+L focus URL bar). Connections with `browser_mode: true` support multi-site navigation — users can browse any website through the proxy.
+
+A default "Web Browser" connection with DuckDuckGo as homepage is created automatically for new users.
+
+---
+
+#### ALL /proxy/{connection_id}/{path}
+Reverse proxy passthrough for HTTP connections. `{connection_id}` is the opaque connection token. Proxies all HTTP methods and WebSocket upgrades to the backend. Portal session cookies and Authorization headers are stripped from upstream requests. Proxied HTML receives a JS interceptor that rewrites URLs to stay within the proxy layer.
+
+In `browser_mode`, the path encodes the full target URL (e.g., `/proxy/{id}/https://example.com/page`), enabling multi-site navigation. Localhost and private IPs are blocked for browser-mode targets.
 
 ---
 
@@ -2118,8 +2136,8 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 
 ---
 
-#### WS /ws/user-connection/:id
-Connect to a user connection.
+#### WS /ws/user-connection/{id}
+Connect to a user connection. `{id}` is the opaque string token.
 
 Binary WebSocket relay to the target service.
 
@@ -2135,8 +2153,8 @@ Text-based terminal I/O with server-side terminal compatibility (DA1/DA2/DSR que
 
 ---
 
-#### WS /ws/user-connection/:id
-User connection relay. For SSH connections, supports shell override via query parameter.
+#### WS /ws/user-connection/{id}
+User connection relay. `{id}` is the opaque string token. For SSH connections, supports shell override via query parameter.
 
 **Query Parameters:**
 - `shell` (optional): Remote shell path override (e.g., `/usr/bin/fish`). Overrides the connection's configured shell.

@@ -478,8 +478,34 @@
             const tab = { id, iframe, title: 'New Tab' };
             tabs.push(tab);
 
-            // Listen for load events to update title
+            // Listen for load events to update title + catch escaped navigation
             iframe.addEventListener('load', function() {
+                // Safety net: if iframe navigated outside proxy path, redirect back through proxy
+                if (browserMode) {
+                    try {
+                        const href = iframe.contentWindow.location.href;
+                        const iframePath = iframe.contentWindow.location.pathname;
+                        if (!iframePath.startsWith(proxyBase + '/')) {
+                            // Navigation escaped the proxy — reconstruct target URL
+                            const escaped = iframe.contentWindow.location.pathname +
+                                iframe.contentWindow.location.search +
+                                iframe.contentWindow.location.hash;
+                            // Get the current target origin from the tab's last known good URL
+                            const curSrc = iframe.src || '';
+                            const prefix = proxyBase + '/';
+                            let curOrigin = '';
+                            const srcIdx = curSrc.indexOf(prefix);
+                            if (srcIdx >= 0) {
+                                const remainder = curSrc.slice(curSrc.indexOf(prefix) + prefix.length);
+                                const m = remainder.match(/^(https?:\/\/[^/]+)/);
+                                if (m) curOrigin = m[1];
+                            }
+                            if (!curOrigin) curOrigin = 'https://' + targetDisplay.replace(/^https?:\/\//, '');
+                            iframe.src = proxyBase + '/' + curOrigin + escaped;
+                            return;
+                        }
+                    } catch(e) { /* cross-origin, ignore */ }
+                }
                 tab.title = extractTitle(iframe);
                 renderTabs();
                 if (tab.id === activeTabId) {

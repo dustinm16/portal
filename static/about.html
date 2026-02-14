@@ -468,7 +468,7 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                             Remote Access
                         </h4>
-                        <p>Connect to SSH, VNC, RDP, SPICE, and Proxmox servers through your browser. HTTP/HTTPS connections open in Portal's embedded browser with navigation controls, address bar, and TLS enforcement. No client software needed.</p>
+                        <p>Connect to SSH, VNC, RDP, SPICE, and Proxmox servers through your browser. HTTP/HTTPS connections open in Portal's embedded browser with tabbed browsing, multi-site navigation, address bar, and TLS enforcement. A default Web Browser connection is created for all users. No client software needed.</p>
                     </div>
                     <div class="feature-card">
                         <h4>
@@ -612,7 +612,7 @@
                     <li><strong>Auth Method</strong> &mdash; Password or SSH key (for SSH connections)</li>
                 </ul>
                 <p>When you select a preset, documentation links appear below the dropdown &mdash; one linking to the software's official documentation and one linking to the <a href="/guides">Portal Setup Guide</a> for that connection type.</p>
-                <p><strong>Web UI connections</strong> (HTTP Proxy, Home Assistant, Grafana, Plex, and 40+ other types) open in Portal's <strong>embedded browser</strong> at <code>/browser?connection={id}</code>. The embedded browser provides a full navigation toolbar with back/forward buttons, an address bar showing the current path, and a refresh button. All traffic is reverse-proxied through <code>/proxy/{id}/</code> internally, so the remote web interface is never exposed directly to the internet. HTTPS is enforced for all proxied connections via TLS.</p>
+                <p><strong>Web UI connections</strong> (HTTP Proxy, Home Assistant, Grafana, Plex, and 40+ other types) open in Portal's <strong>embedded browser</strong> with tabbed browsing, multi-site navigation, and full navigation controls (back/forward, address bar, refresh). Browser-mode connections can navigate to any website through the proxy. Each user gets a default "Web Browser" connection with DuckDuckGo as the homepage. All traffic is reverse-proxied through Portal, so remote web interfaces are never exposed directly. Connection IDs use opaque tokens for security. HTTPS is enforced for all proxied connections via TLS.</p>
 
                 <h3>Connection Types</h3>
                 <p>Open Relay Portal supports <strong>75 connection types</strong> out of the box, covering remote access, web panels, databases, media servers, dev tools, monitoring, automation, file/photo management, security, and networking. The most common types are listed below &mdash; see the <a href="/guides">Guides</a> page for detailed setup instructions for each connection type.</p>
