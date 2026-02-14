@@ -8020,7 +8020,12 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                         if browser_mode:
                             # Browser mode: rewrite target origin → proxy_prefix (which includes origin in path)
                             text = text.replace(target_origin, proxy_prefix)
-                            text = text.replace(f"//{parsed_target.netloc}", proxy_prefix)
+                            # Protocol-relative //host — use negative lookbehind to skip ://host inside already-rewritten URLs
+                            text = re.sub(
+                                rf'(?<!:)//{re.escape(parsed_target.netloc)}',
+                                proxy_prefix,
+                                text
+                            )
 
                             esc_base = re.escape(proxy_base[1:])
 
