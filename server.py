@@ -1176,6 +1176,24 @@ async def http_get_service_logs(request: web.Request) -> web.Response:
     return web.json_response({"logs": logs})
 
 
+async def _create_default_connections(user_id: int) -> None:
+    """Create default connections for a new user."""
+    try:
+        await db.create_user_connection(
+            user_id=user_id,
+            name="Web Browser",
+            conn_type="http_proxy",
+            host="duckduckgo.com",
+            port=443,
+            config="{}",
+            icon="globe",
+            portal_access=1,
+            api_access=0
+        )
+    except Exception as e:
+        logger.warning(f"Failed to create default connections for user {user_id}: {e}")
+
+
 async def http_create_user(request: web.Request) -> web.Response:
     """Create a new user (admin only, no invite code required)."""
     token = await authenticate_request(request)
@@ -1202,6 +1220,7 @@ async def http_create_user(request: web.Request) -> web.Response:
 
     try:
         user = await create_user(username, password, is_admin)
+        await _create_default_connections(user["id"])
         logger.info(f"User '{username}' created by admin user {token.user_id}")
         return web.json_response({
             "id": user["id"],
@@ -1281,6 +1300,7 @@ async def http_register(request: web.Request) -> web.Response:
 
     try:
         user = await create_user(username, password, is_admin=False, registration_ip=client_ip)
+        await _create_default_connections(user["id"])
         log_invite_code_usage(username, True, client_ip)
         logger.info(f"User '{username}' registered with invite code from {client_ip}")
         await db.log_activity(user["id"], username, "register", "Account created", client_ip)

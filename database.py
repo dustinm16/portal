@@ -940,6 +940,34 @@ class Database:
         # Generate UUIDs for any connections that don't have one
         await self._populate_connection_uuids()
 
+        # Seed default connections for existing users who don't have one
+        await self._seed_default_connections()
+
+    async def _seed_default_connections(self) -> None:
+        """Add default Web Browser connection to users who don't have one."""
+        try:
+            cursor = await self._connection.execute(
+                """SELECT u.id FROM users u
+                   WHERE u.id NOT IN (
+                       SELECT DISTINCT user_id FROM user_connections
+                       WHERE name = 'Web Browser' AND type = 'http_proxy' AND host = 'duckduckgo.com'
+                   )"""
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                uuid_val = _secrets.token_urlsafe(12)
+                encrypted_config = encrypt_config('{}')
+                await self._connection.execute(
+                    """INSERT INTO user_connections
+                       (user_id, name, type, host, port, config, icon, portal_access, api_access, uuid)
+                       VALUES (?, 'Web Browser', 'http_proxy', 'duckduckgo.com', 443, ?, 'globe', 1, 0, ?)""",
+                    (row["id"], encrypted_config, uuid_val)
+                )
+            if rows:
+                await self._connection.commit()
+        except Exception:
+            pass  # Table may not exist yet on first run
+
     async def _migrate_service_logs_fk(self) -> None:
         """Fix service_logs FK: managed_services(id) -> services(id)."""
         try:
