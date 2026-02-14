@@ -7871,7 +7871,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
 
                     await asyncio.gather(_fwd_client(), _fwd_upstream())
         except Exception as e:
-            logger.error(f"Proxy WS {conn_id} error: {e}")
+            logger.error(f"Proxy WS {conn_uuid} error: {e}")
         return ws
 
     # Build upstream URL
@@ -7885,7 +7885,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     fwd_headers = {}
     for key, value in request.headers.items():
         k = key.lower()
-        if k in ("host", "content-length", "transfer-encoding", "authorization"):
+        if k in ("host", "content-length", "transfer-encoding", "authorization", "accept-encoding"):
             continue
         # Strip Portal session cookie from Cookie header
         if k == "cookie":
@@ -7907,7 +7907,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         fwd_headers[k] = v
 
     # Record connection usage
-    await db.record_connection_usage(conn_id, token.user_id)
+    await db.record_connection_usage(connection["id"], token.user_id)
 
     try:
         connector = aiohttp.TCPConnector(ssl=verify_ssl)
@@ -8112,7 +8112,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 )
 
     except aiohttp.ClientError as e:
-        logger.error(f"Proxy connection {conn_id} error: {e}")
+        logger.error(f"Proxy connection {conn_uuid} error: {e}")
         return web.Response(
             status=502,
             content_type="text/html",
