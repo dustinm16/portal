@@ -3903,14 +3903,23 @@ class Database:
         )
         await self.conn.commit()
 
+    # Activity types visible to all authenticated users (community events)
+    PUBLIC_ACTIVITY_TYPES = {"stream_live", "stream_offline", "register"}
+
     async def get_recent_activity(self, limit: int = 20, offset: int = 0,
                                    user_id: int = None) -> list[dict]:
-        """Get recent activity entries. If user_id is specified, filter to that user only."""
+        """Get recent activity entries.
+
+        Admins (user_id=None): see everything.
+        Regular users: see their own activity + public community events.
+        """
         if user_id:
+            placeholders = ",".join("?" for _ in self.PUBLIC_ACTIVITY_TYPES)
             cursor = await self.conn.execute(
-                """SELECT * FROM activity_log WHERE user_id = ?
-                   ORDER BY created_at DESC LIMIT ? OFFSET ?""",
-                (user_id, limit, offset)
+                f"""SELECT * FROM activity_log
+                    WHERE user_id = ? OR action IN ({placeholders})
+                    ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+                (user_id, *self.PUBLIC_ACTIVITY_TYPES, limit, offset)
             )
         else:
             cursor = await self.conn.execute(

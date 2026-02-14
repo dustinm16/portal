@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>{{SERVICE_NAME}} - Open Relay Portal</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=41">
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: var(--bg-primary, #0d1117);
+            color: var(--text-primary, #c9d1d9);
+        }
+        .browser-header {
+            display: flex;
+            align-items: center;
+            height: 50px;
+            padding: 0 12px;
+            background: var(--card-bg, #161b22);
+            border-bottom: 1px solid var(--card-border, #30363d);
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .browser-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .browser-title svg {
+            width: 20px;
+            height: 20px;
+            color: var(--accent-blue, #58a6ff);
+            flex-shrink: 0;
+        }
+        .browser-nav {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .browser-nav button {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            color: var(--text-secondary, #8b949e);
+            cursor: pointer;
+            padding: 4px 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }
+        .browser-nav button:hover {
+            background: var(--bg-secondary, #1c2128);
+            border-color: var(--card-border, #30363d);
+            color: var(--text-primary, #c9d1d9);
+        }
+        .browser-nav button:active {
+            background: var(--card-border, #30363d);
+        }
+        .browser-nav button:disabled {
+            opacity: 0.3;
+            cursor: default;
+        }
+        .browser-nav button:disabled:hover {
+            background: transparent;
+            border-color: transparent;
+        }
+        .url-bar {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            background: var(--bg-primary, #0d1117);
+            border: 1px solid var(--card-border, #30363d);
+            border-radius: 8px;
+            padding: 0 10px;
+            height: 32px;
+            min-width: 0;
+            transition: border-color 0.15s;
+        }
+        .url-bar:focus-within {
+            border-color: var(--accent-blue, #58a6ff);
+        }
+        .url-bar .lock-icon {
+            color: var(--accent-green, #3fb950);
+            flex-shrink: 0;
+            margin-right: 6px;
+        }
+        .url-bar input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-primary, #c9d1d9);
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.8rem;
+            outline: none;
+            min-width: 0;
+        }
+        .url-bar input::placeholder {
+            color: var(--text-muted, #484f58);
+        }
+        .browser-controls {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .browser-controls .connection-status {
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0 8px;
+        }
+        .browser-controls .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .connection-status.connected .status-dot {
+            background: var(--accent-green, #3fb950);
+            box-shadow: 0 0 6px var(--accent-green, #3fb950);
+        }
+        .connection-status.connecting .status-dot {
+            background: var(--accent-orange, #d29922);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .connection-status.disconnected .status-dot {
+            background: var(--accent-red, #f85149);
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        #browser-frame {
+            width: 100%;
+            height: calc(100vh - 50px);
+            border: none;
+            background: #fff;
+        }
+        .browser-error {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: calc(100vh - 50px);
+            text-align: center;
+            gap: 16px;
+            padding: 2rem;
+        }
+        .browser-error svg {
+            width: 48px;
+            height: 48px;
+            color: var(--text-muted, #484f58);
+        }
+        .browser-error h2 {
+            font-size: 1.2rem;
+            color: var(--text-primary, #c9d1d9);
+            margin: 0;
+        }
+        .browser-error p {
+            color: var(--text-secondary, #8b949e);
+            margin: 0;
+            max-width: 400px;
+        }
+        /* Responsive */
+        @media (max-width: 600px) {
+            .browser-header {
+                gap: 4px;
+                padding: 0 8px;
+            }
+            .browser-title span {
+                display: none;
+            }
+            .browser-controls #status-text {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="browser-header">
+        <div class="browser-title">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+            </svg>
+            <span id="service-name">{{SERVICE_NAME}}</span>
+        </div>
+
+        <div class="browser-nav">
+            <button id="btn-back" onclick="goBack()" title="Back" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
+            </button>
+            <button id="btn-forward" onclick="goForward()" title="Forward" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+            </button>
+            <button id="btn-refresh" onclick="refreshPage()" title="Refresh">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+        </div>
+
+        <div class="url-bar">
+            <svg class="lock-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            <input type="text" id="url-input" value="{{TARGET_DISPLAY}}" placeholder="Loading..." spellcheck="false" autocomplete="off">
+        </div>
+
+        <div class="browser-controls">
+            <div class="connection-status connecting" id="connection-status">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting</span>
+            </div>
+            <button class="btn btn-secondary" onclick="openExternal()" title="Open in new tab" style="padding:4px 6px;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+            </button>
+            <button class="btn btn-secondary" onclick="disconnect()" title="Disconnect" style="padding:4px 6px;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <iframe id="browser-frame" src="{{PROXY_PATH}}/" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+
+    <div class="browser-error" id="browser-error">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+        </svg>
+        <h2>Connection Failed</h2>
+        <p id="error-message">Could not reach the upstream service. Check that the target host is running and accessible.</p>
+        <button class="btn btn-primary" onclick="reconnect()">Retry Connection</button>
+    </div>
+
+    <script src="/static/js/portal.js?v=29"></script>
+    <script>
+        const connectionId = '{{CONNECTION_ID}}';
+        const proxyBase = '{{PROXY_PATH}}';
+        const targetDisplay = '{{TARGET_DISPLAY}}';
+        const frame = document.getElementById('browser-frame');
+        const urlInput = document.getElementById('url-input');
+        const statusEl = document.getElementById('connection-status');
+        const statusText = document.getElementById('status-text');
+        const errorEl = document.getElementById('browser-error');
+
+        // Navigation history
+        const history = { stack: [proxyBase + '/'], index: 0 };
+        let urlPollInterval = null;
+
+        function setStatus(state, text) {
+            statusEl.className = 'connection-status ' + state;
+            statusText.textContent = text;
+        }
+
+        function proxyPathToDisplay(proxyUrl) {
+            // Convert /proxy/{id}/some/path → targetHost/some/path
+            try {
+                const url = new URL(proxyUrl, window.location.origin);
+                const path = url.pathname;
+                const prefix = proxyBase + '/';
+                if (path.startsWith(prefix)) {
+                    return targetDisplay + '/' + path.slice(prefix.length);
+                } else if (path === proxyBase) {
+                    return targetDisplay + '/';
+                }
+            } catch {}
+            return targetDisplay + '/';
+        }
+
+        function displayToProxyPath(display) {
+            // Convert targetHost/some/path → /proxy/{id}/some/path
+            if (display.startsWith(targetDisplay)) {
+                return proxyBase + '/' + display.slice(targetDisplay.length).replace(/^\/+/, '');
+            }
+            // If they typed a relative path
+            if (display.startsWith('/')) {
+                return proxyBase + display;
+            }
+            return proxyBase + '/' + display;
+        }
+
+        function updateUrlBar() {
+            try {
+                const loc = frame.contentWindow.location;
+                const path = loc.pathname + loc.search + loc.hash;
+                urlInput.value = proxyPathToDisplay(path);
+            } catch {
+                // Cross-origin — can't read
+            }
+        }
+
+        function startUrlPolling() {
+            if (urlPollInterval) clearInterval(urlPollInterval);
+            urlPollInterval = setInterval(updateUrlBar, 500);
+        }
+
+        function stopUrlPolling() {
+            if (urlPollInterval) {
+                clearInterval(urlPollInterval);
+                urlPollInterval = null;
+            }
+        }
+
+        // Navigation buttons
+        function goBack() {
+            try { frame.contentWindow.history.back(); } catch {}
+        }
+
+        function goForward() {
+            try { frame.contentWindow.history.forward(); } catch {}
+        }
+
+        function refreshPage() {
+            try { frame.contentWindow.location.reload(); } catch {
+                frame.src = frame.src;
+            }
+        }
+
+        function navigateTo(display) {
+            const proxyPath = displayToProxyPath(display);
+            frame.src = proxyPath;
+        }
+
+        function openExternal() {
+            try {
+                window.open(frame.contentWindow.location.href, '_blank');
+            } catch {
+                window.open(frame.src, '_blank');
+            }
+        }
+
+        function disconnect() {
+            stopUrlPolling();
+            frame.src = 'about:blank';
+            setStatus('disconnected', 'Disconnected');
+            window.close();
+            // If window.close() didn't work (not opened by script), go to dashboard
+            setTimeout(() => { window.location.href = '/dashboard'; }, 200);
+        }
+
+        function reconnect() {
+            errorEl.style.display = 'none';
+            frame.style.display = 'block';
+            frame.src = proxyBase + '/';
+            setStatus('connecting', 'Connecting');
+        }
+
+        // URL bar keyboard nav
+        urlInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                navigateTo(this.value);
+                this.blur();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                updateUrlBar();
+                this.blur();
+            }
+        });
+
+        // Select all on focus
+        urlInput.addEventListener('focus', function() {
+            setTimeout(() => this.select(), 0);
+        });
+
+        // Iframe load handler
+        frame.addEventListener('load', function() {
+            try {
+                const doc = frame.contentDocument || frame.contentWindow.document;
+                // Check for error responses
+                if (doc && doc.title && doc.title.includes('Cannot reach')) {
+                    setStatus('disconnected', 'Error');
+                    frame.style.display = 'none';
+                    errorEl.style.display = 'flex';
+                    return;
+                }
+                setStatus('connected', 'Connected');
+                updateUrlBar();
+                startUrlPolling();
+
+                // Intercept link clicks inside iframe to update URL bar
+                doc.addEventListener('click', function() {
+                    setTimeout(updateUrlBar, 100);
+                });
+                // Listen for popstate inside iframe
+                frame.contentWindow.addEventListener('popstate', function() {
+                    setTimeout(updateUrlBar, 50);
+                });
+            } catch {
+                // Cross-origin — still connected but can't inspect
+                setStatus('connected', 'Connected');
+            }
+        });
+
+        frame.addEventListener('error', function() {
+            setStatus('disconnected', 'Error');
+            frame.style.display = 'none';
+            errorEl.style.display = 'flex';
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            // Alt+Left = Back, Alt+Right = Forward
+            if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goBack(); }
+            if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); goForward(); }
+            // Ctrl/Cmd+R = Refresh (when not focused in iframe)
+            if ((e.ctrlKey || e.metaKey) && e.key === 'r' && document.activeElement !== frame) {
+                e.preventDefault();
+                refreshPage();
+            }
+            // Ctrl/Cmd+L = Focus URL bar
+            if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+                e.preventDefault();
+                urlInput.focus();
+            }
+        });
+
+        // Initial load status
+        setStatus('connecting', 'Connecting');
+    </script>
+</body>
+</html>

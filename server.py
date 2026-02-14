@@ -1885,7 +1885,7 @@ CONNECTION_TYPES = {
     "database": {"name": "Database", "icon": "database", "default_port": 3306, "plugin": "tcp_tunnel"},
     "redis": {"name": "Redis", "icon": "database", "default_port": 6379, "plugin": "tcp_tunnel"},
     "mongodb": {"name": "MongoDB", "icon": "database", "default_port": 27017, "plugin": "tcp_tunnel"},
-    "elasticsearch": {"name": "Elasticsearch", "icon": "database", "default_port": 9200, "plugin": "tcp_tunnel"},
+    "elasticsearch": {"name": "Elasticsearch", "icon": "database", "default_port": 9200, "plugin": "http_proxy"},
 
     # Web Panels (via HTTP proxy)
     "home_assistant": {"name": "Home Assistant", "icon": "home", "default_port": 8123, "plugin": "http_proxy"},
@@ -1954,7 +1954,7 @@ CONNECTION_TYPES = {
     # Databases (via TCP tunnel)
     "postgresql": {"name": "PostgreSQL", "icon": "database", "default_port": 5432, "plugin": "tcp_tunnel"},
     "mariadb": {"name": "MariaDB", "icon": "database", "default_port": 3306, "plugin": "tcp_tunnel"},
-    "influxdb": {"name": "InfluxDB", "icon": "database", "default_port": 8086, "plugin": "tcp_tunnel"},
+    "influxdb": {"name": "InfluxDB", "icon": "database", "default_port": 8086, "plugin": "http_proxy"},
 
     # Legacy / Game Servers (via TCP tunnel)
     "telnet": {"name": "Telnet", "icon": "terminal", "default_port": 23, "plugin": "tcp_tunnel"},
@@ -5041,16 +5041,14 @@ async def http_stats(request: web.Request) -> web.Response:
 
 
 async def http_public_stats(request: web.Request) -> web.Response:
-    """Get public statistics.
+    """Get public statistics visible to all authenticated users.
 
-    Returns metrics visible to all authenticated users:
+    Returns:
     - live_streams: Count of currently live public streams
     - online_users: Count of unique users in chat
     - total_services: Count of enabled services
-
-    Admin-only fields (included when requester is admin):
     - total_users: Count of registered users
-    - active_connections: Count of active WebSocket connections
+    - active_sessions: Count of active WebSocket sessions
     - uptime: Server uptime string
     """
     token = await authenticate_request(request)
@@ -5064,30 +5062,28 @@ async def http_public_stats(request: web.Request) -> web.Response:
     # Get enabled services count
     services = await db.get_all_services()
 
+    # Uptime calculation
+    uptime_delta = datetime.now(timezone.utc) - _server_start_time
+    days = uptime_delta.days
+    hours, remainder = divmod(uptime_delta.seconds, 3600)
+    minutes = remainder // 60
+    if days > 0:
+        uptime_str = f"{days}d {hours}h {minutes}m"
+    elif hours > 0:
+        uptime_str = f"{hours}h {minutes}m"
+    else:
+        uptime_str = f"{minutes}m"
+
+    users = await db.get_all_users()
+
     stats = {
         "live_streams": live_count,
         "online_users": len(_online_users),
         "total_services": len(services),
+        "total_users": len(users),
+        "active_sessions": len(active_connections),
+        "uptime": uptime_str,
     }
-
-    # Admin-only stats
-    is_admin = token.has_scope("admin") or token.has_scope("*")
-    if is_admin:
-        users = await db.get_all_users()
-        uptime_delta = datetime.now(timezone.utc) - _server_start_time
-        days = uptime_delta.days
-        hours, remainder = divmod(uptime_delta.seconds, 3600)
-        minutes = remainder // 60
-        if days > 0:
-            uptime_str = f"{days}d {hours}h {minutes}m"
-        elif hours > 0:
-            uptime_str = f"{hours}h {minutes}m"
-        else:
-            uptime_str = f"{minutes}m"
-
-        stats["total_users"] = len(users)
-        stats["active_connections"] = len(active_connections)
-        stats["uptime"] = uptime_str
 
     return web.json_response(stats)
 
@@ -6306,6 +6302,10 @@ async def http_activity_feed(request: web.Request) -> web.Response:
         activities = await db.get_recent_activity(limit=limit, offset=offset)
     else:
         activities = await db.get_recent_activity(limit=limit, offset=offset, user_id=token.user_id)
+        # Strip IP addresses and usernames from other users' public activity
+        for a in activities:
+            if a.get("user_id") != token.user_id:
+                a.pop("ip_address", None)
 
     return web.json_response({"activities": activities})
 
@@ -7677,6 +7677,55 @@ async def http_github_page(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def http_browser_page(request: web.Request) -> web.Response:
+    """Serve embedded browser page for HTTP proxy connections."""
+    token = await authenticate_request(request)
+    if not token:
+        raise web.HTTPFound("/login")
+
+    conn_id = request.query.get("connection", "")
+    if not conn_id or not conn_id.isdigit():
+        return web.Response(status=400, text="Missing connection parameter")
+
+    connection = await db.get_user_connection(int(conn_id), token.user_id)
+    if not connection:
+        return web.Response(status=404, text="Connection not found")
+
+    conn_type = connection.get("type", "custom")
+    type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
+    if type_info.get("plugin") != "http_proxy":
+        return web.Response(status=400, text="Not an HTTP proxy connection")
+
+    # Build target display URL for the address bar
+    host = connection.get("host", "")
+    config = connection.get("config", {})
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
+
+    default_port = type_info.get("default_port", 80)
+    port = connection.get("port") or config.get("port") or default_port
+    https_types = {"https", "portainer", "truenas", "pfsense", "nextcloud", "cockpit"}
+    scheme = "https" if (conn_type in https_types or port == 443) else "http"
+    default_scheme_port = 443 if scheme == "https" else 80
+    if int(port) == default_scheme_port:
+        target_display = f"{scheme}://{host}"
+    else:
+        target_display = f"{scheme}://{host}:{port}"
+
+    proxy_path = f"/proxy/{conn_id}"
+
+    html = load_static_file("browser.html")
+    html = html.replace("{{CONNECTION_ID}}", conn_id)
+    html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Browser"))
+    html = html.replace("{{PROXY_PATH}}", proxy_path)
+    html = html.replace("{{TARGET_DISPLAY}}", target_display)
+
+    return web.Response(text=html, content_type="text/html")
+
+
 async def http_proxy_connection(request: web.Request) -> web.Response:
     """Reverse proxy for user HTTP connections.
 
@@ -7721,7 +7770,12 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         # Use HTTPS for types that default to 443 or are explicitly HTTPS
         https_types = {"https", "portainer", "truenas", "pfsense", "nextcloud", "cockpit"}
         scheme = "https" if (conn_type in https_types or port == 443) else "http"
-        config["target_url"] = f"{scheme}://{host}:{port}"
+        # Omit default ports (80 for HTTP, 443 for HTTPS) from URL
+        default_scheme_port = 443 if scheme == "https" else 80
+        if int(port) == default_scheme_port:
+            config["target_url"] = f"{scheme}://{host}"
+        else:
+            config["target_url"] = f"{scheme}://{host}:{port}"
 
     target_url = config["target_url"].rstrip("/")
     verify_ssl = config.get("verify_ssl", False)
@@ -7777,11 +7831,18 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     if query:
         upstream_url = f"{upstream_url}?{query}"
 
-    # Prepare headers
+    # Prepare headers — strip Portal auth and sensitive headers
     fwd_headers = {}
     for key, value in request.headers.items():
         k = key.lower()
-        if k in ("host", "content-length", "transfer-encoding"):
+        if k in ("host", "content-length", "transfer-encoding", "authorization"):
+            continue
+        # Strip Portal session cookie from Cookie header
+        if k == "cookie":
+            cookies = [c.strip() for c in value.split(";")
+                       if not c.strip().startswith(Config.SESSION_COOKIE_NAME + "=")]
+            if cookies:
+                fwd_headers[key] = "; ".join(cookies)
             continue
         fwd_headers[key] = value
 
@@ -7812,7 +7873,8 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 url=upstream_url,
                 headers=fwd_headers,
                 data=body,
-                allow_redirects=False
+                allow_redirects=True,
+                max_redirects=10
             ) as resp:
                 response_body = await resp.read()
 
@@ -7834,6 +7896,14 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                             loc = proxy_prefix + loc[len(target_origin):]
                         elif loc.startswith("/"):
                             loc = proxy_prefix + loc
+                        elif loc.startswith("http://") or loc.startswith("https://"):
+                            # External redirect — rewrite to proxy path
+                            from urllib.parse import urlparse as _up
+                            redir_parsed = _up(loc)
+                            redir_path = redir_parsed.path or "/"
+                            if redir_parsed.query:
+                                redir_path += "?" + redir_parsed.query
+                            loc = proxy_prefix + redir_path
                         resp_headers[key] = loc
                         continue
 
@@ -7845,60 +7915,145 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
 
                 # Rewrite URLs in text responses
                 content_type = resp.headers.get("Content-Type", "")
-                if any(t in content_type for t in ("text/html", "text/css", "javascript")):
+                if any(t in content_type for t in ("text/html", "text/css", "javascript", "application/json")):
                     try:
                         charset = "utf-8"
                         if "charset=" in content_type:
                             charset = content_type.split("charset=")[1].split(";")[0].strip()
                         text = response_body.decode(charset)
 
-                        # Replace absolute target URLs
+                        # Replace absolute target URLs everywhere (HTML, CSS, JS, JSON)
                         text = text.replace(target_origin, proxy_prefix)
+                        # Also handle protocol-relative //host:port → root-relative path
+                        text = text.replace(f"//{parsed_target.netloc}", proxy_prefix)
+                        # If redirects were followed, also replace the final URL's origin
+                        final_url = str(resp.url)
+                        final_parsed = urlparse(final_url)
+                        final_origin = f"{final_parsed.scheme}://{final_parsed.netloc}"
+                        if final_origin != target_origin:
+                            text = text.replace(final_origin, proxy_prefix)
+                            text = text.replace(f"//{final_parsed.netloc}", proxy_prefix)
 
-                        if "text/html" in content_type:
-                            # Rewrite root-relative URLs in HTML attributes
+                        # Escaped prefix for regex negative lookahead
+                        esc_pfx = re.escape(proxy_prefix[1:])  # e.g. "proxy/11"
+
+                        if "text/css" in content_type:
+                            # Rewrite url(/...) in CSS (skip // and already-proxied)
                             text = re.sub(
-                                r'((?:href|src|action)\s*=\s*["\'])/',
-                                rf'\1{proxy_prefix}/',
+                                rf'url\(\s*(["\']?)/(?!/|{esc_pfx})',
+                                rf'url(\1{proxy_prefix}/',
                                 text
                             )
 
-                            # Inject JS to intercept fetch/XHR/WebSocket for root-relative paths
+                        if "text/html" in content_type:
+                            # Rewrite root-relative URLs in HTML attrs (skip // and already-proxied)
+                            text = re.sub(
+                                rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])/(?!/|{esc_pfx})',
+                                rf'\1{proxy_prefix}/',
+                                text
+                            )
+                            # Rewrite url(/...) in inline styles (skip // and already-proxied)
+                            text = re.sub(
+                                rf'url\(\s*(["\']?)/(?!/|{esc_pfx})',
+                                rf'url(\1{proxy_prefix}/',
+                                text
+                            )
+                            # Rewrite meta refresh redirects
+                            text = re.sub(
+                                r'(content\s*=\s*["\']\d+\s*;\s*url\s*=\s*)/',
+                                rf'\1{proxy_prefix}/',
+                                text,
+                                flags=re.IGNORECASE
+                            )
+
+                            # Comprehensive JS interceptor — catches all browser request APIs
                             inject_js = (
-                                f'<script>(function(){{'
+                                f'<script>(function(){{"use strict";'
                                 f'var B="{proxy_prefix}";'
-                                f'var F=window.fetch;window.fetch=function(u,o){{'
-                                f'if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(B))u=B+u;'
-                                f'return F.call(this,u,o)}};'
-                                f'var X=XMLHttpRequest.prototype.open;'
-                                f'XMLHttpRequest.prototype.open=function(m,u){{'
-                                f'if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(B))'
-                                f'arguments[1]=B+u;return X.apply(this,arguments)}};'
-                                f'var W=window.WebSocket;window.WebSocket=function(u,p){{'
-                                f'if(typeof u==="string"){{'
-                                f'var r=u.match(/^wss?:\\/\\/[^/]+(\\/.*)$/);'
-                                f'if(r&&!r[1].startsWith(B))u=u.replace(r[1],B+r[1])}}'
-                                f'return new W(u,p)}};'
-                                f'window.WebSocket.prototype=W.prototype;'
-                                f'window.WebSocket.CONNECTING=W.CONNECTING;'
-                                f'window.WebSocket.OPEN=W.OPEN;'
-                                f'window.WebSocket.CLOSING=W.CLOSING;'
-                                f'window.WebSocket.CLOSED=W.CLOSED;'
+                                f'var TO="{target_origin}";'
+                                f'var FO="{final_origin}";'
+                                # Helper: rewrite a URL string
+                                f'function R(u){{if(typeof u!=="string")return u;'
+                                f'if(u.startsWith(TO))return B+u.slice(TO.length);'
+                                f'if(FO!==TO&&u.startsWith(FO))return B+u.slice(FO.length);'
+                                f'if(u.startsWith("/")&&!u.startsWith(B)&&!u.startsWith("//"))return B+u;'
+                                f'return u}}'
+                                # fetch()
+                                f'var _f=window.fetch;window.fetch=function(u,o){{'
+                                f'if(typeof u==="string")u=R(u);'
+                                f'else if(u instanceof Request)u=new Request(R(u.url),u);'
+                                f'return _f.call(this,u,o)}};'
+                                # XMLHttpRequest.open()
+                                f'var _xo=XMLHttpRequest.prototype.open;'
+                                f'XMLHttpRequest.prototype.open=function(){{'
+                                f'if(arguments.length>1)arguments[1]=R(arguments[1]);'
+                                f'return _xo.apply(this,arguments)}};'
+                                # WebSocket
+                                f'var _W=window.WebSocket;'
+                                f'function PW(u,p){{if(typeof u==="string"){{'
+                                f'var m=u.match(/^(wss?:\\/\\/[^/]+)(\\/.*)$/);'
+                                f'if(m&&!m[2].startsWith(B))u=m[1]+B+m[2]}}'
+                                f'if(p!==undefined)return new _W(u,p);return new _W(u)}};'
+                                f'PW.prototype=_W.prototype;PW.CONNECTING=0;PW.OPEN=1;PW.CLOSING=2;PW.CLOSED=3;'
+                                f'window.WebSocket=PW;'
+                                # EventSource
+                                f'if(window.EventSource){{var _E=window.EventSource;'
+                                f'window.EventSource=function(u,o){{return new _E(R(u),o)}};'
+                                f'window.EventSource.prototype=_E.prototype}}'
+                                # window.open()
+                                f'var _wo=window.open;window.open=function(u){{arguments[0]=R(u);return _wo.apply(this,arguments)}};'
+                                # navigator.sendBeacon()
+                                f'if(navigator.sendBeacon){{var _sb=navigator.sendBeacon.bind(navigator);'
+                                f'navigator.sendBeacon=function(u,d){{return _sb(R(u),d)}}}}'
+                                # Intercept link clicks and form submissions
+                                f'document.addEventListener("click",function(e){{'
+                                f'var a=e.target.closest("a[href]");'
+                                f'if(a&&a.href){{'
+                                f'var h=a.getAttribute("href");'
+                                f'if(h&&h.startsWith("/")&&!h.startsWith(B))a.setAttribute("href",B+h)'
+                                f'}}}},true);'
+                                f'document.addEventListener("submit",function(e){{'
+                                f'var f=e.target;if(f.action){{'
+                                f'var u=new URL(f.action,location.href);'
+                                f'if(u.pathname.startsWith("/")&&!u.pathname.startsWith(B))'
+                                f'f.action=B+u.pathname+u.search'
+                                f'}}}},true);'
+                                # MutationObserver for dynamically added elements
+                                f'new MutationObserver(function(ms){{ms.forEach(function(m){{'
+                                f'm.addedNodes.forEach(function(n){{if(n.nodeType!==1)return;'
+                                f'var els=n.querySelectorAll?[n].concat(Array.from(n.querySelectorAll("[src],[href],[action],[data],[poster],[formaction]"))):[n];'
+                                f'els.forEach(function(el){{'
+                                f'["src","href","action","data","poster","formaction"].forEach(function(a){{'
+                                f'var v=el.getAttribute&&el.getAttribute(a);'
+                                f'if(v&&v.startsWith("/")&&!v.startsWith(B)&&!v.startsWith("//"))el.setAttribute(a,B+v)'
+                                f'}})}})}})}})}}).observe(document.documentElement,{{childList:true,subtree:true}});'
+                                # Override history.pushState/replaceState to keep URL in proxy scope
+                                f'var _ps=history.pushState;history.pushState=function(s,t,u){{return _ps.call(this,s,t,u?R(u):u)}};'
+                                f'var _rs=history.replaceState;history.replaceState=function(s,t,u){{return _rs.call(this,s,t,u?R(u):u)}};'
                                 f'}})();</script>'
                             )
-                            # Inject after <head> or at start
-                            if "<head>" in text:
-                                text = text.replace("<head>", f"<head>{inject_js}", 1)
-                            elif "<HEAD>" in text:
-                                text = text.replace("<HEAD>", f"<HEAD>{inject_js}", 1)
-                            elif "<html" in text.lower():
-                                text = inject_js + text
+                            # Inject after <head> (or at very start if no <head>)
+                            head_idx = text.lower().find("<head")
+                            if head_idx >= 0:
+                                close_idx = text.find(">", head_idx)
+                                if close_idx >= 0:
+                                    insert_at = close_idx + 1
+                                    text = text[:insert_at] + inject_js + text[insert_at:]
                             else:
                                 text = inject_js + text
 
                         response_body = text.encode(charset)
                     except Exception:
                         pass
+
+                # Set permissive CSP for proxied content (upstream sites need their own scripts)
+                # The middleware uses setdefault, so setting here takes priority
+                ct = resp_headers.get("Content-Type", "")
+                if "text/html" in ct:
+                    resp_headers["Content-Security-Policy"] = (
+                        "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
+                        "frame-ancestors 'self';"
+                    )
 
                 return web.Response(
                     status=resp.status,
@@ -12508,6 +12663,8 @@ def create_app() -> web.Application:
     app.router.add_get("/spice/{service_id}", http_spice_page)
     app.router.add_get("/proxmox/{service_id}", http_proxmox_page)
     app.router.add_get("/github/{service_id}", http_github_page)
+    # Embedded browser for HTTP proxy connections
+    app.router.add_get("/browser", http_browser_page)
     # User connection reverse proxy (all HTTP methods + WebSocket)
     app.router.add_route("*", "/proxy/{conn_id}", http_proxy_connection)
     app.router.add_route("*", "/proxy/{conn_id}/{path:.*}", http_proxy_connection)

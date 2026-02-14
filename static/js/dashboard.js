@@ -351,6 +351,16 @@ async function loadDashboardStats() {
             statOnlineUsers.textContent = publicStats.online_users;
         }
 
+        // Populate community stats (visible to all users)
+        const statTotalUsers = document.getElementById('stat-total-users');
+        const statActiveSessions = document.getElementById('stat-active-sessions');
+        const statTotalServices = document.getElementById('stat-total-services');
+        const statUptime = document.getElementById('stat-uptime');
+        if (statTotalUsers && publicStats.total_users !== undefined) statTotalUsers.textContent = publicStats.total_users;
+        if (statActiveSessions && publicStats.active_sessions !== undefined) statActiveSessions.textContent = publicStats.active_sessions;
+        if (statTotalServices && publicStats.total_services !== undefined) statTotalServices.textContent = publicStats.total_services;
+        if (statUptime && publicStats.uptime) statUptime.textContent = publicStats.uptime;
+
         // Load connections count
         const connections = await Portal.api('/api/connections');
         const statConnections = document.getElementById('stat-connections');
@@ -371,28 +381,6 @@ async function loadDashboardStats() {
             const adminPanelCard = document.getElementById('admin-panel-card');
             if (adminServiceActions) adminServiceActions.style.display = 'flex';
             if (adminPanelCard) adminPanelCard.style.display = 'block';
-
-            // Populate admin stats row
-            const adminStats = document.getElementById('admin-stats');
-            if (adminStats) {
-                adminStats.style.display = 'grid';
-                const statTotalUsers = document.getElementById('stat-total-users');
-                const statActiveConns = document.getElementById('stat-active-conns');
-                const statTotalServices = document.getElementById('stat-total-services');
-                const statUptime = document.getElementById('stat-uptime');
-                if (statTotalUsers && publicStats.total_users !== undefined) {
-                    statTotalUsers.textContent = publicStats.total_users;
-                }
-                if (statActiveConns && publicStats.active_connections !== undefined) {
-                    statActiveConns.textContent = publicStats.active_connections;
-                }
-                if (statTotalServices && publicStats.total_services !== undefined) {
-                    statTotalServices.textContent = publicStats.total_services;
-                }
-                if (statUptime && publicStats.uptime) {
-                    statUptime.textContent = publicStats.uptime;
-                }
-            }
         }
     } catch (error) {
         console.error('Failed to load dashboard stats:', error);
@@ -414,17 +402,15 @@ setInterval(async () => {
         if (statOnlineUsers && publicStats.online_users !== undefined) {
             statOnlineUsers.textContent = publicStats.online_users;
         }
-        // Update admin stats if visible
-        if (Portal.isAdmin(currentUser)) {
-            const statTotalUsers = document.getElementById('stat-total-users');
-            const statActiveConns = document.getElementById('stat-active-conns');
-            const statTotalServices = document.getElementById('stat-total-services');
-            const statUptime = document.getElementById('stat-uptime');
-            if (statTotalUsers && publicStats.total_users !== undefined) statTotalUsers.textContent = publicStats.total_users;
-            if (statActiveConns && publicStats.active_connections !== undefined) statActiveConns.textContent = publicStats.active_connections;
-            if (statTotalServices && publicStats.total_services !== undefined) statTotalServices.textContent = publicStats.total_services;
-            if (statUptime && publicStats.uptime) statUptime.textContent = publicStats.uptime;
-        }
+        // Update community stats
+        const statTotalUsers = document.getElementById('stat-total-users');
+        const statActiveSessions = document.getElementById('stat-active-sessions');
+        const statTotalServices = document.getElementById('stat-total-services');
+        const statUptime = document.getElementById('stat-uptime');
+        if (statTotalUsers && publicStats.total_users !== undefined) statTotalUsers.textContent = publicStats.total_users;
+        if (statActiveSessions && publicStats.active_sessions !== undefined) statActiveSessions.textContent = publicStats.active_sessions;
+        if (statTotalServices && publicStats.total_services !== undefined) statTotalServices.textContent = publicStats.total_services;
+        if (statUptime && publicStats.uptime) statUptime.textContent = publicStats.uptime;
         // Refresh activity feed
         await loadActivityFeed();
     } catch (error) {

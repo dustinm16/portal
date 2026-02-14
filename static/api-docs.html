@@ -361,6 +361,7 @@
                 </ul>
                 <h4>Files &amp; System</h4>
                 <ul>
+                    <li><a href="#embedded-browser">Embedded Browser</a></li>
                     <li><a href="#sftp-browser">SFTP Browser</a></li>
                 </ul>
                 <div class="admin-only">
@@ -1045,7 +1046,7 @@
                             <tr><td>vnc, rdp</td><td>VNC (noVNC)</td><td><code>/vnc/connect?connection={id}</code></td></tr>
                             <tr><td>spice</td><td>SPICE Console</td><td><code>/spice/connect?connection={id}</code></td></tr>
                             <tr><td>proxmox</td><td>Proxmox VE</td><td><code>/proxmox/connect?connection={id}</code></td></tr>
-                            <tr><td>http, https, http_proxy</td><td>HTTP Proxy</td><td><code>/proxy/{id}</code></td></tr>
+                            <tr><td>http, https, http_proxy</td><td>Embedded Browser</td><td><code>/browser?connection={id}</code></td></tr>
                             <tr><td>mediamtx, stream</td><td>Media Player</td><td><code>/media/connect?connection={id}</code></td></tr>
                             <tr><td>database, redis, tcp_tunnel, etc.</td><td>Info Toast</td><td>Shows host:port (no web viewer)</td></tr>
                         </table>
@@ -4565,6 +4566,57 @@ ws.send(JSON.stringify({
                         </table>
                     </div>
                 </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2 id="embedded-browser">Embedded Browser</h2>
+                <p>Portal's embedded browser provides a full browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar showing the current proxied path, and TLS enforcement for secure communication with backend services.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/browser?connection={id}</span>
+                        <span class="endpoint-desc">Open embedded browser for HTTP proxy connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Opens the embedded browser page for browsing a remote web service through Portal. Requires authentication. The connection must use the <code>http_proxy</code> plugin type (includes <code>http</code>, <code>https</code>, <code>http_proxy</code>, and all web panel connection types such as Home Assistant, Grafana, Portainer, etc.).</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">connection</span></td><td><span class="param-type">integer</span></td><td>Connection ID <span class="param-required">required</span></td></tr>
+                        </table>
+                        <h4>Notes</h4>
+                        <ul>
+                            <li>This is the user-facing page for HTTP/HTTPS connections. When users click <strong>Connect</strong> on a web-type connection, they are directed here.</li>
+                            <li>All proxied traffic is routed internally through <code>/proxy/{connection_id}/{path}</code>. Users should use <code>/browser?connection={id}</code> rather than accessing <code>/proxy/</code> directly.</li>
+                            <li>The embedded browser rewrites links and intercepts navigation to keep all traffic within Portal's proxy layer.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/proxy/{connection_id}/{path}</span>
+                        <span class="endpoint-desc">Reverse proxy passthrough (internal)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Proxies HTTP requests to the backend service configured for the given connection. This endpoint is used internally by the embedded browser and should not be accessed directly by users. Use <code>/browser?connection={id}</code> instead for the full browsing experience with navigation controls.</p>
+                        <h4>Path Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">connection_id</span></td><td><span class="param-type">integer</span></td><td>Connection ID <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Path to proxy to the backend service</td></tr>
+                        </table>
+                        <h4>Behavior</h4>
+                        <ul>
+                            <li>Forwards all HTTP methods (GET, POST, PUT, DELETE, etc.) to the backend</li>
+                            <li>Proxies WebSocket upgrade requests for real-time features</li>
+                            <li>Enforces TLS for connections to HTTPS backends</li>
+                            <li>Requires authentication &mdash; only the connection owner can access their proxy routes</li>
+                        </ul>
+                    </div>
                 </div>
 
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">

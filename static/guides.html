@@ -406,7 +406,7 @@
                 <p>Step-by-step configuration guides for all 75 supported connection types. Each guide covers requirements, setup steps, default ports, and security best practices.</p>
                 
                 <div class="alert alert-info">
-                    <strong>How connections work:</strong> Portal proxies connections through your browser via WebSocket. HTTP-based services use the <code>http_proxy</code> plugin (reverse proxy). TCP services like databases use the <code>tcp_tunnel</code> plugin. SSH and VNC have dedicated plugins with native protocol support.
+                    <strong>How connections work:</strong> Portal proxies connections through your browser via WebSocket. HTTP-based services use the <code>http_proxy</code> plugin and open in Portal's embedded browser with navigation controls, an address bar, and full TLS encryption. TCP services like databases use the <code>tcp_tunnel</code> plugin. SSH and VNC have dedicated plugins with native protocol support.
                 </div>
                 <div class="alert alert-info">
                     <strong>Tip:</strong> When adding a connection from the Dashboard, selecting a preset will show links to these guides and the software's official documentation directly in the form.
@@ -2122,11 +2122,11 @@
             </section>
 
             <h2 id="cat-web-services">Web Services</h2>
-            <p>Generic web service connections for any HTTP or HTTPS endpoint. Use these when a service doesn't have a dedicated type but has a web interface.</p>
+            <p>Generic web service connections for any HTTP or HTTPS endpoint. Use these when a service doesn't have a dedicated type but has a web interface. These connections open in Portal's embedded browser with navigation controls and an address bar.</p>
 
             <section id="guide-http">
                 <h3>HTTP Service</h3>
-                <p>Generic HTTP connection for any unencrypted web service. Portal acts as a reverse proxy, adding TLS on the browser-facing side.</p>
+                <p>Generic HTTP connection for any unencrypted web service. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal. Portal acts as a reverse proxy, adding TLS on the browser-facing side.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>http</code></td></tr>
                     <tr><th>Default Port</th><td><code>80</code></td></tr>
@@ -2155,7 +2155,7 @@
 
             <section id="guide-https">
                 <h3>HTTPS Service</h3>
-                <p>Generic HTTPS connection for any TLS-encrypted web service. Portal proxies requests while maintaining end-to-end encryption to the target.</p>
+                <p>Generic HTTPS connection for any TLS-encrypted web service. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal. Portal proxies requests while maintaining end-to-end encryption to the target.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>https</code></td></tr>
                     <tr><th>Default Port</th><td><code>443</code></td></tr>
@@ -2183,7 +2183,7 @@
             </section>
 
             <h2 id="cat-databases">Databases</h2>
-            <p>Database connections use Portal's TCP tunnel plugin to forward the database protocol through a WebSocket. This lets you access your databases securely from your browser or connect local database tools through Portal.</p>
+            <p>Most database connections use Portal's TCP tunnel plugin to forward the database protocol through a WebSocket. Databases with HTTP interfaces (Elasticsearch, InfluxDB) open in Portal's embedded browser instead. All connections are encrypted via TLS between your browser and Portal.</p>
 
             <section id="guide-database">
                 <h3>MySQL</h3>
@@ -2342,12 +2342,12 @@
 
             <section id="guide-elasticsearch">
                 <h3>Elasticsearch</h3>
-                <p>Elasticsearch is a distributed search and analytics engine used for log analysis, full-text search, and metrics.</p>
+                <p>Elasticsearch is a distributed search and analytics engine used for log analysis, full-text search, and metrics. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>elasticsearch</code></td></tr>
                     <tr><th>Default Port</th><td><code>9200</code></td></tr>
-                    <tr><th>Protocol</th><td>HTTP/TCP</td></tr>
-                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                    <tr><th>Protocol</th><td>HTTP</td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
                 </table>
                 <h4>Requirements</h4>
                 <ul>
@@ -2373,12 +2373,12 @@
 
             <section id="guide-influxdb">
                 <h3>InfluxDB</h3>
-                <p>InfluxDB is a time-series database optimized for metrics, events, and real-time analytics.</p>
+                <p>InfluxDB is a time-series database optimized for metrics, events, and real-time analytics. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>influxdb</code></td></tr>
                     <tr><th>Default Port</th><td><code>8086</code></td></tr>
                     <tr><th>Protocol</th><td>HTTP</td></tr>
-                    <tr><th>Plugin</th><td><code>tcp_tunnel</code></td></tr>
+                    <tr><th>Plugin</th><td><code>http_proxy</code></td></tr>
                 </table>
                 <h4>Requirements</h4>
                 <ul>
@@ -2435,7 +2435,7 @@
 
             <section id="guide-http_proxy">
                 <h3>HTTP Proxy</h3>
-                <p>Generic HTTP reverse proxy for any web-based service. Portal forwards HTTP requests to the target, handling TLS termination.</p>
+                <p>Generic HTTP reverse proxy for any web-based service. This connection type opens in Portal's embedded browser with navigation controls, address bar, and full TLS encryption through the portal. Portal forwards HTTP requests to the target, handling TLS termination.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>http_proxy</code></td></tr>
                     <tr><th>Default Port</th><td><code>80</code></td></tr>

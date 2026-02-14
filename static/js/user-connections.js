@@ -1248,41 +1248,33 @@ async function connectTo(connectionId) {
             return;
         }
 
-        // Check if this type uses the http_proxy plugin (covers 40+ web UI types)
-        const typeInfo = connectionTypes[type];
-        const isHttpProxy = typeInfo ? typeInfo.plugin === 'http_proxy' : false;
+        // Types that have dedicated UIs (not reverse-proxied)
+        const DEDICATED_TYPES = {
+            'sftp': () => window.open(`/files#sftp-${connectionId}`, '_blank'),
+            'ssh': () => window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600'),
+            'terminal': () => window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600'),
+            'vnc': () => window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+            'rdp': () => window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+            'spice': () => window.open(`/spice/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+            'proxmox': () => window.open(`/proxmox/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+            'github': () => window.open(`/github/connect?connection=${connectionId}`, '_blank', 'width=1400,height=900'),
+            'mediamtx': () => window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+            'stream': () => window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800'),
+        };
+        // TCP-only types that can't be proxied in a browser
+        const TCP_ONLY = new Set([
+            'database', 'redis', 'mongodb', 'postgresql',
+            'mariadb', 'telnet', 'minecraft_rcon',
+            'tcp_tunnel', 'secure_tunnel', 'vpn_tunnel', 'custom'
+        ]);
 
-        if (isHttpProxy) {
-            window.open(`/proxy/${connectionId}`, '_blank');
+        if (DEDICATED_TYPES[type]) {
+            DEDICATED_TYPES[type]();
+        } else if (TCP_ONLY.has(type)) {
+            Portal.toast(`${conn.name || 'Connection'}: Use a native client with Portal's WebSocket relay`, 'info');
         } else {
-            switch (type) {
-                case 'sftp':
-                    window.open(`/files#sftp-${connectionId}`, '_blank');
-                    break;
-                case 'ssh':
-                case 'terminal':
-                    window.open(`/terminal/connect?connection=${connectionId}`, '_blank', 'width=900,height=600');
-                    break;
-                case 'vnc':
-                case 'rdp':
-                    window.open(`/vnc/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                    break;
-                case 'spice':
-                    window.open(`/spice/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                    break;
-                case 'proxmox':
-                    window.open(`/proxmox/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                    break;
-                case 'github':
-                    window.open(`/github/connect?connection=${connectionId}`, '_blank', 'width=1400,height=900');
-                    break;
-                case 'mediamtx':
-                case 'stream':
-                    window.open(`/media/connect?connection=${connectionId}`, '_blank', 'width=1280,height=800');
-                    break;
-                default:
-                    Portal.toast(`${conn.name || 'Connection'}: ${conn.host}:${conn.port}`, 'info');
-            }
+            // Everything else is an HTTP proxy type — open in Portal's embedded browser
+            window.open(`/browser?connection=${connectionId}`, '_blank', 'width=1280,height=900');
         }
     } catch (error) {
         console.error('[Connections] Error connecting:', error);

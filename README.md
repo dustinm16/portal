@@ -48,7 +48,7 @@ Full-text search across channels and DMs powered by FTS5. Filter by user, date r
 WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
 
 ### Remote Access
-SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 75 connection types supported across 17 categories, with setup guides for each. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. HTTP/HTTPS connections are fully reverse-proxied through the portal with URL rewriting, so you can browse web UIs (Home Assistant, Grafana, Plex, etc.) without exposing them directly. No VPN required.
+SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 75 connection types supported across 17 categories, with setup guides for each. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. HTTP/HTTPS connections open in Portal's embedded browser with navigation controls, address bar, and keyboard shortcuts (Alt+arrows, Ctrl+L, Ctrl+R) — browse web UIs (Home Assistant, Grafana, Plex, Elasticsearch, InfluxDB, etc.) without exposing them directly. Portal session cookies and auth headers are stripped from upstream requests, and proxied content runs in a sandboxed iframe with a permissive CSP but `frame-ancestors 'self'` to prevent external embedding. No VPN required.
 
 ### File Management
 Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI. Commander-style dual-pane file manager when multiple SFTP connections exist, enabling drag-and-drop transfers between remote hosts.
@@ -71,7 +71,7 @@ User management with role hierarchy (Super Admin / Admin / Moderator / User), in
 | VOD recording (self-hosted) | Yes | No | Yes (platform) | No | No | No |
 | Voice chat (E2E encrypted) | Yes | No | No | No | Yes | No |
 | SSH/VNC/RDP remote access | Yes | No | No | Yes | No | No |
-| HTTP reverse proxy | Yes | No | No | No | No | No |
+| HTTP reverse proxy + embedded browser | Yes | No | No | No | No | No |
 | File management (SFTP) | Yes | No | No | No | No | No |
 | Direct messages | Yes | Yes | Yes | No | Yes | Yes |
 | Full-text search | Yes | Yes | No | No | Partial | Yes |
