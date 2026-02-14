@@ -13,6 +13,8 @@ del _sys
 
 import asyncio
 import hashlib
+import html as _html
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -1822,11 +1824,13 @@ async def http_delete_api_key(request: web.Request) -> web.Response:
 # =============================================================================
 
 # Blocked hosts for user connections (security - no local server access)
-BLOCKED_HOSTS = {'localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal', 'kubernetes.default'}
+BLOCKED_HOSTS = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
+                 'host.docker.internal', 'kubernetes.default',
+                 '169.254.169.254', 'metadata.google.internal'}
 
 
 def is_blocked_host(host: str) -> bool:
-    """Check if host is blocked for user connections (localhost variants)."""
+    """Check if host is blocked for user connections (localhost variants, cloud metadata)."""
     if not host:
         return False
     h = host.lower().strip()
@@ -1839,6 +1843,13 @@ def is_blocked_host(host: str) -> bool:
     # IPv6 localhost variants
     if h.startswith('::ffff:127.'):
         return True
+    # IP range checks (loopback, link-local / cloud metadata)
+    try:
+        ip = ipaddress.ip_address(h)
+        if ip.is_loopback or ip.is_link_local:
+            return True
+    except ValueError:
+        pass
     return False
 
 
@@ -7779,12 +7790,16 @@ async def http_browser_page(request: web.Request) -> web.Response:
 
     html = load_static_file("browser.html")
     html = html.replace("{{CONNECTION_ID}}", conn_id)
-    html = html.replace("{{SERVICE_NAME}}", connection.get("name", "Browser"))
+    html = html.replace("{{SERVICE_NAME}}", _html.escape(connection.get("name", "Browser")))
     html = html.replace("{{PROXY_PATH}}", proxy_path)
-    html = html.replace("{{TARGET_DISPLAY}}", target_display)
+    html = html.replace("{{TARGET_DISPLAY}}", _html.escape(target_display))
     html = html.replace("{{BROWSER_MODE}}", "true" if browser_mode else "false")
 
     return web.Response(text=html, content_type="text/html")
+
+
+_PROXY_MAX_RESPONSE_SIZE = 50 * 1024 * 1024   # 50 MB for text content needing URL rewriting
+_PROXY_MAX_REQUEST_SIZE = 10 * 1024 * 1024     # 10 MB
 
 
 async def http_proxy_connection(request: web.Request) -> web.Response:
@@ -7824,6 +7839,8 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     # Build target URL
     browser_mode = config.get("browser_mode", False)
     host = connection.get("host")
+    if is_blocked_host(host):
+        return web.Response(status=403, text="Access to blocked hosts not allowed")
     default_port = type_info.get("default_port", 80)
     port = connection.get("port") or config.get("port") or default_port
     if not config.get("target_url"):
@@ -7960,7 +7977,11 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
             timeout=aiohttp.ClientTimeout(total=timeout_s),
             auto_decompress=True
         ) as session:
-            body = await request.read() if request.body_exists else None
+            body = None
+            if request.body_exists:
+                body = await request.content.read(_PROXY_MAX_REQUEST_SIZE + 1)
+                if len(body) > _PROXY_MAX_REQUEST_SIZE:
+                    return web.Response(status=413, text="Request body too large")
 
             async with session.request(
                 method=request.method,
@@ -7970,9 +7991,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 allow_redirects=not browser_mode,
                 max_redirects=10
             ) as resp:
-                response_body = await resp.read()
-
-                # Build response headers
+                # Build response headers (before reading body — needed for streaming path)
                 resp_headers = {}
                 for key, value in resp.headers.items():
                     k = key.lower()
@@ -8014,13 +8033,37 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
 
                     resp_headers[key] = value
 
-                # Rewrite URLs in text responses
+                # Check if response needs URL rewriting
                 content_type = resp.headers.get("Content-Type", "")
-                if any(t in content_type for t in ("text/html", "text/css", "javascript", "application/json")):
+                needs_rewriting = any(t in content_type for t in ("text/html", "text/css", "javascript", "application/json"))
+
+                if not needs_rewriting:
+                    # Stream binary/media directly (no rewriting needed, no size limit)
+                    stream_resp = web.StreamResponse(status=resp.status, headers=resp_headers)
+                    await stream_resp.prepare(request)
+                    async for chunk in resp.content.iter_chunked(65536):
+                        await stream_resp.write(chunk)
+                    await stream_resp.write_eof()
+                    return stream_resp
+
+                # Text content — read with size limit for URL rewriting
+                chunks = []
+                total_size = 0
+                while True:
+                    chunk = await resp.content.read(65536)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > _PROXY_MAX_RESPONSE_SIZE:
+                        return web.Response(status=502, text="Upstream response too large")
+                    chunks.append(chunk)
+                response_body = b''.join(chunks)
+
+                if needs_rewriting:
                     try:
                         charset = "utf-8"
                         if "charset=" in content_type:
-                            charset = content_type.split("charset=")[1].split(";")[0].strip()
+                            charset = content_type.split("charset=")[1].split(";")[0].strip().strip('"\'')
                         text = response_body.decode(charset)
 
                         if browser_mode:
@@ -8054,10 +8097,10 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                 double_prefix = f"{proxy_base}/{proxy_base}/"
                                 while double_prefix in text:
                                     text = text.replace(double_prefix, f"{proxy_base}/")
-                                # Rewrite protocol-relative //host in HTML attrs
+                                # Rewrite protocol-relative //host in HTML attrs (use target's scheme)
                                 text = re.sub(
                                     rf'((?:href|src|action|data|poster|srcset|formaction)\s*=\s*["\'])//(?!{esc_base})',
-                                    rf'\1{proxy_base}/https://',
+                                    rf'\1{proxy_base}/{parsed_target.scheme}://',
                                     text
                                 )
                                 # Rewrite root-relative URLs in HTML attrs
@@ -8095,7 +8138,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'if(u.startsWith(P+"/"))return B+"/"+O+u.slice(P.length);'
                                     f'if(u.startsWith(P))return B+"/"+O+u.slice(P.length);'
                                     f'if(u.startsWith("http://")||u.startsWith("https://"))return B+"/"+u;'
-                                    f'if(u.startsWith("//"))return B+"/https:"+u;'
+                                    f'if(u.startsWith("//"))return B+"/"+O.split("//")[0]+u;'
                                     f'if(u.startsWith("/")&&!u.startsWith(B))return B+"/"+O+u;'
                                     f'return u}}'
                                     # fetch()
@@ -8122,7 +8165,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'window.EventSource.prototype=_E.prototype}}'
                                     # window.open() — send to parent as new tab
                                     f'window.open=function(u){{if(u){{var ru=R(u);'
-                                    f'try{{window.top.postMessage({{type:"openTab",url:ru}},"*")}}catch{{}}'
+                                    f'try{{window.top.postMessage({{type:"openTab",url:ru}},location.origin)}}catch{{}}'
                                     f'}}return null}};'
                                     # navigator.sendBeacon()
                                     f'if(navigator.sendBeacon){{var _sb=navigator.sendBeacon.bind(navigator);'
@@ -8135,7 +8178,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'if(h){{var rh=R(h);'
                                     f'if(t==="_blank"||e.ctrlKey||e.metaKey||e.button===1){{'
                                     f'e.preventDefault();e.stopPropagation();'
-                                    f'try{{window.top.postMessage({{type:"openTab",url:rh}},"*")}}catch{{}}'
+                                    f'try{{window.top.postMessage({{type:"openTab",url:rh}},location.origin)}}catch{{}}'
                                     f'return}}a.setAttribute("href",rh)}}'
                                     f'}}}},true);'
                                     f'document.addEventListener("submit",function(e){{'
@@ -8288,6 +8331,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 if "text/html" in ct:
                     resp_headers["Content-Security-Policy"] = (
                         "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
+                        "worker-src 'none'; "
                         "frame-ancestors 'self';"
                     )
 
@@ -8302,11 +8346,11 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         return web.Response(
             status=502,
             content_type="text/html",
-            text=f"<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:2rem'>"
-                 f"<h2>Cannot reach upstream service</h2>"
-                 f"<p>{type(e).__name__}: Could not connect to {connection.get('name', 'service')}</p>"
-                 f"<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
-                 f"</body></html>"
+            text="<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:2rem'>"
+                 "<h2>Cannot reach upstream service</h2>"
+                 "<p>The upstream service is unreachable. Check that it is running and accessible.</p>"
+                 "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
+                 "</body></html>"
         )
 
 

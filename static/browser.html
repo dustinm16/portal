@@ -718,8 +718,11 @@
 
         // Open a URL in a new tab (called from JS interceptor via postMessage)
         window.addEventListener('message', function(e) {
+            if (e.origin !== window.location.origin) return;
             if (e.data && e.data.type === 'openTab' && e.data.url) {
-                addTab(e.data.url);
+                var url = e.data.url;
+                if (typeof url !== 'string' || !url.startsWith(proxyBase + '/')) return;
+                addTab(url);
             }
         });
 
