@@ -13,6 +13,12 @@ import fcntl
 import os
 import pty
 import pwd
+
+# Shells allowed for local terminal — must match server.py ALLOWED_SHELLS
+_ALLOWED_SHELLS = {
+    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
+    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
+}
 import re
 import select
 import signal
@@ -208,6 +214,10 @@ class TerminalPlugin(PluginBase):
         """Handle terminal WebSocket connection."""
         config = target.config
         shell = config.get("shell", "/bin/bash")
+        if shell not in _ALLOWED_SHELLS:
+            logger.warning(f"Rejected disallowed shell: {shell}")
+            await ws.send_json({"type": "error", "message": f"Shell not allowed: {shell}"})
+            return
         working_dir = os.path.expanduser(config.get("working_dir", "~"))
 
         # Build environment

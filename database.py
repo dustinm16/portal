@@ -925,9 +925,11 @@ class Database:
             try:
                 await self._connection.execute(migration)
                 await self._connection.commit()
-            except Exception:
-                # Column likely already exists
-                pass
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "already exists" not in err_msg and "duplicate column" not in err_msg:
+                    logger.warning(f"Migration skipped (non-duplicate error): {e}")
+                # Column/table/index already exists — expected on re-run
 
         # Fix service_logs FK to reference services instead of managed_services
         await self._migrate_service_logs_fk()
@@ -1376,6 +1378,39 @@ class Database:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    async def update_password_hash(self, user_id: int, password_hash: str) -> bool:
+        """Update a user's password hash."""
+        cursor = await self.conn.execute(
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (password_hash, datetime.now(timezone.utc).isoformat(), user_id)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_user(self, user_id: int) -> bool:
+        """Delete a user and all associated data (tokens, connections, streams, etc.).
+
+        Uses cascading deletes where FK constraints exist, and explicit cleanup otherwise.
+        """
+        # Delete tokens (no FK cascade)
+        await self.conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
+        # Delete API keys
+        await self.conn.execute("DELETE FROM api_keys WHERE user_id = ?", (user_id,))
+        # Delete user connections
+        await self.conn.execute("DELETE FROM user_connections WHERE user_id = ?", (user_id,))
+        # Delete user streams (cascade handles chat channels)
+        await self.conn.execute("DELETE FROM user_streams WHERE user_id = ?", (user_id,))
+        # Delete notifications
+        await self.conn.execute("DELETE FROM notifications WHERE user_id = ?", (user_id,))
+        # Delete activity log
+        await self.conn.execute("DELETE FROM activity_log WHERE user_id = ?", (user_id,))
+        # Delete VOD storage config
+        await self.conn.execute("DELETE FROM vod_storage WHERE user_id = ?", (user_id,))
+        # Delete the user
+        cursor = await self.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # Two-Factor Authentication operations
     async def set_user_totp_secret(self, user_id: int, secret: str) -> None:
@@ -2548,6 +2583,14 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def update_viewer_count(self, stream_id: int, count: int) -> None:
+        """Update viewer count for a live stream."""
+        await self.conn.execute(
+            "UPDATE user_streams SET viewer_count = ? WHERE id = ?",
+            (count, stream_id)
+        )
+        await self.conn.commit()
+
     async def set_stream_encoding(self, stream_id: int) -> bool:
         """Set stream to encoding state (is_live=2). VOD chunks still being finalized."""
         now = datetime.now(timezone.utc).isoformat()
@@ -3316,43 +3359,33 @@ class Database:
                 config_val = _json.dumps(config_val)
             kwargs["config"] = encrypt_config(config_val)
 
-        existing = await self.get_vod_storage(user_id)
         now = datetime.now(timezone.utc).isoformat()
 
-        if existing:
-            allowed = {"name", "host", "port", "username", "auth_method",
-                       "remote_path", "config"}
-            updates = {k: v for k, v in kwargs.items() if k in allowed}
-            updates["updated_at"] = now
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            values = list(updates.values()) + [user_id]
-            await self.conn.execute(
-                f"UPDATE vod_storage SET {set_clause} WHERE user_id = ?",
-                values
-            )
-            await self.conn.commit()
-            return existing["id"]
-        else:
-            fields = {
-                "user_id": user_id,
-                "name": kwargs.get("name", "My VOD Storage"),
-                "host": kwargs["host"],
-                "port": kwargs.get("port", 22),
-                "username": kwargs["username"],
-                "auth_method": kwargs.get("auth_method", "password"),
-                "remote_path": kwargs.get("remote_path", "/home/user/vods"),
-                "config": kwargs.get("config", "{}"),
-                "created_at": now,
-                "updated_at": now,
-            }
-            columns = ", ".join(fields.keys())
-            placeholders = ", ".join("?" for _ in fields)
-            cursor = await self.conn.execute(
-                f"INSERT INTO vod_storage ({columns}) VALUES ({placeholders})",
-                list(fields.values())
-            )
-            await self.conn.commit()
-            return cursor.lastrowid
+        fields = {
+            "user_id": user_id,
+            "name": kwargs.get("name", "My VOD Storage"),
+            "host": kwargs["host"],
+            "port": kwargs.get("port", 22),
+            "username": kwargs["username"],
+            "auth_method": kwargs.get("auth_method", "password"),
+            "remote_path": kwargs.get("remote_path", "/home/user/vods"),
+            "config": kwargs.get("config", "{}"),
+            "created_at": now,
+            "updated_at": now,
+        }
+        columns = ", ".join(fields.keys())
+        placeholders = ", ".join("?" for _ in fields)
+        # Atomic upsert — avoids TOCTOU race between check and insert
+        update_cols = ["name", "host", "port", "username", "auth_method",
+                       "remote_path", "config", "updated_at"]
+        conflict_update = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
+        cursor = await self.conn.execute(
+            f"INSERT INTO vod_storage ({columns}) VALUES ({placeholders}) "
+            f"ON CONFLICT(user_id) DO UPDATE SET {conflict_update}",
+            list(fields.values())
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
 
     async def delete_vod_storage(self, user_id: int) -> bool:
         """Delete VOD storage config for a user."""

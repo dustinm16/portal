@@ -277,7 +277,7 @@ def control_service(name: str, action: str) -> tuple[bool, str]:
 def _validate_service_name(name: str) -> bool:
     """Validate a systemd service name to prevent injection."""
     import re
-    return bool(re.match(r'^[a-zA-Z0-9_@\-\.]+$', name)) and len(name) < 256
+    return bool(re.match(r'^[a-zA-Z0-9_\-\.]+$', name)) and 0 < len(name) < 256
 
 
 # =============================================================================

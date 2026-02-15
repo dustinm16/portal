@@ -41,6 +41,11 @@ def _validate_path(path: str, root: str) -> Path:
     if not str(resolved).startswith(str(root_path)):
         raise ValueError("Path traversal detected")
 
+    # Block symlinks to prevent TOCTOU races — an attacker could swap a symlink
+    # between resolve() and the actual file operation to escape the root
+    if resolved.is_symlink():
+        raise ValueError("Symbolic links are not allowed")
+
     # Check blocked files
     rel = str(resolved.relative_to(root_path))
     name = resolved.name

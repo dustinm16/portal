@@ -1,5 +1,6 @@
 """HTTP Proxy plugin - Reverse proxy for web UIs."""
 
+import ipaddress
 import logging
 from urllib.parse import urljoin, urlparse
 
@@ -10,6 +11,25 @@ from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.http_proxy")
+
+
+def _is_blocked_proxy_host(host: str) -> bool:
+    """Check if a proxy target host is blocked (SSRF prevention)."""
+    if not host:
+        return True
+    h = host.lower().strip()
+    blocked_names = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
+                     'host.docker.internal', 'metadata.google.internal',
+                     '169.254.169.254'}
+    if h in blocked_names or h.startswith('127.'):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
+            return True
+    except ValueError:
+        pass
+    return False
 
 
 @register_plugin
@@ -86,6 +106,12 @@ class HTTPProxyPlugin(PluginBase):
         verify_ssl = config.get("verify_ssl", False)
         timeout = aiohttp.ClientTimeout(total=config.get("timeout", 60))
 
+        # SSRF protection: validate target host
+        if target_url:
+            parsed_target = urlparse(target_url)
+            if _is_blocked_proxy_host(parsed_target.hostname or ""):
+                return web.json_response({"error": "Target host not allowed"}, status=403)
+
         # Build target URL
         path = request.match_info.get("path", "")
         query = request.query_string
@@ -158,8 +184,10 @@ class HTTPProxyPlugin(PluginBase):
                                 ""  # Convert to relative
                             )
                             response_body = text.encode("utf-8")
-                        except Exception:
-                            pass
+                        except UnicodeDecodeError:
+                            pass  # Binary content, skip URL rewriting
+                        except Exception as e:
+                            logger.debug(f"URL rewriting failed: {e}")
 
                     return web.Response(
                         status=resp.status,

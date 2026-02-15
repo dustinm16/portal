@@ -296,7 +296,7 @@ function onPluginChange() {
     // Add section header
     const header = document.createElement('div');
     header.className = 'config-section-header';
-    header.innerHTML = `<h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">${pluginInfo.display_name} Settings</h4>`;
+    header.innerHTML = `<h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">${escapeHtml(pluginInfo.display_name)} Settings</h4>`;
     configContainer.appendChild(header);
 
     // Add GitHub OAuth helper for GitHub plugin
@@ -593,7 +593,7 @@ function onEditPluginChange() {
     // Add section header
     const header = document.createElement('div');
     header.className = 'config-section-header';
-    header.innerHTML = `<h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">${pluginInfo.display_name} Settings</h4>`;
+    header.innerHTML = `<h4 style="margin: 1rem 0 0.5rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">${escapeHtml(pluginInfo.display_name)} Settings</h4>`;
     configContainer.appendChild(header);
 
     // Generate fields
@@ -1330,7 +1330,7 @@ async function loadLogs() {
         const data = await response.json();
 
         if (data.error) {
-            container.innerHTML = `<div class="logs-content" style="color: var(--accent-red);">Error: ${data.error}</div>`;
+            container.innerHTML = `<div class="logs-content" style="color: var(--accent-red);">Error: ${escapeHtml(data.error)}</div>`;
             return;
         }
 
@@ -1344,7 +1344,7 @@ async function loadLogs() {
         // Scroll to bottom
         container.scrollTop = container.scrollHeight;
     } catch (error) {
-        container.innerHTML = `<div class="logs-content" style="color: var(--accent-red);">Failed to load logs: ${error.message}</div>`;
+        container.innerHTML = `<div class="logs-content" style="color: var(--accent-red);">Failed to load logs: ${escapeHtml(error.message)}</div>`;
         console.error('Load logs error:', error);
     }
 }

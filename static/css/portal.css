@@ -2739,10 +2739,6 @@ select option {
     animation: spin 1s linear infinite;
 }
 
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
 .stream-card.has-thumbnail .stream-viewers {
     position: absolute;
     bottom: 8px;

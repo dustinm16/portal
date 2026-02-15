@@ -144,6 +144,10 @@ _disconnect_grace_tasks: dict[int, "asyncio.Task"] = {}
 # When a stream publishes via rtmp_ token, MediaMTX uses the token as the path
 # instead of the live_ key. This mapping lets HLS/thumbnail/VOD find the right path.
 _rtmp_stream_paths: dict[int, str] = {}
+
+# Lock for stream state dictionaries to prevent race conditions
+# between concurrent stream connect/disconnect/auth events
+_stream_state_lock = asyncio.Lock()
 VOD_TEMP_DIR = "/tmp/portal_vods"
 
 # Static files cache
@@ -350,6 +354,9 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
     # Look up key by prefix
     key_record = await db.get_api_key_by_prefix(prefix)
     if not key_record:
+        # Constant-time: always attempt a verification to prevent
+        # timing side-channel that reveals valid key prefixes
+        verify_api_key(api_key, "$argon2id$v=19$m=65536,t=3,p=4$dummy$dummy")
         return None
 
     # Check if revoked
@@ -1830,7 +1837,11 @@ BLOCKED_HOSTS = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
 
 
 def is_blocked_host(host: str) -> bool:
-    """Check if host is blocked for user connections (localhost variants, cloud metadata)."""
+    """Check if host is blocked for user connections.
+
+    Blocks localhost variants, cloud metadata, and RFC 1918/6598 private ranges
+    to prevent SSRF attacks against internal network services.
+    """
     if not host:
         return False
     h = host.lower().strip()
@@ -1843,10 +1854,14 @@ def is_blocked_host(host: str) -> bool:
     # IPv6 localhost variants
     if h.startswith('::ffff:127.'):
         return True
-    # IP range checks (loopback, link-local / cloud metadata)
+    # IP range checks (loopback, link-local, private, shared)
     try:
         ip = ipaddress.ip_address(h)
-        if ip.is_loopback or ip.is_link_local:
+        if ip.is_loopback or ip.is_link_local or ip.is_private:
+            return True
+        # RFC 6598 shared address space (100.64.0.0/10) — is_private covers
+        # RFC 1918 ranges but check is_reserved for extra safety
+        if ip.is_reserved:
             return True
     except ValueError:
         pass
@@ -2976,7 +2991,8 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         _vod_chunk_uploader(recording)
     )
 
-    active_recordings[stream_id] = recording
+    async with _stream_state_lock:
+        active_recordings[stream_id] = recording
     logger.info(f"VOD recording started: {safe_name}/{date_str}/ from chunk_{start_number:03d} (every {VOD_SEGMENT_DURATION}s)")
 
 
@@ -3091,7 +3107,8 @@ async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
     as the RTSPS source disappearing causes ffmpeg to finish the current
     chunk and exit cleanly. Only use force=True on server shutdown.
     """
-    recording = active_recordings.pop(stream_id, None)
+    async with _stream_state_lock:
+        recording = active_recordings.pop(stream_id, None)
     if not recording:
         return
 
@@ -3163,16 +3180,17 @@ async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
 
 async def stop_all_recordings() -> None:
     """Stop all active VOD recordings (called on server shutdown)."""
-    # Cancel any pending disconnect grace tasks
-    for stream_id, task in list(_disconnect_grace_tasks.items()):
-        if not task.done():
-            task.cancel()
-    _disconnect_grace_tasks.clear()
+    async with _stream_state_lock:
+        # Cancel any pending disconnect grace tasks
+        for stream_id, task in list(_disconnect_grace_tasks.items()):
+            if not task.done():
+                task.cancel()
+        _disconnect_grace_tasks.clear()
 
-    if not active_recordings:
-        return
-    logger.info(f"Stopping {len(active_recordings)} active VOD recording(s)...")
-    stream_ids = list(active_recordings.keys())
+        if not active_recordings:
+            return
+        logger.info(f"Stopping {len(active_recordings)} active VOD recording(s)...")
+        stream_ids = list(active_recordings.keys())
     for stream_id in stream_ids:
         await stop_vod_recording(stream_id, force=True)
 
@@ -3196,7 +3214,8 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             return
 
         # Still disconnected — proceed with encoding/offline transition
-        has_vod = stream_id in active_recordings
+        async with _stream_state_lock:
+            has_vod = stream_id in active_recordings
 
         if has_vod:
             # Transition to encoding state — VOD chunks still being finalized
@@ -3380,7 +3399,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             }
             logger.info(f"RTMP token auth successful for stream {stream['name']} from {ip}")
             # Store path mapping so HLS/thumbnail/VOD can find the MediaMTX path
-            _rtmp_stream_paths[token_record["stream_id"]] = stream_key
+            async with _stream_state_lock:
+                _rtmp_stream_paths[token_record["stream_id"]] = stream_key
 
         elif stream_key and stream_key.startswith("live_"):
             stream = await db.get_stream_by_key(stream_key)
@@ -3394,7 +3414,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
 
         # Cancel any pending disconnect grace task (stream reconnected)
         stream_id = stream["id"]
-        grace_task = _disconnect_grace_tasks.pop(stream_id, None)
+        async with _stream_state_lock:
+            grace_task = _disconnect_grace_tasks.pop(stream_id, None)
         if grace_task and not grace_task.done():
             grace_task.cancel()
             logger.info(f"Stream {stream['name']} reconnected, cancelled disconnect grace period")
@@ -3497,18 +3518,19 @@ async def http_stream_event(request: web.Request) -> web.Response:
         if stream:
             stream_id = stream["id"]
 
-            # Clean up rtmp_ path mapping
-            _rtmp_stream_paths.pop(stream_id, None)
+            async with _stream_state_lock:
+                # Clean up rtmp_ path mapping
+                _rtmp_stream_paths.pop(stream_id, None)
 
-            # Cancel any existing grace task for this stream (shouldn't happen, but be safe)
-            existing_task = _disconnect_grace_tasks.pop(stream_id, None)
-            if existing_task and not existing_task.done():
-                existing_task.cancel()
+                # Cancel any existing grace task for this stream (shouldn't happen, but be safe)
+                existing_task = _disconnect_grace_tasks.pop(stream_id, None)
+                if existing_task and not existing_task.done():
+                    existing_task.cancel()
 
-            # Spawn grace period task — waits before triggering encoding/offline
-            logger.info(f"Stream {stream['name']} disconnected, starting 7s grace period...")
-            task = asyncio.create_task(_handle_disconnect_grace(stream))
-            _disconnect_grace_tasks[stream_id] = task
+                # Spawn grace period task — waits before triggering encoding/offline
+                logger.info(f"Stream {stream['name']} disconnected, starting 7s grace period...")
+                task = asyncio.create_task(_handle_disconnect_grace(stream))
+                _disconnect_grace_tasks[stream_id] = task
 
     return web.json_response({"ok": True})
 
@@ -6944,6 +6966,13 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     logger.info(f"WebSocket connection from {client_ip} (user {token.user_id}) to {path}")
     logger.debug(f"WebSocket headers: {dict(request.headers)}")
 
+    # Per-user WebSocket connection limit (prevents resource exhaustion)
+    _MAX_WS_PER_USER = 20
+    user_ws_count = _online_users.get(token.user_id, 0)
+    if user_ws_count >= _MAX_WS_PER_USER:
+        logger.warning(f"User {token.user_id} exceeded max WebSocket connections ({_MAX_WS_PER_USER})")
+        return web.Response(status=429, text="Too many active connections")
+
     # Create WebSocket response
     ws = web.WebSocketResponse(heartbeat=30)
     try:
@@ -9078,7 +9107,8 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
         return web.json_response({"error": "Upload failed"}, status=500)
 
 
-# Link preview cache: url -> (preview_data, timestamp)
+# Link preview cache: url -> (preview_data, timestamp) — bounded to 256 entries
+_LINK_PREVIEW_CACHE_MAX = 256
 _link_preview_cache: dict[str, tuple[dict, float]] = {}
 _LINK_PREVIEW_TTL = 3600  # 1 hour
 
@@ -9173,11 +9203,17 @@ async def http_link_preview(request: web.Request) -> web.Response:
         preview = _parse_opengraph(html, url)
         _link_preview_cache[url] = (preview, now)
 
-        # Trim cache if too large
-        if len(_link_preview_cache) > 500:
-            sorted_items = sorted(_link_preview_cache.items(), key=lambda x: x[1][1])
-            for k, _ in sorted_items[:250]:
+        # Evict expired + oldest entries when cache exceeds max
+        if len(_link_preview_cache) > _LINK_PREVIEW_CACHE_MAX:
+            # First pass: remove expired entries
+            expired = [k for k, (_, ts) in _link_preview_cache.items() if now - ts >= _LINK_PREVIEW_TTL]
+            for k in expired:
                 _link_preview_cache.pop(k, None)
+            # Second pass: if still over limit, drop oldest half
+            if len(_link_preview_cache) > _LINK_PREVIEW_CACHE_MAX:
+                sorted_keys = sorted(_link_preview_cache, key=lambda k: _link_preview_cache[k][1])
+                for k in sorted_keys[:len(sorted_keys) // 2]:
+                    _link_preview_cache.pop(k, None)
 
         return web.json_response(preview)
     except asyncio.TimeoutError:
@@ -12049,11 +12085,7 @@ async def http_change_password(request: web.Request) -> web.Response:
 
     # Update password
     new_hash = hash_password(new_password)
-    await db.conn.execute(
-        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-        (new_hash, datetime.now(timezone.utc).isoformat(), token.user_id)
-    )
-    await db.conn.commit()
+    await db.update_password_hash(token.user_id, new_hash)
 
     logger.info(f"Password changed for user {token.user_id}")
 
@@ -12553,11 +12585,8 @@ async def http_delete_user(request: web.Request) -> web.Response:
     # Superadmins can delete anyone (except themselves, checked above)
     target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
 
-    # Delete user's tokens first
-    await db.conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
-    # Delete the user
-    await db.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    await db.conn.commit()
+    # Delete user and all associated data via ORM
+    await db.delete_user(user_id)
 
     logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
 
@@ -13354,14 +13383,9 @@ class PortalServer:
                         # Get current stream
                         stream = await db.get_stream_by_key(stream_key)
                         if stream and stream.get("is_live") == 1:
-                            # Update viewer count directly
                             current_count = stream.get("viewer_count", 0)
                             if current_count != reader_count:
-                                await db.conn.execute(
-                                    "UPDATE user_streams SET viewer_count = ? WHERE id = ?",
-                                    (reader_count, stream["id"])
-                                )
-                                await db.conn.commit()
+                                await db.update_viewer_count(stream["id"], reader_count)
 
             except asyncio.CancelledError:
                 break

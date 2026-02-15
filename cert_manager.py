@@ -291,6 +291,10 @@ def request_letsencrypt_cert(
     if not shutil.which("certbot"):
         return False, "certbot is not installed. Install with: apt install certbot"
 
+    # Validate hostname to prevent injection via certbot arguments
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.\-]*[a-zA-Z0-9]$', hostname):
+        return False, "Invalid hostname format"
+
     cmd = [
         "certbot", "certonly",
         "--non-interactive",

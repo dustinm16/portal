@@ -276,7 +276,7 @@ def get_daily_invite_code() -> str:
         # Store to file
         try:
             INVITE_CODE_FILE.write_text(f"{today}\n{_current_invite_code}\n")
-            INVITE_CODE_FILE.chmod(0o644)  # Readable by all (code is logged anyway)
+            INVITE_CODE_FILE.chmod(0o600)  # Owner-only (code is also logged to journalctl)
         except Exception as e:
             logger.error(f"Failed to write invite code file: {e}")
 

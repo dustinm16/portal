@@ -38,7 +38,7 @@ async function loadUserStreams() {
     } catch (error) {
         console.error('Failed to load streams:', error);
         loadingEl.style.display = 'none';
-        gridEl.innerHTML = `<div class="error-message">Failed to load streams: ${error.message}</div>`;
+        gridEl.innerHTML = `<div class="error-message">Failed to load streams: ${escapeHtml(error.message)}</div>`;
         gridEl.style.display = 'block';
     }
 }
@@ -74,7 +74,7 @@ async function loadCommunityStreams() {
     } catch (error) {
         console.error('Failed to load community streams:', error);
         loadingEl.style.display = 'none';
-        gridEl.innerHTML = `<div class="error-message">Failed to load streams: ${error.message}</div>`;
+        gridEl.innerHTML = `<div class="error-message">Failed to load streams: ${escapeHtml(error.message)}</div>`;
         gridEl.style.display = 'block';
     }
 }

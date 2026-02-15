@@ -12,6 +12,12 @@ from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.ssh")
 
+# Shells allowed for SSH command override — must match server.py ALLOWED_SHELLS
+_ALLOWED_SHELLS = {
+    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
+    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
+}
+
 # NOTE: Unlike the local terminal plugin, we do NOT intercept DA1/DA2/DSR
 # queries server-side for SSH connections. Server-side interception fails
 # for SSH because:
@@ -172,6 +178,10 @@ class SSHPlugin(PluginBase):
                 }
                 shell_cmd = config.get("shell", "").strip()
                 if shell_cmd:
+                    if shell_cmd not in _ALLOWED_SHELLS:
+                        logger.warning(f"Rejected disallowed shell: {shell_cmd}")
+                        await ws.send_json({"type": "error", "message": f"Shell not allowed: {shell_cmd}"})
+                        return
                     proc_opts["command"] = shell_cmd
                 async with conn.create_process(**proc_opts) as process:
                     await ws.send_json({
