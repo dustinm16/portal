@@ -445,6 +445,10 @@ def update_env_value(env_path: str, key: str, value: str) -> None:
         new_lines.append(f"{key}={value}")
 
     env_file.write_text("\n".join(new_lines) + "\n")
+    try:
+        os.chmod(str(env_file), 0o600)
+    except OSError:
+        pass
 
 
 def update_env_ssl_paths(env_path: str, cert_path: str, key_path: str) -> None:
@@ -500,3 +504,7 @@ def write_env_file(env_path: str, config: dict) -> None:
         lines.append("")
 
     env_file.write_text("\n".join(lines))
+    try:
+        os.chmod(str(env_file), 0o600)
+    except OSError:
+        pass

@@ -4279,10 +4279,7 @@ async def _connect_vod_sftp(user_id: int):
     if not storage:
         return None, None, "No VOD storage configured"
 
-    try:
-        config = json.loads(storage.get("config", "{}"))
-    except json.JSONDecodeError:
-        config = {}
+    config = storage.get("config") or {}
     connect_opts = {
         "host": storage["host"],
         "port": storage["port"] or 22,
@@ -4322,10 +4319,7 @@ async def http_get_vod_storage(request: web.Request) -> web.Response:
         return web.json_response({"storage": None})
 
     # Redact sensitive fields - strip config entirely, expose only flags
-    try:
-        config = json.loads(storage.get("config", "{}"))
-    except json.JSONDecodeError:
-        config = {}
+    config = storage.get("config") or {}
     redacted = dict(storage)
     del redacted["config"]
     redacted["has_password"] = bool(config.get("password"))
@@ -10793,7 +10787,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not current_channel:
                             continue
 
-                        target_user_id = data.get("user_id")
+                        try:
+                            target_user_id = int(data.get("user_id"))
+                        except (TypeError, ValueError):
+                            await ws.send_json({"type": "error", "message": "Invalid user_id"})
+                            continue
                         reason = data.get("reason", "")
 
                         if not target_user_id:
@@ -10868,7 +10866,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not current_channel:
                             continue
 
-                        target_user_id = data.get("user_id")
+                        try:
+                            target_user_id = int(data.get("user_id"))
+                        except (TypeError, ValueError):
+                            await ws.send_json({"type": "error", "message": "Invalid user_id"})
+                            continue
                         if not target_user_id:
                             await ws.send_json({"type": "error", "message": "user_id required"})
                             continue
@@ -11193,6 +11195,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         attachment_name = data.get("attachment_name")
                         attachment_size = data.get("attachment_size")
                         attachment_type = data.get("attachment_type")
+                        if attachment_size is not None:
+                            try:
+                                attachment_size = int(attachment_size)
+                            except (ValueError, TypeError):
+                                attachment_size = None
                         if attachment_url and not attachment_url.startswith("/static/uploads/chat/"):
                             attachment_url = None
                             attachment_name = None
@@ -13472,12 +13479,11 @@ async def init_admin_user() -> None:
         from argon2 import PasswordHasher
         ph = PasswordHasher()
         hashed = ph.hash(password)
-        async with db._connection.execute(
+        await db.conn.execute(
             "UPDATE users SET password_hash = ? WHERE username = 'admin'",
             (hashed,),
-        ):
-            pass
-        await db._connection.commit()
+        )
+        await db.conn.commit()
         label = "ADMIN PASSWORD RESET"
 
     creds_file.write_text(f"Username: admin\nPassword: {password}\n")

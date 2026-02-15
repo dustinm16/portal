@@ -695,14 +695,16 @@ function connectStreamChat(streamKey) {
     };
 
     streamChatWs.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
         if (data.type === 'message') {
             appendStreamChatMessage(data);
         } else if (data.type === 'history') {
             document.getElementById('stream-chat-messages').innerHTML = '';
             data.messages.forEach(msg => appendStreamChatMessage(msg));
         } else if (data.type === 'message_deleted') {
-            const el = document.querySelector(`#stream-chat-messages .chat-message[data-message-id="${data.message_id}"]`);
+            const msgId = String(data.message_id).replace(/[^a-zA-Z0-9_-]/g, '');
+            const el = document.querySelector(`#stream-chat-messages .chat-message[data-message-id="${msgId}"]`);
             if (el) el.remove();
         }
     };
@@ -733,12 +735,12 @@ function appendStreamChatMessage(msg) {
 
     // Image
     const imageHtml = msg.image_url
-        ? `<br><img src="${escapeHtml(msg.image_url)}" alt="image" style="max-width:180px;max-height:120px;border-radius:4px;margin-top:0.2rem;cursor:pointer;" onclick="window.open('${escapeHtml(msg.image_url)}','_blank')" loading="lazy">`
+        ? `<br><img src="${escapeHtml(msg.image_url)}" alt="image" style="max-width:180px;max-height:120px;border-radius:4px;margin-top:0.2rem;cursor:pointer;" data-fullimg="${escapeHtml(msg.image_url)}" loading="lazy">`
         : '';
 
     messageEl.innerHTML = `
         <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
-            <div style="width: 24px; height: 24px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0;">${avatarContent}</div>
+            <div style="width: 24px; height: 24px; border-radius: 50%; background: ${escapeHtml(avatarColor)}; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0;">${escapeHtml(avatarContent)}</div>
             <div style="min-width: 0;">
                 ${replyHtml}
                 <span class="chat-username">${escapeHtml(displayName)}</span>
@@ -746,6 +748,8 @@ function appendStreamChatMessage(msg) {
             </div>
         </div>
     `;
+    const img = messageEl.querySelector('img[data-fullimg]');
+    if (img) img.addEventListener('click', () => window.open(img.dataset.fullimg, '_blank'));
     messagesEl.appendChild(messageEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -773,6 +777,7 @@ function sendStreamChatMessage(event) {
  * Escape HTML entities
  */
 function escapeHtml(text) {
+    if (text == null) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;

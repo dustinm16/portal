@@ -1,6 +1,7 @@
 """Database layer for Open Relay Portal using SQLite."""
 
 import json
+import logging
 import secrets as _secrets
 
 import aiosqlite
@@ -11,6 +12,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from config import Config
+
+logger = logging.getLogger("portal.database")
 
 # Message encryption using Fernet-like scheme with AES
 try:
@@ -1271,22 +1274,22 @@ class Database:
             old_f = Fernet(old_chat_key)
             new_f = Fernet(new_chat_key)
             cursor = await self._connection.execute(
-                "SELECT id, content, reply_preview FROM chat_messages"
+                "SELECT id, message, reply_preview_text FROM chat_messages"
             )
             rows = await cursor.fetchall()
             for row in rows:
                 try:
                     updates = {}
-                    if row["content"]:
+                    if row["message"]:
                         try:
-                            plaintext = old_f.decrypt(row["content"].encode()).decode()
-                            updates["content"] = new_f.encrypt(plaintext.encode()).decode()
+                            plaintext = old_f.decrypt(row["message"].encode()).decode()
+                            updates["message"] = new_f.encrypt(plaintext.encode()).decode()
                         except Exception:
                             pass  # Might be unencrypted legacy
-                    if row.get("reply_preview"):
+                    if row.get("reply_preview_text"):
                         try:
-                            plaintext = old_f.decrypt(row["reply_preview"].encode()).decode()
-                            updates["reply_preview"] = new_f.encrypt(plaintext.encode()).decode()
+                            plaintext = old_f.decrypt(row["reply_preview_text"].encode()).decode()
+                            updates["reply_preview_text"] = new_f.encrypt(plaintext.encode()).decode()
                         except Exception:
                             pass
                     if updates:
@@ -1308,16 +1311,16 @@ class Database:
             old_f = Fernet(old_chat_key)
             new_f = Fernet(new_chat_key)
             cursor = await self._connection.execute(
-                "SELECT id, content FROM dm_messages"
+                "SELECT id, message FROM dm_messages"
             )
             rows = await cursor.fetchall()
             for row in rows:
                 try:
-                    if row["content"]:
-                        plaintext = old_f.decrypt(row["content"].encode()).decode()
+                    if row["message"]:
+                        plaintext = old_f.decrypt(row["message"].encode()).decode()
                         new_encrypted = new_f.encrypt(plaintext.encode()).decode()
                         await self._connection.execute(
-                            "UPDATE dm_messages SET content = ? WHERE id = ?",
+                            "UPDATE dm_messages SET message = ? WHERE id = ?",
                             (new_encrypted, row["id"])
                         )
                         dm_total += 1
@@ -1799,7 +1802,6 @@ class Database:
         service_id: int,
         name: str = None,
         path: str = None,
-        internal_url: str = None,
         required_scopes: list[str] = None,
         enabled: bool = None
     ) -> bool:
@@ -1813,9 +1815,6 @@ class Database:
         if path is not None:
             updates.append("path = ?")
             params.append(path)
-        if internal_url is not None:
-            updates.append("internal_url = ?")
-            params.append(internal_url)
         if required_scopes is not None:
             updates.append("required_scopes = ?")
             params.append(",".join(required_scopes))
@@ -3357,7 +3356,10 @@ class Database:
         if row:
             storage = dict(row)
             raw_config = storage.get("config", "{}")
-            storage["config"] = decrypt_config(raw_config)
+            try:
+                storage["config"] = json.loads(decrypt_config(raw_config)) if raw_config else {}
+            except (json.JSONDecodeError, Exception):
+                storage["config"] = {}
             return storage
         return None
 
@@ -5069,8 +5071,8 @@ class Database:
     async def ensure_daily_invite_code(self, admin_user_id: int) -> str:
         """Ensure today's daily invite code exists in DB. Returns the code string."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        today_start = f"{today}T00:00:00"
-        today_end = f"{today}T23:59:59"
+        today_start = f"{today} 00:00:00"
+        today_end = f"{today} 23:59:59"
 
         # Check for existing daily code created today
         cursor = await self.conn.execute(

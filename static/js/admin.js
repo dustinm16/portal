@@ -1293,11 +1293,13 @@ async function showLogsModal() {
 async function loadLogFiles() {
     try {
         const response = await Portal.fetch('/api/logs/files');
+        if (!response.ok) return;
         const data = await response.json();
+        if (!data.files) return;
 
         const select = document.getElementById('log-file-select');
         select.innerHTML = data.files.map(f =>
-            `<option value="${f.name}">${f.name} (${formatFileSize(f.size)})</option>`
+            `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)} (${formatFileSize(f.size)})</option>`
         ).join('');
     } catch (error) {
         console.error('Failed to load log files:', error);

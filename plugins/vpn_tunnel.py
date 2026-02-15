@@ -5,6 +5,7 @@ similar to WireGuard or OpenVPN, but over WebSocket for firewall traversal.
 """
 
 import asyncio
+import ipaddress
 import logging
 import os
 import struct
@@ -194,6 +195,18 @@ class VPNTunnelPlugin(PluginBase):
                 writer.close()
             logger.info(f"SOCKS tunnel ended for user {user_id}")
 
+    @staticmethod
+    def _is_blocked_host(host: str) -> bool:
+        """Block connections to localhost, link-local, and cloud metadata endpoints."""
+        blocked_hostnames = {"localhost", "metadata.google.internal"}
+        if host.lower() in blocked_hostnames:
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return ip.is_loopback or ip.is_link_local or ip.is_reserved
+        except ValueError:
+            return False
+
     async def _socks_connect(
         self,
         ws: web.WebSocketResponse,
@@ -205,6 +218,10 @@ class VPNTunnelPlugin(PluginBase):
     ) -> None:
         """Establish SOCKS connection."""
         try:
+            if self._is_blocked_host(host):
+                error = self._packet("connect_err", struct.pack(">I", conn_id))
+                await ws.send_bytes(self._encrypt(error, cipher))
+                return
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port),
                 timeout=30
@@ -251,6 +268,8 @@ class VPNTunnelPlugin(PluginBase):
             await ws.send_bytes(self._packet("error", b"TUN mode requires root"))
             return
 
+        tun = None
+        client_ip = None
         try:
             import fcntl
 
@@ -290,7 +309,18 @@ class VPNTunnelPlugin(PluginBase):
 
         except Exception as e:
             logger.error(f"TUN setup failed: {e}")
-            await ws.send_bytes(self._packet("error", str(e).encode()))
+            try:
+                await ws.send_bytes(self._packet("error", str(e).encode()))
+            except Exception:
+                pass
+        finally:
+            if tun is not None:
+                try:
+                    os.close(tun)
+                except OSError:
+                    pass
+            if client_ip:
+                self._ip_pool.discard(client_ip)
 
     async def _tun_loop(
         self,

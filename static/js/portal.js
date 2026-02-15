@@ -197,7 +197,7 @@ const Portal = {
                 break;
             default:
                 console.warn(`Unknown plugin type: ${plugin}`);
-                alert(`Service type "${plugin}" is not supported in the web UI`);
+                Portal.toast(`Service type "${plugin}" is not supported in the web UI`, 'error');
         }
     },
 
@@ -916,16 +916,23 @@ const NotificationBell = {
                 list.innerHTML = '<div class="notif-empty">No notifications</div>';
                 return;
             }
-            list.innerHTML = notifications.slice(0, 20).map(n => {
+            const items = notifications.slice(0, 20);
+            list.innerHTML = items.map(n => {
                 const timeAgo = Portal.formatRelativeTime ? Portal.formatRelativeTime(n.created_at) : '';
-                const dataStr = typeof n.data === 'string' ? n.data : JSON.stringify(n.data || {});
-                const safeData = dataStr.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                return `<div class="notif-item notif-unread" id="notif-${n.id}" onclick="NotificationBell.clickNotification(${n.id}, '${safeData}')">
+                return `<div class="notif-item notif-unread" id="notif-${n.id}" data-notif-id="${n.id}">
                     <div class="notif-title">${this.escapeHtml(n.title)}</div>
                     <div class="notif-message">${this.escapeHtml(n.message || '')}</div>
                     <div class="notif-time">${timeAgo}</div>
                 </div>`;
             }).join('');
+            const notifDataMap = {};
+            items.forEach(n => { notifDataMap[n.id] = typeof n.data === 'string' ? n.data : JSON.stringify(n.data || {}); });
+            list.querySelectorAll('.notif-item[data-notif-id]').forEach(el => {
+                el.addEventListener('click', () => {
+                    const nid = parseInt(el.dataset.notifId);
+                    NotificationBell.clickNotification(nid, notifDataMap[nid] || '{}');
+                });
+            });
         } catch (e) {
             console.error('Failed to load notifications:', e);
         }
