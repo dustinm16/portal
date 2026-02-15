@@ -562,7 +562,7 @@
         </main>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         const serviceId = window.location.pathname.split('/').pop();
@@ -645,10 +645,10 @@
                     renderRuns(data.runs);
                     break;
                 case 'workflow_triggered':
-                    alert(data.message);
+                    Portal.toast(data.message, 'info');
                     break;
                 case 'repo_created':
-                    alert(`Repository created: ${data.repo.full_name}`);
+                    Portal.toast(`Repository created: ${data.repo.full_name}`, 'success');
                     hideCreateRepoForm();
                     send({ command: 'list_repos' });
                     break;
@@ -681,7 +681,7 @@
 
         function showError(message) {
             console.error('Error:', message);
-            alert(message);
+            Portal.toast(message, 'error');
         }
 
         function renderRepos(repos) {
@@ -856,7 +856,7 @@
             if (!currentRepo) return;
             const url = `git clone git@github.com:${currentRepo.full_name}.git`;
             navigator.clipboard.writeText(url);
-            alert('Clone command copied to clipboard!');
+            Portal.toast('Clone command copied to clipboard!', 'success');
         }
 
         function showCreateRepoForm() {
@@ -901,6 +901,7 @@
         }
 
         function escapeHtml(text) {
+            if (text == null) return '';
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;

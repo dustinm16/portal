@@ -1360,7 +1360,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -3911,7 +3911,7 @@
 
         async function submitAutomodRule(ruleId) {
             const name = document.getElementById('am-name').value.trim();
-            if (!name) return alert('Name required');
+            if (!name) return Portal.toast('Name required', 'error');
             const payload = {
                 name,
                 type: document.getElementById('am-type').value,
@@ -3934,10 +3934,10 @@
                     loadAutomodRules();
                 } else {
                     const err = await res.json();
-                    alert(err.error || 'Failed to save rule');
+                    Portal.toast(err.error || 'Failed to save rule', 'error');
                 }
             } catch (e) {
-                alert('Failed to save rule');
+                Portal.toast('Failed to save rule', 'error');
             }
         }
 

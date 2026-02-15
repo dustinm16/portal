@@ -12,11 +12,7 @@ from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.ssh")
 
-# Shells allowed for SSH command override — must match server.py ALLOWED_SHELLS
-_ALLOWED_SHELLS = {
-    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
-    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
-}
+from config import ALLOWED_SHELLS as _ALLOWED_SHELLS
 
 # NOTE: Unlike the local terminal plugin, we do NOT intercept DA1/DA2/DSR
 # queries server-side for SSH connections. Server-side interception fails

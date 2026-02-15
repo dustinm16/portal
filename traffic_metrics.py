@@ -6,7 +6,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-import json
 
 logger = logging.getLogger("portal.metrics")
 

@@ -4,11 +4,10 @@ import asyncio
 import json
 import os
 import re
-import signal
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Any
+from typing import Optional
 
 import aiofiles
 

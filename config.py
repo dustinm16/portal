@@ -159,3 +159,10 @@ class Config:
         print("=" * 60)
         print()
         return True
+
+
+# Shell whitelist for SSH and terminal connections (shared across server + plugins)
+ALLOWED_SHELLS = {
+    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
+    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
+}

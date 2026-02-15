@@ -14,11 +14,7 @@ import os
 import pty
 import pwd
 
-# Shells allowed for local terminal — must match server.py ALLOWED_SHELLS
-_ALLOWED_SHELLS = {
-    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
-    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
-}
+from config import ALLOWED_SHELLS as _ALLOWED_SHELLS
 import re
 import select
 import signal

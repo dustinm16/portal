@@ -364,7 +364,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script>
         const connectionId = '{{CONNECTION_ID}}';
         const proxyBase = '{{PROXY_PATH}}';
@@ -594,6 +594,7 @@
         }
 
         function escapeHtml(s) {
+            if (s == null) return '';
             const d = document.createElement('div');
             d.textContent = s;
             return d.innerHTML;

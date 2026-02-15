@@ -37,7 +37,7 @@ import asyncssh
 import psutil
 from aiohttp import web, WSMsgType
 
-from config import Config
+from config import Config, ALLOWED_SHELLS
 from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles
 from auth import (
     AuthError,
@@ -75,7 +75,6 @@ from logger import (
     update_log_settings,
     read_log_file,
     get_log_files,
-    set_log_level,
 )
 from ssh_keys import (
     create_user_key,
@@ -1843,7 +1842,7 @@ def is_blocked_host(host: str) -> bool:
     to prevent SSRF attacks against internal network services.
     """
     if not host:
-        return False
+        return True
     h = host.lower().strip()
     # Direct matches
     if h in BLOCKED_HOSTS:
@@ -2018,11 +2017,6 @@ CONNECTION_TYPES = {
 }
 
 # Allowed shells for terminal and SSH connections
-ALLOWED_SHELLS = {
-    "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh",
-    "/usr/bin/fish", "/usr/bin/zsh", "/bin/zsh",
-}
-
 
 async def http_create_user_connection(request: web.Request) -> web.Response:
     """Create a new user connection."""

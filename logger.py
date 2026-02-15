@@ -101,9 +101,7 @@ def setup_logging(
     structured: bool = None,
 ) -> None:
     """Configure logging with rotation."""
-    global LOG_SETTINGS, LOG_DIR, LOG_FILE
-
-    global LOG_DIR, LOG_FILE, AUDIT_FILE
+    global LOG_SETTINGS, LOG_DIR, LOG_FILE, AUDIT_FILE
 
     # Update settings
     if level:

@@ -221,7 +221,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script>
         const serviceId = '{{SERVICE_ID}}';
         const wsPath = '{{WS_PATH}}';
@@ -321,7 +321,7 @@
 
             const stream = streams.find(s => s.name === streamName);
             if (stream && !stream.ready) {
-                alert('Stream is not available');
+                Portal.toast('Stream is not available', 'error');
                 return;
             }
 

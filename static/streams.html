@@ -916,7 +916,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script>
         let currentUser = null;
         let currentStream = null;
@@ -1386,7 +1386,7 @@
                 currentStream = data.stream;
 
                 if (!currentStream) {
-                    alert('Stream not found');
+                    Portal.toast('Stream not found', 'error');
                     return;
                 }
 
@@ -1485,7 +1485,7 @@
 
             } catch (error) {
                 console.error('Failed to open stream:', error);
-                alert('Failed to load stream');
+                Portal.toast('Failed to load stream', 'error');
             }
         }
 

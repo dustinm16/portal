@@ -8,8 +8,6 @@ This plugin provides SPICE console access for virtual machines via:
 
 import asyncio
 import logging
-import struct
-from typing import Optional
 
 from aiohttp import web, WSMsgType
 

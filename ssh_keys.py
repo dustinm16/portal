@@ -12,7 +12,6 @@ Supported key types:
     - rsa: RSA 4096-bit keys for legacy compatibility
 """
 
-import os
 import logging
 from datetime import datetime, timezone
 from pathlib import Path

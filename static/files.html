@@ -316,7 +316,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script>
         let isAdmin = false;
         let editingFile = null;  // { path, connId, panel }
@@ -379,8 +379,8 @@
         }
 
         function showToast(msg, type) {
-            if (window.showNotification) window.showNotification(msg, type);
-            else alert(msg);
+            if (window.Portal && Portal.toast) Portal.toast(msg, type);
+            else if (window.showNotification) window.showNotification(msg, type);
         }
 
         // ===== SFTP FILES (Panel-based) =====

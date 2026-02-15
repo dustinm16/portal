@@ -197,13 +197,18 @@ class VPNTunnelPlugin(PluginBase):
 
     @staticmethod
     def _is_blocked_host(host: str) -> bool:
-        """Block connections to localhost, link-local, and cloud metadata endpoints."""
-        blocked_hostnames = {"localhost", "metadata.google.internal"}
-        if host.lower() in blocked_hostnames:
+        """Block connections to localhost, link-local, private, and cloud metadata endpoints."""
+        if not host:
+            return True
+        h = host.lower().strip()
+        blocked_hostnames = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
+                             'host.docker.internal', 'kubernetes.default',
+                             'metadata.google.internal', '169.254.169.254'}
+        if h in blocked_hostnames or h.startswith('127.') or h.startswith('::ffff:127.'):
             return True
         try:
-            ip = ipaddress.ip_address(host)
-            return ip.is_loopback or ip.is_link_local or ip.is_reserved
+            ip = ipaddress.ip_address(h)
+            return ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved
         except ValueError:
             return False
 

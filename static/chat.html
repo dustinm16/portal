@@ -2802,7 +2802,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script src="/static/js/voice.js?v=2"></script>
     <script>
         // Mobile sidebar toggle
@@ -4459,7 +4459,7 @@
                 await loadChannels();
                 switchChannel(name);
             } catch (error) {
-                alert(error.message);
+                Portal.toast(error.message, 'error');
             }
         }
 
@@ -4481,7 +4481,7 @@
                 const channel = channelsData.channels.find(c => c.name === channelName);
 
                 if (!channel) {
-                    alert('Channel not found');
+                    Portal.toast('Channel not found', 'error');
                     return;
                 }
 
@@ -4492,11 +4492,11 @@
 
                 if (!response.ok) {
                     const data = await response.json();
-                    alert(data.error || 'Failed to clear channel');
+                    Portal.toast(data.error || 'Failed to clear channel', 'error');
                 }
             } catch (error) {
                 console.error('Failed to clear channel:', error);
-                alert('Failed to clear channel');
+                Portal.toast('Failed to clear channel', 'error');
             }
         }
 
@@ -4601,6 +4601,7 @@
         }
 
         function escapeHtml(text) {
+            if (text == null) return '';
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
@@ -4627,7 +4628,7 @@
                     if (currentUser) currentUser.status = status;
                 } else {
                     const data = await response.json();
-                    alert(data.error || 'Failed to update status');
+                    Portal.toast(data.error || 'Failed to update status', 'error');
                 }
             } catch (error) {
                 console.error('Failed to update status:', error);
@@ -4660,7 +4661,7 @@
                     document.getElementById('username-display').textContent = nickname || currentUser?.username || 'User';
                 } else {
                     const data = await response.json();
-                    alert(data.error || 'Failed to update nickname');
+                    Portal.toast(data.error || 'Failed to update nickname', 'error');
                     input.value = currentUser?.nickname || '';
                 }
             } catch (error) {
@@ -4691,7 +4692,7 @@
                     }
                 } else {
                     const data = await response.json();
-                    alert(data.error || 'Failed to update anonymous setting');
+                    Portal.toast(data.error || 'Failed to update anonymous setting', 'error');
                     checkbox.checked = !anonymous;
                 }
             } catch (error) {
@@ -4775,7 +4776,7 @@
                     appendSystemMessage('Avatar updated!');
                 } else {
                     const data = await response.json();
-                    alert(data.error || 'Failed to update avatar');
+                    Portal.toast(data.error || 'Failed to update avatar', 'error');
                 }
             } catch (error) {
                 console.error('Failed to update avatar:', error);
@@ -5032,7 +5033,7 @@
 
                 closeModal('rename-channel-modal');
             } catch (error) {
-                alert(error.message);
+                Portal.toast(error.message, 'error');
             }
         }
 
@@ -5052,7 +5053,7 @@
                     throw new Error(data.error || 'Failed to delete channel');
                 }
             } catch (error) {
-                alert(error.message);
+                Portal.toast(error.message, 'error');
             }
         }
 
@@ -5091,7 +5092,7 @@
                 await loadChannels();
                 showToast(seconds > 0 ? `Slowmode set to ${seconds}s` : 'Slowmode disabled', 'success');
             } catch (error) {
-                alert(error.message);
+                Portal.toast(error.message, 'error');
             }
         }
 
@@ -5137,7 +5138,7 @@
                 await loadChannels();
                 showToast(category.trim() ? `Category set to "${category.trim()}"` : 'Category removed', 'success');
             } catch (error) {
-                alert(error.message);
+                Portal.toast(error.message, 'error');
             }
         }
 
@@ -5598,7 +5599,7 @@
             const isImage = file.type.startsWith('image/');
             const maxSize = isImage ? 5 * 1024 * 1024 : 25 * 1024 * 1024;
             if (file.size > maxSize) {
-                alert(`File too large (max ${isImage ? '5MB' : '25MB'})`);
+                Portal.toast(`File too large (max ${isImage ? '5MB' : '25MB'})`, 'error');
                 return;
             }
 
@@ -5648,7 +5649,7 @@
                 document.getElementById('chat-input').focus();
             } catch (error) {
                 console.error('File upload failed:', error);
-                alert(error.message || 'Failed to upload file');
+                Portal.toast(error.message || 'Failed to upload file', 'error');
             }
         }
 
@@ -6041,7 +6042,7 @@
                 const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({}));
-                    alert(err.error || 'Search failed');
+                    Portal.toast(err.error || 'Search failed', 'error');
                     return;
                 }
                 const data = await resp.json();

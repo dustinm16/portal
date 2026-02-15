@@ -7,7 +7,6 @@ All operations are admin-only (enforced by API handlers in server.py).
 import os
 import subprocess
 import logging
-from datetime import datetime, timezone
 
 import psutil
 

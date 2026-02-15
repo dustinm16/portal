@@ -224,7 +224,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=31"></script>
+    <script src="/static/js/portal.js?v=32"></script>
     <script>
         const serviceId = '{{SERVICE_ID}}';
         const wsPath = '{{WS_PATH}}';
@@ -449,12 +449,12 @@
         function openVncConsole(data) {
             // For now, show the ticket info
             // In a full implementation, you would open the VNC viewer
-            alert(`VNC Ticket: ${data.ticket}\nPort: ${data.port}`);
+            Portal.toast(`VNC Ticket: ${data.ticket} | Port: ${data.port}`, 'info');
         }
 
         function openSpiceConsole(data) {
             // For now, show the ticket info
-            alert('SPICE ticket received. Use a SPICE client to connect.');
+            Portal.toast('SPICE ticket received. Use a SPICE client to connect.', 'info');
         }
 
         function refresh() {

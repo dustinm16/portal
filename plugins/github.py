@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import os
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlencode

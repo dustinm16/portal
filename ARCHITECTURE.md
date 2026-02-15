@@ -470,10 +470,10 @@ DELETE /api/users/:id           - Delete user (superadmin)
 ### Two-Factor Authentication
 
 ```
-GET  /api/2fa/status     - Check 2FA status
-POST /api/2fa/setup      - Generate TOTP secret and URI
-POST /api/2fa/verify     - Verify code and enable 2FA
-POST /api/2fa/disable    - Disable 2FA (requires password)
+GET  /api/user/2fa/status     - Check 2FA status
+POST /api/user/2fa/setup      - Generate TOTP secret and URI
+POST /api/user/2fa/verify     - Verify code and enable 2FA
+POST /api/user/2fa/disable    - Disable 2FA (requires password)
 ```
 
 ### SSH Keys
