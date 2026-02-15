@@ -144,8 +144,9 @@ class SSHPlugin(PluginBase):
             })
 
             # Loop to skip non-auth messages (e.g. resize sent on WS open)
+            # Timeout after 60s to prevent resource exhaustion from unauthenticated connections
             while True:
-                msg = await ws.receive()
+                msg = await asyncio.wait_for(ws.receive(), timeout=60)
                 if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     return
                 if msg.type == WSMsgType.TEXT:
@@ -244,12 +245,18 @@ class SSHPlugin(PluginBase):
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     break
 
-        await asyncio.gather(
-            read_stdout(),
-            read_stderr(),
-            read_ws(),
-            return_exceptions=True
-        )
+        tasks = [
+            asyncio.ensure_future(read_stdout()),
+            asyncio.ensure_future(read_stderr()),
+            asyncio.ensure_future(read_ws()),
+        ]
+        try:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def health_check(self, target: ServiceTarget) -> dict:
         """Check SSH connectivity."""

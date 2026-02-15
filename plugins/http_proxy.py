@@ -4,6 +4,8 @@ import ipaddress
 import logging
 from urllib.parse import urljoin, urlparse
 
+import asyncio
+
 import aiohttp
 from aiohttp import web, WSMsgType
 
@@ -146,8 +148,12 @@ class HTTPProxyPlugin(PluginBase):
                 connector=connector,
                 timeout=timeout
             ) as session:
-                # Read request body if present
-                body = await request.read() if request.body_exists else None
+                # Read request body if present (cap at 10MB)
+                body = None
+                if request.body_exists:
+                    body = await request.content.read(10 * 1024 * 1024)
+                    if not request.content.at_eof():
+                        return web.json_response({"error": "Request body too large"}, status=413)
 
                 async with session.request(
                     method=request.method,
@@ -156,21 +162,30 @@ class HTTPProxyPlugin(PluginBase):
                     data=body,
                     allow_redirects=False
                 ) as resp:
-                    # Read response
-                    response_body = await resp.read()
+                    # Read response (cap at 50MB for text)
+                    response_body = await resp.content.read(50 * 1024 * 1024)
 
-                    # Prepare response headers
+                    # Prepare response headers (preserve multi-valued like Set-Cookie)
+                    hop_by_hop = {
+                        "transfer-encoding", "connection",
+                        "keep-alive", "proxy-authenticate",
+                        "proxy-authorization", "te", "trailers",
+                        "upgrade"
+                    }
                     response_headers = {}
                     for key, value in resp.headers.items():
-                        # Skip hop-by-hop headers
-                        if key.lower() in (
-                            "transfer-encoding", "connection",
-                            "keep-alive", "proxy-authenticate",
-                            "proxy-authorization", "te", "trailers",
-                            "upgrade"
-                        ):
+                        if key.lower() in hop_by_hop:
                             continue
-                        response_headers[key] = value
+                        # For duplicate headers (e.g. Set-Cookie), keep all values
+                        if key in response_headers:
+                            # aiohttp Response accepts only single values per key,
+                            # so combine with separator (comma for most, newline for Set-Cookie)
+                            if key.lower() == 'set-cookie':
+                                # Will be handled via resp.cookies or raw headers
+                                continue
+                            response_headers[key] = f"{response_headers[key]}, {value}"
+                        else:
+                            response_headers[key] = value
 
                     # Optionally rewrite URLs in HTML/JS responses
                     content_type = resp.headers.get("Content-Type", "")
@@ -215,6 +230,10 @@ class HTTPProxyPlugin(PluginBase):
 
         # Convert http(s) to ws(s)
         parsed = urlparse(target_url)
+        # SSRF check on WebSocket target (same as HTTP handler)
+        if _is_blocked_proxy_host(parsed.hostname or ""):
+            logger.warning(f"WebSocket proxy blocked: {parsed.hostname}")
+            return
         ws_scheme = "wss" if parsed.scheme == "https" else "ws"
         ws_url = f"{ws_scheme}://{parsed.netloc}{ws_path}"
 
@@ -281,7 +300,3 @@ class HTTPProxyPlugin(PluginBase):
                     }
         except Exception as e:
             return {"healthy": False, "message": str(e)}
-
-
-# Import asyncio at module level for WebSocket handling
-import asyncio

@@ -1,8 +1,11 @@
 """GitHub repository management plugin for Open Relay Portal."""
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import secrets
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlencode
@@ -79,6 +82,7 @@ class GitHubPlugin(PluginBase):
         super().__init__()
         self._sessions: dict[int, GitHubSession] = {}
         self._http_session: Optional[aiohttp.ClientSession] = None
+        self._oauth_states: dict[str, int] = {}  # nonce -> user_id
 
     async def initialize(self) -> None:
         """Initialize HTTP session."""
@@ -166,10 +170,12 @@ class GitHubPlugin(PluginBase):
             client_id = target.config.get("client_id")
             if client_id:
                 # OAuth flow
+                oauth_nonce = secrets.token_urlsafe(32)
+                self._oauth_states[oauth_nonce] = user_id
                 params = {
                     'client_id': client_id,
                     'scope': 'repo,read:user,workflow',
-                    'state': str(user_id)
+                    'state': oauth_nonce
                 }
                 auth_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
                 await ws.send_json({
@@ -546,7 +552,9 @@ class GitHubPlugin(PluginBase):
                 token_data = await resp.json()
 
             if "access_token" in token_data:
-                user_id = int(state)
+                user_id = self._oauth_states.pop(state, None)
+                if user_id is None:
+                    return web.json_response({"error": "Invalid OAuth state"}, status=403)
                 token = token_data["access_token"]
 
                 # Get user info

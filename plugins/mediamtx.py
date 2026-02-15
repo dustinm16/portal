@@ -241,7 +241,7 @@ class MediaMTXPlugin(PluginBase):
 
         elif msg_type == "get_streams":
             # Refresh stream list
-            api_url = data.get("api_url", webrtc_url.replace(":8889", ":9997"))
+            api_url = webrtc_url.replace(":8889", ":9997")
             try:
                 streams = await self._get_streams(api_url, timeout)
                 if allowed_streams:

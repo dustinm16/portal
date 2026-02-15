@@ -684,7 +684,7 @@
                     // Success - redirect
                     setButtonLoading(btn, true, 'Redirecting...');
                     const next = new URLSearchParams(window.location.search).get('next');
-                    window.location.href = next && next.startsWith('/') ? next : '/dashboard';
+                    window.location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
                 } else {
                     // If 2FA was wrong, keep the field visible
                     if (awaiting2FA) {

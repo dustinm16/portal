@@ -1201,7 +1201,8 @@
             };
 
             chatWs.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+                let data;
+                try { data = JSON.parse(event.data); } catch { return; }
                 handleChatMessage(data);
             };
 
@@ -1245,7 +1246,7 @@
                     showBanListModal(data.bans);
                     break;
                 case 'message_deleted':
-                    const delEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
+                    const delEl = document.querySelector(`.chat-message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
                     if (delEl) delEl.remove();
                     break;
                 case 'reaction_update':
@@ -1367,7 +1368,7 @@
         }
 
         function handleWatchReactionUpdate(data) {
-            const msgEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
+            const msgEl = document.querySelector(`.chat-message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             let reactionsDiv = msgEl.querySelector('.watch-reactions');
             if (!reactionsDiv) {
@@ -1401,7 +1402,7 @@
         }
 
         function handleWatchMessageEdited(data) {
-            const msgEl = document.querySelector(`.chat-message[data-message-id="${data.message_id}"]`);
+            const msgEl = document.querySelector(`.chat-message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             const textEl = msgEl.querySelector('.chat-text');
             if (textEl) textEl.textContent = data.message || '';

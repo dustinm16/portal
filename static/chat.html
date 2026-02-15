@@ -3247,7 +3247,8 @@
             };
 
             ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+                let data;
+                try { data = JSON.parse(event.data); } catch { return; }
                 handleMessage(data);
             };
 
@@ -3859,7 +3860,7 @@
         }
 
         function handleReactionUpdate(data) {
-            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             const contentEl = msgEl.querySelector('.message-content');
             if (!contentEl) return;
@@ -3923,7 +3924,7 @@
         // === Message Editing ===
 
         function handleMessageEdited(data) {
-            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             // Update message text
             const textEl = msgEl.querySelector('.message-text');
@@ -4060,7 +4061,7 @@
             pinnedMessages.unshift({ id: data.message_id, username: data.username, message: data.message });
             renderPinnedMessages(pinnedMessages);
             // Mark message in DOM
-            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (msgEl) {
                 msgEl.classList.add('pinned');
                 const header = msgEl.querySelector('.message-header');
@@ -4078,7 +4079,7 @@
         function handleMessageUnpinned(data) {
             pinnedMessages = pinnedMessages.filter(m => m.id !== data.message_id);
             renderPinnedMessages(pinnedMessages);
-            const msgEl = document.querySelector(`.message[data-message-id="${data.message_id}"]`);
+            const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (msgEl) {
                 msgEl.classList.remove('pinned');
                 const pin = msgEl.querySelector('.pin-icon');

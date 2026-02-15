@@ -310,9 +310,10 @@ async def validate_invite_code(code: str, db=None) -> tuple:
         if row:
             return (True, row["id"])
 
-    # Fall back to legacy file-based daily code
+    # Fall back to legacy file-based daily code (constant-time comparison)
+    import hmac
     current_code = get_daily_invite_code()
-    if code == current_code.upper():
+    if hmac.compare_digest(code.encode(), current_code.upper().encode()):
         return (True, None)
 
     return (False, None)

@@ -3328,7 +3328,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
 
     # For publishing, the stream key is passed as the password or in the path
     # OBS typically sends: rtmp://server/live/stream_key or uses username/password
-    stream_key = password or path.split("/")[-1] if path else ""
+    stream_key = password or (path.split("/")[-1] if path else "")
 
     if action == "publish":
         # Resolve stream from key — supports live_ (permanent) and rtmp_ (temporary token)
@@ -3993,17 +3993,19 @@ async def http_stream_info(request: web.Request) -> web.Response:
     host = request.headers.get("Host", Config.HOSTNAME)
     base_url = f"https://{host}"
 
+    # Use public key for playback URLs, never expose the private stream_key
+    public_key = stream.get("public_key", "")
+    if public_key and public_key.startswith("pub_"):
+        public_key = public_key[4:]
+
     return web.json_response({
-        "stream_key": full_stream_key,
+        "public_key": public_key,
         "name": stream.get("name", ""),
         "is_live": stream.get("is_live", 0),
         "is_public": stream.get("is_public", False),
         "playback": {
-            "hls": f"{base_url}/api/stream/{stream_key}/hls/index.m3u8",
-            "webrtc_whep": f"{base_url}/api/stream/{stream_key}/webrtc/whep"
-        },
-        "publish": {
-            "webrtc_whip": f"{base_url}/api/stream/{stream_key}/webrtc/whip"
+            "hls": f"{base_url}/api/stream/{public_key}/hls/index.m3u8",
+            "webrtc_whep": f"{base_url}/api/stream/{public_key}/webrtc/whep"
         }
     })
 
@@ -5762,7 +5764,8 @@ async def http_download_file(request: web.Request) -> web.Response:
 
     response = web.StreamResponse()
     response.content_type = mime
-    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    safe_filename = filename.replace('"', '').replace('\\', '').replace('\n', '').replace('\r', '')
+    response.headers["Content-Disposition"] = f'attachment; filename="{safe_filename}"'
     response.headers["Content-Length"] = str(resolved.stat().st_size)
     await response.prepare(request)
 
@@ -5969,10 +5972,11 @@ async def http_sftp_vod_download(request: web.Request) -> web.Response:
             return web.json_response({"error": "path required"}, status=400)
         content = await sftp_browser.read_remote_file(sftp, path, max_size=100 * 1024 * 1024)
         filename = path.split("/")[-1]
+        safe_filename = filename.replace('"', '').replace('\\', '').replace('\n', '').replace('\r', '')
         return web.Response(
             body=content,
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f'attachment; filename="{safe_filename}"',
                 "Content-Type": "application/octet-stream",
             }
         )
@@ -6205,9 +6209,10 @@ async def http_sftp_download(request: web.Request) -> web.Response:
     try:
         content = await sftp_browser.read_remote_file(sftp, path, max_size=100 * 1024 * 1024)
         filename = path.rsplit("/", 1)[-1] or "download"
+        safe_filename = filename.replace('"', '').replace('\\', '').replace('\n', '').replace('\r', '')
         response = web.Response(body=content)
         response.content_type = "application/octet-stream"
-        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response.headers["Content-Disposition"] = f'attachment; filename="{safe_filename}"'
         return response
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)

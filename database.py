@@ -1454,21 +1454,32 @@ class Database:
         await self.conn.commit()
 
     async def use_backup_code(self, user_id: int, code: str) -> bool:
-        """Use a backup code, removing it from available codes. Returns True if valid."""
+        """Use a backup code, removing it from available codes. Returns True if valid.
+
+        Uses constant-time comparison to prevent timing attacks and atomic
+        read-modify-write to prevent race conditions with concurrent requests.
+        """
+        import hmac
         user = await self.get_user_by_id(user_id)
         if not user or not user.get("backup_codes"):
             return False
         codes = user["backup_codes"].split(",")
         code_upper = code.upper().strip()
-        if code_upper in codes:
-            codes.remove(code_upper)
-            await self.conn.execute(
-                "UPDATE users SET backup_codes = ?, updated_at = ? WHERE id = ?",
-                (",".join(codes), datetime.now(timezone.utc).isoformat(), user_id)
-            )
-            await self.conn.commit()
-            return True
-        return False
+        # Constant-time scan: check all codes to prevent timing leaks
+        match_idx = -1
+        for i, stored_code in enumerate(codes):
+            if hmac.compare_digest(code_upper.encode(), stored_code.encode()):
+                match_idx = i
+        if match_idx < 0:
+            return False
+        codes.pop(match_idx)
+        # Atomic update: only succeed if backup_codes hasn't changed since we read it
+        cursor = await self.conn.execute(
+            "UPDATE users SET backup_codes = ?, updated_at = ? WHERE id = ? AND backup_codes = ?",
+            (",".join(codes), datetime.now(timezone.utc).isoformat(), user_id, user["backup_codes"])
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # User status and profile operations
     async def get_user_status(self, user_id: int) -> Optional[dict]:
@@ -1941,6 +1952,15 @@ class Database:
     async def update_service_full(self, service_id: int, **updates) -> bool:
         """Update any service fields (unified method)."""
         import json
+        allowed_fields = {
+            "name", "path", "host", "port", "plugin", "icon", "description",
+            "config", "ports", "required_scopes", "category_id", "internal_url",
+            "service_type", "enabled", "command", "working_dir", "env_vars",
+            "auto_start", "health_check_url", "status", "pid", "health_status",
+            "error_message", "restart_count", "last_started_at", "last_stopped_at",
+            "last_health_check",
+        }
+        updates = {k: v for k, v in updates.items() if k in allowed_fields}
         if not updates:
             return False
 
@@ -3032,13 +3052,13 @@ class Database:
             return False
         if option_index < 0 or option_index >= len(poll["options_list"]):
             return False
-        if not poll["allow_multiple"]:
-            # Single vote: remove existing votes for this user, then add new one
-            await self.conn.execute(
-                "DELETE FROM chat_poll_votes WHERE poll_id = ? AND user_id = ?",
-                (poll_id, user_id)
-            )
         try:
+            if not poll["allow_multiple"]:
+                # Single vote: atomic delete + insert in same transaction
+                await self.conn.execute(
+                    "DELETE FROM chat_poll_votes WHERE poll_id = ? AND user_id = ?",
+                    (poll_id, user_id)
+                )
             await self.conn.execute(
                 "INSERT OR IGNORE INTO chat_poll_votes (poll_id, user_id, option_index) VALUES (?, ?, ?)",
                 (poll_id, user_id, option_index)
@@ -3046,6 +3066,7 @@ class Database:
             await self.conn.commit()
             return True
         except Exception:
+            await self.conn.rollback()
             return False
 
     async def unvote_poll(self, poll_id: int, user_id: int, option_index: int) -> bool:
@@ -3885,6 +3906,12 @@ class Database:
     async def update_managed_service(self, service_id: int, **updates) -> bool:
         """Update a managed service."""
         import json
+        allowed_fields = {
+            "name", "description", "command", "working_dir", "env_vars",
+            "config", "ports", "enabled", "auto_start", "health_check_url",
+            "icon", "category_id",
+        }
+        updates = {k: v for k, v in updates.items() if k in allowed_fields}
         if not updates:
             return False
 
@@ -5023,13 +5050,20 @@ class Database:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def increment_invite_code_usage(self, code_id: int) -> None:
-        """Increment use count for an invite code."""
-        await self.conn.execute(
-            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?",
+    async def increment_invite_code_usage(self, code_id: int) -> bool:
+        """Atomically increment use count for an invite code.
+
+        Returns True if the code was valid and incremented, False if
+        the code was already exhausted (TOCTOU-safe for single-use codes).
+        """
+        cursor = await self.conn.execute(
+            """UPDATE invite_codes SET use_count = use_count + 1
+               WHERE id = ? AND is_active = 1
+               AND (max_uses IS NULL OR use_count < max_uses)""",
             (code_id,)
         )
         await self.conn.commit()
+        return cursor.rowcount > 0
 
     async def deactivate_invite_code(self, code_id: int) -> None:
         """Deactivate an invite code."""

@@ -110,12 +110,17 @@ class TCPTunnelPlugin(PluginBase):
 
         await ws.send_bytes(self._control_frame("connected", {"host": host, "port": port}))
 
+        tasks = [
+            asyncio.ensure_future(self._tcp_to_ws(reader, ws, buffer_size, stats)),
+            asyncio.ensure_future(self._ws_to_tcp(ws, writer, stats)),
+        ]
         try:
-            await asyncio.gather(
-                self._tcp_to_ws(reader, ws, buffer_size, stats),
-                self._ws_to_tcp(ws, writer, stats),
-            )
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             writer.close()
             try:
                 await writer.wait_closed()

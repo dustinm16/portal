@@ -461,14 +461,16 @@ class ServiceManager:
             "warn"
         )
 
-        await asyncio.sleep(delay)
+        async def _delayed_restart():
+            await asyncio.sleep(delay)
+            if not self._shutdown:
+                success, error = await service.start()
+                if success:
+                    await self._db.increment_service_restart(service.id)
+                else:
+                    logger.error(f"Failed to restart {service.name}: {error}")
 
-        if not self._shutdown:
-            success, error = await service.start()
-            if success:
-                await self._db.increment_service_restart(service.id)
-            else:
-                logger.error(f"Failed to restart {service.name}: {error}")
+        asyncio.ensure_future(_delayed_restart())
 
 
 # Global service manager instance (initialized by server.py)

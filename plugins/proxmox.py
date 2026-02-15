@@ -270,18 +270,14 @@ class ProxmoxPlugin(PluginBase):
         self._clients.clear()
 
     def _get_client(self, config: dict) -> ProxmoxAPI:
-        """Get or create API client for config."""
+        """Create a new API client per connection to avoid credential leakage."""
         host = config.get("host", "")
         port = config.get("port", 8006)
-        key = f"{host}:{port}"
-
-        if key not in self._clients:
-            self._clients[key] = ProxmoxAPI(
-                host=host,
-                port=port,
-                verify_ssl=config.get("verify_ssl", False)
-            )
-        return self._clients[key]
+        return ProxmoxAPI(
+            host=host,
+            port=port,
+            verify_ssl=config.get("verify_ssl", False)
+        )
 
     async def handle_websocket(
         self,
@@ -330,6 +326,7 @@ class ProxmoxPlugin(PluginBase):
         except asyncio.CancelledError:
             pass
         finally:
+            await client.close()
             logger.info(f"Proxmox session ended for user {user_id}")
 
     async def _send_cluster_info(
@@ -412,7 +409,7 @@ class ProxmoxPlugin(PluginBase):
         vm_type = data.get("type", "qemu")  # qemu or lxc
 
         # Check VMID access
-        if vmid and allowed_vmids and vmid not in allowed_vmids:
+        if vmid and allowed_vmids and str(vmid) not in [str(v) for v in allowed_vmids]:
             await ws.send_json({
                 "type": "error",
                 "message": f"Access denied to VM {vmid}"

@@ -91,12 +91,17 @@ class VNCPlugin(PluginBase):
 
         logger.info(f"VNC connected to {host}:{port}")
 
+        tasks = [
+            asyncio.ensure_future(self._vnc_to_ws(reader, ws)),
+            asyncio.ensure_future(self._ws_to_vnc(ws, writer)),
+        ]
         try:
-            await asyncio.gather(
-                self._vnc_to_ws(reader, ws),
-                self._ws_to_vnc(ws, writer),
-            )
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             writer.close()
             try:
                 await writer.wait_closed()

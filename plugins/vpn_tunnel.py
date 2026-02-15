@@ -358,10 +358,7 @@ class VPNTunnelPlugin(PluginBase):
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     break
 
-        try:
-            await asyncio.gather(read_tun(), read_ws())
-        finally:
-            os.close(tun_fd)
+        await asyncio.gather(read_tun(), read_ws())
 
     def _create_cipher(self, psk: Optional[str]) -> Optional[object]:
         """Create ChaCha20-Poly1305 cipher from PSK."""
