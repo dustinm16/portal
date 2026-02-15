@@ -130,7 +130,8 @@ def encrypt_message(plaintext: str) -> str:
     try:
         f = Fernet(get_chat_encryption_key())
         return f.encrypt(plaintext.encode()).decode()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Message encryption failed, storing plaintext: {e}")
         return plaintext
 
 
@@ -146,7 +147,8 @@ def decrypt_message(ciphertext: str) -> str:
         try:
             f = Fernet(_get_legacy_chat_key())
             return f.decrypt(ciphertext.encode()).decode()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Message decryption failed (both keys), returning raw: {type(e).__name__}")
             return ciphertext
 
 
@@ -162,7 +164,8 @@ def encrypt_config(config_json: str) -> str:
     try:
         f = Fernet(get_config_encryption_key())
         return "enc:" + f.encrypt(config_json.encode()).decode()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Config encryption failed, storing plaintext: {e}")
         return config_json
 
 
@@ -178,7 +181,8 @@ def decrypt_config(data: str) -> str:
         try:
             f = Fernet(_get_legacy_config_key())
             return f.decrypt(data[4:].encode()).decode()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Config decryption failed (both keys): {type(e).__name__}")
             return "{}"
 
 
@@ -1104,8 +1108,10 @@ class Database:
                             (encrypted, row["id"])
                         )
                         total += 1
-            except Exception:
-                pass  # Table might not exist yet
+            except Exception as e:
+                err_lower = str(e).lower()
+                if "no such table" not in err_lower:
+                    logger.debug(f"Config encryption migration skipped for {table}: {e}")
         if total:
             await self._connection.commit()
             import logging
@@ -1130,8 +1136,10 @@ class Database:
                 "WHERE stream_key IS NOT NULL AND stream_key != '' AND stream_key NOT LIKE 'enc:%'"
             )
             rows = await cursor.fetchall()
-        except Exception:
-            return  # Table might not exist yet
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                logger.debug(f"Stream key migration skipped: {e}")
+            return
 
         total = 0
         for row in rows:
@@ -1220,10 +1228,11 @@ class Database:
                             (new_encrypted, row["id"])
                         )
                         total += 1
-                    except Exception:
-                        pass  # Skip rows that can't be decrypted
-            except Exception:
-                pass  # Table might not exist
+                    except Exception as e:
+                        logger.debug(f"Re-encryption failed for {table} id={row['id']}: {type(e).__name__}")
+            except Exception as e:
+                if "no such table" not in str(e).lower():
+                    logger.debug(f"Re-encryption skipped for {table}: {e}")
 
         # 2. Re-encrypt stream keys
         try:
@@ -1250,10 +1259,11 @@ class Database:
                             (*updates.values(), row["id"])
                         )
                         total += 1
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"Stream key re-encryption failed for id={row['id']}: {type(e).__name__}")
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                logger.debug(f"Stream key re-encryption skipped: {e}")
 
         # 3. Re-encrypt chat messages (content + reply_preview)
         chat_total = 0
@@ -1286,10 +1296,11 @@ class Database:
                             (*updates.values(), row["id"])
                         )
                         chat_total += 1
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"Chat message re-encryption failed for id={row['id']}: {type(e).__name__}")
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                logger.debug(f"Chat message re-encryption skipped: {e}")
 
         # 4. Re-encrypt DM messages
         dm_total = 0
@@ -1310,10 +1321,11 @@ class Database:
                             (new_encrypted, row["id"])
                         )
                         dm_total += 1
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"DM re-encryption failed for id={row['id']}: {type(e).__name__}")
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                logger.debug(f"DM re-encryption skipped: {e}")
 
         if total or chat_total or dm_total:
             await self._connection.commit()
@@ -3685,6 +3697,8 @@ class Database:
         if not msg or msg["user_id"] != user_id:
             return None
         created = datetime.fromisoformat(msg["created_at"])
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         if (now - created).total_seconds() > max_age_seconds:
             return None
@@ -4379,6 +4393,8 @@ class Database:
         if not msg or msg["user_id"] != user_id:
             return None
         created = datetime.fromisoformat(msg["created_at"])
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         if (now - created).total_seconds() > max_age_seconds:
             return None

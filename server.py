@@ -2086,6 +2086,11 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     if not icon:
         icon = type_info["icon"]
 
+    # Enforce config size limit to prevent oversized database entries
+    config_str = json.dumps(config) if isinstance(config, dict) else (config or "{}")
+    if len(config_str) > 10240:  # 10 KB
+        return web.json_response({"error": "Config too large (max 10 KB)"}, status=400)
+
     try:
         conn_id = await db.create_user_connection(
             user_id=token.user_id,
@@ -2093,7 +2098,7 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
             conn_type=conn_type,
             host=host,
             port=port,
-            config=json.dumps(config) if isinstance(config, dict) else config,
+            config=config_str,
             ssh_key_id=ssh_key_id,
             icon=icon,
             portal_access=portal_access,
@@ -2210,6 +2215,12 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
             # Existing config provides defaults; incoming config overrides
             merged = {**existing_config, **config}
             data["config"] = merged
+
+    # Enforce config size limit
+    config_check = data.get("config", {})
+    config_size = len(json.dumps(config_check) if isinstance(config_check, dict) else str(config_check or ""))
+    if config_size > 10240:  # 10 KB
+        return web.json_response({"error": "Config too large (max 10 KB)"}, status=400)
 
     try:
         if await db.update_user_connection(int_id, token.user_id, **data):
@@ -2649,10 +2660,11 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
                     return web.json_response({"error": "File too large (max 5MB)"}, status=400)
                 f.write(chunk)
 
-        # Delete old thumbnail if exists
+        # Delete old thumbnail if exists (with path traversal protection)
         if stream.get("thumbnail_url"):
-            old_path = Path(__file__).parent / stream["thumbnail_url"].lstrip("/")
-            if old_path.exists() and "uploads/thumbnails" in str(old_path):
+            thumb_dir = (Path(__file__).parent / "static" / "uploads" / "thumbnails").resolve()
+            old_path = (Path(__file__).parent / stream["thumbnail_url"].lstrip("/")).resolve()
+            if old_path.exists() and str(old_path).startswith(str(thumb_dir)):
                 try:
                     old_path.unlink()
                 except OSError:
@@ -2691,10 +2703,11 @@ async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
     if stream["user_id"] != token.user_id:
         return web.json_response({"error": "Not authorized"}, status=403)
 
-    # Delete file if exists
+    # Delete file if exists (with path traversal protection)
     if stream.get("thumbnail_url"):
-        old_path = Path(__file__).parent / stream["thumbnail_url"].lstrip("/")
-        if old_path.exists() and "uploads/thumbnails" in str(old_path):
+        thumb_dir = (Path(__file__).parent / "static" / "uploads" / "thumbnails").resolve()
+        old_path = (Path(__file__).parent / stream["thumbnail_url"].lstrip("/")).resolve()
+        if old_path.exists() and str(old_path).startswith(str(thumb_dir)):
             try:
                 old_path.unlink()
             except OSError:
