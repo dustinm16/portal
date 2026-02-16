@@ -1257,7 +1257,9 @@ async function viewCodeRegistrations(codeId) {
  * Format date for display
  */
 function formatDate(dateStr) {
+    if (!dateStr) return '—';
     const date = new Date(dateStr + 'Z'); // Assume UTC
+    if (isNaN(date.getTime())) return '—';
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 }
 
@@ -1268,7 +1270,7 @@ function escapeHtml(text) {
     if (text == null) return '';
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    return div.innerHTML.replace(/'/g, '&#39;').replace(/\\/g, '&#92;');
 }
 
 // ============================================================================
@@ -1312,6 +1314,7 @@ async function loadLogFiles() {
 async function loadLogSettings() {
     try {
         const response = await Portal.fetch('/api/logs/settings');
+        if (!response.ok) return;
         const data = await response.json();
 
         document.getElementById('log-level-select').value = data.level;
@@ -1328,7 +1331,8 @@ async function loadLogs() {
     const filename = document.getElementById('log-file-select').value;
 
     try {
-        const response = await Portal.fetch(`/api/logs?file=${filename}&lines=500`);
+        const response = await Portal.fetch(`/api/logs?file=${encodeURIComponent(filename)}&lines=500`);
+        if (!response.ok) throw new Error('Failed to load logs');
         const data = await response.json();
 
         if (data.error) {
@@ -1582,7 +1586,7 @@ async function verify2FASetup() {
         }
 
         // Show backup codes
-        const codesHtml = data.backup_codes.map(c => `<div>${c}</div>`).join('');
+        const codesHtml = data.backup_codes.map(c => `<div>${escapeHtml(c)}</div>`).join('');
         document.getElementById('2fa-backup-codes').innerHTML = codesHtml;
         document.getElementById('2fa-setup-step1').style.display = 'none';
         document.getElementById('2fa-setup-step2').style.display = 'block';

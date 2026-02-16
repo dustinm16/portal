@@ -6,7 +6,7 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=41">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
     <script>
         if (typeof Chart === 'undefined') {
             document.addEventListener('DOMContentLoaded', () => {
@@ -1407,10 +1407,10 @@
         async function loadOverview() {
             try {
                 const [stats, metrics, shodanInfo, top, health] = await Promise.all([
-                    Portal.fetchJSON('/api/stats'),
-                    Portal.fetchJSON('/api/metrics'),
-                    Portal.fetchJSON('/api/shodan/info'),
-                    Portal.fetchJSON('/api/metrics/top'),
+                    Portal.fetchJSON('/api/stats').catch(() => ({})),
+                    Portal.fetchJSON('/api/metrics').catch(() => ({})),
+                    Portal.fetchJSON('/api/shodan/info').catch(() => ({})),
+                    Portal.fetchJSON('/api/metrics/top').catch(() => ({})),
                     Portal.fetchJSON('/api/system/health').catch(() => null)
                 ]);
 
@@ -1433,8 +1433,8 @@
                 if (shodanInfo.configured) {
                     document.getElementById('shodan-status').innerHTML = `
                         <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value" style="color: var(--accent-green);">Configured</span></div>
-                        <div class="stat-row"><span class="stat-label">Plan</span><span class="stat-value">${shodanInfo.plan || 'Unknown'}</span></div>
-                        <div class="stat-row"><span class="stat-label">Query Credits</span><span class="stat-value">${shodanInfo.query_credits || 0}</span></div>
+                        <div class="stat-row"><span class="stat-label">Plan</span><span class="stat-value">${escapeHtml(shodanInfo.plan || 'Unknown')}</span></div>
+                        <div class="stat-row"><span class="stat-label">Query Credits</span><span class="stat-value">${parseInt(shodanInfo.query_credits) || 0}</span></div>
                     `;
                 } else {
                     document.getElementById('shodan-status').innerHTML = `
@@ -1460,11 +1460,11 @@
                             <tbody>
                                 ${topServices.map(s => `
                                     <tr>
-                                        <td>${s.service_name || ('Service #' + s.service_id)}</td>
-                                        <td>${s.total_connections}</td>
-                                        <td>${s.active_connections}</td>
+                                        <td>${escapeHtml(s.service_name || ('Service #' + s.service_id))}</td>
+                                        <td>${parseInt(s.total_connections) || 0}</td>
+                                        <td>${parseInt(s.active_connections) || 0}</td>
                                         <td>${formatBytes(s.total_bytes)}</td>
-                                        <td>${s.unique_users}</td>
+                                        <td>${parseInt(s.unique_users) || 0}</td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -1584,13 +1584,13 @@
                             <tbody>
                                 ${serviceList.filter(s => s.total_connections > 0).map(s => `
                                     <tr>
-                                        <td>${s.service_name || ('Service #' + s.service_id)}</td>
-                                        <td>${s.total_connections}</td>
-                                        <td>${s.active_connections}</td>
+                                        <td>${escapeHtml(s.service_name || ('Service #' + s.service_id))}</td>
+                                        <td>${parseInt(s.total_connections) || 0}</td>
+                                        <td>${parseInt(s.active_connections) || 0}</td>
                                         <td>${formatBytes(s.total_bytes_sent)}</td>
                                         <td>${formatBytes(s.total_bytes_received)}</td>
                                         <td>${formatDuration(s.avg_duration_seconds)}</td>
-                                        <td>${s.errors}</td>
+                                        <td>${parseInt(s.errors) || 0}</td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -1776,7 +1776,7 @@
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
                                 <p style="color: var(--accent-green); font-weight: 500;">API Key Configured</p>
-                                <p style="color: var(--text-muted); font-size: 0.875rem;">Plan: ${info.plan || 'Unknown'} | Query Credits: ${info.query_credits || 0}</p>
+                                <p style="color: var(--text-muted); font-size: 0.875rem;">Plan: ${escapeHtml(info.plan || 'Unknown')} | Query Credits: ${parseInt(info.query_credits) || 0}</p>
                             </div>
                             <button class="btn btn-secondary btn-sm" onclick="showApiKeyForm()">Update Key</button>
                         </div>
@@ -1914,10 +1914,10 @@
                             <p style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem;">Open Ports (${result.ports?.length || 0}):</p>
                             ${result.ports?.map(p => `
                                 <div class="port-item">
-                                    <span class="port-number">${p.port}/${p.protocol}</span>
-                                    <span class="port-service">${p.service}</span>
-                                    <span class="port-product">${p.product || ''} ${p.version || ''}</span>
-                                    ${p.vulns?.length > 0 ? `<span class="vulnerability-badge critical">${p.vulns.length} CVE</span>` : ''}
+                                    <span class="port-number">${escapeHtml(p.port + '/' + p.protocol)}</span>
+                                    <span class="port-service">${escapeHtml(p.service)}</span>
+                                    <span class="port-product">${escapeHtml(p.product || '')} ${escapeHtml(p.version || '')}</span>
+                                    ${p.vulns?.length > 0 ? `<span class="vulnerability-badge critical">${parseInt(p.vulns.length)} CVE</span>` : ''}
                                 </div>
                             `).join('') || '<p style="color: var(--text-muted);">No open ports found.</p>'}
 
@@ -1925,7 +1925,7 @@
                                 <div style="margin-top: 1rem;">
                                     <p style="color: var(--accent-red); font-size: 0.875rem; font-weight: 500;">Known Vulnerabilities:</p>
                                     <div style="display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.5rem;">
-                                        ${result.vulns.map(v => `<span class="vulnerability-badge critical">${v}</span>`).join('')}
+                                        ${result.vulns.map(v => `<span class="vulnerability-badge critical">${escapeHtml(v)}</span>`).join('')}
                                     </div>
                                 </div>
                             ` : ''}
@@ -1962,8 +1962,8 @@
                 document.getElementById('active-connections').innerHTML = connections.map(c => `
                     <div class="conn-item">
                         <div class="conn-info">
-                            <span class="conn-service">${c.service_name || c.plugin}</span>
-                            <span class="conn-details">User #${c.user_id} | ${formatDuration(c.duration_seconds)}</span>
+                            <span class="conn-service">${escapeHtml(c.service_name || c.plugin)}</span>
+                            <span class="conn-details">User #${parseInt(c.user_id) || 0} | ${formatDuration(c.duration_seconds)}</span>
                         </div>
                         <div class="conn-stats">
                             <div style="color: var(--accent-green);">${formatBytes(c.bytes_sent)} sent</div>
@@ -1982,7 +1982,7 @@
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text || '';
-            return div.innerHTML;
+            return div.innerHTML.replace(/'/g, '&#39;').replace(/\\/g, '&#92;');
         }
 
         // =================================================================
@@ -2066,7 +2066,7 @@
             document.getElementById('vuln-results').innerHTML = `
                 <div class="loading" style="padding: 2rem;">
                     <div class="spinner"></div>
-                    <span>Running ${scanTypeLabels[scanType]} on ${host}... This may take a few minutes.</span>
+                    <span>Running ${escapeHtml(scanTypeLabels[scanType])} on ${escapeHtml(host)}... This may take a few minutes.</span>
                 </div>
             `;
 
@@ -2098,7 +2098,7 @@
             document.getElementById('vuln-results').innerHTML = `
                 <div class="loading" style="padding: 2rem;">
                     <div class="spinner"></div>
-                    <span>Searching NVD for "${query}"...</span>
+                    <span>Searching NVD for "${escapeHtml(query)}"...</span>
                 </div>
             `;
 
@@ -2152,9 +2152,9 @@
                 html += `
                     <div class="port-item" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; width: 100%;">
-                            <span class="risk-badge ${cve.severity}" style="font-size: 0.625rem;">${cve.severity}</span>
-                            <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${cve.cve_id}')">${cve.cve_id}</span>
-                            <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${cve.cvss || 'N/A'}</span>
+                            <span class="risk-badge ${escapeHtml(cve.severity)}" style="font-size: 0.625rem;">${escapeHtml(cve.severity)}</span>
+                            <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${escapeHtml(cve.cve_id)}')">${escapeHtml(cve.cve_id)}</span>
+                            <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${escapeHtml(String(cve.cvss || 'N/A'))}</span>
                             ${cve.published ? `<span style="font-size: 0.75rem; color: var(--text-muted);">${new Date(cve.published).toLocaleDateString()}</span>` : ''}
                         </div>
                         <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">${escapeHtml((cve.description || '').substring(0, 200))}${cve.description?.length > 200 ? '...' : ''}</p>
@@ -2247,12 +2247,12 @@
                     html += `
                         <div class="port-item" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem;">
                             <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; width: 100%;">
-                                <span class="risk-badge ${v.severity}" style="font-size: 0.625rem;">${v.severity}</span>
-                                <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${v.cve_id}')">${v.cve_id}</span>
-                                <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${v.cvss}</span>
-                                ${v.port ? `<span style="font-size: 0.75rem; color: var(--text-muted);">Port: ${v.port}</span>` : ''}
+                                <span class="risk-badge ${escapeHtml(v.severity)}" style="font-size: 0.625rem;">${escapeHtml(v.severity)}</span>
+                                <span style="font-family: monospace; color: var(--accent-blue); cursor: pointer;" onclick="lookupCVEById('${escapeHtml(v.cve_id)}')">${escapeHtml(v.cve_id)}</span>
+                                <span style="font-size: 0.75rem; color: var(--text-muted);">CVSS: ${escapeHtml(String(v.cvss))}</span>
+                                ${v.port ? `<span style="font-size: 0.75rem; color: var(--text-muted);">Port: ${parseInt(v.port) || ''}</span>` : ''}
                                 ${v.detected_version ? `<span style="font-size: 0.75rem; color: var(--accent-cyan);">v${escapeHtml(v.detected_version)}</span>` : ''}
-                                ${v.confidence ? `<span style="font-size: 0.625rem; padding: 0.1rem 0.3rem; background: rgba(255,255,255,0.1); border-radius: 3px; color: var(--text-muted);">${v.confidence}</span>` : ''}
+                                ${v.confidence ? `<span style="font-size: 0.625rem; padding: 0.1rem 0.3rem; background: rgba(255,255,255,0.1); border-radius: 3px; color: var(--text-muted);">${escapeHtml(v.confidence)}</span>` : ''}
                             </div>
                             <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">${escapeHtml(v.description)}</p>
                             ${v.cpe ? `<p style="font-size: 0.65rem; color: var(--text-muted); font-family: monospace; margin: 0;">CPE: ${escapeHtml(v.cpe)}</p>` : ''}
@@ -2264,7 +2264,7 @@
                             ` : ''}
                             ${v.references && v.references.length > 0 ? `
                                 <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">
-                                    References: ${v.references.slice(0, 2).map(r => `<a href="${escapeHtml(r)}" target="_blank" style="color: var(--accent-blue);">${escapeHtml(new URL(r).hostname)}</a>`).join(', ')}
+                                    References: ${v.references.slice(0, 2).map(r => { try { return `<a href="${escapeHtml(r)}" target="_blank" style="color: var(--accent-blue);">${escapeHtml(new URL(r).hostname)}</a>`; } catch { return `<a href="${escapeHtml(r)}" target="_blank" style="color: var(--accent-blue);">${escapeHtml(r)}</a>`; } }).join(', ')}
                                 </div>
                             ` : ''}
                         </div>
@@ -2316,7 +2316,7 @@
             document.getElementById('vuln-results').innerHTML = `
                 <div class="loading" style="padding: 2rem;">
                     <div class="spinner"></div>
-                    <span>Looking up ${cveId}...</span>
+                    <span>Looking up ${escapeHtml(cveId)}...</span>
                 </div>
             `;
 
@@ -2349,20 +2349,20 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>
-                            ${cve.cve_id}
+                            ${escapeHtml(cve.cve_id)}
                         </h4>
-                        <span class="risk-badge ${cve.severity}">${cve.severity} (CVSS: ${cve.cvss})</span>
+                        <span class="risk-badge ${escapeHtml(cve.severity)}">${escapeHtml(cve.severity)} (CVSS: ${escapeHtml(String(cve.cvss))})</span>
                     </div>
                     <div class="scan-body">
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             ${escapeHtml(cve.description)}
                         </p>
 
-                        ${cve.service ? `<p style="font-size: 0.875rem;"><strong>Service:</strong> ${cve.service}</p>` : ''}
+                        ${cve.service ? `<p style="font-size: 0.875rem;"><strong>Service:</strong> ${escapeHtml(cve.service)}</p>` : ''}
                         ${cve.affected_versions ? `
-                            <p style="font-size: 0.875rem;"><strong>Affected Versions:</strong> ${cve.affected_versions.join(', ')}</p>
+                            <p style="font-size: 0.875rem;"><strong>Affected Versions:</strong> ${escapeHtml(cve.affected_versions.join(', '))}</p>
                         ` : ''}
-                        ${cve.source ? `<p style="font-size: 0.75rem; color: var(--text-muted);">Source: ${cve.source}</p>` : ''}
+                        ${cve.source ? `<p style="font-size: 0.75rem; color: var(--text-muted);">Source: ${escapeHtml(cve.source)}</p>` : ''}
 
                         ${mitigations.length > 0 ? `
                             <div style="background: rgba(34,197,94,0.1); padding: 1rem; border-radius: 6px; margin-top: 1rem;">
@@ -2840,28 +2840,28 @@
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Subject</span>
-                        <span class="stat-value">${info.subject.CN || 'N/A'}</span>
+                        <span class="stat-value">${escapeHtml(info.subject.CN || 'N/A')}</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Issuer</span>
-                        <span class="stat-value">${info.issuer.CN || info.issuer.O || 'N/A'}</span>
+                        <span class="stat-value">${escapeHtml(info.issuer.CN || info.issuer.O || 'N/A')}</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">SANs</span>
-                        <span class="stat-value" style="font-size:0.75rem; text-align:right; max-width:60%;">${(info.sans || []).join(', ') || 'None'}</span>
+                        <span class="stat-value" style="font-size:0.75rem; text-align:right; max-width:60%;">${escapeHtml((info.sans || []).join(', ') || 'None')}</span>
                     </div>
                     ${coverageHtml}
                     <div class="stat-row">
                         <span class="stat-label">Valid Until</span>
-                        <span class="stat-value" style="color:${statusColor}">${new Date(info.not_after).toLocaleDateString()} (${statusText})</span>
+                        <span class="stat-value" style="color:${statusColor}">${new Date(info.not_after).toLocaleDateString()} (${escapeHtml(statusText)})</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Fingerprint</span>
-                        <span class="stat-value" style="font-size:0.6rem; word-break:break-all; text-align:right; max-width:60%;">${info.fingerprint_sha256}</span>
+                        <span class="stat-value" style="font-size:0.6rem; word-break:break-all; text-align:right; max-width:60%;">${escapeHtml(info.fingerprint_sha256)}</span>
                     </div>
                     <div class="stat-row" style="border-bottom:none;">
                         <span class="stat-label">Key Type</span>
-                        <span class="stat-value">${info.key_type}</span>
+                        <span class="stat-value">${escapeHtml(info.key_type)}</span>
                     </div>
                 `;
 
@@ -3037,10 +3037,10 @@
                     document.getElementById('cert-apply-section').style.display = '';
                     await loadCertInfo();
                 } else {
-                    statusEl.innerHTML = '<span style="color:var(--accent-red);">' + (data.error || 'Request failed') + '</span>';
+                    statusEl.innerHTML = '<span style="color:var(--accent-red);">' + escapeHtml(data.error || 'Request failed') + '</span>';
                 }
             } catch (error) {
-                statusEl.innerHTML = '<span style="color:var(--accent-red);">Request failed: ' + error.message + '</span>';
+                statusEl.innerHTML = '<span style="color:var(--accent-red);">Request failed: ' + escapeHtml(error.message) + '</span>';
             }
         }
 
@@ -3282,13 +3282,13 @@
                 if (!Array.isArray(interfaces) || !Array.isArray(ports)) return;
 
                 document.getElementById('sys-interfaces-body').innerHTML = interfaces.map(iface => {
-                    const ips = iface.addresses.map(a => `${a.address}${a.netmask ? '/' + a.netmask : ''}`).join('<br>');
+                    const ips = iface.addresses.map(a => `${escapeHtml(a.address)}${a.netmask ? '/' + escapeHtml(a.netmask) : ''}`).join('<br>');
                     return `
                     <tr>
                         <td><strong>${escapeHtml(iface.name)}</strong></td>
                         <td><span class="${iface.is_up ? 'badge-running' : 'badge-stopped'}">${iface.is_up ? 'UP' : 'DOWN'}</span></td>
                         <td style="white-space:normal;font-size:0.8rem;">${ips || '-'}</td>
-                        <td>${iface.mac || '-'}</td>
+                        <td>${escapeHtml(iface.mac || '-')}</td>
                         <td>${iface.speed ? iface.speed + ' Mbps' : '-'}</td>
                         <td>${formatBytes(iface.bytes_sent)}</td>
                         <td>${formatBytes(iface.bytes_recv)}</td>
@@ -3390,13 +3390,14 @@
         }
 
         async function saveRetentionConfig() {
+            const pInt = (id, def) => { const v = parseInt(document.getElementById(id).value, 10); return isNaN(v) ? def : v; };
             const data = {
-                retention_chat_days: parseInt(document.getElementById('ret-chat-days').value) || 7,
-                retention_dm_days: parseInt(document.getElementById('ret-dm-days').value) || 30,
-                retention_notifications_days: parseInt(document.getElementById('ret-notif-days').value) || 30,
-                retention_activity_max: parseInt(document.getElementById('ret-activity-max').value) || 500,
-                retention_service_logs_max: parseInt(document.getElementById('ret-svc-logs').value) || 1000,
-                cleanup_interval_hours: parseInt(document.getElementById('ret-interval').value) || 6,
+                retention_chat_days: pInt('ret-chat-days', 7),
+                retention_dm_days: pInt('ret-dm-days', 30),
+                retention_notifications_days: pInt('ret-notif-days', 30),
+                retention_activity_max: pInt('ret-activity-max', 500),
+                retention_service_logs_max: pInt('ret-svc-logs', 1000),
+                cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
             };
             try {
@@ -3460,11 +3461,11 @@
 
         function filesEscapeHtml(str) {
             if (!str) return '';
-            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         }
         function filesEscapeJs(str) {
             if (!str) return '';
-            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
         }
 
         function filesFormatDate(ts) {
@@ -3787,21 +3788,26 @@
 
         async function toggleAutomodRule(ruleId, enabled) {
             try {
-                await fetch(`/api/admin/automod/${ruleId}`, {
+                const res = await Portal.fetch(`/api/admin/automod/${ruleId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ enabled })
                 });
-            } catch (e) {}
+                if (!res.ok) Portal.toast('Failed to update rule', 'error');
+            } catch (e) {
+                Portal.toast('Failed to update rule', 'error');
+            }
         }
 
         async function deleteAutomodRule(ruleId) {
             if (!confirm('Delete this automod rule?')) return;
             try {
-                const res = await fetch(`/api/admin/automod/${ruleId}`, { method: 'DELETE', credentials: 'include' });
+                const res = await Portal.fetch(`/api/admin/automod/${ruleId}`, { method: 'DELETE' });
                 if (res.ok) loadAutomodRules();
-            } catch (e) {}
+                else Portal.toast('Failed to delete rule', 'error');
+            } catch (e) {
+                Portal.toast('Failed to delete rule', 'error');
+            }
         }
 
         function showCreateAutomodRuleModal() {
@@ -3810,12 +3816,14 @@
 
         async function editAutomodRule(ruleId) {
             try {
-                const res = await fetch('/api/admin/automod', { credentials: 'include' });
+                const res = await Portal.fetch('/api/admin/automod');
                 if (!res.ok) return;
                 const data = await res.json();
                 const rule = (data.rules || []).find(r => r.id === ruleId);
                 if (rule) showAutomodRuleModal(rule);
-            } catch (e) {}
+            } catch (e) {
+                Portal.toast('Failed to load rule', 'error');
+            }
         }
 
         function showAutomodRuleModal(rule) {

@@ -646,6 +646,18 @@ async def http_create_token(request: web.Request) -> web.Response:
         logger.warning(f"Failed login attempt for '{username}' from {client_ip}")
         return web.json_response({"error": "Invalid credentials"}, status=401)
 
+    # Enforce scope restrictions based on user role
+    is_admin = user.get("is_admin") or user.get("role") in ("admin", "superadmin")
+    allowed_scopes = ["*"] if is_admin else ["services:read", "access:*"]
+    if is_admin:
+        # Admins can request any scopes
+        pass
+    else:
+        # Non-admin users: restrict to their allowed scopes
+        scopes = [s for s in scopes if s in allowed_scopes]
+        if not scopes:
+            scopes = allowed_scopes
+
     # Create token
     jwt_token, token_id = await create_access_token(
         user_id=user["id"],
@@ -1160,6 +1172,9 @@ async def http_get_service_logs(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
@@ -1223,6 +1238,19 @@ async def http_create_user(request: web.Request) -> web.Response:
     if not username or not password:
         return web.json_response(
             {"error": "username and password required"},
+            status=400
+        )
+
+    # Validate username format (same rules as registration)
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{3,30}', username):
+        return web.json_response(
+            {"error": "Username must be 3-30 characters: letters, numbers, underscores, hyphens only"},
+            status=400
+        )
+
+    if len(password) < 8 or len(password) > 128:
+        return web.json_response(
+            {"error": "Password must be between 8 and 128 characters"},
             status=400
         )
 
@@ -1731,7 +1759,10 @@ async def http_create_api_key(request: web.Request) -> web.Response:
         return web.json_response({"error": "API key name required"}, status=400)
 
     # Optional: scopes (comma-separated) and expiration
+    # Enforce: non-admin users cannot request admin/"*" scopes
     scopes = data.get("scopes", "*")
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        scopes = "services:read,access:*"
     expires_days = data.get("expires_days")  # None = never expires
 
     expires_at = None
