@@ -33,6 +33,8 @@ SENSITIVE_PATTERNS = [
     (re.compile(r'(secret["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
     (re.compile(r'(-----BEGIN[^-]+-----)[^-]+(-----END[^-]+-----)', re.DOTALL), r'\1[REDACTED]\2'),
     (re.compile(r'rtmp_[A-Za-z0-9_-]{20,}'), '[RTMP_TOKEN_REDACTED]'),
+    (re.compile(r'live_[A-Za-z0-9_-]{16,}'), '[STREAM_KEY_REDACTED]'),
+    (re.compile(r'pub_[A-Za-z0-9_-]{16,}'), '[PUBLIC_KEY_REDACTED]'),
 ]
 
 # Log settings (can be modified at runtime)

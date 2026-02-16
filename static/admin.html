@@ -866,7 +866,7 @@
                             Key persists across restarts.
                         </p>
                         <div class="shodan-lookup">
-                            <input type="password" id="nvd-api-key" placeholder="Enter NVD API key">
+                            <input type="password" id="nvd-api-key" placeholder="Enter NVD API key" autocomplete="off">
                             <button class="btn btn-primary" style="width: auto;" onclick="setNvdApiKey()">Save</button>
                         </div>
                     </div>
@@ -1783,7 +1783,7 @@
                         <div id="api-key-form" style="display: none; margin-top: 1rem;">
                             <div class="config-form">
                                 <label>New Shodan API Key</label>
-                                <input type="password" id="new-api-key" placeholder="Enter Shodan API key">
+                                <input type="password" id="new-api-key" placeholder="Enter Shodan API key" autocomplete="off">
                                 <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
                                     <button class="btn btn-primary btn-sm" style="width: auto;" onclick="saveShodanKey()">Save</button>
                                     <button class="btn btn-secondary btn-sm" style="width: auto;" onclick="hideApiKeyForm()">Cancel</button>
@@ -1801,7 +1801,7 @@
                         </div>
                         <div class="config-form">
                             <label>Shodan API Key</label>
-                            <input type="password" id="new-api-key" placeholder="Enter your Shodan API key">
+                            <input type="password" id="new-api-key" placeholder="Enter your Shodan API key" autocomplete="off">
                             <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">
                                 Get your API key from <a href="https://account.shodan.io" target="_blank" style="color: var(--accent-blue);">account.shodan.io</a>.
                                 Key is saved to database and persists across service restarts.

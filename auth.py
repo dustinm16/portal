@@ -280,10 +280,7 @@ def get_daily_invite_code() -> str:
         except Exception as e:
             logger.error(f"Failed to write invite code file: {e}")
 
-        # Log to stdout (journalctl visible)
-        # Use print with specific format for easy grepping
         log_message = f"INVITE_CODE_GENERATED date={today} code={_current_invite_code}"
-        print(f"[PORTAL] {log_message}")
         logger.info(log_message)
 
     return _current_invite_code

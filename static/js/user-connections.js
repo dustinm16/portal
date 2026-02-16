@@ -442,8 +442,6 @@ async function submitCreateApiKey(event) {
         }
 
         const keyData = await response.json();
-        console.log('[API Keys] Key created:', keyData.key_prefix);
-
         // Show the key (only time it's available)
         showNewApiKeyDisplay(keyData);
 

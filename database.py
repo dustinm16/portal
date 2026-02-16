@@ -992,6 +992,9 @@ class Database:
         # Seed default connections for existing users who don't have one
         await self._seed_default_connections()
 
+        # Encrypt plaintext TOTP secrets and hash plaintext backup codes
+        await self._migrate_totp_and_backup_codes()
+
     async def _seed_default_connections(self) -> None:
         """One-time: add default Web Browser connection and enable browser_mode on existing ones."""
         try:
@@ -1037,6 +1040,80 @@ class Database:
             await self._connection.commit()
         except Exception:
             pass  # Table may not exist yet on first run
+
+    async def _migrate_totp_and_backup_codes(self) -> None:
+        """One-time: encrypt plaintext TOTP secrets and hash plaintext backup codes.
+
+        TOTP secrets are encrypted with Fernet (encrypt_message).
+        Backup codes are hashed with SHA-256.
+        Uses a settings flag to avoid re-running.
+        """
+        try:
+            cursor = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = 'totp_backup_codes_migrated'"
+            )
+            row = await cursor.fetchone()
+            if row:
+                return  # Already done
+        except Exception:
+            return  # settings table may not exist yet
+
+        total_totp = 0
+        total_backup = 0
+
+        try:
+            # Migrate TOTP secrets: encrypt any that are plaintext
+            # Fernet tokens are base64url and 120+ chars; plaintext TOTP secrets are
+            # base32 strings typically 16-32 chars. Use length as the discriminator.
+            cursor = await self._connection.execute(
+                "SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL AND totp_secret != ''"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                secret = row["totp_secret"]
+                if len(secret) < 100:
+                    # Likely plaintext base32 — encrypt it
+                    encrypted = encrypt_message(secret)
+                    await self._connection.execute(
+                        "UPDATE users SET totp_secret = ? WHERE id = ?",
+                        (encrypted, row["id"])
+                    )
+                    total_totp += 1
+
+            # Migrate backup codes: hash any that are plaintext
+            # Plaintext codes are 8-char uppercase hex (e.g. "A1B2C3D4")
+            # SHA-256 hashes are 64-char lowercase hex
+            cursor = await self._connection.execute(
+                "SELECT id, backup_codes FROM users WHERE backup_codes IS NOT NULL AND backup_codes != ''"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                codes_str = row["backup_codes"]
+                codes = codes_str.split(",")
+                # Check if first code looks like plaintext (8 chars) vs hash (64 chars)
+                if codes and len(codes[0]) < 64:
+                    hashed_codes = [hashlib.sha256(c.encode()).hexdigest() for c in codes]
+                    await self._connection.execute(
+                        "UPDATE users SET backup_codes = ? WHERE id = ?",
+                        (",".join(hashed_codes), row["id"])
+                    )
+                    total_backup += 1
+
+            # Mark migration complete
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('totp_backup_codes_migrated', '1')"
+            )
+            await self._connection.commit()
+
+            if total_totp or total_backup:
+                logger.info(
+                    f"TOTP/backup migration: encrypted {total_totp} TOTP secret(s), "
+                    f"hashed {total_backup} backup code set(s)"
+                )
+        except Exception as e:
+            err_lower = str(e).lower()
+            if "no such table" not in err_lower:
+                logger.warning(f"TOTP/backup code migration error: {e}")
 
     async def _migrate_service_logs_fk(self) -> None:
         """Fix service_logs FK: managed_services(id) -> services(id)."""
@@ -1245,6 +1322,7 @@ class Database:
             return
 
         total = 0
+        failed = 0
 
         # 1. Re-encrypt config fields (user_connections, services, vod_storage)
         for table in ["user_connections", "services", "vod_storage"]:
@@ -1265,6 +1343,7 @@ class Database:
                         )
                         total += 1
                     except Exception as e:
+                        failed += 1
                         logger.debug(f"Re-encryption failed for {table} id={row['id']}: {type(e).__name__}")
             except Exception as e:
                 if "no such table" not in str(e).lower():
@@ -1296,6 +1375,7 @@ class Database:
                         )
                         total += 1
                 except Exception as e:
+                    failed += 1
                     logger.debug(f"Stream key re-encryption failed for id={row['id']}: {type(e).__name__}")
         except Exception as e:
             if "no such table" not in str(e).lower():
@@ -1303,6 +1383,7 @@ class Database:
 
         # 3. Re-encrypt chat messages (content + reply_preview)
         chat_total = 0
+        chat_failed = 0
         try:
             old_f = Fernet(old_chat_key)
             new_f = Fernet(new_chat_key)
@@ -1333,6 +1414,7 @@ class Database:
                         )
                         chat_total += 1
                 except Exception as e:
+                    chat_failed += 1
                     logger.debug(f"Chat message re-encryption failed for id={row['id']}: {type(e).__name__}")
         except Exception as e:
             if "no such table" not in str(e).lower():
@@ -1340,6 +1422,7 @@ class Database:
 
         # 4. Re-encrypt DM messages
         dm_total = 0
+        dm_failed = 0
         try:
             old_f = Fernet(old_chat_key)
             new_f = Fernet(new_chat_key)
@@ -1370,6 +1453,7 @@ class Database:
                         )
                         dm_total += 1
                 except Exception as e:
+                    dm_failed += 1
                     logger.debug(f"DM re-encryption failed for id={row['id']}: {type(e).__name__}")
         except Exception as e:
             if "no such table" not in str(e).lower():
@@ -1382,7 +1466,14 @@ class Database:
                 f"{total} config(s), {chat_total} chat message(s), {dm_total} DM(s)"
             )
 
-        # Mark migration complete
+        total_failed = failed + chat_failed + dm_failed
+        if total_failed:
+            log.warning(
+                f"Encryption migration completed with {total_failed} failed row(s): "
+                f"{failed} config(s), {chat_failed} chat message(s), {dm_failed} DM(s)"
+            )
+
+        # Mark migration complete (even with failures, to avoid infinite retries)
         try:
             await self._connection.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_key_version', '2')"
@@ -1429,7 +1520,12 @@ class Database:
             "SELECT * FROM users WHERE username = ?", (username,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        user = dict(row)
+        if user.get("totp_secret"):
+            user["totp_secret"] = decrypt_message(user["totp_secret"])
+        return user
 
     async def get_user_by_id(self, user_id: int) -> Optional[dict]:
         """Get user by ID."""
@@ -1437,7 +1533,12 @@ class Database:
             "SELECT * FROM users WHERE id = ?", (user_id,)
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        user = dict(row)
+        if user.get("totp_secret"):
+            user["totp_secret"] = decrypt_message(user["totp_secret"])
+        return user
 
     async def update_password_hash(self, user_id: int, password_hash: str) -> bool:
         """Update a user's password hash."""
@@ -1551,16 +1652,18 @@ class Database:
 
     # Two-Factor Authentication operations
     async def set_user_totp_secret(self, user_id: int, secret: str) -> None:
-        """Store TOTP secret for user (before enabling 2FA)."""
+        """Store TOTP secret for user (before enabling 2FA). Encrypted at rest."""
+        encrypted_secret = encrypt_message(secret)
         await self.conn.execute(
             "UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?",
-            (secret, datetime.now(timezone.utc).isoformat(), user_id)
+            (encrypted_secret, datetime.now(timezone.utc).isoformat(), user_id)
         )
         await self.conn.commit()
 
     async def enable_user_totp(self, user_id: int, backup_codes: list[str]) -> None:
-        """Enable TOTP for user and store backup codes."""
-        codes_str = ",".join(backup_codes)
+        """Enable TOTP for user and store backup codes (SHA-256 hashed)."""
+        hashed_codes = [hashlib.sha256(code.encode()).hexdigest() for code in backup_codes]
+        codes_str = ",".join(hashed_codes)
         await self.conn.execute(
             "UPDATE users SET totp_enabled = 1, backup_codes = ?, updated_at = ? WHERE id = ?",
             (codes_str, datetime.now(timezone.utc).isoformat(), user_id)
@@ -1578,7 +1681,8 @@ class Database:
     async def use_backup_code(self, user_id: int, code: str) -> bool:
         """Use a backup code, removing it from available codes. Returns True if valid.
 
-        Uses constant-time comparison to prevent timing attacks and atomic
+        Backup codes are stored as SHA-256 hashes. The input code is hashed before
+        comparison. Uses constant-time comparison to prevent timing attacks and atomic
         read-modify-write to prevent race conditions with concurrent requests.
         """
         import hmac
@@ -1586,11 +1690,11 @@ class Database:
         if not user or not user.get("backup_codes"):
             return False
         codes = user["backup_codes"].split(",")
-        code_upper = code.upper().strip()
+        code_hash = hashlib.sha256(code.upper().strip().encode()).hexdigest()
         # Constant-time scan: check all codes to prevent timing leaks
         match_idx = -1
         for i, stored_code in enumerate(codes):
-            if hmac.compare_digest(code_upper.encode(), stored_code.encode()):
+            if hmac.compare_digest(code_hash.encode(), stored_code.encode()):
                 match_idx = i
         if match_idx < 0:
             return False
@@ -2625,6 +2729,8 @@ class Database:
                 (stream_key,)
             )
             row = await cursor.fetchone()
+            if row:
+                logger.warning("Stream key lookup used plaintext fallback — un-migrated stream key detected (stream_id=%s)", row["id"])
         return self._decrypt_stream_keys(dict(row)) if row else None
 
     async def get_stream_by_public_key(self, public_key: str) -> Optional[dict]:
@@ -2648,6 +2754,8 @@ class Database:
                 (public_key,)
             )
             row = await cursor.fetchone()
+            if row:
+                logger.warning("Public key lookup used plaintext fallback — un-migrated stream key detected (stream_id=%s)", row["id"])
         return self._decrypt_stream_keys(dict(row)) if row else None
 
     async def get_public_streams(self, live_only: bool = False) -> list[dict]:

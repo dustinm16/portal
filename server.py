@@ -38,7 +38,7 @@ import psutil
 from aiohttp import web, WSMsgType
 
 from config import Config, ALLOWED_SHELLS
-from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles
+from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
 from auth import (
     AuthError,
     TokenPayload,
@@ -4335,8 +4335,8 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
     # Verify the key works before persisting
     info = await shodan_client.get_api_info()
     if info:
-        # Persist to database for survival across restarts
-        await db.set_setting("shodan_api_key", api_key)
+        # Persist to database (encrypted at rest) for survival across restarts
+        await db.set_setting("shodan_api_key", encrypt_config(api_key))
         logger.info(f"Shodan API key updated and persisted by user {token.user_id}")
         return web.json_response({
             "status": "success",
@@ -5091,8 +5091,8 @@ async def http_vuln_set_nvd_api_key(request: web.Request) -> web.Response:
     vulnerability_scanner.set_nvd_api_key(api_key)
     Config.NVD_API_KEY = api_key
 
-    # Persist to database for survival across restarts
-    await db.set_setting("nvd_api_key", api_key)
+    # Persist to database (encrypted at rest) for survival across restarts
+    await db.set_setting("nvd_api_key", encrypt_config(api_key))
     logger.info(f"NVD API key updated and persisted by user {token.user_id}")
 
     return web.json_response({
@@ -13206,13 +13206,14 @@ class PortalServer:
         await initialize_plugins()
         logger.info("Plugins initialized")
 
-        # Initialize Shodan client - check database first, then env var
-        shodan_api_key = await db.get_setting("shodan_api_key") or Config.SHODAN_API_KEY
+        # Initialize Shodan client - check database first (encrypted), then env var
+        shodan_api_key_raw = await db.get_setting("shodan_api_key")
+        shodan_api_key = decrypt_config(shodan_api_key_raw) if shodan_api_key_raw else Config.SHODAN_API_KEY
         if shodan_api_key:
             await init_shodan(shodan_api_key)
             Config.SHODAN_API_KEY = shodan_api_key  # Update Config for runtime checks
             shodan_client.set_api_key(shodan_api_key)  # Ensure client has the key
-            logger.info("Shodan integration initialized (key from database)" if await db.get_setting("shodan_api_key") else "Shodan integration initialized (key from env)")
+            logger.info("Shodan integration initialized (key from database)" if shodan_api_key_raw else "Shodan integration initialized (key from env)")
 
         # Start traffic metrics recorder
         if Config.METRICS_ENABLED:
@@ -13228,8 +13229,9 @@ class PortalServer:
         # Start RTMP token cleanup task (runs every 5 minutes)
         asyncio.create_task(self._rtmp_token_cleanup_task())
 
-        # Initialize vulnerability scanner - check database for NVD API key
-        nvd_api_key = await db.get_setting("nvd_api_key") or Config.NVD_API_KEY
+        # Initialize vulnerability scanner - check database for NVD API key (encrypted)
+        nvd_api_key_raw = await db.get_setting("nvd_api_key")
+        nvd_api_key = decrypt_config(nvd_api_key_raw) if nvd_api_key_raw else Config.NVD_API_KEY
         await init_scanner(
             nvd_api_key=nvd_api_key or None,
             nmap_path=Config.NMAP_PATH,

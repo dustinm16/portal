@@ -7,6 +7,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import aiofiles
@@ -150,10 +151,13 @@ class ManagedService(ABC):
         """Write config file and return path."""
         content = await self.generate_config_file()
         if not self.config_path:
-            self.config_path = f'/tmp/portal_service_{self.id}.conf'
+            data_dir = Path(__file__).parent.parent / 'data'
+            data_dir.mkdir(mode=0o700, exist_ok=True)
+            self.config_path = str(data_dir / f'service_{self.id}.conf')
 
         async with aiofiles.open(self.config_path, 'w') as f:
             await f.write(content)
+        os.chmod(self.config_path, 0o600)
 
         return self.config_path
 
@@ -253,6 +257,13 @@ class ManagedService(ABC):
             # Update database
             if self._db:
                 await self._db.update_service_process_status(self.id, 'stopped')
+
+            # Clean up config file
+            if self.config_path and os.path.exists(self.config_path):
+                try:
+                    os.remove(self.config_path)
+                except OSError:
+                    pass
 
             await self._log("info", "Service stopped")
             return True, ""

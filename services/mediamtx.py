@@ -9,6 +9,7 @@ import asyncio
 import os
 import ssl
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 from . import register_service
@@ -140,8 +141,11 @@ class MediaMTXService(ManagedService):
         if os.path.exists(letsencrypt_cert) and os.path.exists(letsencrypt_key):
             return letsencrypt_cert, letsencrypt_key
 
-        # Fall back to self-signed
-        return f"/tmp/portal_mediamtx_{self.id}_cert.pem", f"/tmp/portal_mediamtx_{self.id}_key.pem"
+        # Fall back to self-signed in a restricted project-local directory
+        cert_dir = Path(__file__).parent.parent / 'certs' / 'mediamtx'
+        cert_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(str(cert_dir), 0o700)
+        return str(cert_dir / f"{self.id}_cert.pem"), str(cert_dir / f"{self.id}_key.pem")
 
     def _generate_self_signed_cert(self) -> tuple[str, str]:
         """Ensure TLS certificates exist, generating self-signed if needed."""
@@ -156,6 +160,8 @@ class MediaMTXService(ManagedService):
             return cert_path, key_path
 
         # Generate self-signed certificate using openssl
+        # The parent directory already has 0o700 permissions from _get_tls_paths(),
+        # so files created inside are not world-readable even briefly.
         try:
             subprocess.run([
                 "openssl", "req", "-x509", "-newkey", "rsa:4096",
@@ -166,6 +172,7 @@ class MediaMTXService(ManagedService):
                 "-subj", f"/CN=portal-mediamtx-{self.id}/O=Open Relay Portal"
             ], check=True, capture_output=True)
             os.chmod(key_path, 0o600)
+            os.chmod(cert_path, 0o600)
             return cert_path, key_path
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to generate TLS certificate: {e.stderr.decode()}")
