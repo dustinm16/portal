@@ -478,7 +478,7 @@ async function submitAddService(event) {
                 path: normalizedPath,
                 plugin,
                 host,
-                port: port ? parseInt(port) : 0,
+                port: port ? parseInt(port, 10) || 0 : 0,
                 config,
                 required_scopes: scopes
             })
@@ -490,7 +490,7 @@ async function submitAddService(event) {
             setTimeout(() => closeModal('add-service-modal'), 800);
             await loadServices();
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to add service', 'error');
         }
     } catch (error) {
@@ -746,7 +746,7 @@ async function submitEditService(event) {
                 path: normalizedPath,
                 plugin,
                 host,
-                port: port ? parseInt(port) : 0,
+                port: port ? parseInt(port, 10) || 0 : 0,
                 enabled,
                 config,
                 required_scopes: scopes
@@ -758,7 +758,7 @@ async function submitEditService(event) {
             closeModal('edit-service-modal');
             await loadServices();
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to update service', 'error');
         }
     } catch (error) {
@@ -902,7 +902,7 @@ async function changeUserRole(userId, newRole) {
         if (response.ok) {
             Portal.toast(`Role updated to ${ROLE_LABELS[newRole]}`);
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to update role', 'error');
             // Reload to revert changes
             showManageUsersModal();
@@ -911,13 +911,6 @@ async function changeUserRole(userId, newRole) {
         Portal.toast('Failed to update role', 'error');
         console.error('Change role error:', error);
     }
-}
-
-/**
- * Legacy toggle function - redirects to role change
- */
-async function toggleUserAdmin(userId, isAdmin) {
-    await changeUserRole(userId, isAdmin ? 'admin' : 'user');
 }
 
 /**
@@ -955,7 +948,7 @@ async function submitResetPassword(event) {
             Portal.toast('Password reset successfully');
             closeModal('reset-password-modal');
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to reset password', 'error');
         }
     } catch (error) {
@@ -981,6 +974,7 @@ function confirmDeleteUser(userId, username) {
  * Delete a user
  */
 async function deleteUser(userId) {
+    if (!Number.isInteger(userId)) return;
     try {
         const response = await Portal.fetch(`/api/users/${userId}`, {
             method: 'DELETE'
@@ -993,7 +987,7 @@ async function deleteUser(userId) {
             const row = document.querySelector(`tr[data-user-id="${userId}"]`);
             if (row) row.remove();
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to delete user', 'error');
         }
     } catch (error) {
@@ -1029,7 +1023,7 @@ async function deleteService(serviceId) {
             closeModal('confirm-modal');
             await loadServices();
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to delete service', 'error');
         }
     } catch (error) {
@@ -1168,7 +1162,7 @@ async function createInviteCode() {
 
     const body = { type, label: label || undefined };
     if ((type === 'timed' || type === 'single_use') && duration) {
-        body.duration_days = parseInt(duration);
+        body.duration_days = parseInt(duration, 10) || 0;
     }
 
     if (btn) Portal.setButtonLoading(btn, true);
@@ -1383,7 +1377,7 @@ async function updateLogLevel() {
         if (response.ok) {
             Portal.toast(`Log level set to ${level}`);
         } else {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to update log level', 'error');
         }
     } catch (error) {
@@ -1648,18 +1642,35 @@ async function disable2FA(event) {
 
 
 
+// Pause/resume log auto-refresh when page visibility changes
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        // Pause: clear interval but remember it was running
+        if (logAutoRefreshInterval) {
+            clearInterval(logAutoRefreshInterval);
+            logAutoRefreshInterval = 'paused';
+        }
+    } else {
+        // Resume: restart interval if it was paused
+        if (logAutoRefreshInterval === 'paused') {
+            logAutoRefreshInterval = setInterval(loadLogs, 3000);
+        }
+    }
+});
+
 // Initialize admin UI when page loads
 document.addEventListener('DOMContentLoaded', () => {
     initAdminUI();
 });
 
-// Close modals on Escape key
+// Close modals on Escape key (only the last/topmost visible modal)
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-        document.querySelectorAll('.modal').forEach(modal => {
-            if (modal.style.display === 'flex') {
-                closeModal(modal.id);
-            }
-        });
+        const visibleModals = Array.from(document.querySelectorAll('.modal')).filter(
+            modal => modal.style.display === 'flex'
+        );
+        if (visibleModals.length > 0) {
+            closeModal(visibleModals[visibleModals.length - 1].id);
+        }
     }
 });

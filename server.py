@@ -1256,6 +1256,8 @@ async def http_create_user(request: web.Request) -> web.Response:
 
     try:
         user = await create_user(username, password, is_admin)
+        if is_admin:
+            await db.set_user_role(user["id"], "admin")
         await _create_default_connections(user["id"])
         logger.info(f"User '{username}' created by admin user {token.user_id}")
         return web.json_response({
@@ -5269,7 +5271,8 @@ async def http_get_cert_info(request: web.Request) -> web.Response:
     except FileNotFoundError:
         return web.json_response({"error": "Certificate file not found"}, status=404)
     except Exception as e:
-        return web.json_response({"error": f"Failed to read certificate: {e}"}, status=500)
+        logger.error(f"Failed to read certificate: {e}")
+        return web.json_response({"error": "Failed to read certificate info"}, status=500)
 
     # Override method from env if set
     if Config.CERT_METHOD:
@@ -5325,7 +5328,8 @@ async def http_upload_cert(request: web.Request) -> web.Response:
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": f"Failed to save certificate: {e}"}, status=500)
+        logger.error(f"Failed to save certificate: {e}")
+        return web.json_response({"error": "Failed to save certificate"}, status=500)
 
     # Update .env
     env_path = str(Path(__file__).parent / ".env")
@@ -5378,7 +5382,8 @@ async def http_generate_selfsigned(request: web.Request) -> web.Response:
             hostname, Config.CERTS_DIR, validity_days, extra_hostnames=extra_hostnames
         )
     except Exception as e:
-        return web.json_response({"error": f"Failed to generate certificate: {e}"}, status=500)
+        logger.error(f"Failed to generate certificate: {e}")
+        return web.json_response({"error": "Failed to generate certificate"}, status=500)
 
     # Update .env
     env_path = str(Path(__file__).parent / ".env")
@@ -5459,9 +5464,11 @@ async def http_apply_certs(request: web.Request) -> web.Response:
     key_path = env_vals.get("SSL_KEY", Config.SSL_KEY)
 
     if not Path(cert_path).exists():
-        return web.json_response({"error": f"Certificate file not found: {cert_path}"}, status=400)
+        logger.error(f"Certificate file not found: {cert_path}")
+        return web.json_response({"error": "Certificate file not found"}, status=400)
     if not Path(key_path).exists():
-        return web.json_response({"error": f"Key file not found: {key_path}"}, status=400)
+        logger.error(f"Key file not found: {key_path}")
+        return web.json_response({"error": "Key file not found"}, status=400)
 
     # Validate the pair
     try:
@@ -5471,7 +5478,8 @@ async def http_apply_certs(request: web.Request) -> web.Response:
         if not is_valid:
             return web.json_response({"error": f"Invalid certificate pair: {error}"}, status=400)
     except Exception as e:
-        return web.json_response({"error": f"Failed to validate certificates: {e}"}, status=400)
+        logger.error(f"Failed to validate certificates: {e}")
+        return web.json_response({"error": "Failed to validate certificates"}, status=400)
 
     logger.warning(f"Server restart requested by user {token.user_id} to apply new certificates")
 
@@ -5653,7 +5661,7 @@ async def http_sysmon_service_logs(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"error": "Service name required"}, status=400)
     try:
-        lines = int(request.query.get("lines", "50"))
+        lines = max(10, min(int(request.query.get("lines", "50")), 500))
     except (ValueError, TypeError):
         lines = 50
 

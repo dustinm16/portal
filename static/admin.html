@@ -2017,7 +2017,7 @@
             }
 
             try {
-                const response = await fetch('/api/vuln/nvd-api-key', {
+                const response = await Portal.fetch('/api/vuln/nvd-api-key', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ api_key: apiKey })
@@ -2781,7 +2781,7 @@
         async function loadCertInfo() {
             const el = document.getElementById('cert-info');
             try {
-                const resp = await fetch('/api/certs/info', { credentials: 'include' });
+                const resp = await Portal.fetch('/api/certs/info');
                 if (!resp.ok) throw new Error('Failed to load');
                 const info = await resp.json();
 
@@ -2900,8 +2900,8 @@
         async function loadServerSettings() {
             try {
                 const [hostnameResp, healthResp] = await Promise.all([
-                    fetch('/api/settings/hostname', { credentials: 'include' }),
-                    fetch('/api/system/health', { credentials: 'include' })
+                    Portal.fetch('/api/settings/hostname'),
+                    Portal.fetch('/api/system/health')
                 ]);
                 if (hostnameResp.ok) {
                     const data = await hostnameResp.json();
@@ -2964,10 +2964,9 @@
             }
 
             try {
-                const resp = await fetch('/api/certs/upload', {
+                const resp = await Portal.fetch('/api/certs/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ cert: certPem, key: keyPem })
                 });
                 const data = await resp.json();
@@ -2993,10 +2992,9 @@
             }
 
             try {
-                const resp = await fetch('/api/certs/self-signed', {
+                const resp = await Portal.fetch('/api/certs/self-signed', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ hostname, validity_days: days })
                 });
                 const data = await resp.json();
@@ -3025,10 +3023,9 @@
             statusEl.innerHTML = '<div class="loading"><div class="spinner"></div> Requesting certificate (this may take a minute)...</div>';
 
             try {
-                const resp = await fetch('/api/certs/letsencrypt', {
+                const resp = await Portal.fetch('/api/certs/letsencrypt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify({ hostname, email })
                 });
                 const data = await resp.json();
@@ -3050,10 +3047,9 @@
             }
 
             try {
-                await fetch('/api/certs/apply', {
+                await Portal.fetch('/api/certs/apply', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: '{}'
                 });
                 Portal.toast('Server restarting... Page will reload in 5 seconds.', 'success');
@@ -3076,10 +3072,9 @@
             if (streamHostname) payload.stream_hostname = streamHostname;
 
             try {
-                const resp = await fetch('/api/settings/hostname', {
+                const resp = await Portal.fetch('/api/settings/hostname', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify(payload)
                 });
                 const data = await resp.json();
@@ -3118,8 +3113,7 @@
         async function sysLoadProcesses() {
             const sort = document.getElementById('sys-proc-sort').value;
             try {
-                const res = await fetch(`/api/sysmon/processes?sort=${sort}&limit=200`, { credentials: 'include' });
-                if (res.status === 401) { window.location.href = '/login'; return; }
+                const res = await Portal.fetch(`/api/sysmon/processes?sort=${sort}&limit=200`);
                 if (!res.ok) { console.error('Failed to load processes:', res.status); return; }
                 sysAllProcesses = await res.json();
                 if (!Array.isArray(sysAllProcesses)) { sysAllProcesses = []; return; }
@@ -3153,8 +3147,8 @@
         async function sysKillProcess(pid, name) {
             if (!confirm(`Kill process ${name} (PID ${pid})?`)) return;
             try {
-                const res = await fetch(`/api/sysmon/processes/${pid}/kill`, {
-                    method: 'POST', credentials: 'include',
+                const res = await Portal.fetch(`/api/sysmon/processes/${pid}/kill`, {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ signal: 'SIGTERM' })
                 });
@@ -3183,8 +3177,7 @@
             const filter = document.getElementById('sys-svc-filter').value;
             try {
                 const url = filter ? `/api/sysmon/services?filter=${filter}` : '/api/sysmon/services';
-                const res = await fetch(url, { credentials: 'include' });
-                if (res.status === 401) { window.location.href = '/login'; return; }
+                const res = await Portal.fetch(url);
                 if (!res.ok) { console.error('Failed to load services:', res.status); return; }
                 sysAllServices = await res.json();
                 if (!Array.isArray(sysAllServices)) { sysAllServices = []; return; }
@@ -3227,8 +3220,8 @@
         async function sysControlService(name, action) {
             if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} service "${name}"?`)) return;
             try {
-                const res = await fetch(`/api/sysmon/services/${encodeURIComponent(name)}/control`, {
-                    method: 'POST', credentials: 'include',
+                const res = await Portal.fetch(`/api/sysmon/services/${encodeURIComponent(name)}/control`, {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action })
                 });
@@ -3255,7 +3248,7 @@
         async function sysReloadLogs() {
             const lines = document.getElementById('sys-logs-lines').value;
             try {
-                const res = await fetch(`/api/sysmon/services/${encodeURIComponent(sysCurrentLogService)}/logs?lines=${lines}`, { credentials: 'include' });
+                const res = await Portal.fetch(`/api/sysmon/services/${encodeURIComponent(sysCurrentLogService)}/logs?lines=${lines}`);
                 const data = await res.json();
                 document.getElementById('sys-logs-content').textContent = data.logs || 'No logs available';
             } catch (e) {
@@ -3271,10 +3264,9 @@
         async function sysLoadNetwork() {
             try {
                 const [ifRes, portRes] = await Promise.all([
-                    fetch('/api/sysmon/network', { credentials: 'include' }),
-                    fetch('/api/sysmon/ports', { credentials: 'include' })
+                    Portal.fetch('/api/sysmon/network'),
+                    Portal.fetch('/api/sysmon/ports')
                 ]);
-                if (ifRes.status === 401 || portRes.status === 401) { window.location.href = '/login'; return; }
                 if (!ifRes.ok || !portRes.ok) { console.error('Failed to load network:', ifRes.status, portRes.status); return; }
 
                 const interfaces = await ifRes.json();
@@ -3333,7 +3325,7 @@
         async function loadRetentionConfig() {
             const el = document.getElementById('retention-config');
             try {
-                const res = await fetch('/api/admin/retention', { credentials: 'include' });
+                const res = await Portal.fetch('/api/admin/retention');
                 if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Failed to load retention config</p>'; return; }
                 retentionConfig = await res.json();
                 renderRetentionConfig();
@@ -3401,8 +3393,8 @@
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
             };
             try {
-                const res = await fetch('/api/admin/retention', {
-                    method: 'PUT', credentials: 'include',
+                const res = await Portal.fetch('/api/admin/retention', {
+                    method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
                 });
@@ -3426,8 +3418,8 @@
             btn.textContent = 'Running...';
             status.innerHTML = '<span style="color:var(--text-muted);">Cleanup in progress...</span>';
             try {
-                const res = await fetch('/api/admin/retention/run', {
-                    method: 'POST', credentials: 'include'
+                const res = await Portal.fetch('/api/admin/retention/run', {
+                    method: 'POST'
                 });
                 if (res.ok) {
                     const result = await res.json();
@@ -3501,8 +3493,7 @@
             filesCurrentPath = path || '/';
             filesBuildBreadcrumb(filesCurrentPath);
             try {
-                const res = await fetch(`/api/files/list?path=${encodeURIComponent(filesCurrentPath)}`, { credentials: 'include' });
-                if (res.status === 401) { window.location.href = '/login'; return; }
+                const res = await Portal.fetch(`/api/files/list?path=${encodeURIComponent(filesCurrentPath)}`);
                 if (!res.ok) { const d = await res.json(); Portal.toast(d.error || 'Error', 'error'); return; }
                 const entries = await res.json();
                 filesRenderFiles(entries);
@@ -3547,7 +3538,7 @@
 
         async function filesEditFile(path) {
             try {
-                const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`, { credentials: 'include' });
+                const res = await Portal.fetch(`/api/files/read?path=${encodeURIComponent(path)}`);
                 if (!res.ok) { const d = await res.json(); Portal.toast(d.error || 'Cannot read file', 'error'); return; }
                 const data = await res.json();
                 filesEditingFile = { path };
@@ -3562,7 +3553,7 @@
         async function filesDeleteFile(path, name, type) {
             if (!confirm(`Delete "${name}"?`)) return;
             try {
-                const res = await fetch(`/api/files/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE', credentials: 'include' });
+                const res = await Portal.fetch(`/api/files/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
                 const data = await res.json();
                 if (res.ok) { Portal.toast('Deleted ' + name, 'success'); filesLoadDirectory(filesCurrentPath); }
                 else Portal.toast(data.error, 'error');
@@ -3575,8 +3566,8 @@
             const dir = path.replace(/\/[^/]+$/, '') || '/';
             const newPath = filesJoinPath(dir, newName);
             try {
-                const res = await fetch('/api/files/rename', {
-                    method: 'POST', credentials: 'include',
+                const res = await Portal.fetch('/api/files/rename', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ old_path: path, new_path: newPath })
                 });
@@ -3591,8 +3582,8 @@
             if (!name) return;
             const path = filesJoinPath(filesCurrentPath, name);
             try {
-                const res = await fetch('/api/files/mkdir', {
-                    method: 'POST', credentials: 'include',
+                const res = await Portal.fetch('/api/files/mkdir', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path })
                 });
@@ -3608,7 +3599,7 @@
                 formData.append('path', filesCurrentPath);
                 formData.append('file', file);
                 try {
-                    const res = await fetch('/api/files/upload', { method: 'POST', credentials: 'include', body: formData });
+                    const res = await Portal.fetch('/api/files/upload', { method: 'POST', body: formData });
                     const data = await res.json();
                     if (!res.ok) Portal.toast(`Upload ${file.name}: ${data.error}`, 'error');
                 } catch (e) { Portal.toast(`Upload ${file.name} failed`, 'error'); }
@@ -3622,8 +3613,8 @@
             if (!filesEditingFile) return;
             const content = document.getElementById('files-edit-textarea').value;
             try {
-                const res = await fetch('/api/files/write', {
-                    method: 'POST', credentials: 'include',
+                const res = await Portal.fetch('/api/files/write', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path: filesEditingFile.path, content })
                 });
@@ -3705,7 +3696,7 @@
             if (action) params.set('action', action);
 
             try {
-                const res = await fetch(`/api/admin/audit-log?${params}`, { credentials: 'include' });
+                const res = await Portal.fetch(`/api/admin/audit-log?${params}`);
                 if (!res.ok) { document.getElementById('audit-log-body').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Failed to load</td></tr>'; return; }
                 const data = await res.json();
                 auditTotal = data.total || 0;
@@ -3761,7 +3752,7 @@
 
         async function loadAutomodRules() {
             try {
-                const res = await fetch('/api/admin/automod', { credentials: 'include' });
+                const res = await Portal.fetch('/api/admin/automod');
                 if (!res.ok) { document.getElementById('automod-rules-body').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Failed to load</td></tr>'; return; }
                 const data = await res.json();
                 const rules = data.rules || [];
@@ -3931,10 +3922,9 @@
             try {
                 const url = ruleId ? `/api/admin/automod/${ruleId}` : '/api/admin/automod';
                 const method = ruleId ? 'PUT' : 'POST';
-                const res = await fetch(url, {
+                const res = await Portal.fetch(url, {
                     method,
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
                     body: JSON.stringify(payload)
                 });
                 if (res.ok) {
@@ -3953,7 +3943,7 @@
             const panel = document.getElementById('automod-actions-panel');
             panel.style.display = '';
             try {
-                const res = await fetch('/api/admin/automod/actions?limit=50', { credentials: 'include' });
+                const res = await Portal.fetch('/api/admin/automod/actions?limit=50');
                 if (!res.ok) return;
                 const data = await res.json();
                 const actions = data.actions || [];
@@ -3977,7 +3967,7 @@
         // Load username for navbar
         (async function() {
             try {
-                const response = await fetch('/api/me', { credentials: 'include' });
+                const response = await Portal.fetch('/api/me');
                 if (response.ok) {
                     const user = await response.json();
                     document.getElementById('username-display').textContent = user.nickname || user.username;
