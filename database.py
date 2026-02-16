@@ -3223,10 +3223,12 @@ class Database:
         expires_at = None
         if expires_minutes:
             expires_at = (datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)).isoformat()
+        encrypted_question = encrypt_message(question)
+        encrypted_options = encrypt_message(json.dumps(options))
         cursor = await self.conn.execute(
             """INSERT INTO chat_polls (channel_id, message_id, user_id, question, options,
                allow_multiple, anonymous_votes, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, message_id, user_id, question, json.dumps(options),
+            (channel_id, message_id, user_id, encrypted_question, encrypted_options,
              1 if allow_multiple else 0, 1 if anonymous_votes else 0, expires_at)
         )
         await self.conn.commit()
@@ -3239,7 +3241,9 @@ class Database:
         if not row:
             return None
         poll = dict(row)
-        poll["options_list"] = json.loads(poll["options"])
+        poll["question"] = decrypt_message(poll["question"])
+        decrypted_options = decrypt_message(poll["options"])
+        poll["options_list"] = json.loads(decrypted_options)
         # Get vote counts per option
         cursor = await self.conn.execute(
             """SELECT option_index, COUNT(*) as count, GROUP_CONCAT(user_id) as voter_ids
@@ -3470,10 +3474,12 @@ class Database:
                                      channel_id: int, message_text: str,
                                      action_taken: str) -> int:
         """Log an auto-moderation action."""
+        truncated = message_text[:500] if message_text else None
+        encrypted_text = encrypt_message(truncated) if truncated else None
         cursor = await self.conn.execute(
             """INSERT INTO automod_actions (rule_id, user_id, channel_id, message_text, action_taken)
                VALUES (?, ?, ?, ?, ?)""",
-            (rule_id, user_id, channel_id, message_text[:500] if message_text else None, action_taken)
+            (rule_id, user_id, channel_id, encrypted_text, action_taken)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -3499,7 +3505,13 @@ class Database:
                 {where} ORDER BY a.created_at DESC LIMIT ? OFFSET ?""",
             params
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        rows = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            if d.get("message_text"):
+                d["message_text"] = decrypt_message(d["message_text"])
+            rows.append(d)
+        return rows
 
     async def cleanup_old_automod_actions(self, days: int = 30) -> int:
         """Delete automod actions older than N days."""
@@ -3810,6 +3822,13 @@ class Database:
 
     async def delete_chat_message(self, message_id: int, user_id: int = None) -> bool:
         """Delete a chat message (optionally verify ownership)."""
+        # Fetch file URLs before deleting so we can clean up uploaded files
+        file_cursor = await self.conn.execute(
+            "SELECT image_url, attachment_url FROM chat_messages WHERE id = ?",
+            (message_id,)
+        )
+        file_row = await file_cursor.fetchone()
+
         if user_id:
             cursor = await self.conn.execute(
                 "DELETE FROM chat_messages WHERE id = ? AND user_id = ?",
@@ -3823,6 +3842,17 @@ class Database:
         await self.conn.commit()
         if cursor.rowcount > 0:
             await self.remove_message_from_search(message_id, "channel")
+            # Clean up uploaded files from disk
+            if file_row:
+                for field in ('image_url', 'attachment_url'):
+                    url = file_row[field]
+                    if url and url.startswith('/static/uploads/chat/'):
+                        file_path = Path(__file__).parent / url.lstrip('/')
+                        try:
+                            if file_path.exists():
+                                file_path.unlink()
+                        except OSError:
+                            pass
             return True
         return False
 
@@ -4672,6 +4702,13 @@ class Database:
 
     async def delete_dm_message(self, message_id: int, user_id: int = None) -> bool:
         """Delete a DM message (optionally verify ownership)."""
+        # Fetch file URLs before deleting so we can clean up uploaded files
+        file_cursor = await self.conn.execute(
+            "SELECT image_url, attachment_url FROM dm_messages WHERE id = ?",
+            (message_id,)
+        )
+        file_row = await file_cursor.fetchone()
+
         if user_id:
             cursor = await self.conn.execute(
                 "DELETE FROM dm_messages WHERE id = ? AND user_id = ?",
@@ -4684,6 +4721,17 @@ class Database:
         await self.conn.commit()
         if cursor.rowcount > 0:
             await self.remove_message_from_search(message_id, "dm")
+            # Clean up uploaded files from disk
+            if file_row:
+                for field in ('image_url', 'attachment_url'):
+                    url = file_row[field] if file_row[field] else None
+                    if url and url.startswith('/static/uploads/chat/'):
+                        file_path = Path(__file__).parent / url.lstrip('/')
+                        try:
+                            if file_path.exists():
+                                file_path.unlink()
+                        except OSError:
+                            pass
             return True
         return False
 

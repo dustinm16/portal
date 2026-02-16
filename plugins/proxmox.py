@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import ssl
-from typing import Optional, Dict, List, Any
+from typing import Optional, List, Any
 from urllib.parse import urljoin
 
 import aiohttp
@@ -258,16 +258,6 @@ class ProxmoxPlugin(PluginBase):
             }
         }
     )
-
-    def __init__(self):
-        super().__init__()
-        self._clients: Dict[str, ProxmoxAPI] = {}
-
-    async def shutdown(self) -> None:
-        """Close all API clients."""
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
 
     def _get_client(self, config: dict) -> ProxmoxAPI:
         """Create a new API client per connection to avoid credential leakage."""

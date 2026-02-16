@@ -190,11 +190,11 @@ class SSHPlugin(PluginBase):
                     await self._ssh_loop(ws, process)
 
         except asyncssh.Error as e:
-            logger.error(f"SSH error: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logger.warning(f"SSH connection failed for user {user_id}: {e}")
+            await ws.send_json({"type": "error", "message": "SSH connection failed"})
         except Exception as e:
-            logger.error(f"Connection error: {e}")
-            await ws.send_json({"type": "error", "message": f"Connection failed: {e}"})
+            logger.error(f"SSH connection error for user {user_id}: {e}")
+            await ws.send_json({"type": "error", "message": "Connection failed"})
 
     async def _ssh_loop(self, ws: web.WebSocketResponse, process) -> None:
         """Handle SSH I/O."""

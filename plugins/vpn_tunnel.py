@@ -254,8 +254,9 @@ class VPNTunnelPlugin(PluginBase):
                     await ws.send_bytes(self._encrypt(close_pkt, cipher))
 
         except Exception as e:
+            logger.error(f"SOCKS connect failed for conn {conn_id} to {host}:{port}: {e}")
             error_pkt = self._packet("connect_error",
-                struct.pack(">I", conn_id) + str(e).encode()[:256])
+                struct.pack(">I", conn_id) + b"Connection failed")
             await ws.send_bytes(self._encrypt(error_pkt, cipher))
 
     async def _handle_tun_tunnel(
@@ -313,9 +314,9 @@ class VPNTunnelPlugin(PluginBase):
             await self._tun_loop(ws, tun, cipher)
 
         except Exception as e:
-            logger.error(f"TUN setup failed: {e}")
+            logger.error(f"TUN setup failed for user {user_id}: {e}")
             try:
-                await ws.send_bytes(self._packet("error", str(e).encode()))
+                await ws.send_bytes(self._packet("error", b"TUN setup failed"))
             except Exception:
                 pass
         finally:

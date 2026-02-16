@@ -135,7 +135,7 @@ class GitHubPlugin(PluginBase):
                 return resp.status, body
         except Exception as e:
             logger.error(f"GitHub API error: {e}")
-            return 500, {"error": str(e)}
+            return 500, {"error": "GitHub API request failed"}
 
     async def handle_websocket(
         self,
@@ -202,6 +202,7 @@ class GitHubPlugin(PluginBase):
         except Exception as e:
             logger.error(f"GitHub WebSocket error: {e}")
         finally:
+            self._sessions.pop(user_id, None)
             logger.info(f"GitHub WebSocket disconnected for user {user_id}")
 
     async def _handle_command(
@@ -483,7 +484,8 @@ class GitHubPlugin(PluginBase):
                 else:
                     await ws.send_json({"type": "readme", "content": "No README found"})
         except Exception as e:
-            await ws.send_json({"type": "error", "message": str(e)})
+            logger.error(f"GitHub README fetch error: {e}")
+            await ws.send_json({"type": "error", "message": "Failed to fetch README"})
 
     async def _create_repo(self, ws, token: str, data: dict) -> None:
         """Create a new repository."""
@@ -586,4 +588,5 @@ class GitHubPlugin(PluginBase):
                     return {"healthy": True, "message": "GitHub API reachable"}
                 return {"healthy": False, "message": f"GitHub API returned {resp.status}"}
         except Exception as e:
-            return {"healthy": False, "message": str(e)}
+            logger.warning(f"GitHub health check failed: {e}")
+            return {"healthy": False, "message": "GitHub API unreachable"}

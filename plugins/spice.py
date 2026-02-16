@@ -143,14 +143,14 @@ class SPICEPlugin(PluginBase):
             logger.error(f"SPICE connection timeout: {host}:{port}")
             await ws.send_json({
                 "type": "error",
-                "message": f"Connection timeout: {host}:{port}"
+                "message": "Connection timeout"
             })
             return
         except Exception as e:
-            logger.error(f"SPICE connection failed: {e}")
+            logger.error(f"SPICE connection failed for user {user_id}: {e}")
             await ws.send_json({
                 "type": "error",
-                "message": f"Connection failed: {e}"
+                "message": "Connection failed"
             })
             return
 

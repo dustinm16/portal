@@ -100,11 +100,13 @@ class TCPTunnelPlugin(PluginBase):
                 timeout=timeout
             )
         except asyncio.TimeoutError:
-            await ws.send_bytes(self._error_frame(f"Connection timeout: {host}:{port}"))
+            logger.warning(f"TCP tunnel connection timeout to {host}:{port} for user {user_id}")
+            await ws.send_bytes(self._error_frame("Connection timeout"))
             del self._active_connections[conn_id]
             return
         except Exception as e:
-            await ws.send_bytes(self._error_frame(f"Connection failed: {e}"))
+            logger.error(f"TCP tunnel connection failed to {host}:{port} for user {user_id}: {e}")
+            await ws.send_bytes(self._error_frame("Connection failed"))
             del self._active_connections[conn_id]
             return
 

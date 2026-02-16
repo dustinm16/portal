@@ -63,9 +63,11 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
     except asyncssh.PermissionDenied:
         return None, None, "Authentication failed"
     except asyncssh.Error as e:
-        return None, None, f"SSH error: {e}"
+        logger.warning(f"SFTP connect SSH error for {connect_opts.get('host')}: {e}")
+        return None, None, "Connection failed"
     except OSError as e:
-        return None, None, f"Connection error: {e}"
+        logger.warning(f"SFTP connect OS error for {connect_opts.get('host')}: {e}")
+        return None, None, "Connection failed"
 
 
 async def list_remote_directory(sftp: asyncssh.SFTPClient, path: str) -> list[dict]:
@@ -98,7 +100,8 @@ async def list_remote_directory(sftp: asyncssh.SFTPClient, path: str) -> list[di
     except asyncssh.SFTPPermissionDenied:
         raise ValueError("Permission denied")
     except asyncssh.SFTPError as e:
-        raise ValueError(f"SFTP error: {e}")
+        logger.error(f"SFTP list directory error for {path}: {e}")
+        raise ValueError("SFTP operation failed")
 
 
 async def read_remote_file(sftp: asyncssh.SFTPClient, path: str, max_size: int = 5 * 1024 * 1024) -> bytes:
@@ -121,7 +124,8 @@ async def read_remote_file(sftp: asyncssh.SFTPClient, path: str, max_size: int =
     except asyncssh.SFTPPermissionDenied:
         raise ValueError("Permission denied")
     except asyncssh.SFTPError as e:
-        raise ValueError(f"SFTP error: {e}")
+        logger.error(f"SFTP read file error for {path}: {e}")
+        raise ValueError("SFTP operation failed")
 
 
 async def write_remote_file(sftp: asyncssh.SFTPClient, path: str, content: bytes) -> None:
@@ -132,7 +136,8 @@ async def write_remote_file(sftp: asyncssh.SFTPClient, path: str, content: bytes
     except asyncssh.SFTPPermissionDenied:
         raise ValueError("Permission denied")
     except asyncssh.SFTPError as e:
-        raise ValueError(f"SFTP error: {e}")
+        logger.error(f"SFTP write file error for {path}: {e}")
+        raise ValueError("SFTP operation failed")
 
 
 async def create_remote_directory(sftp: asyncssh.SFTPClient, path: str) -> None:
@@ -144,7 +149,8 @@ async def create_remote_directory(sftp: asyncssh.SFTPClient, path: str) -> None:
     except asyncssh.SFTPError as e:
         if "already exists" in str(e).lower():
             raise ValueError("Directory already exists")
-        raise ValueError(f"SFTP error: {e}")
+        logger.error(f"SFTP mkdir error for {path}: {e}")
+        raise ValueError("SFTP operation failed")
 
 
 async def delete_remote_path(sftp: asyncssh.SFTPClient, path: str) -> None:
@@ -162,7 +168,8 @@ async def delete_remote_path(sftp: asyncssh.SFTPClient, path: str) -> None:
     except asyncssh.SFTPError as e:
         if "not empty" in str(e).lower():
             raise ValueError("Directory is not empty")
-        raise ValueError(f"SFTP error: {e}")
+        logger.error(f"SFTP delete error for {path}: {e}")
+        raise ValueError("SFTP operation failed")
 
 
 async def rename_remote_path(sftp: asyncssh.SFTPClient, old_path: str, new_path: str) -> None:
@@ -174,7 +181,8 @@ async def rename_remote_path(sftp: asyncssh.SFTPClient, old_path: str, new_path:
     except asyncssh.SFTPPermissionDenied:
         raise ValueError("Permission denied")
     except asyncssh.SFTPError as e:
-        raise ValueError(f"SFTP error: {e}")
+        logger.error(f"SFTP rename error for {old_path} -> {new_path}: {e}")
+        raise ValueError("SFTP operation failed")
 
 
 def _format_permissions(mode: int) -> str:

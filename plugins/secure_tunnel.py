@@ -303,9 +303,10 @@ class SecureTunnelPlugin(PluginBase):
                         "error": "Connection timeout"
                     })
                 except Exception as e:
+                    logger.error(f"Tunnel connection {conn_id} failed to {host}:{port}: {e}")
                     await self._send_frame(ws, FRAME_ERROR, {
                         "conn_id": conn_id,
-                        "error": str(e)
+                        "error": "Connection failed"
                     })
 
             elif frame_type == FRAME_DATA:

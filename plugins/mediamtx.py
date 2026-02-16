@@ -218,7 +218,7 @@ class MediaMTXPlugin(PluginBase):
                 await ws.send_json({"type": "error", "message": "Connection timeout"})
             except Exception as e:
                 logger.error(f"WebRTC signaling error: {e}")
-                await ws.send_json({"type": "error", "message": str(e)})
+                await ws.send_json({"type": "error", "message": "WebRTC signaling failed"})
 
         elif msg_type == "ice":
             # Forward ICE candidate to MediaMTX
@@ -248,7 +248,8 @@ class MediaMTXPlugin(PluginBase):
                     streams = [s for s in streams if s["name"] in allowed_streams]
                 await ws.send_json({"type": "streams", "streams": streams})
             except Exception as e:
-                await ws.send_json({"type": "error", "message": str(e)})
+                logger.error(f"Get streams error: {e}")
+                await ws.send_json({"type": "error", "message": "Failed to get streams"})
 
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})

@@ -316,7 +316,7 @@ class TerminalPlugin(PluginBase):
 
         except Exception as e:
             logger.error(f"Failed to create terminal for user {user_id}: {e}")
-            await ws.send_json({"type": "error", "message": f"Failed to create terminal: {e}"})
+            await ws.send_json({"type": "error", "message": "Failed to create terminal"})
         finally:
             # Cleanup
             if master_fd is not None:

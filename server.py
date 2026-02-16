@@ -4382,9 +4382,11 @@ async def _connect_vod_sftp(user_id: int):
     except asyncio.TimeoutError:
         return None, None, "Connection timed out"
     except asyncssh.Error as e:
-        return None, None, f"SSH error: {e}"
+        logger.warning(f"VOD SFTP SSH error for user {user_id}: {e}")
+        return None, None, "Connection failed"
     except OSError as e:
-        return None, None, f"Connection error: {e}"
+        logger.warning(f"VOD SFTP connection error for user {user_id}: {e}")
+        return None, None, "Connection failed"
 
 
 async def http_get_vod_storage(request: web.Request) -> web.Response:
@@ -4538,7 +4540,8 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
             try:
                 connect_opts["client_keys"] = [asyncssh.import_private_key(private_key)]
             except asyncssh.KeyImportError as e:
-                return web.json_response({"success": False, "error": f"Invalid private key: {e}"})
+                logger.warning(f"VOD storage private key import error: {e}")
+                return web.json_response({"success": False, "error": "Invalid private key format"})
     else:
         password = data.get("password", "")
         if password == "***":
@@ -4570,9 +4573,11 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
     except asyncio.TimeoutError:
         return web.json_response({"success": False, "error": "Connection timed out"})
     except asyncssh.Error as e:
-        return web.json_response({"success": False, "error": f"SSH error: {e}"})
+        logger.warning(f"VOD storage test SSH error for user {token.user_id}: {e}")
+        return web.json_response({"success": False, "error": "SSH connection failed"})
     except OSError as e:
-        return web.json_response({"success": False, "error": f"Connection failed: {e}"})
+        logger.warning(f"VOD storage test connection error for user {token.user_id}: {e}")
+        return web.json_response({"success": False, "error": "Connection failed"})
     finally:
         if conn:
             conn.close()
@@ -4638,9 +4643,11 @@ async def http_list_vods(request: web.Request) -> web.Response:
 
         return web.json_response({"files": files, "path": remote_root})
     except asyncssh.SFTPError as e:
-        return web.json_response({"error": f"SFTP error: {e}"}, status=502)
+        logger.error(f"VOD list SFTP error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=502)
     except OSError as e:
-        return web.json_response({"error": f"Connection error: {e}"}, status=502)
+        logger.error(f"VOD list connection error for user {token.user_id}: {e}")
+        return web.json_response({"error": "Connection failed"}, status=502)
     finally:
         conn.close()
 
@@ -4694,13 +4701,15 @@ async def http_download_vod(request: web.Request) -> web.Response:
         await response.write_eof()
         return response
     except asyncssh.SFTPError as e:
+        logger.error(f"VOD download SFTP error for user {token.user_id}: {e}")
         if response_started:
             return response  # Headers already sent, can't send error JSON
-        return web.json_response({"error": f"SFTP error: {e}"}, status=502)
+        return web.json_response({"error": "SFTP operation failed"}, status=502)
     except OSError as e:
+        logger.error(f"VOD download error for user {token.user_id}: {e}")
         if response_started:
             return response
-        return web.json_response({"error": f"Download error: {e}"}, status=502)
+        return web.json_response({"error": "Download failed"}, status=502)
     finally:
         conn.close()
 
@@ -4894,9 +4903,11 @@ async def http_delete_vod(request: web.Request) -> web.Response:
         await sftp.remove(remote_path)
         return web.json_response({"message": f"Deleted {filename}"})
     except asyncssh.SFTPError as e:
-        return web.json_response({"error": f"SFTP error: {e}"}, status=502)
+        logger.error(f"VOD delete SFTP error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=502)
     except OSError as e:
-        return web.json_response({"error": f"Delete error: {e}"}, status=502)
+        logger.error(f"VOD delete error for user {token.user_id}: {e}")
+        return web.json_response({"error": "Delete operation failed"}, status=502)
     finally:
         conn.close()
 
@@ -5061,7 +5072,6 @@ async def http_vuln_scanner_status(request: web.Request) -> web.Response:
 
     return web.json_response({
         "nmap_available": vulnerability_scanner.nmap.is_available(),
-        "nmap_path": vulnerability_scanner.nmap.nmap_path,
         "nvd_api_configured": bool(vulnerability_scanner.cve_db._nvd_api_key),
         "cache_ttl": vulnerability_scanner._cache_ttl,
         "scan_timeout": vulnerability_scanner.nmap.timeout,
@@ -6019,8 +6029,11 @@ async def http_sftp_vod_list(request: web.Request) -> web.Response:
         path = request.query.get("path", "/")
         entries = await sftp_browser.list_remote_directory(sftp, path)
         return web.json_response(entries)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD list error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6040,8 +6053,11 @@ async def http_sftp_vod_read(request: web.Request) -> web.Response:
             return web.json_response({"error": "path required"}, status=400)
         content = await sftp_browser.read_remote_file(sftp, path)
         return web.json_response({"path": path, "content": content.decode("utf-8", errors="replace")})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD read error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6069,8 +6085,11 @@ async def http_sftp_vod_download(request: web.Request) -> web.Response:
                 "Content-Type": "application/octet-stream",
             }
         )
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD download error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6091,8 +6110,11 @@ async def http_sftp_vod_mkdir(request: web.Request) -> web.Response:
             return web.json_response({"error": "path required"}, status=400)
         await sftp_browser.create_remote_directory(sftp, path)
         return web.json_response({"status": "created", "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD mkdir error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6112,8 +6134,11 @@ async def http_sftp_vod_delete(request: web.Request) -> web.Response:
             return web.json_response({"error": "path required"}, status=400)
         await sftp_browser.delete_remote_path(sftp, path)
         return web.json_response({"status": "deleted"})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD delete error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6146,8 +6171,11 @@ async def http_sftp_vod_upload(request: web.Request) -> web.Response:
         dest = target_path.rstrip("/") + "/" + file_name
         await sftp_browser.write_remote_file(sftp, dest, file_data)
         return web.json_response({"status": "success", "path": dest})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD upload error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6176,8 +6204,11 @@ async def http_sftp_vod_write(request: web.Request) -> web.Response:
     try:
         await sftp_browser.write_remote_file(sftp, path, content.encode("utf-8"))
         return web.json_response({"status": "success", "path": path})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD write error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -6206,8 +6237,11 @@ async def http_sftp_vod_rename(request: web.Request) -> web.Response:
     try:
         await sftp_browser.rename_remote_path(sftp, old_path, new_path)
         return web.json_response({"status": "success"})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        logger.error(f"SFTP VOD rename error for user {token.user_id}: {e}")
+        return web.json_response({"error": "SFTP operation failed"}, status=500)
     finally:
         ssh_conn.close()
 
@@ -7059,7 +7093,6 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         )
 
     logger.info(f"WebSocket connection from {client_ip} (user {token.user_id}) to {path}")
-    logger.debug(f"WebSocket headers: {dict(request.headers)}")
 
     # Per-user WebSocket connection limit (prevents resource exhaustion)
     _MAX_WS_PER_USER = 20
@@ -7212,7 +7245,7 @@ async def handle_local_terminal_ws(
         logger.error(f"Local terminal error for user {token.user_id}: {e}")
         traffic_metrics.record_error(SERVICE_ID_TERMINAL)
         if not ws.closed:
-            await ws.send_json({"type": "error", "message": f"Terminal error: {type(e).__name__}"})
+            await ws.send_json({"type": "error", "message": "Terminal error"})
             await ws.close(code=4500, message=b"Terminal error")
 
 
@@ -7308,7 +7341,7 @@ async def handle_user_connection_ws(
         logger.error(f"User connection {conn_id} error: {e}")
         traffic_metrics.record_error(-conn_id)
         if not ws.closed:
-            await ws.send_json({"type": "error", "message": f"Connection error: {type(e).__name__}"})
+            await ws.send_json({"type": "error", "message": "Connection error"})
             await ws.close(code=4500, message=b"Connection error")
 
 
@@ -7408,7 +7441,7 @@ async def handle_relay_ws(
         if not ws.closed:
             await ws.send_json({
                 "type": "error",
-                "message": f"Service error: {type(e).__name__}"
+                "message": "Service error"
             })
             await ws.close(code=4500, message=b"Service error")
 
@@ -7616,6 +7649,16 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
 async def http_logout(request: web.Request) -> web.Response:
     """Handle logout."""
+    # Try to revoke the session token before clearing cookie
+    cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
+    if cookie:
+        try:
+            token = await authenticate_request(request)
+            if token:
+                await db.revoke_token(token.token_id)
+        except Exception:
+            pass  # Best effort - still clear cookie
+
     response = web.HTTPFound("/login")
     response.del_cookie(Config.SESSION_COOKIE_NAME)
     raise response
@@ -9275,6 +9318,16 @@ async def http_link_preview(request: web.Request) -> web.Response:
             return web.json_response({"error": "Blocked host"}, status=403)
     except ValueError:
         pass
+    # DNS resolution check: validate resolved IPs are not private/internal
+    import socket
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+        for family, stype, proto, canonname, sockaddr in resolved:
+            ip_str = sockaddr[0]
+            if is_blocked_host(ip_str):
+                return web.json_response({"error": "URL resolves to blocked address"}, status=403)
+    except socket.gaierror:
+        return web.json_response({"error": "Could not resolve hostname"}, status=400)
 
     # Check cache
     now = time()
@@ -10394,11 +10447,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     for mid in mentioned_ids:
                                         if mid == user_id or mid in channel_viewer_ids:
                                             continue
-                                        preview = message_text[:80] + "..." if len(message_text) > 80 else message_text
                                         await send_notification(
                                             mid, "mention",
                                             f"{display_name} mentioned you in #{current_channel}",
-                                            preview,
+                                            None,
                                             {"channel": current_channel, "channel_id": channel["id"], "message_id": msg_id}
                                         )
                             except Exception as e:
@@ -11354,11 +11406,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         participants = await db.get_dm_participant_ids(conv_id)
                         for pid in participants:
                             if pid != user_id and pid not in dm_user_connections:
-                                preview = text[:80] + "..." if len(text) > 80 else text
                                 await send_notification(
                                     pid, "dm_message",
-                                    f"Message from {display_name}",
-                                    preview,
+                                    f"New message from {display_name}",
+                                    None,
                                     {"conversation_id": conv_id, "message_id": msg_id}
                                 )
 
@@ -12200,6 +12251,13 @@ async def http_change_password(request: web.Request) -> web.Response:
     new_hash = hash_password(new_password)
     await db.update_password_hash(token.user_id, new_hash)
 
+    # Revoke all existing tokens except the current session
+    await db.conn.execute(
+        "UPDATE tokens SET revoked = 1 WHERE user_id = ? AND token_id != ?",
+        (token.user_id, token.token_id)
+    )
+    await db.conn.commit()
+
     logger.info(f"Password changed for user {token.user_id}")
 
     return web.json_response({"message": "Password changed successfully"})
@@ -12640,6 +12698,13 @@ async def http_update_user_role(request: web.Request) -> web.Response:
         )
 
     await db.set_user_role(user_id, new_role)
+
+    # Revoke all tokens - user must re-authenticate with new role scopes
+    await db.conn.execute(
+        "UPDATE tokens SET revoked = 1 WHERE user_id = ?",
+        (user_id,)
+    )
+    await db.conn.commit()
 
     logger.info(f"Role changed for user {target_user['username']} from {target_role} to {new_role} by user {token.user_id}")
 
