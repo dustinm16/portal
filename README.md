@@ -6,80 +6,79 @@
 
 A self-hosted, encrypted communication and infrastructure gateway. One server gives you everything — live streaming, encrypted chat, voice calls, remote access, and file management — all under your control, on your hardware, with zero third-party dependencies.
 
-> **A self-hosted alternative to Discord + Twitch + your VPN.** No accounts on someone else's server. No content moderation you didn't choose. No subscription fees. Just your hardware, your rules.
+> **Your server. Your data. Your rules.** No accounts on someone else's platform. No content policies you didn't write. No subscription fees. Just your hardware running your portal.
 
 ## Why This Exists
 
-The internet's communication infrastructure is centralized. Discord owns your chat history. Twitch takes 50% of your revenue and can deplatform you overnight. Kick, YouTube, and every other platform can censor, throttle, or shut down your content at will.
+Most of the tools people use every day for communication, streaming, and remote access are run by someone else. That means someone else holds your messages, your files, your audience, and your access credentials. If they change their terms, raise prices, or shut down — you lose everything.
 
-**Open Relay Portal is the alternative.**
+Open Relay Portal puts all of it on a server you own. One installation gives you a complete communication platform, a streaming server, remote access to all your machines, and a file manager — with everything encrypted and under your control.
 
-### For communities that need sovereignty
-- **Content creators** who want to own their platform, their audience, and their revenue
-- **Organizations** that need secure internal communication without trusting a third party
-- **Gaming communities** tired of Discord's arbitrary moderation and data harvesting
+### For communities that want independence
+- **Content creators** who want to own their platform, their audience, and 100% of their revenue
+- **Organizations** that need secure internal communication without trusting their data to a third party
+- **Friend groups and gaming communities** who want a private space they fully control
 
-### For people in hostile environments
+### For people in restrictive or dangerous environments
 - **Journalists** in countries where press freedom is under attack — encrypted chat and streaming that no corporation can be compelled to hand over
-- **Activists and organizers** in authoritarian regimes — your server, your data, your rules
-- **Aid workers and NGOs** operating in conflict zones where commercial services are blocked, monitored, or unreliable
-- **War-torn regions** where centralized infrastructure is destroyed but a single server (or a VPS anywhere in the world) can restore communication
+- **Activists and organizers** who need communication infrastructure that can't be censored or monitored by outside parties
+- **Aid workers and NGOs** operating in conflict zones where commercial services are blocked, unreliable, or under surveillance
+- **Anyone in a region** where centralized infrastructure is destroyed — a single server (even a small VPS anywhere in the world) can restore communication
 
 ### For infrastructure operators
-- **Homelab enthusiasts** who want a single portal to manage their entire infrastructure
-- **Small businesses** that need VPN-less remote access to internal services
-- **DevOps teams** who want SSH, VNC, RDP, and database access through a web browser
+- **Homelab enthusiasts** who want a single portal to manage their entire setup from anywhere
+- **Small businesses** that need remote access to internal services without maintaining a VPN
+- **IT teams** who want browser-based SSH, VNC, RDP, and database access with centralized authentication
 
 ## What You Get
 
 ### Live Streaming
-RTMPS ingress with HLS playback. Stream from OBS, use hardware encoding (NVENC/AMF/x264), automatic VOD recording to your own storage. No platform cut, no algorithm, no ToS surprises.
+Broadcast video to your community — like having your own private TV channel. Stream from OBS or any RTMP-compatible app, with support for hardware-accelerated encoding (NVENC, AMF, x264). Viewers watch in their browser over HLS. Every stream is automatically recorded as VOD clips and uploaded to your own storage. You keep full control — no platform cut, no algorithm deciding who sees your content, no surprise policy changes.
 
 ### Encrypted Chat
-Real-time messaging with Fernet encryption at rest. Channels, replies, threads, reactions, @mentions, image embeds, link previews, YouTube embeds, pinned messages. Everything Discord does, except you own the database.
+Message your team or community in real time — all messages are encrypted on the server so only your portal can read them. Organize conversations into channels, reply to specific messages, start threads, react with emoji, @mention people, share images, embed links and videos, and pin important messages. Search across everything with Ctrl+K. It's a full-featured chat system that lives entirely on your hardware.
 
 ### Direct Messages
-Private 1:1 and group DMs (up to 10 participants), all encrypted at rest. Reactions, replies, editing, typing indicators, unread badges, mute — the same features as channel chat, delivered in real-time via WebSocket. Offline users get persistent notifications.
+Have private conversations with one person or a small group (up to 10 people), all encrypted on the server. Supports reactions, replies, message editing, typing indicators, unread badges, and muting — everything you'd expect from a modern messaging experience, delivered instantly over WebSocket. If someone is offline, they'll see a notification when they return.
 
 ### Message Search
-Full-text search across channels and DMs powered by FTS5. Filter by user, date range, content type. Search syntax: `from:user in:channel has:image before:date`. Keyboard shortcut: Ctrl+K. DM search results restricted to your own conversations.
+Find anything across your channels and DMs with full-text search. Filter by who sent it, when it was sent, or what type of content it contains. Use shortcuts like `from:user in:channel has:image before:date` to narrow results. DM search is private — you only see results from your own conversations.
 
 ### Voice Chat
-WebRTC peer-to-peer voice with DTLS-SRTP encryption. Push-to-talk or voice activity detection. No audio ever touches the server — true end-to-end.
+Talk to people in real time with encrypted audio. Choose between push-to-talk or automatic voice detection. Audio travels directly between participants using WebRTC — it never passes through or gets stored on the server. True peer-to-peer, end-to-end encrypted voice.
 
 ### Remote Access
-SSH terminals, VNC desktops, RDP sessions, SPICE consoles, database connections, Proxmox management — all through your browser over WSS. 75 connection types supported across 17 categories, with setup guides for each. Quick Add bar lets any user create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click. HTTP/HTTPS connections open in Portal's embedded browser with tabbed browsing, multi-site navigation, and keyboard shortcuts (Ctrl+T/W/Tab for tabs, Alt+arrows for navigation, Ctrl+L for URL bar) — browse web UIs (Home Assistant, Grafana, Plex, etc.) or any website through the proxy. A default "Web Browser" connection with DuckDuckGo as homepage is created for all users. Connection IDs use opaque tokens to prevent enumeration. Portal session cookies and auth headers are stripped from upstream requests, and proxied content runs in a sandboxed iframe. No VPN required.
+Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, RDP sessions, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
+
+For web-based services, Portal includes a built-in embedded browser with tabbed browsing and keyboard shortcuts (Ctrl+T for new tab, Ctrl+W to close, Alt+arrows for back/forward). Browse web dashboards, admin panels, or any website through Portal's secure proxy. A default "Web Browser" connection with a search engine homepage is created for every user. No VPN required — if you can reach your portal, you can reach everything behind it.
 
 ### File Management
-Browse and edit files on the server or on remote machines via SFTP. Upload, download, create, rename, delete — all from the web UI. Commander-style dual-pane file manager when multiple SFTP connections exist, enabling drag-and-drop transfers between remote hosts.
+Browse, upload, download, and edit files on your server or on remote machines through the web. The file manager works with your server's local filesystem (for admins) and with any SFTP connection you've set up. When you have multiple SFTP connections, a dual-pane commander-style view lets you move files between remote machines side by side.
 
 ### System Monitoring
-Process manager, systemd service control, network interfaces, listening ports — integrated directly into the Admin Panel as a tab. Manage your server without opening a terminal.
+See what's running on your server at a glance — active processes, systemd services, network interfaces, and open ports. Start, stop, or restart services. Kill runaway processes. All integrated directly into the admin panel as a tab, so you don't need to open a terminal for routine server management.
 
 ### Data Retention
-Admin-configurable retention policies for chat messages, DMs, notifications, activity logs, service logs, and expired tokens. Automatic cleanup runs on a configurable interval (default 6 hours) with optional database VACUUM. Run cleanup on demand from the Admin Panel.
+Set policies for how long chat messages, DMs, notifications, activity logs, and expired tokens are kept. Automatic cleanup runs on a schedule (default every 6 hours) with optional database compaction. Run cleanup on demand anytime from the admin panel.
 
 ### Administration
-User management with role hierarchy (Super Admin / Admin / Moderator / User), invite codes, TOTP 2FA, API keys, SSH key management, traffic metrics, vulnerability scanning. Server file management and data retention settings integrated directly into the Admin Panel. Unified role checking across all pages with consistent role labels in profile and UI.
+Manage users with a clear role hierarchy — Super Admin, Admin, Moderator, and User. Create invite codes to let people register (daily rotating, single-use, or time-limited). Require two-factor authentication. Issue API keys for automation. Manage SSH keys, monitor traffic patterns, and scan for vulnerabilities. All administration happens through the admin panel in your browser.
 
-## Feature Comparison
+## Usage Examples
 
-| Feature | Open Relay Portal | Discord | Twitch | Guacamole | Matrix/Element | Mastodon |
-|---------|:-:|:-:|:-:|:-:|:-:|:-:|
-| Encrypted chat (at rest) | Yes | No | No | No | E2EE opt-in | No |
-| Live streaming (RTMPS/HLS) | Yes | Go Live only | Yes | No | No | No |
-| VOD recording (self-hosted) | Yes | No | Yes (platform) | No | No | No |
-| Voice chat (E2E encrypted) | Yes | No | No | No | Yes | No |
-| SSH/VNC/RDP remote access | Yes | No | No | Yes | No | No |
-| HTTP reverse proxy + embedded browser | Yes | No | No | No | No | No |
-| File management (SFTP) | Yes | No | No | No | No | No |
-| Direct messages | Yes | Yes | Yes | No | Yes | Yes |
-| Full-text search | Yes | Yes | No | No | Partial | Yes |
-| Self-hosted / on-premise | Yes | No | No | Yes | Yes | Yes |
-| No vendor lock-in | Yes | No | No | Yes | Yes | Yes |
-| No subscription required | Yes | No | No | Yes | Yes | Yes |
-| Open source | AGPL-3.0 | No | No | Apache-2.0 | Apache-2.0 | AGPL-3.0 |
-| Single binary deployment | Yes | N/A | N/A | No | No | No |
+Here are a few ways people use Open Relay Portal:
+
+- **"My friend needs help with their computer."** Open a VNC connection in your browser and see their screen in real time — walk them through the fix or take control directly.
+
+- **"I need a file from my home server while I'm traveling."** Log into your portal from any browser, open the file manager, and download what you need. No VPN setup, no special app.
+
+- **"Our team needs a private group chat with voice."** Create channels for different topics, invite your team with an invite code, and use voice chat when you need to talk. Everything stays on your server.
+
+- **"I want to stream for my friends without a public platform."** Go live from OBS to your portal's RTMPS address. Your friends open your portal URL in their browser and watch. Recordings are saved automatically.
+
+- **"I manage a home server with several services."** Add each service as a connection in Portal — Proxmox, Home Assistant, Grafana, Pi-hole, whatever you run. Access all of them through one authenticated dashboard in your browser, from anywhere.
+
+- **"Our organization needs secure communication that we fully control."** Deploy Portal on your own infrastructure. All messages are encrypted at rest, voice never touches the server, and no third party can access your data — even if compelled.
 
 ## Screenshots
 
@@ -200,7 +199,7 @@ Single binary. No Docker required. No microservices. No external databases. One 
 ## Security
 
 - **HTTPS only** — TLS 1.2+ with HSTS preload, no HTTP fallback
-- **Encryption at rest** — Chat messages, connection configs, stream keys all encrypted (Fernet/PBKDF2)
+- **Encryption at rest** — Chat messages, connection configs, stream keys, TOTP secrets all encrypted (Fernet/PBKDF2)
 - **Machine-bound keys** — Encryption keys derived from hardware ID + random salt; cloning the repo cannot decrypt data
 - **Argon2id** password hashing
 - **Zero-knowledge voice** — WebRTC DTLS-SRTP, audio never touches the server
@@ -246,16 +245,6 @@ Contributions welcome. The codebase is vanilla Python and vanilla JS — no fram
 pip install flake8
 flake8 server.py database.py auth.py --max-line-length=120
 ```
-
-## Related Projects
-
-If you're looking for self-hosted alternatives in specific categories:
-
-- **Chat**: [Matrix/Element](https://matrix.org), [Rocket.Chat](https://rocket.chat), [Mattermost](https://mattermost.com)
-- **Streaming**: [Owncast](https://owncast.online), [Peertube](https://joinpeertube.org)
-- **Remote Access**: [Guacamole](https://guacamole.apache.org), [Rustdesk](https://rustdesk.com)
-
-Open Relay Portal combines all three into a single server with unified authentication, encrypted storage, and zero external dependencies.
 
 ## License
 
