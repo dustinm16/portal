@@ -14,16 +14,16 @@ Open Relay Portal is a secure, authenticated gateway for home infrastructure tha
 
 | Category | Files | Lines |
 |----------|------:|------:|
-| Python (core) | 14 | 21,517 |
-| Python (plugins) | 13 | 4,376 |
-| Python (services) | 3 | 1,291 |
-| **Python Total** | **30** | **27,184** |
-| HTML | 19 | 27,457 |
-| JavaScript | 9 | 7,231 |
-| CSS | 1 | 3,476 |
-| **All Code Total** | **59** | **65,348** |
+| Python (core) | 14 | 24,896 |
+| Python (plugins) | 13 | 4,482 |
+| Python (services) | 3 | 1,292 |
+| **Python Total** | **30** | **30,670** |
+| HTML | 20 | 30,875 |
+| JavaScript | 9 | 7,260 |
+| CSS | 1 | 3,520 |
+| **All Code Total** | **60** | **72,325** |
 
-- **217 HTTP routes** (118 GET, 67 POST, 14 PUT, 17 DELETE, 1 PATCH)
+- **237 HTTP routes** (130 GET, 68 POST, 16 PUT, 20 DELETE, 1 PATCH)
 - **28 WebSocket message types** (13 chat, 9 DM, 6 voice)
 - **75 connection types** across 17 categories
 - **28 documented security features**
@@ -162,19 +162,19 @@ Permission Hierarchy:
 
 ```
 /opt/portal/
-├── server.py              # Main aiohttp server (~11,280 lines, 217 routes)
-├── database.py            # SQLite async database layer (~4,255 lines)
-├── auth.py                # JWT/API key authentication (~466 lines)
-├── config.py              # Environment configuration (~154 lines)
-├── logger.py              # Logging with rotation (~281 lines)
-├── ssh_keys.py            # SSH key generation/management (~261 lines)
+├── server.py              # Main aiohttp server (~13,730 lines, 237 routes)
+├── database.py            # SQLite async database layer (~5,152 lines)
+├── auth.py                # JWT/API key authentication (~467 lines)
+├── config.py              # Environment configuration (~168 lines)
+├── logger.py              # Logging with rotation (~279 lines)
+├── ssh_keys.py            # SSH key generation/management (~260 lines)
 ├── shodan_integration.py  # Shodan API for recon (~307 lines)
-├── traffic_metrics.py     # Connection metrics, time series, Chart.js data (~400 lines)
-├── vulnerability_scanner.py # CVE/port scanning (~1,525 lines)
-├── cert_manager.py        # TLS certificate lifecycle (~492 lines)
+├── traffic_metrics.py     # Connection metrics, time series, Chart.js data (~399 lines)
+├── vulnerability_scanner.py # CVE/port scanning (~1,524 lines)
+├── cert_manager.py        # TLS certificate lifecycle (~510 lines)
 ├── setup.py               # Interactive setup wizard + MediaMTX installer (~1,265 lines)
-├── system_monitor.py      # Process, systemd service, and network monitoring (~368 lines)
-├── file_manager.py        # Local filesystem operations (admin) (~279 lines)
+├── system_monitor.py      # Process, systemd service, and network monitoring (~367 lines)
+├── file_manager.py        # Local filesystem operations (admin) (~285 lines)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user) (~183 lines)
 │
 ├── plugins/               # Connection plugins
@@ -197,7 +197,7 @@ Permission Hierarchy:
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   └── mediamtx.py        # MediaMTX process manager
 │
-├── static/                # 20 HTML pages, 9 JS modules, 1 CSS file (~38,164 lines frontend)
+├── static/                # 20 HTML pages, 9 JS modules, 1 CSS file (~41,655 lines frontend)
 │   ├── index.html         # Dashboard
 │   ├── login.html         # Login page
 │   ├── admin.html         # Admin panel
@@ -218,7 +218,7 @@ Permission Hierarchy:
 │   ├── files.html         # File manager (SFTP, admin local in admin panel)
 │   ├── sysmon.html        # Redirects to /admin#system
 │   ├── unauthorized.html  # Auth error page
-│   ├── css/portal.css     # Shared styles (~3,476 lines, 6 responsive breakpoints)
+│   ├── css/portal.css     # Shared styles (~3,520 lines, 6 responsive breakpoints)
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
@@ -270,6 +270,7 @@ CREATE TABLE users (
 CREATE TABLE user_connections (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
+    uuid TEXT,                       -- Opaque public ID (secrets.token_urlsafe)
     name TEXT NOT NULL,
     type TEXT NOT NULL,              -- ssh, vnc, rdp, proxmox, etc.
     host TEXT NOT NULL,
@@ -1224,7 +1225,7 @@ GOOGLE_VERIFICATION_FILE=<filename.html>      # Verification filename
 RTMP_PLAIN_ENABLED=false          # Enable plain RTMP ingress (default: false)
 RTMP_PLAIN_PORT=1935              # Plain RTMP port (default: 1935)
 RTMP_TOKEN_EXPIRY_MINUTES=15      # Token expiry time in minutes (default: 15)
-RTMP_TOKEN_GRACE_SECONDS=30       # Grace period for reconnects (default: 30)
+RTMP_TOKEN_GRACE_SECONDS=300      # Grace period for reconnects (default: 300)
 
 # Certificate Management
 CERT_METHOD=                      # letsencrypt, selfsigned, or custom

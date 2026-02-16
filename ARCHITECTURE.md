@@ -144,9 +144,9 @@ Permission Hierarchy:
 
 ```
 /opt/portal/
-├── server.py              # Main aiohttp server (~8100 lines)
-├── database.py            # SQLite async database layer (~2500 lines)
-├── auth.py                # JWT/API key authentication (~450 lines)
+├── server.py              # Main aiohttp server (~13,730 lines)
+├── database.py            # SQLite async database layer (~5,152 lines)
+├── auth.py                # JWT/API key authentication (~467 lines)
 ├── config.py              # Environment configuration
 ├── logger.py              # Logging with rotation
 ├── ssh_keys.py            # SSH key generation/management
@@ -179,14 +179,15 @@ Permission Hierarchy:
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   └── mediamtx.py        # MediaMTX process manager
 │
-├── static/                # 16 HTML pages, 8 JS modules, 1 CSS file
+├── static/                # 20 HTML pages, 9 JS modules, 1 CSS file
 │   ├── index.html         # Dashboard
 │   ├── login.html         # Login page
 │   ├── admin.html         # Admin panel
+│   ├── browser.html       # Embedded HTTP browser (navigation, address bar, iframe sandbox)
 │   ├── chat.html          # Community chat (mobile sidebar toggle)
 │   ├── streams.html       # Community streams
 │   ├── live.html          # Public live streams (unauthenticated)
-│   ├── watch.html         # Stream viewer (HLS playback)
+│   ├── watch.html         # Stream viewer (HLS playback, mobile chat popout)
 │   ├── terminal.html      # Terminal UI
 │   ├── vnc.html           # VNC viewer
 │   ├── spice.html         # SPICE viewer
@@ -194,11 +195,12 @@ Permission Hierarchy:
 │   ├── mediamtx.html      # MediaMTX management
 │   ├── github.html        # GitHub browser
 │   ├── api-docs.html      # Interactive API documentation
-│   ├── about.html         # Feature guide & docs
-│   ├── files.html         # File manager (admin local + user SFTP)
-│   ├── sysmon.html        # System monitor (processes, services, network)
+│   ├── about.html         # Feature guide & docs (fully public, all features visible)
+│   ├── guides.html        # Connection setup guides (75 types)
+│   ├── files.html         # File manager (SFTP, admin local in admin panel)
+│   ├── sysmon.html        # Redirects to /admin#system
 │   ├── unauthorized.html  # Auth error page
-│   ├── css/portal.css     # Shared styles (~3100 lines, 6 responsive breakpoints)
+│   ├── css/portal.css     # Shared styles (~3,520 lines, 6 responsive breakpoints)
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
