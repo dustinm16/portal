@@ -1204,7 +1204,8 @@ async function deactivateInviteCode(id) {
 
 function copyInviteCode(code) {
     navigator.clipboard.writeText(code).then(() => {
-        Portal.toast('Copied to clipboard', 'success');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     }).catch(() => {
         // Fallback
         const ta = document.createElement('textarea');
@@ -1213,7 +1214,8 @@ function copyInviteCode(code) {
         ta.select();
         document.execCommand('copy');
         document.body.removeChild(ta);
-        Portal.toast('Copied to clipboard', 'success');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     });
 }
 

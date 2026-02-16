@@ -23,6 +23,10 @@ try:
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
+    import logging as _logging
+    _logging.getLogger(__name__).critical(
+        "cryptography library not available — ALL DATA WILL BE STORED UNENCRYPTED"
+    )
 
 
 # --- Machine-bound encryption salt ---
@@ -53,6 +57,11 @@ def _get_encryption_salt() -> bytes:
         _encryption_salt_cache = _ENCRYPTION_SALT_FILE.read_bytes()
         return _encryption_salt_cache
 
+    # Salt file missing — could be fresh install or accidental deletion
+    logger.warning(
+        "Encryption salt file not found — generating new salt. "
+        "If this is not a fresh install, previously encrypted data will be unreadable!"
+    )
     return _generate_encryption_salt()
 
 
@@ -68,11 +77,17 @@ def _generate_encryption_salt() -> bytes:
     return salt
 
 
+# --- Key derivation caches (avoid repeated PBKDF2 computations) ---
+_chat_key_cache: bytes | None = None
+_config_key_cache: bytes | None = None
+
 # --- Legacy key functions (hardcoded salts, pre-machine-binding) ---
 
 def _get_legacy_chat_key() -> bytes:
     """Legacy chat encryption key using hardcoded salt."""
-    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    if not Config.JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is required for encryption")
+    secret = Config.JWT_SECRET.encode()
     if CRYPTO_AVAILABLE:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(), length=32,
@@ -84,7 +99,9 @@ def _get_legacy_chat_key() -> bytes:
 
 def _get_legacy_config_key() -> bytes:
     """Legacy config encryption key using hardcoded salt."""
-    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    if not Config.JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is required for encryption")
+    secret = Config.JWT_SECRET.encode()
     if CRYPTO_AVAILABLE:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(), length=32,
@@ -98,7 +115,12 @@ def _get_legacy_config_key() -> bytes:
 
 def get_chat_encryption_key() -> bytes:
     """Derive chat encryption key from JWT_SECRET + machine-bound salt."""
-    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    global _chat_key_cache
+    if _chat_key_cache is not None:
+        return _chat_key_cache
+    if not Config.JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is required for encryption")
+    secret = Config.JWT_SECRET.encode()
     machine_salt = _get_encryption_salt()
     if CRYPTO_AVAILABLE:
         kdf = PBKDF2HMAC(
@@ -107,13 +129,20 @@ def get_chat_encryption_key() -> bytes:
             salt=machine_salt + b"chat",
             iterations=100000,
         )
-        return base64.urlsafe_b64encode(kdf.derive(secret))
-    return base64.urlsafe_b64encode(hashlib.sha256(secret + machine_salt).digest())
+        _chat_key_cache = base64.urlsafe_b64encode(kdf.derive(secret))
+        return _chat_key_cache
+    _chat_key_cache = base64.urlsafe_b64encode(hashlib.sha256(secret + machine_salt).digest())
+    return _chat_key_cache
 
 
 def get_config_encryption_key() -> bytes:
     """Derive config encryption key from JWT_SECRET + machine-bound salt."""
-    secret = Config.JWT_SECRET.encode() if Config.JWT_SECRET else b"default-secret"
+    global _config_key_cache
+    if _config_key_cache is not None:
+        return _config_key_cache
+    if not Config.JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is required for encryption")
+    secret = Config.JWT_SECRET.encode()
     machine_salt = _get_encryption_salt()
     if CRYPTO_AVAILABLE:
         kdf = PBKDF2HMAC(
@@ -122,8 +151,10 @@ def get_config_encryption_key() -> bytes:
             salt=machine_salt + b"config",
             iterations=100000,
         )
-        return base64.urlsafe_b64encode(kdf.derive(secret))
-    return base64.urlsafe_b64encode(hashlib.sha256(secret + machine_salt).digest())
+        _config_key_cache = base64.urlsafe_b64encode(kdf.derive(secret))
+        return _config_key_cache
+    _config_key_cache = base64.urlsafe_b64encode(hashlib.sha256(secret + machine_salt).digest())
+    return _config_key_cache
 
 
 def encrypt_message(plaintext: str) -> str:
@@ -134,7 +165,7 @@ def encrypt_message(plaintext: str) -> str:
         f = Fernet(get_chat_encryption_key())
         return f.encrypt(plaintext.encode()).decode()
     except Exception as e:
-        logger.debug(f"Message encryption failed, storing plaintext: {e}")
+        logger.error(f"Message encryption failed, storing plaintext: {e}")
         return plaintext
 
 
@@ -151,8 +182,8 @@ def decrypt_message(ciphertext: str) -> str:
             f = Fernet(_get_legacy_chat_key())
             return f.decrypt(ciphertext.encode()).decode()
         except Exception as e:
-            logger.debug(f"Message decryption failed (both keys), returning raw: {type(e).__name__}")
-            return ciphertext
+            logger.warning(f"Message decryption failed (both keys): {type(e).__name__}")
+            return "[Message could not be decrypted]"
 
 
 # --- Connection config encryption (separate key from chat) ---
@@ -185,7 +216,7 @@ def decrypt_config(data: str) -> str:
             f = Fernet(_get_legacy_config_key())
             return f.decrypt(data[4:].encode()).decode()
         except Exception as e:
-            logger.debug(f"Config decryption failed (both keys): {type(e).__name__}")
+            logger.warning(f"Config decryption failed (both keys): {type(e).__name__}")
             return "{}"
 
 
@@ -919,6 +950,8 @@ class Database:
 
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
+        # Restrict DB file permissions even if umask is permissive
+        os.chmod(self.db_path, 0o600)
         await self._connection.execute("PRAGMA journal_mode = WAL")
         await self._connection.execute("PRAGMA busy_timeout = 5000")
         await self._connection.execute("PRAGMA foreign_keys = ON")
@@ -1311,17 +1344,29 @@ class Database:
             old_f = Fernet(old_chat_key)
             new_f = Fernet(new_chat_key)
             cursor = await self._connection.execute(
-                "SELECT id, message FROM dm_messages"
+                "SELECT id, message, reply_preview_text FROM dm_messages WHERE message IS NOT NULL"
             )
             rows = await cursor.fetchall()
             for row in rows:
                 try:
+                    updates = {}
                     if row["message"]:
-                        plaintext = old_f.decrypt(row["message"].encode()).decode()
-                        new_encrypted = new_f.encrypt(plaintext.encode()).decode()
+                        try:
+                            plaintext = old_f.decrypt(row["message"].encode()).decode()
+                            updates["message"] = new_f.encrypt(plaintext.encode()).decode()
+                        except Exception:
+                            pass  # Might be unencrypted legacy
+                    if row.get("reply_preview_text"):
+                        try:
+                            plaintext = old_f.decrypt(row["reply_preview_text"].encode()).decode()
+                            updates["reply_preview_text"] = new_f.encrypt(plaintext.encode()).decode()
+                        except Exception:
+                            pass
+                    if updates:
+                        set_clause = ", ".join(f"{k} = ?" for k in updates)
                         await self._connection.execute(
-                            "UPDATE dm_messages SET message = ? WHERE id = ?",
-                            (new_encrypted, row["id"])
+                            f"UPDATE dm_messages SET {set_clause} WHERE id = ?",
+                            (*updates.values(), row["id"])
                         )
                         dm_total += 1
                 except Exception as e:
@@ -1406,22 +1451,99 @@ class Database:
     async def delete_user(self, user_id: int) -> bool:
         """Delete a user and all associated data (tokens, connections, streams, etc.).
 
-        Uses cascading deletes where FK constraints exist, and explicit cleanup otherwise.
+        Explicitly deletes from all user-related tables. Uses try/except per-table
+        in case migrations haven't created certain tables yet.
         """
-        # Delete tokens (no FK cascade)
-        await self.conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
-        # Delete API keys
-        await self.conn.execute("DELETE FROM api_keys WHERE user_id = ?", (user_id,))
-        # Delete user connections
-        await self.conn.execute("DELETE FROM user_connections WHERE user_id = ?", (user_id,))
-        # Delete user streams (cascade handles chat channels)
-        await self.conn.execute("DELETE FROM user_streams WHERE user_id = ?", (user_id,))
-        # Delete notifications
-        await self.conn.execute("DELETE FROM notifications WHERE user_id = ?", (user_id,))
-        # Delete activity log
-        await self.conn.execute("DELETE FROM activity_log WHERE user_id = ?", (user_id,))
-        # Delete VOD storage config
-        await self.conn.execute("DELETE FROM vod_storage WHERE user_id = ?", (user_id,))
+        # Collect FTS rowids for cleanup before deleting map entries
+        fts_cleanup = []
+        for fts_table, map_table in [
+            ("chat_messages_fts", "chat_fts_map"),
+            ("dm_messages_fts", "dm_fts_map"),
+        ]:
+            try:
+                cursor = await self.conn.execute(
+                    f"SELECT rowid FROM {map_table} WHERE user_id = ?", (user_id,)
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    fts_cleanup.append((fts_table, row[0]))
+            except Exception:
+                pass
+
+        # Delete FTS virtual table entries by rowid
+        for fts_table, rowid in fts_cleanup:
+            try:
+                await self.conn.execute(
+                    f"INSERT INTO {fts_table}({fts_table}, rowid, message) VALUES ('delete', ?, '')",
+                    (rowid,)
+                )
+            except Exception:
+                pass
+
+        # Delete from all user-related tables. Each wrapped in try/except
+        # in case a table doesn't exist yet (migrations may not have run).
+        delete_statements = [
+            # FTS map tables (after FTS cleanup above)
+            ("chat_fts_map", "DELETE FROM chat_fts_map WHERE user_id = ?"),
+            ("dm_fts_map", "DELETE FROM dm_fts_map WHERE user_id = ?"),
+            # Chat reactions
+            ("chat_reactions", "DELETE FROM chat_reactions WHERE user_id = ?"),
+            ("dm_reactions", "DELETE FROM dm_reactions WHERE user_id = ?"),
+            # Read positions
+            ("channel_read_positions", "DELETE FROM channel_read_positions WHERE user_id = ?"),
+            ("dm_read_positions", "DELETE FROM dm_read_positions WHERE user_id = ?"),
+            # Poll votes (before polls, since polls may cascade)
+            ("chat_poll_votes", "DELETE FROM chat_poll_votes WHERE user_id = ?"),
+            # Polls created by user
+            ("chat_polls", "DELETE FROM chat_polls WHERE user_id = ?"),
+            # Chat timeouts (as target or moderator)
+            ("chat_timeouts (target)", "DELETE FROM chat_timeouts WHERE user_id = ?"),
+            ("chat_timeouts (moderator)", "DELETE FROM chat_timeouts WHERE moderator_id = ?"),
+            # User blocks (as blocker or blocked)
+            ("user_blocks (blocker)", "DELETE FROM user_blocks WHERE user_id = ?"),
+            ("user_blocks (blocked)", "DELETE FROM user_blocks WHERE blocked_user_id = ?"),
+            # Channel memberships
+            ("channel_members", "DELETE FROM channel_members WHERE user_id = ?"),
+            # Audit log entries by this user
+            ("audit_log", "DELETE FROM audit_log WHERE actor_id = ?"),
+            # Automod actions targeting this user
+            ("automod_actions", "DELETE FROM automod_actions WHERE user_id = ?"),
+            # Chat messages
+            ("chat_messages", "DELETE FROM chat_messages WHERE user_id = ?"),
+            # DM messages
+            ("dm_messages", "DELETE FROM dm_messages WHERE user_id = ?"),
+            # DM participants
+            ("dm_participants", "DELETE FROM dm_participants WHERE user_id = ?"),
+            # DM conversations created by user (only orphaned ones with no other participants)
+            ("dm_conversations", "DELETE FROM dm_conversations WHERE created_by = ? AND id NOT IN (SELECT conversation_id FROM dm_participants)"),
+            # Stream bans (as banned user)
+            ("stream_bans", "DELETE FROM stream_bans WHERE user_id = ?"),
+            # Recordings
+            ("recordings", "DELETE FROM recordings WHERE user_id = ?"),
+            # SSH keys
+            ("ssh_keys", "DELETE FROM ssh_keys WHERE user_id = ?"),
+            # Tokens (no FK cascade)
+            ("tokens", "DELETE FROM tokens WHERE user_id = ?"),
+            # API keys
+            ("api_keys", "DELETE FROM api_keys WHERE user_id = ?"),
+            # User connections
+            ("user_connections", "DELETE FROM user_connections WHERE user_id = ?"),
+            # User streams (cascade handles related stream data)
+            ("user_streams", "DELETE FROM user_streams WHERE user_id = ?"),
+            # Notifications
+            ("notifications", "DELETE FROM notifications WHERE user_id = ?"),
+            # Activity log
+            ("activity_log", "DELETE FROM activity_log WHERE user_id = ?"),
+            # VOD storage config
+            ("vod_storage", "DELETE FROM vod_storage WHERE user_id = ?"),
+        ]
+
+        for table_name, sql in delete_statements:
+            try:
+                await self.conn.execute(sql, (user_id,))
+            except Exception:
+                pass  # Table may not exist if migration hasn't run
+
         # Delete the user
         cursor = await self.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         await self.conn.commit()
@@ -4641,7 +4763,8 @@ class Database:
         channel_id: int = None, conversation_id: int = None,
         from_user: str = None, has_image: bool = None,
         before: str = None, after: str = None,
-        limit: int = 25, offset: int = 0
+        limit: int = 25, offset: int = 0,
+        user_role: str = "user"
     ) -> dict:
         """Search messages across channels and/or DMs. Returns {results, total}."""
         results = []
@@ -4662,6 +4785,15 @@ class Database:
             return {"results": [], "total": 0}
         fts_expr = " ".join(f'"{w}"' for w in words if w)
 
+        # Build set of accessible channel IDs to filter private channels
+        accessible_channel_ids = None
+        if scope in ("all", "channels") and user_role not in ("admin", "superadmin"):
+            try:
+                accessible = await self.get_accessible_channels(user_id, user_role)
+                accessible_channel_ids = {ch["id"] for ch in accessible}
+            except Exception:
+                accessible_channel_ids = None  # Fall back to unfiltered on error
+
         # Search channel messages
         if scope in ("all", "channels"):
             ch_results, ch_total = await self._search_fts(
@@ -4669,7 +4801,8 @@ class Database:
                 fts_expr, channel_id=channel_id, from_user=from_user,
                 has_image=has_image, before=before, after=after,
                 limit=offset + limit if scope == "all" else limit,
-                offset=offset if scope == "channels" else 0
+                offset=offset if scope == "channels" else 0,
+                accessible_channel_ids=accessible_channel_ids
             )
             # Batch fetch channel names (avoids N+1)
             ch_ids = list({r.get("source_id") for r in ch_results if r.get("source_id")})
@@ -4736,7 +4869,8 @@ class Database:
         fts_expr: str, channel_id: int = None, conversation_id: int = None,
         from_user: str = None, has_image: bool = None,
         before: str = None, after: str = None,
-        limit: int = 25, offset: int = 0, dm_user_id: int = None
+        limit: int = 25, offset: int = 0, dm_user_id: int = None,
+        accessible_channel_ids: set = None
     ) -> tuple[list[dict], int]:
         """Run FTS5 search against a specific table pair. Returns (results, total)."""
         try:
@@ -4766,6 +4900,13 @@ class Database:
                     f"m.{id_col} IN (SELECT conversation_id FROM dm_participants WHERE user_id = ? AND left_at IS NULL)"
                 )
                 params.append(dm_user_id)
+            # Channel access security: only search channels the user can access
+            if accessible_channel_ids is not None:
+                if not accessible_channel_ids:
+                    return [], 0  # User has no accessible channels
+                ph = ",".join("?" * len(accessible_channel_ids))
+                conditions.append(f"m.{id_col} IN ({ph})")
+                params.extend(accessible_channel_ids)
 
             where = " AND ".join(conditions)
 

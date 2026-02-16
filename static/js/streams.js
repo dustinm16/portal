@@ -286,7 +286,7 @@ async function showStreamDetails(streamId) {
                         <label>Server (RTMPS)</label>
                         <div class="input-with-copy">
                             <input type="text" value="${rtmpUrl}" readonly>
-                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${rtmpUrl}')">Copy</button>
+                            <button class="btn btn-sm btn-secondary" data-copy="rtmp-url">Copy</button>
                         </div>
                         <small style="color: var(--text-muted);">Direct connection to streaming server</small>
                     </div>
@@ -296,7 +296,7 @@ async function showStreamDetails(streamId) {
                         <div class="input-with-copy">
                             <input type="password" value="${stream.stream_key}" readonly id="stream-key-input">
                             <button class="btn btn-sm btn-secondary" onclick="toggleStreamKeyVisibility()">Show</button>
-                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${stream.stream_key}')">Copy</button>
+                            <button class="btn btn-sm btn-secondary" data-copy="stream-key">Copy</button>
                         </div>
                         <small class="warning-text">Keep your stream key secret! Anyone with this key can stream to your channel.</small>
                     </div>
@@ -342,7 +342,7 @@ async function showStreamDetails(streamId) {
                         <label>Viewing Key (read-only)</label>
                         <div class="input-with-copy">
                             <input type="text" value="${stream.public_key}" readonly>
-                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${stream.public_key}')">Copy</button>
+                            <button class="btn btn-sm btn-secondary" data-copy="public-key">Copy</button>
                         </div>
                         <small style="color: var(--text-muted);">Safe to share - viewers cannot modify your stream with this key.</small>
                     </div>
@@ -355,7 +355,7 @@ async function showStreamDetails(streamId) {
                         <label>HLS (for web players)</label>
                         <div class="input-with-copy">
                             <input type="text" value="${hlsUrl}" readonly>
-                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${hlsUrl}')">Copy</button>
+                            <button class="btn btn-sm btn-secondary" data-copy="hls-url">Copy</button>
                         </div>
                         <small style="color: var(--text-muted);">Proxied through Portal on port 443</small>
                     </div>
@@ -370,6 +370,20 @@ async function showStreamDetails(streamId) {
         `;
 
         showModal('stream-details-modal');
+
+        // Bind copy buttons programmatically to avoid inlining secrets in onclick attributes
+        const copyValues = {
+            'rtmp-url': rtmpUrl,
+            'stream-key': stream.stream_key,
+            'public-key': stream.public_key || '',
+            'hls-url': hlsUrl
+        };
+        document.querySelectorAll('#stream-details-content [data-copy]').forEach(btn => {
+            const key = btn.getAttribute('data-copy');
+            if (copyValues[key] !== undefined) {
+                btn.addEventListener('click', () => copyToClipboard(copyValues[key]));
+            }
+        });
 
     } catch (error) {
         console.error('Failed to load stream details:', error);
@@ -395,7 +409,8 @@ function toggleStreamKeyVisibility() {
 async function copyToClipboard(text) {
     try {
         await navigator.clipboard.writeText(text);
-        // Could show a toast notification here
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     } catch (error) {
         console.error('Failed to copy:', error);
     }
@@ -489,19 +504,28 @@ async function generateRtmpToken(streamId) {
                 <label>RTMP Server</label>
                 <div class="input-with-copy">
                     <input type="text" value="${escapeHtml(data.rtmp_url)}" readonly>
-                    <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${escapeHtml(data.rtmp_url)}')">Copy</button>
+                    <button class="btn btn-sm btn-secondary" data-copy="rtmp-token-url">Copy</button>
                 </div>
             </div>
             <div class="form-group">
                 <label>Temporary Stream Key (expires in ${Math.floor(data.expires_in / 60)} min)</label>
                 <div class="input-with-copy">
                     <input type="text" value="${escapeHtml(data.token)}" readonly id="rtmp-token-input">
-                    <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${escapeHtml(data.token)}')">Copy</button>
+                    <button class="btn btn-sm btn-secondary" data-copy="rtmp-token-key">Copy</button>
                 </div>
                 <small class="warning-text">Token binds to your IP on first use. Reconnects allowed within ${Math.floor((data.grace_seconds || 300) / 60)} min of disconnect.</small>
             </div>
             <div id="rtmp-token-countdown" style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;"></div>
         `;
+
+        // Bind copy buttons programmatically to avoid inlining tokens in onclick attributes
+        const rtmpCopyValues = { 'rtmp-token-url': data.rtmp_url, 'rtmp-token-key': data.token };
+        resultEl.querySelectorAll('[data-copy]').forEach(btn => {
+            const key = btn.getAttribute('data-copy');
+            if (rtmpCopyValues[key]) {
+                btn.addEventListener('click', () => copyToClipboard(rtmpCopyValues[key]));
+            }
+        });
 
         // Start countdown timer
         if (_rtmpCountdownInterval) clearInterval(_rtmpCountdownInterval);

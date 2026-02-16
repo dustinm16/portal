@@ -1000,7 +1000,7 @@ async def http_get_service(request: web.Request) -> web.Response:
         "port": service.get("port", 0),
         "enabled": bool(service["enabled"]),
         "required_scopes": service["required_scopes"],
-        "config": service.get("config", {}),
+        "config": redact_service_config(service.get("config", {})),
         "service_type": service.get("service_type", "proxy"),
         "icon": service.get("icon", "server"),
     }
@@ -1938,6 +1938,38 @@ def redact_connection_config(connection: dict) -> dict:
     return conn
 
 
+# Sensitive keys that may appear in service configs (API keys, passwords, tokens, secrets)
+_SENSITIVE_SERVICE_CONFIG_FIELDS = {
+    "password", "secret", "api_key", "api_secret", "token",
+    "private_key", "private_key_path", "auth_header", "psk",
+    "credentials", "auth_token", "access_key", "secret_key",
+}
+
+
+def redact_service_config(config: dict) -> dict:
+    """Redact sensitive fields from a service config for API responses.
+
+    Replaces sensitive values with has_<field>: True flags so the frontend
+    knows a credential exists without exposing the actual value.
+    """
+    if not config or not isinstance(config, dict):
+        return config if isinstance(config, dict) else {}
+
+    redacted = {}
+    for key, value in config.items():
+        # Check if the key itself is sensitive or contains a sensitive keyword
+        key_lower = key.lower()
+        is_sensitive = key_lower in _SENSITIVE_SERVICE_CONFIG_FIELDS or any(
+            s in key_lower for s in ("password", "secret", "token", "api_key", "private_key", "credential")
+        )
+        if is_sensitive:
+            if value:
+                redacted[f"has_{key}"] = True
+        else:
+            redacted[key] = value
+    return redacted
+
+
 CONNECTION_TYPES = {
     # Remote Access
     "ssh": {"name": "SSH Terminal", "icon": "terminal", "default_port": 22, "plugin": "ssh"},
@@ -2349,7 +2381,7 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
             ssh_public_key = key["public_key"]
 
     return web.json_response({
-        "connection": _externalize_connection(connection),
+        "connection": _externalize_connection(redact_connection_config(connection)),
         "ssh_public_key": ssh_public_key,
         "websocket_url": f"/ws/user-connection/{conn_uuid}"
     })
@@ -2379,6 +2411,10 @@ async def http_list_user_streams(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     streams = await db.get_user_streams(token.user_id)
+    # Strip internal hash fields — these are implementation details not needed by clients
+    for stream in streams:
+        stream.pop("stream_key_hash", None)
+        stream.pop("public_key_hash", None)
     return web.json_response({"streams": streams})
 
 
@@ -2431,6 +2467,10 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
             return web.json_response({"error": "Failed to create stream chat channel"}, status=500)
 
         stream = await db.get_user_stream(stream_id)
+        # Strip internal hash fields from response
+        if stream:
+            stream.pop("stream_key_hash", None)
+            stream.pop("public_key_hash", None)
         return web.json_response({"stream": stream}, status=201)
 
     except Exception as e:
@@ -2470,11 +2510,13 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     is_owner = stream["user_id"] == token.user_id
     is_public = stream.get("is_public", False)
 
+    # Always strip internal hash fields — these are implementation details
+    stream.pop("stream_key_hash", None)
+    stream.pop("public_key_hash", None)
+
     if not is_owner:
         # Always hide the private stream_key from non-owners
         stream.pop("stream_key", None)
-        stream.pop("stream_key_hash", None)
-        stream.pop("public_key_hash", None)
         # Also hide public_key for private streams
         if not is_public:
             stream.pop("public_key", None)
@@ -2526,6 +2568,10 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             if revoked:
                 logger.info(f"Revoked {revoked} RTMP token(s) for stream {stream_id}")
         updated_stream = await db.get_user_stream(stream_id)
+        # Strip internal hash fields from response
+        if updated_stream:
+            updated_stream.pop("stream_key_hash", None)
+            updated_stream.pop("public_key_hash", None)
         return web.json_response({"stream": updated_stream})
     return web.json_response({"error": "Failed to update stream"}, status=500)
 
@@ -3512,9 +3558,13 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             # Check if viewer has auth (via query param or password)
             if password:
                 # Validate via API key
-                api_key = await db.get_api_key(password)
-                if api_key and api_key["user_id"] == stream["user_id"]:
-                    return web.json_response({"allowed": True})
+                from auth import parse_api_key, verify_api_key
+                key_prefix = parse_api_key(password)
+                if key_prefix:
+                    key_record = await db.get_api_key_by_prefix(key_prefix)
+                    if key_record and not key_record.get("revoked") and verify_api_key(password, key_record["key_hash"]):
+                        if key_record["user_id"] == stream["user_id"]:
+                            return web.json_response({"allowed": True})
 
         # Default deny for unrecognized streams or unauthorized access
         return web.json_response({"error": "Access denied"}, status=403)
@@ -11758,11 +11808,16 @@ async def http_search_messages(request: web.Request) -> web.Response:
     before = request.query.get("before", None)
     after = request.query.get("after", None)
 
+    # Resolve user role for channel access filtering
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+
     results = await db.search_messages(
         query=query, user_id=token.user_id, scope=scope,
         channel_id=channel_id, conversation_id=conversation_id,
         from_user=from_user, has_image=has_image if has_image else None,
-        before=before, after=after, limit=limit, offset=offset
+        before=before, after=after, limit=limit, offset=offset,
+        user_role=user_role
     )
     results["query"] = query
     return web.json_response(results)

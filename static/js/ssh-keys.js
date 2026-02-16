@@ -179,12 +179,14 @@ async function copyPrivateKey() {
     const textarea = document.getElementById('new-private-key');
     try {
         await navigator.clipboard.writeText(textarea.value);
-        Portal.toast('Private key copied to clipboard');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     } catch (error) {
         // Fallback for older browsers
         textarea.select();
         document.execCommand('copy');
-        Portal.toast('Private key copied to clipboard');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     }
 }
 
@@ -195,11 +197,13 @@ async function copyPublicKey() {
     const textarea = document.getElementById('new-public-key');
     try {
         await navigator.clipboard.writeText(textarea.value);
-        Portal.toast('Public key copied to clipboard');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     } catch (error) {
         textarea.select();
         document.execCommand('copy');
-        Portal.toast('Public key copied to clipboard');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     }
 }
 
@@ -244,6 +248,7 @@ async function viewPublicKey(keyId) {
 async function copyToClipboard(text) {
     try {
         await navigator.clipboard.writeText(text);
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
         return true;
     } catch (error) {
         return false;

@@ -591,8 +591,7 @@
 
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const token = Portal.getToken();
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws/github/${serviceId}?token=${token}`);
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/github/${serviceId}`);
 
             ws.onopen = () => {
                 console.log('GitHub WebSocket connected');

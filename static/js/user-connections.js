@@ -484,11 +484,13 @@ async function copyApiKey() {
     const input = document.getElementById('new-api-key-value');
     try {
         await navigator.clipboard.writeText(input.value);
-        Portal.toast('API key copied to clipboard');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     } catch (error) {
         input.select();
         document.execCommand('copy');
-        Portal.toast('API key copied to clipboard');
+        Portal.toast('Copied! Clipboard will clear in 30s', 'success');
+        setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     }
 }
 
