@@ -2950,7 +2950,7 @@ async def http_live_page(request: web.Request) -> web.Response:
     html = load_static_file("live.html")
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"
-    html = html.replace("{{HOSTNAME}}", hostname)
+    html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
     return web.Response(text=html, content_type="text/html")
 
 
@@ -6995,17 +6995,17 @@ async def http_root_redirect(request: web.Request) -> web.Response:
     html = load_static_file("login.html")
     verification_tags = []
     if Config.GOOGLE_SITE_VERIFICATION:
-        verification_tags.append(f'<meta name="google-site-verification" content="{Config.GOOGLE_SITE_VERIFICATION}">')
+        verification_tags.append(f'<meta name="google-site-verification" content="{_html.escape(Config.GOOGLE_SITE_VERIFICATION)}">')
     if Config.BING_SITE_VERIFICATION:
-        verification_tags.append(f'<meta name="msvalidate.01" content="{Config.BING_SITE_VERIFICATION}">')
+        verification_tags.append(f'<meta name="msvalidate.01" content="{_html.escape(Config.BING_SITE_VERIFICATION)}">')
     if Config.YANDEX_SITE_VERIFICATION:
-        verification_tags.append(f'<meta name="yandex-verification" content="{Config.YANDEX_SITE_VERIFICATION}">')
+        verification_tags.append(f'<meta name="yandex-verification" content="{_html.escape(Config.YANDEX_SITE_VERIFICATION)}">')
     html = html.replace(
         "<!-- SEARCH_ENGINE_VERIFICATION -->",
         "\n    ".join(verification_tags) if verification_tags else ""
     )
     hostname = Config.HOSTNAME or "localhost"
-    html = html.replace("{{HOSTNAME}}", hostname)
+    html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
     return web.Response(text=html, content_type="text/html")
 
 
@@ -7540,11 +7540,11 @@ async def http_login_page(request: web.Request) -> web.Response:
     # Inject search engine verification meta tags if configured
     verification_tags = []
     if Config.GOOGLE_SITE_VERIFICATION:
-        verification_tags.append(f'<meta name="google-site-verification" content="{Config.GOOGLE_SITE_VERIFICATION}">')
+        verification_tags.append(f'<meta name="google-site-verification" content="{_html.escape(Config.GOOGLE_SITE_VERIFICATION)}">')
     if Config.BING_SITE_VERIFICATION:
-        verification_tags.append(f'<meta name="msvalidate.01" content="{Config.BING_SITE_VERIFICATION}">')
+        verification_tags.append(f'<meta name="msvalidate.01" content="{_html.escape(Config.BING_SITE_VERIFICATION)}">')
     if Config.YANDEX_SITE_VERIFICATION:
-        verification_tags.append(f'<meta name="yandex-verification" content="{Config.YANDEX_SITE_VERIFICATION}">')
+        verification_tags.append(f'<meta name="yandex-verification" content="{_html.escape(Config.YANDEX_SITE_VERIFICATION)}">')
     html = html.replace(
         "<!-- SEARCH_ENGINE_VERIFICATION -->",
         "\n    ".join(verification_tags) if verification_tags else ""
@@ -7552,7 +7552,7 @@ async def http_login_page(request: web.Request) -> web.Response:
 
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"
-    html = html.replace("{{HOSTNAME}}", hostname)
+    html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
 
     return web.Response(text=html, content_type="text/html")
 
@@ -8612,7 +8612,7 @@ async def http_api_docs_page(request: web.Request) -> web.Response:
 
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"
-    html = html.replace("{{HOSTNAME}}", hostname)
+    html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
     return web.Response(text=html, content_type="text/html")
 
 
@@ -8626,7 +8626,7 @@ async def http_about_page(request: web.Request) -> web.Response:
 
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"
-    html = html.replace("{{HOSTNAME}}", hostname)
+    html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
 
     return web.Response(text=html, content_type="text/html")
 
@@ -8636,7 +8636,7 @@ async def http_guides_page(request: web.Request) -> web.Response:
     html = load_static_file("guides.html")
     # Inject dynamic hostname for canonical URLs and OG tags
     hostname = Config.HOSTNAME or "localhost"
-    html = html.replace("{{HOSTNAME}}", hostname)
+    html = html.replace("{{HOSTNAME}}", _html.escape(hostname))
     return web.Response(text=html, content_type="text/html")
 
 
@@ -9270,6 +9270,34 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
         return web.json_response({"error": "Upload failed"}, status=500)
 
 
+class _SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
+    """DNS resolver that rejects private/blocked IPs at connection time.
+
+    Prevents DNS rebinding: even if a hostname changes its DNS between
+    the initial check and the actual connection, this resolver catches it.
+    """
+
+    async def resolve(self, host: str, port: int = 0, family: int = 0):
+        result = await super().resolve(host, port, family)
+        import ipaddress
+        for entry in result:
+            ip_str = entry["host"]
+            if is_blocked_host(ip_str):
+                raise OSError(f"DNS resolved to blocked address: {ip_str}")
+            try:
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                    raise OSError(f"DNS resolved to blocked address: {ip_str}")
+            except ValueError:
+                pass
+        return result
+
+
+def _SSRFSafeConnector(**kwargs):
+    """Create a TCPConnector that validates resolved IPs against SSRF blocklist."""
+    return aiohttp.TCPConnector(resolver=_SSRFSafeResolver(), **kwargs)
+
+
 # Link preview cache: url -> (preview_data, timestamp) — bounded to 256 entries
 _LINK_PREVIEW_CACHE_MAX = 256
 _link_preview_cache: dict[str, tuple[dict, float]] = {}
@@ -9362,8 +9390,11 @@ async def http_link_preview(request: web.Request) -> web.Response:
             return web.json_response(cached)
 
     try:
+        # Use SSRF-safe connector that validates IPs at connection time,
+        # preventing DNS rebinding between the check above and the fetch
+        connector = _SSRFSafeConnector()
         timeout = aiohttp.ClientTimeout(total=5)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             async with session.get(url, headers={"User-Agent": "PortalBot/1.0"}, allow_redirects=True, max_redirects=3) as resp:
                 if resp.status != 200:
                     return web.json_response({"error": "Failed to fetch URL"}, status=502)
