@@ -3158,9 +3158,10 @@ class Database:
         return cursor.rowcount
 
     async def get_user_by_nickname(self, nickname: str) -> Optional[dict]:
-        """Get a user by nickname (case-insensitive)."""
+        """Get a user by nickname (case-insensitive). Returns only safe fields."""
         cursor = await self.conn.execute(
-            "SELECT * FROM users WHERE LOWER(nickname) = LOWER(?)", (nickname,)
+            "SELECT id, username, nickname, role, is_admin FROM users WHERE LOWER(nickname) = LOWER(?)",
+            (nickname,)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -3838,14 +3839,15 @@ class Database:
         await self.conn.commit()
         if cursor.rowcount > 0:
             await self.remove_message_from_search(message_id, "channel")
-            # Clean up uploaded files from disk
+            # Clean up uploaded files from disk (with path traversal protection)
             if file_row:
+                uploads_dir = (Path(__file__).parent / 'static' / 'uploads' / 'chat').resolve()
                 for field in ('image_url', 'attachment_url'):
                     url = file_row[field]
                     if url and url.startswith('/static/uploads/chat/'):
-                        file_path = Path(__file__).parent / url.lstrip('/')
+                        file_path = (Path(__file__).parent / url.lstrip('/')).resolve()
                         try:
-                            if file_path.exists():
+                            if str(file_path).startswith(str(uploads_dir)) and file_path.exists():
                                 file_path.unlink()
                         except OSError:
                             pass
@@ -4717,14 +4719,15 @@ class Database:
         await self.conn.commit()
         if cursor.rowcount > 0:
             await self.remove_message_from_search(message_id, "dm")
-            # Clean up uploaded files from disk
+            # Clean up uploaded files from disk (with path traversal protection)
             if file_row:
+                uploads_dir = (Path(__file__).parent / 'static' / 'uploads' / 'chat').resolve()
                 for field in ('image_url', 'attachment_url'):
                     url = file_row[field] if file_row[field] else None
                     if url and url.startswith('/static/uploads/chat/'):
-                        file_path = Path(__file__).parent / url.lstrip('/')
+                        file_path = (Path(__file__).parent / url.lstrip('/')).resolve()
                         try:
-                            if file_path.exists():
+                            if str(file_path).startswith(str(uploads_dir)) and file_path.exists():
                                 file_path.unlink()
                         except OSError:
                             pass
