@@ -647,8 +647,13 @@
         .watch-voice-controls button:hover { background: rgba(255,255,255,0.15); }
         .watch-voice-controls button.active { color: var(--accent-red, #f04747); border-color: var(--accent-red, #f04747); }
         .watch-voice-controls .vc-disconnect { background: var(--accent-red, #f04747); color: #fff; border: none; }
+        .watch-voice-controls button.sharing { color: var(--accent-green, #43b581); border-color: var(--accent-green, #43b581); }
         .watch-voice-users { flex: 1; overflow-x: auto; color: var(--text-muted, #72767d); white-space: nowrap; }
         @media (pointer: coarse) { .watch-voice-controls button, .watch-voice-btn { min-height: 44px; } }
+        .watch-screen-share { display:none; background:#000; border-bottom:1px solid rgba(255,255,255,0.1); padding:0.3rem; flex-direction:column; }
+        .watch-screen-share.active { display:flex; }
+        .watch-screen-share-header { display:flex; align-items:center; justify-content:space-between; padding:0 0.25rem 0.3rem; font-size:0.7rem; color:var(--text-secondary); }
+        .watch-screen-share video { width:100%; max-height:30vh; object-fit:contain; border-radius:3px; }
     </style>
 </head>
 <body>
@@ -747,8 +752,16 @@
             <div class="watch-voice-controls" id="watch-voice-controls">
                 <button id="wv-mute-btn" onclick="VoiceChat.toggleMute()">Mute</button>
                 <button id="wv-deafen-btn" onclick="VoiceChat.toggleDeafen()">Deafen</button>
+                <button id="wv-share-btn" onclick="toggleWatchScreenShare()" style="display:none;">Share</button>
                 <span class="watch-voice-users" id="wv-users"></span>
                 <button class="vc-disconnect" onclick="VoiceChat.leave()">X</button>
+            </div>
+            <div class="watch-screen-share" id="watch-screen-share">
+                <div class="watch-screen-share-header">
+                    <span id="watch-screen-share-label">Screen share</span>
+                    <button style="background:none;border:none;color:var(--text-secondary);cursor:pointer;" onclick="document.getElementById('watch-screen-share').classList.remove('active')">&times;</button>
+                </div>
+                <video id="watch-screen-share-video" autoplay playsinline></video>
             </div>
             <div class="viewer-chat-messages" id="chat-messages"></div>
             <div class="chat-reply-indicator" id="chat-reply-indicator">
@@ -777,7 +790,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=32"></script>
-    <script src="/static/js/voice.js?v=2"></script>
+    <script src="/static/js/voice.js?v=3"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -817,8 +830,44 @@
         streamId = pathParts[pathParts.length - 1];
 
         // Initialize
+        // Custom emotes catalog
+        const customEmotes = new Map();
+
+        async function loadCustomEmotes() {
+            try {
+                const res = await fetch('/api/emotes', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                for (const e of data.emotes || []) {
+                    customEmotes.set(e.name, e.url);
+                }
+            } catch (err) { /* ignore */ }
+        }
+
+        function renderCustomEmotes(escapedText) {
+            return escapedText.replace(/:([a-zA-Z0-9_]{2,32}):/g, (match, name) => {
+                const url = customEmotes.get(name);
+                if (url) {
+                    return `<img class="custom-emote" src="${url}" alt=":${name}:" title=":${name}:" loading="lazy" style="width:22px;height:22px;object-fit:contain;vertical-align:middle;">`;
+                }
+                return match;
+            });
+        }
+
+        function renderWatchReactionContent(emoji, count) {
+            const emoteMatch = emoji.match(/^:([a-zA-Z0-9_]{2,32}):$/);
+            if (emoteMatch) {
+                const url = customEmotes.get(emoteMatch[1]);
+                if (url) {
+                    return `<img src="${url}" alt="${escapeHtml(emoji)}" style="width:14px;height:14px;object-fit:contain;vertical-align:middle;"> ${count}`;
+                }
+            }
+            return `${emoji} ${count}`;
+        }
+
         document.addEventListener('DOMContentLoaded', async () => {
             await loadUserInfo();
+            await loadCustomEmotes();
             await loadStream();
         });
 
@@ -1193,7 +1242,7 @@
             chatWs = new WebSocket(wsUrl);
 
             chatWs.onopen = () => {
-                VoiceChat.init(chatWs, onWatchVoiceState);
+                VoiceChat.init(chatWs, onWatchVoiceState, onWatchScreenShareChange);
                 chatWs.send(JSON.stringify({
                     type: 'join',
                     stream_key: streamKey
@@ -1340,7 +1389,7 @@
                             ${banBtn}
                             <span class="chat-time">${time}</span>
                         </div>
-                        <div class="chat-text">${escapeHtml(msg.message || '')}${imageHtml}</div>
+                        <div class="chat-text">${renderCustomEmotes(escapeHtml(msg.message || ''))}${imageHtml}</div>
                         ${renderWatchReactions(msg)}
                     </div>
                 </div>
@@ -1357,7 +1406,7 @@
             return '<div class="watch-reactions" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">' +
                 msg.reactions.map(r => {
                     const isMine = r.user_ids && r.user_ids.includes(currentUser?.id);
-                    return `<button class="watch-reaction-pill${isMine ? ' my-reaction' : ''}" data-msg-id="${msg.id}" data-emoji="${escapeHtml(r.emoji)}" style="display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid ${isMine ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)'};background:${isMine ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.05)'};color:${isMine ? 'var(--accent-blue)' : 'var(--text-secondary)'};font-size:0.75rem;cursor:pointer;">${r.emoji} ${r.count}</button>`;
+                    return `<button class="watch-reaction-pill${isMine ? ' my-reaction' : ''}" data-msg-id="${msg.id}" data-emoji="${escapeHtml(r.emoji)}" style="display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid ${isMine ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)'};background:${isMine ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.05)'};color:${isMine ? 'var(--accent-blue)' : 'var(--text-secondary)'};font-size:0.75rem;cursor:pointer;">${renderWatchReactionContent(r.emoji, r.count)}</button>`;
                 }).join('') + '</div>';
         }
 
@@ -1379,7 +1428,7 @@
                 if (textEl) textEl.parentNode.insertBefore(reactionsDiv, textEl.nextSibling);
                 else msgEl.appendChild(reactionsDiv);
             }
-            let pill = reactionsDiv.querySelector(`[data-emoji="${data.emoji}"]`);
+            let pill = reactionsDiv.querySelector(`[data-emoji="${CSS.escape(data.emoji)}"]`);
             if (data.count === 0) {
                 if (pill) pill.remove();
             } else {
@@ -1390,7 +1439,7 @@
                     pill.style.cssText = 'display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--text-secondary);font-size:0.75rem;cursor:pointer;';
                     reactionsDiv.appendChild(pill);
                 }
-                pill.textContent = `${data.emoji} ${data.count}`;
+                pill.innerHTML = renderWatchReactionContent(data.emoji, data.count);
                 const isMine = data.user_id === currentUser?.id;
                 if (isMine) {
                     pill.style.borderColor = data.added ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)';
@@ -1667,6 +1716,7 @@
             const controls = document.getElementById('watch-voice-controls');
             const muteBtn = document.getElementById('wv-mute-btn');
             const deafenBtn = document.getElementById('wv-deafen-btn');
+            const shareBtn = document.getElementById('wv-share-btn');
             const users = document.getElementById('wv-users');
 
             if (state.inVoice) {
@@ -1677,12 +1727,48 @@
                 muteBtn.textContent = state.muted ? 'Unmute' : 'Mute';
                 deafenBtn.classList.toggle('active', state.deafened);
                 deafenBtn.textContent = state.deafened ? 'Undeafen' : 'Deafen';
-                users.textContent = state.users.map(u => u.username + (u.speaking ? '*' : '')).join(', ');
+                // Screen share button
+                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                    shareBtn.style.display = '';
+                    if (state.screenSharing) {
+                        shareBtn.classList.add('sharing');
+                        shareBtn.textContent = 'Stop';
+                    } else {
+                        shareBtn.classList.remove('sharing');
+                        shareBtn.textContent = 'Share';
+                        shareBtn.disabled = !!state.screenSharerId;
+                    }
+                }
+                users.textContent = state.users.map(u => u.username + (u.speaking ? '*' : '') + (u.screen_sharing ? ' 🖥️' : '')).join(', ');
             } else {
                 btn.classList.remove('in-voice');
                 btn.textContent = 'Join Voice';
                 controls.classList.remove('active');
+                shareBtn.style.display = 'none';
+                document.getElementById('watch-screen-share').classList.remove('active');
             }
+        }
+
+        function onWatchScreenShareChange(event) {
+            const panel = document.getElementById('watch-screen-share');
+            const video = document.getElementById('watch-screen-share-video');
+            const label = document.getElementById('watch-screen-share-label');
+            if (event.action === 'started') {
+                label.textContent = escapeHtml(event.username) + ' is sharing';
+                panel.classList.add('active');
+            } else if (event.action === 'stopped' || event.action === 'track_ended') {
+                panel.classList.remove('active');
+                video.srcObject = null;
+            } else if (event.action === 'track') {
+                video.srcObject = event.stream;
+                panel.classList.add('active');
+            }
+        }
+
+        function toggleWatchScreenShare() {
+            const state = VoiceChat.getState();
+            if (state.screenSharing) VoiceChat.stopScreenShare();
+            else VoiceChat.startScreenShare();
         }
 
         // Clean up on close

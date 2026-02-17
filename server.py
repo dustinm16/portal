@@ -7110,7 +7110,7 @@ async def http_root_redirect(request: web.Request) -> web.Response:
         raise web.HTTPFound("/dashboard")
 
     # Serve login page directly at root (no redirect) so crawlers and
-    # embed services (Discord, Slack, Twitter) see OG tags immediately
+    # embed services (Slack, Twitter, etc.) see OG tags immediately
     html = load_static_file("login.html")
     verification_tags = []
     if Config.GOOGLE_SITE_VERIFICATION:
@@ -9389,6 +9389,200 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
         return web.json_response({"error": "Upload failed"}, status=500)
 
 
+# =========================================================================
+# Custom Emotes
+# =========================================================================
+
+# Built-in shortcodes that custom emotes cannot override
+_RESERVED_EMOTE_NAMES = {
+    "fire", "rocket", "heart", "star", "check", "x", "100", "clap",
+    "eyes", "thinking", "bulb", "warning", "bug", "wrench", "memo",
+    "lock", "unlock", "wave", "party", "tada", "lol", "cry", "angry",
+    "cool", "pray", "muscle", "shrug", "pin", "speech",
+    "thumbsup", "thumbsdown",
+}
+
+
+async def http_list_emotes(request: web.Request) -> web.Response:
+    """List all custom emotes (any authenticated user)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    async with Database() as db:
+        emotes = await db.get_all_custom_emotes()
+    for e in emotes:
+        e["url"] = f"/static/uploads/emotes/{e['filename']}"
+    return web.json_response({"emotes": emotes})
+
+
+async def http_upload_emote(request: web.Request) -> web.Response:
+    """Upload a custom emote (admin/mod only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    async with Database() as db:
+        user = await db.get_user(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    if user_role not in ("admin", "superadmin", "moderator"):
+        return web.json_response({"error": "Admin or moderator required"}, status=403)
+
+    EMOTE_TYPES = {"image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/jpeg": ".jpg"}
+    MAX_SIZE = 256 * 1024  # 256KB
+
+    try:
+        reader = await request.multipart()
+        fields = {}
+        file_data = None
+        file_ext = None
+
+        while True:
+            field = await reader.next()
+            if field is None:
+                break
+            if field.name == "name":
+                fields["name"] = (await field.read(decode=True)).strip()
+            elif field.name == "category":
+                fields["category"] = (await field.read(decode=True)).strip()
+            elif field.name == "file":
+                content_type = field.headers.get(aiohttp.hdrs.CONTENT_TYPE, "")
+                if content_type not in EMOTE_TYPES:
+                    return web.json_response({"error": f"Type not allowed: {content_type}. Use PNG, GIF, WebP, or JPEG."}, status=400)
+                file_ext = EMOTE_TYPES[content_type]
+                chunks = []
+                size = 0
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_SIZE:
+                        return web.json_response({"error": "File too large (max 256KB)"}, status=400)
+                    chunks.append(chunk)
+                file_data = b"".join(chunks)
+
+        name = fields.get("name", "")
+        category = fields.get("category", "General") or "General"
+
+        if not name or not re.match(r'^[a-zA-Z0-9_]{2,32}$', name):
+            return web.json_response({"error": "Name must be 2-32 alphanumeric/underscore characters"}, status=400)
+
+        if name.lower() in _RESERVED_EMOTE_NAMES:
+            return web.json_response({"error": "Name conflicts with built-in shortcode"}, status=409)
+
+        if not file_data:
+            return web.json_response({"error": "No file provided"}, status=400)
+
+        async with Database() as db:
+            existing = await db.get_custom_emote_by_name(name)
+            if existing:
+                return web.json_response({"error": f"Emote :{name}: already exists"}, status=409)
+
+            filename = f"{uuid.uuid4().hex}{file_ext}"
+            upload_dir = Path(__file__).parent / "static" / "uploads" / "emotes"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            filepath = upload_dir / filename
+            with open(filepath, "wb") as f:
+                f.write(file_data)
+
+            emote = await db.create_custom_emote(name, filename, category, token.user_id)
+            emote["url"] = f"/static/uploads/emotes/{filename}"
+
+        return web.json_response(emote, status=201)
+
+    except Exception as e:
+        logger.error(f"Emote upload error: {e}")
+        return web.json_response({"error": "Upload failed"}, status=500)
+
+
+async def http_update_emote(request: web.Request) -> web.Response:
+    """Update an emote's name or category (admin/mod only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    async with Database() as db:
+        user = await db.get_user(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    if user_role not in ("admin", "superadmin", "moderator"):
+        return web.json_response({"error": "Admin or moderator required"}, status=403)
+
+    try:
+        emote_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = body.get("name")
+    category = body.get("category")
+
+    if name is not None:
+        if not re.match(r'^[a-zA-Z0-9_]{2,32}$', name):
+            return web.json_response({"error": "Name must be 2-32 alphanumeric/underscore characters"}, status=400)
+        if name.lower() in _RESERVED_EMOTE_NAMES:
+            return web.json_response({"error": "Name conflicts with built-in shortcode"}, status=409)
+
+    async with Database() as db:
+        if name is not None:
+            existing = await db.get_custom_emote_by_name(name)
+            if existing and existing["id"] != emote_id:
+                return web.json_response({"error": f"Emote :{name}: already exists"}, status=409)
+        updated = await db.update_custom_emote(emote_id, name=name, category=category)
+
+    if not updated:
+        return web.json_response({"error": "Emote not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def http_delete_emote(request: web.Request) -> web.Response:
+    """Delete a custom emote (admin/mod only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    async with Database() as db:
+        user = await db.get_user(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    if user_role not in ("admin", "superadmin", "moderator"):
+        return web.json_response({"error": "Admin or moderator required"}, status=403)
+
+    try:
+        emote_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+
+    async with Database() as db:
+        filename = await db.delete_custom_emote(emote_id)
+    if not filename:
+        return web.json_response({"error": "Emote not found"}, status=404)
+
+    emote_dir = Path(__file__).parent / "static" / "uploads" / "emotes"
+    filepath = (emote_dir / filename).resolve()
+    if filepath.is_file() and str(filepath).startswith(str(emote_dir.resolve())):
+        filepath.unlink()
+    return web.json_response({"ok": True})
+
+
+async def http_serve_emote(request: web.Request) -> web.Response:
+    """Serve custom emotes publicly (shared community content)."""
+    filename = request.match_info.get("filename", "")
+    if not filename or ".." in filename or "/" in filename:
+        return web.Response(status=400)
+    emote_dir = Path(__file__).parent / "static" / "uploads" / "emotes"
+    filepath = (emote_dir / filename).resolve()
+    if not filepath.is_file() or not str(filepath).startswith(str(emote_dir.resolve())):
+        return web.Response(status=404)
+    content_type, _ = mimetypes.guess_type(str(filepath))
+    if content_type not in ("image/png", "image/gif", "image/webp", "image/jpeg"):
+        return web.Response(status=403)
+    return web.FileResponse(filepath, headers={
+        "Cache-Control": "public, max-age=86400",
+        "X-Content-Type-Options": "nosniff"
+    })
+
+
+
 class _SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
     """DNS resolver that rejects private/blocked IPs at connection time.
 
@@ -10208,6 +10402,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if current_channel and current_channel in chat_rooms:
                             # Auto-leave voice in old room
                             if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
+                                # Auto-stop screen share
+                                if voice_state[voice_room][user_id].get("screen_sharing"):
+                                    stop_bcast = {"type": "screen_share_stopped", "user_id": user_id}
+                                    if voice_room.startswith("dm:"):
+                                        await broadcast_to_voice_room(voice_room, stop_bcast)
+                                    else:
+                                        await broadcast_to_channel(voice_room, stop_bcast)
                                 del voice_state[voice_room][user_id]
                                 leave_msg = {"type": "voice_user_left", "user_id": user_id}
                                 if voice_room.startswith("dm:"):
@@ -10397,7 +10598,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "in_voice": bool(voice_info),
                                 "voice_muted": voice_info.get("muted", False),
                                 "voice_deafened": voice_info.get("deafened", False),
-                                "voice_speaking": voice_info.get("speaking", False)
+                                "voice_speaking": voice_info.get("speaking", False),
+                                "screen_sharing": voice_info.get("screen_sharing", False)
                             })
                         await ws.send_json({
                             "type": "users",
@@ -10717,7 +10919,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         message_id = data.get("message_id")
                         emoji = data.get("emoji", "").strip()
-                        if not message_id or not emoji or len(emoji) > 10:
+                        if not message_id or not emoji or len(emoji) > 36:
                             continue
                         try:
                             message_id = int(message_id)
@@ -11360,7 +11562,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "username": display_name,
                             "muted": False,
                             "deafened": False,
-                            "speaking": False
+                            "speaking": False,
+                            "screen_sharing": False
                         }
                         voice_room = target_room
 
@@ -11372,7 +11575,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": vdata["username"],
                                 "muted": vdata["muted"],
                                 "deafened": vdata["deafened"],
-                                "speaking": vdata["speaking"]
+                                "speaking": vdata["speaking"],
+                                "screen_sharing": vdata.get("screen_sharing", False)
                             })
                         await ws.send_json({
                             "type": "voice_state",
@@ -11400,6 +11604,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not voice_room:
                             continue
                         if voice_room in voice_state and user_id in voice_state[voice_room]:
+                            # Auto-stop screen share if leaving while sharing
+                            if voice_state[voice_room][user_id].get("screen_sharing"):
+                                stop_bcast = {"type": "screen_share_stopped", "user_id": user_id}
+                                if voice_room.startswith("dm:"):
+                                    await broadcast_to_voice_room(voice_room, stop_bcast)
+                                else:
+                                    await broadcast_to_channel(voice_room, stop_bcast)
                             del voice_state[voice_room][user_id]
                             if voice_room.startswith("dm:"):
                                 await broadcast_to_voice_room(voice_room, {
@@ -11480,6 +11691,37 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 await broadcast_to_voice_room(voice_room, bcast)
                             else:
                                 await broadcast_to_channel(voice_room, bcast)
+
+                    elif msg_type == "screen_share_start":
+                        if not voice_room or voice_room not in voice_state or user_id not in voice_state[voice_room]:
+                            continue
+                        # Check nobody else is sharing in this room
+                        already_sharing = any(
+                            vd.get("screen_sharing") for vid, vd in voice_state[voice_room].items() if vid != user_id
+                        )
+                        if already_sharing:
+                            await ws.send_json({"type": "error", "message": "Someone is already sharing their screen"})
+                            continue
+                        voice_state[voice_room][user_id]["screen_sharing"] = True
+                        display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
+                        bcast = {"type": "screen_share_started", "user_id": user_id, "username": display_name}
+                        if voice_room.startswith("dm:"):
+                            await broadcast_to_voice_room(voice_room, bcast)
+                        else:
+                            await broadcast_to_channel(voice_room, bcast)
+                        logger.info(f"[Voice] {display_name} started screen sharing in {voice_room}")
+
+                    elif msg_type == "screen_share_stop":
+                        if not voice_room or voice_room not in voice_state or user_id not in voice_state[voice_room]:
+                            continue
+                        voice_state[voice_room][user_id]["screen_sharing"] = False
+                        bcast = {"type": "screen_share_stopped", "user_id": user_id}
+                        if voice_room.startswith("dm:"):
+                            await broadcast_to_voice_room(voice_room, bcast)
+                        else:
+                            await broadcast_to_channel(voice_room, bcast)
+                        display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
+                        logger.info(f"[Voice] {display_name} stopped screen sharing in {voice_room}")
 
                     # ==============================================
                     # Direct Message handlers
@@ -11698,7 +11940,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         except (ValueError, TypeError):
                             continue
                         emoji = data.get("emoji", "")
-                        if not emoji or len(emoji) > 10:
+                        if not emoji or len(emoji) > 36:
                             continue
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
@@ -11800,6 +12042,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             if vc_users is None:
                 continue
             if user_id in vc_users:
+                # Auto-stop screen share on disconnect
+                if vc_users[user_id].get("screen_sharing"):
+                    try:
+                        stop_bcast = {"type": "screen_share_stopped", "user_id": user_id}
+                        if vc.startswith("dm:"):
+                            await broadcast_to_voice_room(vc, stop_bcast)
+                        else:
+                            await broadcast_to_channel(vc, stop_bcast)
+                    except (ConnectionError, ConnectionResetError, TypeError, KeyError):
+                        pass
                 del vc_users[user_id]
                 try:
                     leave_msg = {"type": "voice_user_left", "user_id": user_id}
@@ -12292,7 +12544,8 @@ async def broadcast_users_list(channel: str):
             "in_voice": bool(voice_info),
             "voice_muted": voice_info.get("muted", False),
             "voice_deafened": voice_info.get("deafened", False),
-            "voice_speaking": voice_info.get("speaking", False)
+            "voice_speaking": voice_info.get("speaking", False),
+            "screen_sharing": voice_info.get("screen_sharing", False)
         })
     await broadcast_to_channel(channel, {
         "type": "users",
@@ -13116,7 +13369,7 @@ async def security_headers_middleware(request: web.Request, handler):
 
     # Permissions policy - restrict sensitive features
     response.headers.setdefault('Permissions-Policy',
-        'geolocation=(), microphone=(self), camera=(), payment=()')
+        'geolocation=(), microphone=(self), camera=(), display-capture=(self), payment=()')
 
     # Cache control and CSP for HTML pages
     content_type = response.headers.get('Content-Type', '')
@@ -13149,6 +13402,9 @@ async def security_headers_middleware(request: web.Request, handler):
 def create_app() -> web.Application:
     """Create the aiohttp application."""
     app = web.Application(middlewares=[security_headers_middleware])
+
+    # Public emote serving (must be registered before the authenticated upload catch-all)
+    app.router.add_get("/static/uploads/emotes/{filename}", http_serve_emote)
 
     # Authenticated uploads (must be registered before the static catch-all)
     app.router.add_get("/static/uploads/{path:.*}", http_authenticated_upload)
@@ -13428,6 +13684,12 @@ def create_app() -> web.Application:
     app.router.add_post("/api/chat/upload", http_upload_chat_image)
     app.router.add_get("/api/chat/link-preview", http_link_preview)
     app.router.add_get("/api/chat/thread/{id}", http_get_chat_thread)
+
+    # Custom Emotes
+    app.router.add_get("/api/emotes", http_list_emotes)
+    app.router.add_post("/api/emotes", http_upload_emote)
+    app.router.add_put("/api/emotes/{id}", http_update_emote)
+    app.router.add_delete("/api/emotes/{id}", http_delete_emote)
 
     # Channel Members / Permissions
     app.router.add_get("/api/chat/channels/{id}/members", http_get_channel_members)

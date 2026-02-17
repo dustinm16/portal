@@ -19,9 +19,16 @@ const VoiceChat = (() => {
     let _audioElements = new Map(); // user_id -> <audio>
     let _voiceUsers = new Map();  // user_id -> {username, muted, deafened, speaking}
     let _onStateChange = null;    // callback for UI updates
+    let _onScreenShareChange = null; // callback for screen share UI
     let _prefs = { mode: 'vad', pttKey: 'Space', vadThreshold: -50, noiseGate: true };
     let _pttActive = false;
     let _pendingCandidates = new Map(); // user_id -> [candidates] (buffered before remote desc set)
+
+    // Screen sharing state
+    let _screenStream = null;       // MediaStream from getDisplayMedia
+    let _screenSharing = false;     // Are we sharing?
+    let _screenSharerId = null;     // Who is sharing (user_id or null)
+    let _screenSenders = new Map(); // user_id -> [RTCRtpSender] for screen tracks
 
     function _loadPrefs() {
         try {
@@ -48,9 +55,10 @@ const VoiceChat = (() => {
         }
     }
 
-    function init(ws, onStateChange) {
+    function init(ws, onStateChange, onScreenShareChange) {
         _ws = ws;
         _onStateChange = onStateChange || null;
+        _onScreenShareChange = onScreenShareChange || null;
         _loadPrefs();
         _fetchIceServers();
     }
@@ -71,6 +79,10 @@ const VoiceChat = (() => {
             _handleDeafenChanged(data);
         } else if (type === 'voice_speaking_changed') {
             _handleSpeakingChanged(data);
+        } else if (type === 'screen_share_started') {
+            _handleScreenShareStarted(data);
+        } else if (type === 'screen_share_stopped') {
+            _handleScreenShareStopped(data);
         }
     }
 
@@ -120,6 +132,15 @@ const VoiceChat = (() => {
         _inVoice = false;
         _speaking = false;
         _pttActive = false;
+
+        // Stop screen sharing
+        if (_screenStream) {
+            _screenStream.getTracks().forEach(t => t.stop());
+            _screenStream = null;
+        }
+        _screenSharing = false;
+        _screenSharerId = null;
+        _screenSenders.clear();
 
         // Stop VAD
         if (_vadInterval) { clearInterval(_vadInterval); _vadInterval = null; }
@@ -303,11 +324,20 @@ const VoiceChat = (() => {
     function _createPeerConnection(userId) {
         const pc = new RTCPeerConnection({ iceServers: _iceServers });
 
-        // Add local tracks
+        // Add local audio tracks
         if (_localStream) {
             _localStream.getTracks().forEach(track => {
                 pc.addTrack(track, _localStream);
             });
+        }
+
+        // Add screen share tracks if we're currently sharing
+        if (_screenStream && _screenSharing) {
+            const senders = [];
+            _screenStream.getTracks().forEach(track => {
+                senders.push(pc.addTrack(track, _screenStream));
+            });
+            _screenSenders.set(userId, senders);
         }
 
         // ICE candidates
@@ -321,19 +351,57 @@ const VoiceChat = (() => {
             }
         };
 
-        // Remote track
-        pc.ontrack = (e) => {
-            let audio = _audioElements.get(userId);
-            if (!audio) {
-                audio = document.createElement('audio');
-                audio.autoplay = true;
-                audio.id = `voice-audio-${userId}`;
-                audio.style.display = 'none';
-                document.body.appendChild(audio);
-                _audioElements.set(userId, audio);
+        // Renegotiation (fires when tracks are added/removed)
+        pc.onnegotiationneeded = async () => {
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                if (_ws && _ws.readyState === WebSocket.OPEN) {
+                    _ws.send(JSON.stringify({
+                        type: 'voice_signal',
+                        target_user_id: userId,
+                        signal: { type: 'offer', sdp: offer.sdp }
+                    }));
+                }
+            } catch (e) {
+                console.error(`[Voice] Renegotiation failed for ${userId}:`, e);
             }
-            audio.srcObject = e.streams[0];
-            audio.muted = _deafened;
+        };
+
+        // Remote tracks (audio + video)
+        pc.ontrack = (e) => {
+            if (e.track.kind === 'audio') {
+                let audio = _audioElements.get(userId);
+                if (!audio) {
+                    audio = document.createElement('audio');
+                    audio.autoplay = true;
+                    audio.id = `voice-audio-${userId}`;
+                    audio.style.display = 'none';
+                    document.body.appendChild(audio);
+                    _audioElements.set(userId, audio);
+                }
+                audio.srcObject = e.streams[0];
+                audio.muted = _deafened;
+            } else if (e.track.kind === 'video') {
+                // Screen share video track received
+                if (_onScreenShareChange) {
+                    _onScreenShareChange({
+                        action: 'track',
+                        userId: userId,
+                        stream: e.streams[0],
+                        track: e.track
+                    });
+                }
+                // Auto-hide when track ends
+                e.track.onended = () => {
+                    if (_onScreenShareChange) {
+                        _onScreenShareChange({
+                            action: 'track_ended',
+                            userId: userId
+                        });
+                    }
+                };
+            }
         };
 
         // Connection state monitoring
@@ -354,13 +422,16 @@ const VoiceChat = (() => {
     function _handleVoiceState(data) {
         // Initial state on join — list of existing voice users
         _voiceUsers.clear();
+        _screenSharerId = null;
         for (const u of (data.users || [])) {
             _voiceUsers.set(u.user_id, {
                 username: u.username,
                 muted: u.muted,
                 deafened: u.deafened,
-                speaking: u.speaking
+                speaking: u.speaking,
+                screen_sharing: u.screen_sharing || false
             });
+            if (u.screen_sharing) _screenSharerId = u.user_id;
         }
         // Create peer connections to existing users (we're the offerer)
         for (const u of (data.users || [])) {
@@ -408,7 +479,15 @@ const VoiceChat = (() => {
 
     function _handleUserLeft(data) {
         const userId = data.user_id;
+        // If the user who left was screen sharing, clear it
+        if (_screenSharerId === userId) {
+            _screenSharerId = null;
+            if (_onScreenShareChange) {
+                _onScreenShareChange({ action: 'stopped', userId });
+            }
+        }
         _voiceUsers.delete(userId);
+        _screenSenders.delete(userId);
         // Close peer
         const pc = _peers.get(userId);
         if (pc) { pc.close(); _peers.delete(userId); }
@@ -480,6 +559,108 @@ const VoiceChat = (() => {
         }
     }
 
+    function _handleScreenShareStarted(data) {
+        _screenSharerId = data.user_id;
+        const user = _voiceUsers.get(data.user_id);
+        if (user) user.screen_sharing = true;
+        if (_onScreenShareChange) {
+            _onScreenShareChange({
+                action: 'started',
+                userId: data.user_id,
+                username: data.username
+            });
+        }
+        _notifyState();
+    }
+
+    function _handleScreenShareStopped(data) {
+        _screenSharerId = null;
+        const user = _voiceUsers.get(data.user_id);
+        if (user) user.screen_sharing = false;
+        if (_onScreenShareChange) {
+            _onScreenShareChange({
+                action: 'stopped',
+                userId: data.user_id
+            });
+        }
+        _notifyState();
+    }
+
+    async function startScreenShare() {
+        if (!_inVoice || _screenSharing) return;
+        if (_screenSharerId) {
+            console.warn('[Voice] Someone else is already sharing');
+            return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+            console.error('[Voice] Screen sharing not supported');
+            return;
+        }
+
+        try {
+            _screenStream = await navigator.mediaDevices.getDisplayMedia({
+                video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15 } },
+                audio: true
+            });
+        } catch (e) {
+            console.warn('[Voice] Screen share cancelled or denied:', e);
+            return;
+        }
+
+        _screenSharing = true;
+
+        // Handle browser's native "Stop sharing" button
+        _screenStream.getVideoTracks().forEach(track => {
+            track.onended = () => stopScreenShare();
+        });
+
+        // Send screen_share_start to server
+        if (_ws && _ws.readyState === WebSocket.OPEN) {
+            _ws.send(JSON.stringify({ type: 'screen_share_start' }));
+        }
+
+        // Add screen tracks to all existing peer connections
+        for (const [userId, pc] of _peers) {
+            const senders = [];
+            _screenStream.getTracks().forEach(track => {
+                senders.push(pc.addTrack(track, _screenStream));
+            });
+            _screenSenders.set(userId, senders);
+            // onnegotiationneeded will fire automatically
+        }
+
+        _notifyState();
+    }
+
+    function stopScreenShare() {
+        if (!_screenSharing) return;
+
+        // Send screen_share_stop to server
+        if (_ws && _ws.readyState === WebSocket.OPEN) {
+            _ws.send(JSON.stringify({ type: 'screen_share_stop' }));
+        }
+
+        // Remove screen tracks from all peers
+        for (const [userId, senders] of _screenSenders) {
+            const pc = _peers.get(userId);
+            if (pc) {
+                for (const sender of senders) {
+                    try { pc.removeTrack(sender); } catch (e) {}
+                }
+            }
+        }
+        _screenSenders.clear();
+
+        // Stop screen stream
+        if (_screenStream) {
+            _screenStream.getTracks().forEach(t => t.stop());
+            _screenStream = null;
+        }
+
+        _screenSharing = false;
+        _notifyState();
+    }
+
     function _handleMuteChanged(data) {
         const user = _voiceUsers.get(data.user_id);
         if (user) user.muted = data.muted;
@@ -505,6 +686,8 @@ const VoiceChat = (() => {
                 muted: _muted,
                 deafened: _deafened,
                 speaking: _speaking,
+                screenSharing: _screenSharing,
+                screenSharerId: _screenSharerId,
                 mode: _prefs.mode,
                 pttKey: _prefs.pttKey,
                 vadThreshold: _prefs.vadThreshold,
@@ -521,6 +704,8 @@ const VoiceChat = (() => {
             muted: _muted,
             deafened: _deafened,
             speaking: _speaking,
+            screenSharing: _screenSharing,
+            screenSharerId: _screenSharerId,
             mode: _prefs.mode,
             pttKey: _prefs.pttKey,
             vadThreshold: _prefs.vadThreshold,
@@ -553,6 +738,8 @@ const VoiceChat = (() => {
         setVadThreshold,
         getState,
         getPrefs,
-        isInVoice
+        isInVoice,
+        startScreenShare,
+        stopScreenShare
     };
 })();

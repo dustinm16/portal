@@ -997,6 +997,134 @@
             background: rgba(255,255,255,0.1);
         }
 
+        .emoji-category-label {
+            grid-column: 1 / -1;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            padding: 4px 2px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .emoji-category-label.with-border {
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: 4px;
+            padding-top: 8px;
+        }
+
+        .custom-emote-picker-img {
+            width: 24px;
+            height: 24px;
+            object-fit: contain;
+        }
+
+        .custom-emote {
+            display: inline-block;
+            width: 28px;
+            height: 28px;
+            object-fit: contain;
+            vertical-align: middle;
+            margin: 0 1px;
+        }
+
+        .custom-emote-reaction {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            object-fit: contain;
+            vertical-align: middle;
+        }
+
+        .emote-autocomplete {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            right: 0;
+            max-height: 200px;
+            overflow-y: auto;
+            background: var(--bg-secondary);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px 8px 0 0;
+            z-index: 102;
+            margin-bottom: 4px;
+            box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+        }
+
+        .emote-autocomplete.show {
+            display: block;
+        }
+
+        .emote-autocomplete-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .emote-autocomplete-item:hover, .emote-autocomplete-item.selected {
+            background: rgba(255,255,255,0.08);
+        }
+
+        .emote-autocomplete-item img {
+            width: 22px;
+            height: 22px;
+            object-fit: contain;
+        }
+
+        .emote-manager-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 0.5rem;
+            max-height: 300px;
+            overflow-y: auto;
+            margin: 0.5rem 0;
+        }
+
+        .emote-manager-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.5rem;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.03);
+            position: relative;
+        }
+
+        .emote-manager-item img {
+            width: 40px;
+            height: 40px;
+            object-fit: contain;
+        }
+
+        .emote-manager-item .emote-name {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-align: center;
+            word-break: break-all;
+        }
+
+        .emote-manager-item .emote-delete-btn {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: rgba(255,0,0,0.3);
+            border: none;
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 0.7rem;
+            padding: 1px 4px;
+            border-radius: 3px;
+            opacity: 0;
+        }
+
+        .emote-manager-item:hover .emote-delete-btn {
+            opacity: 1;
+        }
+
         /* Input area adjustments */
         .chat-input-wrapper {
             position: relative;
@@ -1857,6 +1985,40 @@
             }
         }
 
+        /* Screen Share */
+        .voice-ctrl-btn.sharing {
+            color: var(--accent-green, #43b581);
+            border-color: var(--accent-green, #43b581);
+            background: rgba(67, 181, 129, 0.1);
+        }
+        .screen-share-panel {
+            display: none;
+            background: var(--bg-secondary, #2f3136);
+            border-bottom: 1px solid var(--border-color, #3a3d41);
+            padding: 0.5rem;
+            flex-direction: column;
+        }
+        .screen-share-panel.active { display: flex; }
+        .screen-share-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 0.25rem 0.4rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary, #b9bbbe);
+        }
+        .screen-share-header span { display: flex; align-items: center; gap: 0.3rem; }
+        .screen-share-collapse-btn {
+            background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1rem; padding: 0.2rem;
+        }
+        .screen-share-video {
+            width: 100%;
+            max-height: 40vh;
+            object-fit: contain;
+            border-radius: 4px;
+            background: #000;
+        }
+
         /* =============================================
            Direct Messages
            ============================================= */
@@ -2592,12 +2754,23 @@
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a6 6 0 0 0-6 6v1c0 .6.4 1 1 1h1V7a4 4 0 1 1 8 0v2h1c.6 0 1-.4 1-1V7a6 6 0 0 0-6-6zM4 9v3a2 2 0 0 0 2 2h.5a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5H4zm8 0h-2.5a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 .5.5H10a2 2 0 0 0 2-2V9z"/></svg>
                     <span id="voice-deafen-label">Deafen</span>
                 </button>
+                <button class="voice-ctrl-btn" id="voice-screenshare-btn" onclick="toggleScreenShare()" title="Share screen" style="display:none;">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 3.5A1.5 1.5 0 0 1 1.5 2h13A1.5 1.5 0 0 1 16 3.5v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 10.5v-7zM1.5 3a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-13z"/><path d="M8 14s-2 0-2-1h4c0 1-2 1-2 1z"/></svg>
+                    <span id="voice-screenshare-label">Share</span>
+                </button>
                 <button class="voice-ctrl-btn" id="voice-settings-btn" onclick="openVoiceSettings()" title="Voice settings">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.421 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.421-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.116l.094-.318z"/></svg>
                 </button>
                 <span class="voice-mode-indicator" id="voice-mode-indicator">VAD</span>
                 <div class="voice-users-mini" id="voice-users-mini"></div>
                 <button class="voice-disconnect-btn" onclick="VoiceChat.leave()" title="Disconnect from voice">Disconnect</button>
+            </div>
+            <div class="screen-share-panel" id="screen-share-panel">
+                <div class="screen-share-header">
+                    <span id="screen-share-label">Someone is sharing their screen</span>
+                    <button class="screen-share-collapse-btn" onclick="toggleScreenSharePanel()" title="Collapse">&#x25B2;</button>
+                </div>
+                <video class="screen-share-video" id="screen-share-video" autoplay playsinline></video>
             </div>
             <div class="chat-messages" id="chat-messages">
                 <!-- Messages populated by JS -->
@@ -2623,6 +2796,7 @@
             <div class="chat-input-container">
                 <div class="chat-input-wrapper">
                     <div class="mention-autocomplete" id="mention-autocomplete"></div>
+                    <div class="emote-autocomplete" id="emote-autocomplete"></div>
                     <button class="emoji-btn" onclick="toggleEmojiPicker()" title="Insert emoji">😊</button>
                     <div class="emoji-picker" id="emoji-picker">
                         <div class="emoji-grid" id="emoji-grid"></div>
@@ -2829,7 +3003,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=32"></script>
-    <script src="/static/js/voice.js?v=2"></script>
+    <script src="/static/js/voice.js?v=3"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -2880,6 +3054,30 @@
         let dmSelectedUsers = []; // for new DM modal multi-select
 
         // @Mention autocomplete state
+        // Custom emotes catalog
+        let customEmotes = new Map();        // name → url
+        let customEmotesByCategory = {};     // category → [{name, url}]
+
+        async function loadCustomEmotes() {
+            try {
+                const res = await fetch('/api/emotes', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                customEmotes.clear();
+                customEmotesByCategory = {};
+                for (const e of data.emotes || []) {
+                    customEmotes.set(e.name, e.url);
+                    if (!customEmotesByCategory[e.category]) {
+                        customEmotesByCategory[e.category] = [];
+                    }
+                    customEmotesByCategory[e.category].push({ name: e.name, url: e.url, id: e.id });
+                }
+                initEmojiPicker();
+            } catch (err) {
+                console.error('Failed to load emotes:', err);
+            }
+        }
+
         let mentionDropdownVisible = false;
         let mentionSelectedIndex = 0;
         let mentionMatches = [];
@@ -2929,6 +3127,7 @@
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
             await loadUserInfo();
+            await loadCustomEmotes();
             await loadChannels();
             await loadBlockedUsers();
             connectWebSocket();
@@ -2943,6 +3142,14 @@
                     }
                     if (e.key === 'Escape') { e.preventDefault(); hideMentionDropdown(); return; }
                 }
+                if (emoteDropdownVisible) {
+                    if (e.key === 'ArrowDown') { e.preventDefault(); emoteNav(1); return; }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); emoteNav(-1); return; }
+                    if (e.key === 'Tab' || e.key === 'Enter') {
+                        e.preventDefault(); emoteSelect(); return;
+                    }
+                    if (e.key === 'Escape') { e.preventDefault(); hideEmoteAutocomplete(); return; }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     sendMessage();
@@ -2953,11 +3160,13 @@
             document.getElementById('chat-input').addEventListener('input', (e) => {
                 sendTyping();
                 handleMentionAutocomplete(e.target);
+                handleEmoteAutocomplete(e.target);
             });
 
             // Hide mention dropdown on blur (delayed so mousedown on items fires first)
             document.getElementById('chat-input').addEventListener('blur', () => {
                 setTimeout(hideMentionDropdown, 150);
+                setTimeout(hideEmoteAutocomplete, 150);
             });
 
             // --- Mobile viewport fixes ---
@@ -3097,9 +3306,31 @@
 
         function initEmojiPicker() {
             const grid = document.getElementById('emoji-grid');
-            grid.innerHTML = COMMON_EMOJI.map(emoji =>
+            let html = '';
+
+            // Custom emotes section (if any)
+            if (customEmotes.size > 0) {
+                for (const [category, emotes] of Object.entries(customEmotesByCategory)) {
+                    html += `<div class="emoji-category-label">${escapeHtml(category)}</div>`;
+                    for (const e of emotes) {
+                        html += `<span class="emoji-item" onclick="insertEmoji(':${escapeHtml(e.name)}:')" title=":${escapeHtml(e.name)}:"><img class="custom-emote-picker-img" src="${e.url}" alt=":${escapeHtml(e.name)}:"></span>`;
+                    }
+                }
+                html += '<div class="emoji-category-label with-border">Standard</div>';
+            }
+
+            // Built-in Unicode emoji
+            html += COMMON_EMOJI.map(emoji =>
                 `<span class="emoji-item" onclick="insertEmoji('${emoji}')">${emoji}</span>`
             ).join('');
+
+            // Emote manager button (admin/mod only)
+            const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
+            if (isMod) {
+                html += `<div class="emoji-category-label with-border" style="cursor:pointer;color:var(--accent-blue);" onclick="openEmoteManager()">⚙️ Manage Emotes</div>`;
+            }
+
+            grid.innerHTML = html;
         }
 
         async function loadChannels() {
@@ -3263,7 +3494,7 @@
                 reconnectAttempts = 0;
 
                 // Initialize voice chat with this WebSocket
-                VoiceChat.init(ws, onVoiceStateChange);
+                VoiceChat.init(ws, onVoiceStateChange, onScreenShareChange);
 
                 // Join current channel
                 ws.send(JSON.stringify({
@@ -3562,7 +3793,7 @@
                 reactionsHtml = '<div class="message-reactions">';
                 for (const r of data.reactions) {
                     const isMine = r.user_ids && r.user_ids.includes(currentUser?.id);
-                    reactionsHtml += `<button class="reaction-pill${isMine ? ' my-reaction' : ''}" data-msg-id="${data.id}" data-emoji="${escapeHtml(r.emoji)}" title="${r.count}">${r.emoji} ${r.count}</button>`;
+                    reactionsHtml += `<button class="reaction-pill${isMine ? ' my-reaction' : ''}" data-msg-id="${data.id}" data-emoji="${escapeHtml(r.emoji)}" title="${r.count}">${renderReactionContent(r.emoji, r.count)}</button>`;
                 }
                 reactionsHtml += '</div>';
             }
@@ -3873,7 +4104,104 @@
             mentionSelect();
         }
 
+        // === Emote Autocomplete ===
+
+        let emoteDropdownVisible = false;
+        let emoteMatches = [];
+        let emoteSelectedIndex = 0;
+        let emoteStartPos = 0;
+
+        function handleEmoteAutocomplete(input) {
+            if (customEmotes.size === 0) return;
+            const text = input.value;
+            const cursor = input.selectionStart;
+            const beforeCursor = text.substring(0, cursor);
+
+            const colonMatch = beforeCursor.match(/:([a-zA-Z0-9_]{1,32})$/);
+            if (!colonMatch) {
+                hideEmoteAutocomplete();
+                return;
+            }
+
+            const query = colonMatch[1].toLowerCase();
+            emoteStartPos = cursor - colonMatch[1].length - 1; // position of :
+
+            emoteMatches = [...customEmotes.entries()]
+                .filter(([name]) => name.toLowerCase().startsWith(query))
+                .slice(0, 8);
+
+            if (emoteMatches.length === 0) {
+                hideEmoteAutocomplete();
+                return;
+            }
+
+            emoteSelectedIndex = 0;
+            showEmoteDropdown();
+        }
+
+        function showEmoteDropdown() {
+            const dropdown = document.getElementById('emote-autocomplete');
+            dropdown.innerHTML = emoteMatches.map(([name, url], i) =>
+                `<div class="emote-autocomplete-item${i === 0 ? ' selected' : ''}" data-index="${i}" onmousedown="emoteClickSelect(${i})" onmouseenter="emoteHoverSelect(${i})">
+                    <img src="${url}" alt=":${escapeHtml(name)}:">
+                    <span>:${escapeHtml(name)}:</span>
+                </div>`
+            ).join('');
+            dropdown.classList.add('show');
+            emoteDropdownVisible = true;
+        }
+
+        function hideEmoteAutocomplete() {
+            const dropdown = document.getElementById('emote-autocomplete');
+            dropdown.classList.remove('show');
+            emoteDropdownVisible = false;
+            emoteMatches = [];
+            emoteSelectedIndex = 0;
+        }
+
+        function emoteNav(direction) {
+            emoteSelectedIndex = Math.max(0, Math.min(emoteMatches.length - 1, emoteSelectedIndex + direction));
+            const items = document.querySelectorAll('.emote-autocomplete-item');
+            items.forEach((item, i) => item.classList.toggle('selected', i === emoteSelectedIndex));
+        }
+
+        function emoteSelect() {
+            if (emoteSelectedIndex >= emoteMatches.length) return;
+            const [name] = emoteMatches[emoteSelectedIndex];
+            const input = document.getElementById('chat-input');
+            const text = input.value;
+            const cursor = input.selectionStart;
+            const replacement = `:${name}: `;
+            input.value = text.substring(0, emoteStartPos) + replacement + text.substring(cursor);
+            const newPos = emoteStartPos + replacement.length;
+            input.focus();
+            input.setSelectionRange(newPos, newPos);
+            hideEmoteAutocomplete();
+        }
+
+        function emoteClickSelect(index) {
+            emoteSelectedIndex = index;
+            emoteSelect();
+        }
+
+        function emoteHoverSelect(index) {
+            emoteSelectedIndex = index;
+            const items = document.querySelectorAll('.emote-autocomplete-item');
+            items.forEach((item, i) => item.classList.toggle('selected', i === index));
+        }
+
         // === Emoji Reactions ===
+
+        function renderReactionContent(emoji, count) {
+            const emoteMatch = emoji.match(/^:([a-zA-Z0-9_]{2,32}):$/);
+            if (emoteMatch) {
+                const url = customEmotes.get(emoteMatch[1]);
+                if (url) {
+                    return `<img class="custom-emote-reaction" src="${url}" alt="${escapeHtml(emoji)}" title="${escapeHtml(emoji)}"> ${count}`;
+                }
+            }
+            return `${emoji} ${count}`;
+        }
 
         function toggleReaction(messageId, emoji) {
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -3912,7 +4240,7 @@
                     pill.onclick = () => toggleReaction(data.message_id, data.emoji);
                     reactionsDiv.appendChild(pill);
                 }
-                pill.textContent = `${data.emoji} ${data.count}`;
+                pill.innerHTML = renderReactionContent(data.emoji, data.count);
                 pill.title = `${data.count}`;
                 // Toggle my-reaction class
                 if (data.user_id === currentUser?.id) {
@@ -3931,9 +4259,17 @@
             const picker = document.getElementById('reaction-picker');
             const grid = document.getElementById('reaction-picker-grid');
             const REACTION_EMOJI = ['👍', '👎', '😂', '❤️', '🔥', '🎉', '😢', '😡', '👀', '🤔', '✅', '❌', '🚀', '💯', '⭐', '🙏'];
-            grid.innerHTML = REACTION_EMOJI.map(e =>
+            let reactionHtml = REACTION_EMOJI.map(e =>
                 `<div class="reaction-picker-item" onclick="selectReaction('${e}')">${e}</div>`
             ).join('');
+            // Append custom emotes
+            if (customEmotes.size > 0) {
+                reactionHtml += '<div style="grid-column:1/-1;border-top:1px solid rgba(255,255,255,0.1);margin:4px 0;"></div>';
+                for (const [name, url] of customEmotes) {
+                    reactionHtml += `<div class="reaction-picker-item" onclick="selectReaction(':${escapeHtml(name)}:')"><img class="custom-emote-reaction" src="${url}" alt=":${escapeHtml(name)}:" title=":${escapeHtml(name)}:" style="width:20px;height:20px;"></div>`;
+                }
+            }
+            grid.innerHTML = reactionHtml;
             // Position near where context menu was
             picker.style.left = (window._lastContextX || 100) + 'px';
             picker.style.top = (window._lastContextY || 100) + 'px';
@@ -4574,6 +4910,15 @@
                 text = text.replace(new RegExp(escaped, 'g'), emoji);
             }
 
+            // Custom emote shortcodes (:name:)
+            text = text.replace(/:([a-zA-Z0-9_]{2,32}):/g, (match, name) => {
+                const url = customEmotes.get(name);
+                if (url) {
+                    return `<img class="custom-emote" src="${url}" alt=":${name}:" title=":${name}:" loading="lazy">`;
+                }
+                return match;
+            });
+
             // Code blocks (```) - must be before inline code
             text = text.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
 
@@ -4847,6 +5192,151 @@
             input.focus();
             input.setSelectionRange(start + emoji.length, start + emoji.length);
             document.getElementById('emoji-picker').classList.remove('show');
+        }
+
+        // === Emote Manager (Admin/Mod) ===
+
+        function openEmoteManager() {
+            document.getElementById('emoji-picker').classList.remove('show');
+            let modal = document.getElementById('emote-manager-modal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'emote-manager-modal';
+                modal.className = 'modal-overlay';
+                modal.innerHTML = `
+                    <div class="modal" style="max-width:500px;">
+                        <div class="modal-header">
+                            <h3>Emote Manager</h3>
+                            <button class="modal-close" onclick="closeEmoteManager()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div style="margin-bottom:1rem;">
+                                <h4 style="margin:0 0 0.5rem;font-size:0.85rem;">Upload New Emote</h4>
+                                <div style="display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+                                    <div style="flex:1;min-width:100px;">
+                                        <label style="font-size:0.75rem;color:var(--text-muted);">Name</label>
+                                        <input type="text" id="emote-name-input" placeholder="emote_name" style="width:100%;padding:0.3rem 0.5rem;border-radius:4px;border:1px solid var(--border-color);background:var(--bg-primary);color:var(--text-primary);font-size:0.85rem;" pattern="[a-zA-Z0-9_]{2,32}">
+                                    </div>
+                                    <div style="flex:1;min-width:100px;">
+                                        <label style="font-size:0.75rem;color:var(--text-muted);">Category</label>
+                                        <input type="text" id="emote-category-input" value="General" style="width:100%;padding:0.3rem 0.5rem;border-radius:4px;border:1px solid var(--border-color);background:var(--bg-primary);color:var(--text-primary);font-size:0.85rem;">
+                                    </div>
+                                    <div>
+                                        <input type="file" id="emote-file-input" accept="image/png,image/gif,image/webp,image/jpeg" style="display:none;" onchange="emoteFileSelected()">
+                                        <button class="btn btn-sm" onclick="document.getElementById('emote-file-input').click()" style="padding:0.3rem 0.6rem;font-size:0.8rem;">Choose File</button>
+                                    </div>
+                                    <button class="btn btn-primary btn-sm" id="emote-upload-btn" onclick="uploadEmote()" disabled style="padding:0.3rem 0.6rem;font-size:0.8rem;">Upload</button>
+                                </div>
+                                <div id="emote-file-label" style="font-size:0.7rem;color:var(--text-muted);margin-top:0.25rem;">PNG, GIF, WebP, JPEG — max 256KB</div>
+                            </div>
+                            <h4 style="margin:0 0 0.5rem;font-size:0.85rem;">Current Emotes (<span id="emote-count">0</span>)</h4>
+                            <div class="emote-manager-grid" id="emote-manager-grid"></div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) closeEmoteManager();
+                });
+            }
+            modal.style.display = 'flex';
+            renderEmoteManagerGrid();
+        }
+
+        function closeEmoteManager() {
+            const modal = document.getElementById('emote-manager-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        function emoteFileSelected() {
+            const file = document.getElementById('emote-file-input').files[0];
+            const label = document.getElementById('emote-file-label');
+            const btn = document.getElementById('emote-upload-btn');
+            if (file) {
+                label.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + 'KB)';
+                btn.disabled = false;
+            } else {
+                label.textContent = 'PNG, GIF, WebP, JPEG — max 256KB';
+                btn.disabled = true;
+            }
+        }
+
+        async function uploadEmote() {
+            const fileInput = document.getElementById('emote-file-input');
+            const nameInput = document.getElementById('emote-name-input');
+            const categoryInput = document.getElementById('emote-category-input');
+            const name = nameInput.value.trim();
+            if (!name || !/^[a-zA-Z0-9_]{2,32}$/.test(name)) {
+                Portal.toast('Name must be 2-32 alphanumeric/underscore characters', 'error');
+                return;
+            }
+            if (!fileInput.files[0]) {
+                Portal.toast('Select a file', 'error');
+                return;
+            }
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('name', name);
+            formData.append('category', categoryInput.value.trim() || 'General');
+            try {
+                const res = await fetch('/api/emotes', { method: 'POST', credentials: 'include', body: formData });
+                if (res.ok) {
+                    Portal.toast('Emote uploaded!', 'success');
+                    nameInput.value = '';
+                    fileInput.value = '';
+                    document.getElementById('emote-file-label').textContent = 'PNG, GIF, WebP, JPEG — max 256KB';
+                    document.getElementById('emote-upload-btn').disabled = true;
+                    await loadCustomEmotes();
+                    renderEmoteManagerGrid();
+                } else {
+                    const err = await res.json();
+                    Portal.toast(err.error || 'Upload failed', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Upload failed', 'error');
+            }
+        }
+
+        async function deleteEmote(id, name) {
+            if (!confirm(`Delete emote :${name}:?`)) return;
+            try {
+                const res = await fetch(`/api/emotes/${id}`, { method: 'DELETE', credentials: 'include' });
+                if (res.ok) {
+                    Portal.toast('Emote deleted', 'success');
+                    await loadCustomEmotes();
+                    renderEmoteManagerGrid();
+                } else {
+                    const err = await res.json();
+                    Portal.toast(err.error || 'Delete failed', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Delete failed', 'error');
+            }
+        }
+
+        function renderEmoteManagerGrid() {
+            const grid = document.getElementById('emote-manager-grid');
+            const count = document.getElementById('emote-count');
+            if (!grid) return;
+            let allEmotes = [];
+            for (const [category, emotes] of Object.entries(customEmotesByCategory)) {
+                for (const e of emotes) {
+                    allEmotes.push({ ...e, category });
+                }
+            }
+            count.textContent = allEmotes.length;
+            if (allEmotes.length === 0) {
+                grid.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:1rem;text-align:center;">No custom emotes yet</div>';
+                return;
+            }
+            grid.innerHTML = allEmotes.map(e => `
+                <div class="emote-manager-item">
+                    <img src="${e.url}" alt=":${escapeHtml(e.name)}:">
+                    <div class="emote-name">:${escapeHtml(e.name)}:</div>
+                    <div style="font-size:0.6rem;color:var(--text-muted);">${escapeHtml(e.category)}</div>
+                    <button class="emote-delete-btn" onclick="deleteEmote(${e.id}, '${escapeHtml(e.name)}')">&times;</button>
+                </div>
+            `).join('');
         }
 
         // Close dropdowns and context menus when clicking outside
@@ -5746,6 +6236,8 @@
             const deafenLabel = document.getElementById('voice-deafen-label');
             const modeIndicator = document.getElementById('voice-mode-indicator');
             const usersMini = document.getElementById('voice-users-mini');
+            const shareBtn = document.getElementById('voice-screenshare-btn');
+            const shareLabel = document.getElementById('voice-screenshare-label');
 
             if (state.inVoice) {
                 joinBtn.classList.add('in-voice');
@@ -5757,15 +6249,76 @@
                 deafenLabel.textContent = state.deafened ? 'Undeafen' : 'Deafen';
                 modeIndicator.textContent = state.mode === 'ptt' ? 'PTT' : 'VAD';
 
+                // Screen share button
+                if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                    shareBtn.style.display = '';
+                    if (state.screenSharing) {
+                        shareBtn.classList.add('sharing');
+                        shareLabel.textContent = 'Stop';
+                    } else {
+                        shareBtn.classList.remove('sharing');
+                        shareLabel.textContent = 'Share';
+                        // Disable if someone else is sharing
+                        shareBtn.disabled = !!state.screenSharerId;
+                        shareBtn.title = state.screenSharerId ? 'Someone else is sharing' : 'Share screen';
+                    }
+                }
+
                 // Update mini user list
                 usersMini.innerHTML = state.users.map(u =>
-                    `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}">${escapeHtml(u.username)}${u.muted ? ' 🔇' : ''}</span>`
+                    `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}">${escapeHtml(u.username)}${u.muted ? ' 🔇' : ''}${u.screen_sharing ? ' 🖥️' : ''}</span>`
                 ).join('');
             } else {
                 joinBtn.classList.remove('in-voice');
                 joinLabel.textContent = 'Join Voice';
                 controls.classList.remove('active');
+                shareBtn.style.display = 'none';
                 usersMini.innerHTML = '';
+                // Hide screen share panel
+                document.getElementById('screen-share-panel').classList.remove('active');
+            }
+        }
+
+        function onScreenShareChange(event) {
+            const panel = document.getElementById('screen-share-panel');
+            const video = document.getElementById('screen-share-video');
+            const label = document.getElementById('screen-share-label');
+
+            if (event.action === 'started') {
+                label.textContent = `${escapeHtml(event.username)} is sharing their screen`;
+                panel.classList.add('active');
+            } else if (event.action === 'stopped') {
+                panel.classList.remove('active');
+                video.srcObject = null;
+            } else if (event.action === 'track') {
+                // Video track received from the sharer
+                video.srcObject = event.stream;
+                panel.classList.add('active');
+            } else if (event.action === 'track_ended') {
+                panel.classList.remove('active');
+                video.srcObject = null;
+            }
+        }
+
+        function toggleScreenShare() {
+            const state = VoiceChat.getState();
+            if (state.screenSharing) {
+                VoiceChat.stopScreenShare();
+            } else {
+                VoiceChat.startScreenShare();
+            }
+        }
+
+        function toggleScreenSharePanel() {
+            const panel = document.getElementById('screen-share-panel');
+            const video = document.getElementById('screen-share-video');
+            const btn = panel.querySelector('.screen-share-collapse-btn');
+            if (video.style.display === 'none') {
+                video.style.display = '';
+                btn.innerHTML = '&#x25B2;';
+            } else {
+                video.style.display = 'none';
+                btn.innerHTML = '&#x25BC;';
             }
         }
 

@@ -751,7 +751,7 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON invite_codes(code)",
     "CREATE INDEX IF NOT EXISTS idx_invite_codes_active ON invite_codes(is_active)",
     "ALTER TABLE users ADD COLUMN invite_code_id INTEGER REFERENCES invite_codes(id)",
-    # Discord parity: slowmode, channel categories, timeouts, file attachments
+    # Chat features: slowmode, channel categories, timeouts, file attachments
     "ALTER TABLE chat_channels ADD COLUMN slowmode_seconds INTEGER DEFAULT 0",
     "ALTER TABLE chat_channels ADD COLUMN category TEXT",
     """CREATE TABLE IF NOT EXISTS chat_timeouts (
@@ -889,6 +889,17 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_chat_channels_visibility ON chat_channels(visibility)",
     "CREATE INDEX IF NOT EXISTS idx_dm_participants_user_left ON dm_participants(user_id, left_at)",
     "CREATE INDEX IF NOT EXISTS idx_automod_rules_enabled ON automod_rules(enabled)",
+    # Custom emotes
+    """CREATE TABLE IF NOT EXISTS custom_emotes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        filename TEXT NOT NULL,
+        category TEXT DEFAULT 'General',
+        uploaded_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_custom_emotes_name ON custom_emotes(name)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -4070,6 +4081,67 @@ class Database:
                 for emoji, uids in emojis.items()
             ]
         return output
+
+    # =========================================================================
+    # Custom Emotes
+    # =========================================================================
+
+    async def get_all_custom_emotes(self) -> list[dict]:
+        """Get all custom emotes ordered by category then name."""
+        cursor = await self.conn.execute(
+            "SELECT id, name, filename, category, uploaded_by, created_at "
+            "FROM custom_emotes ORDER BY category, name"
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_custom_emote_by_name(self, name: str) -> Optional[dict]:
+        """Get a single emote by shortcode name."""
+        cursor = await self.conn.execute(
+            "SELECT id, name, filename, category, uploaded_by, created_at "
+            "FROM custom_emotes WHERE name = ?", (name,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def create_custom_emote(self, name: str, filename: str, category: str, uploaded_by: int) -> dict:
+        """Create a new custom emote."""
+        cursor = await self.conn.execute(
+            "INSERT INTO custom_emotes (name, filename, category, uploaded_by) VALUES (?, ?, ?, ?)",
+            (name, filename, category, uploaded_by)
+        )
+        await self.conn.commit()
+        return {"id": cursor.lastrowid, "name": name, "filename": filename,
+                "category": category, "uploaded_by": uploaded_by}
+
+    async def update_custom_emote(self, emote_id: int, name: str = None, category: str = None) -> bool:
+        """Update emote name and/or category."""
+        fields, values = [], []
+        if name is not None:
+            fields.append("name = ?")
+            values.append(name)
+        if category is not None:
+            fields.append("category = ?")
+            values.append(category)
+        if not fields:
+            return False
+        values.append(emote_id)
+        cursor = await self.conn.execute(
+            f"UPDATE custom_emotes SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_custom_emote(self, emote_id: int) -> Optional[str]:
+        """Delete emote by ID. Returns filename for disk cleanup, or None."""
+        cursor = await self.conn.execute(
+            "SELECT filename FROM custom_emotes WHERE id = ?", (emote_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await self.conn.execute("DELETE FROM custom_emotes WHERE id = ?", (emote_id,))
+        await self.conn.commit()
+        return row["filename"]
 
     # =========================================================================
     # Message Editing
