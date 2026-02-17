@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Open Relay Portal REST API documentation. Endpoints for authentication, user connections, streaming, chat, services, and administration. Open-source self-hosted infrastructure gateway with full API access.">
-    <meta name="keywords" content="open relay portal API, REST API documentation, self-hosted API, streaming API, chat API, connection management API, open source gateway API, aiohttp REST API">
+    <meta name="keywords" content="open relay portal API, REST API documentation, self-hosted API, streaming API, chat API, connection management API, open source gateway API, aiohttp REST API, self-hosted API gateway, Guacamole REST API, self-hosted WebSocket server, open source WebSocket API">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/api-docs">
 
@@ -26,6 +26,39 @@
 
     <meta name="theme-color" content="#1a1a2e">
     <title>API Documentation — Open Relay Portal | REST API Reference</title>
+
+    <!-- JSON-LD Structured Data: TechArticle -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "headline": "Open Relay Portal REST API Documentation",
+        "description": "Complete REST API reference for Open Relay Portal — authentication, user connections, streaming, chat, services, and administration endpoints.",
+        "url": "https://{{HOSTNAME}}/api-docs",
+        "author": {
+            "@type": "Organization",
+            "name": "Open Relay Portal",
+            "url": "https://github.com/dustinm16/portal"
+        },
+        "publisher": {
+            "@type": "Organization",
+            "name": "Open Relay Portal",
+            "url": "https://github.com/dustinm16/portal"
+        },
+        "about": [
+            {"@type": "Thing", "name": "REST API"},
+            {"@type": "Thing", "name": "WebSocket API"},
+            {"@type": "Thing", "name": "Self-Hosted Infrastructure"}
+        ],
+        "keywords": "REST API, WebSocket API, self-hosted API gateway, streaming API, chat API, connection management, open source API documentation",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "Open Relay Portal",
+            "url": "https://{{HOSTNAME}}",
+            "sameAs": ["https://github.com/dustinm16/portal"]
+        }
+    }
+    </script>
     <link rel="stylesheet" href="/static/css/portal.css?v=41">
     <style>
         /* Hide auth-only nav items and show sign-in by default; JS adds .authenticated to toggle */

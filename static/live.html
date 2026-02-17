@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Watch live streams on Open Relay Portal — a self-hosted, open-source streaming platform. RTMPS streaming with HLS playback, real-time encrypted chat, WebRTC voice chat, and automatic VOD recording to your own storage.">
-    <meta name="keywords" content="live streaming, self-hosted streaming, open source streaming, RTMPS streaming, HLS live stream, self-hosted live streaming, community streaming platform, encrypted stream chat, open relay portal live">
+    <meta name="description" content="Watch live streams on Open Relay Portal — a self-hosted, open-source alternative to Twitch and Owncast. RTMPS streaming with HLS playback, real-time encrypted chat, WebRTC voice chat, and automatic VOD recording to your own storage.">
+    <meta name="keywords" content="live streaming, self-hosted streaming, open source streaming, RTMPS streaming, HLS live stream, self-hosted live streaming, community streaming platform, encrypted stream chat, open relay portal live, Twitch alternative, Owncast alternative, PeerTube alternative, self-hosted Twitch, Restream alternative, Nginx RTMP alternative, open source live streaming, self-hosted stream server, RTMP server alternative">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/live">
 
@@ -12,7 +12,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://{{HOSTNAME}}/live">
     <meta property="og:title" content="Live Streams — Open Relay Portal | Self-Hosted Streaming Platform">
-    <meta property="og:description" content="Watch live streams on a self-hosted, open-source streaming platform. RTMPS ingest, HLS playback, encrypted chat, and automatic VOD recording.">
+    <meta property="og:description" content="Watch live streams on a self-hosted, open-source alternative to Twitch and Owncast. RTMPS ingest, HLS playback, encrypted chat, and automatic VOD recording.">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Live Streams — Open Relay Portal | Self-Hosted Streaming Platform">
-    <meta name="twitter:description" content="Self-hosted live streaming with RTMPS, HLS playback, encrypted chat, and automatic VODs. Free and open source.">
+    <meta name="twitter:description" content="Self-hosted alternative to Twitch and Owncast. Live streaming with RTMPS, HLS playback, encrypted chat, and automatic VODs. Free and open source.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <meta name="theme-color" content="#1a1a2e">
@@ -46,6 +46,20 @@
                 "name": "Live Streams",
                 "item": "https://{{HOSTNAME}}/live"
             }
+        ]
+    }
+    </script>
+
+    <!-- JSON-LD Structured Data: WebSite with GitHub reference -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Open Relay Portal",
+        "url": "https://{{HOSTNAME}}",
+        "description": "Free, open-source, self-hosted alternative to Twitch and Owncast for live streaming, with encrypted chat and 75+ remote connection types.",
+        "sameAs": [
+            "https://github.com/dustinm16/portal"
         ]
     }
     </script>

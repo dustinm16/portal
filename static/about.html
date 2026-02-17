@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Open Relay Portal is a free, open-source, self-hosted communication and infrastructure gateway. Features encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH, VNC, and RDP. Built with Python. Encrypted at rest. Your server, your data.">
-    <meta name="keywords" content="self-hosted chat, open source streaming, encrypted chat server, self-hosted streaming platform, private chat server, WebRTC voice chat, RTMP streaming server, remote access gateway, SSH browser, VNC browser, self-hosted infrastructure, open relay portal">
+    <meta name="description" content="Open Relay Portal is a free, open-source, self-hosted alternative to Discord, Slack, Twitch, and Apache Guacamole. Encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH, VNC, and RDP. Built with Python. Encrypted at rest. Your server, your data.">
+    <meta name="keywords" content="self-hosted chat, open source streaming, encrypted chat server, self-hosted streaming platform, private chat server, WebRTC voice chat, RTMP streaming server, remote access gateway, SSH browser, VNC browser, self-hosted infrastructure, open relay portal, Discord alternative, Slack alternative, Twitch alternative, TeamViewer alternative, self-hosted Discord, self-hosted Twitch, Rocket.Chat alternative, Matrix Element alternative, Mattermost alternative, Jitsi alternative, Mumble alternative, Apache Guacamole alternative, Rustdesk alternative, Parsec alternative, Owncast alternative, PeerTube alternative, Nginx RTMP alternative, Restream alternative, MeshCentral alternative">
     <meta name="author" content="Open Relay Portal">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/about">
@@ -13,7 +13,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://{{HOSTNAME}}/about">
     <meta property="og:title" content="Open Relay Portal — Free, Open-Source Self-Hosted Communication & Infrastructure Gateway">
-    <meta property="og:description" content="Self-hosted platform with encrypted chat, RTMPS live streaming, WebRTC voice chat, automatic VOD recording, and 75+ remote connection types. Your server, your data, your rules.">
+    <meta property="og:description" content="Self-hosted alternative to Discord, Slack, Twitch, and Apache Guacamole. Encrypted chat, RTMPS live streaming, WebRTC voice chat, automatic VOD recording, and 75+ remote connection types. Your server, your data, your rules.">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -23,7 +23,7 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Open Relay Portal — Free, Open-Source Self-Hosted Communication & Infrastructure Gateway">
-    <meta name="twitter:description" content="Self-hosted encrypted chat, live streaming, voice chat, and 75+ remote connection types. Open source. Your server, your data.">
+    <meta name="twitter:description" content="Self-hosted alternative to Discord, Twitch, and Apache Guacamole. Encrypted chat, live streaming, voice chat, and 75+ remote connection types. Open source. Your server, your data.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <!-- Additional SEO -->
@@ -39,7 +39,8 @@
         "@type": "SoftwareApplication",
         "name": "Open Relay Portal",
         "alternateName": ["ORP", "Open Relay"],
-        "description": "A free, open-source, self-hosted communication and infrastructure gateway. Features encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH, VNC, and RDP.",
+        "alternativeHeadline": "Self-hosted open-source alternative to Discord, Slack, Twitch, Owncast, TeamViewer, and Apache Guacamole",
+        "description": "A free, open-source, self-hosted communication and infrastructure gateway. An alternative to Discord, Slack, Twitch, Owncast, TeamViewer, and Apache Guacamole. Features encrypted chat with channels and DMs, RTMPS live streaming with automatic VOD recording, WebRTC voice chat, and 75+ remote connection types including SSH, VNC, and RDP.",
         "url": "https://{{HOSTNAME}}/about",
         "applicationCategory": "CommunicationApplication",
         "applicationSubCategory": ["Chat Application", "Streaming Platform", "Remote Access Gateway"],
@@ -78,7 +79,10 @@
             "name": "Open Relay Portal",
             "url": "https://github.com/dustinm16/portal"
         },
-        "keywords": "self-hosted chat, open source streaming, encrypted chat, self-hosted streaming, voice chat, remote access, SSH gateway, VNC gateway, self-hosted infrastructure, open relay portal"
+        "keywords": "self-hosted chat, open source streaming, encrypted chat, self-hosted streaming, voice chat, remote access, SSH gateway, VNC gateway, self-hosted infrastructure, open relay portal, Discord alternative, Slack alternative, Twitch alternative, TeamViewer alternative, Apache Guacamole alternative, Owncast alternative, Rocket.Chat alternative, Mattermost alternative, Jitsi alternative, PeerTube alternative, MeshCentral alternative, Rustdesk alternative",
+        "sameAs": [
+            "https://github.com/dustinm16/portal"
+        ]
     }
     </script>
 
@@ -129,7 +133,7 @@
                 "name": "Is Open Relay Portal free and open source?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Yes. Open Relay Portal is completely free and open source, available on GitHub. It is self-hosted, meaning you run it on your own server and maintain full ownership of your data, messages, streams, and recordings."
+                    "text": "Yes. Open Relay Portal is completely free and open source under the AGPL-3.0 license, available at https://github.com/dustinm16/portal. It is self-hosted, meaning you run it on your own server and maintain full ownership of your data, messages, streams, and recordings."
                 }
             },
             {
@@ -146,6 +150,14 @@
                 "acceptedAnswer": {
                     "@type": "Answer",
                     "text": "Open Relay Portal supports 75+ connection types including SSH, VNC, RDP, SFTP, MySQL, PostgreSQL, MongoDB, Redis, Proxmox, Home Assistant, Plex, Jellyfin, Nextcloud, Grafana, Portainer, pfSense, TrueNAS, and many more self-hosted services."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What software does Open Relay Portal replace?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Open Relay Portal can replace multiple tools: Discord or Slack for encrypted team chat with channels, DMs, and voice; Twitch or Owncast for live streaming with VOD recording; TeamViewer, Apache Guacamole, or RustDesk for remote access (SSH, VNC, RDP); and Jitsi or Mumble for voice chat. It combines all of these into a single self-hosted platform you control. Source code is available at https://github.com/dustinm16/portal."
                 }
             }
         ]
