@@ -2089,6 +2089,12 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
+    # Check if non-admin users are allowed to create connections
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        allow = await db.get_setting("allow_user_connections")
+        if allow == "false":
+            return web.json_response({"error": "Adding connections is currently disabled by an administrator"}, status=403)
+
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -2423,6 +2429,12 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    # Check if non-admin users are allowed to create streams
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        allow = await db.get_setting("allow_user_streams")
+        if allow == "false":
+            return web.json_response({"error": "Creating streams is currently disabled by an administrator"}, status=403)
 
     try:
         data = await request.json()
@@ -5627,6 +5639,44 @@ async def http_update_server_hostname(request: web.Request) -> web.Response:
         "stream_hostname": Config.STREAM_HOSTNAME,
         "message": "Hostname updated. Restart the server for full effect.",
     })
+
+
+async def http_get_feature_permissions(request: web.Request) -> web.Response:
+    """GET /api/settings/permissions - Get feature permission toggles (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    allow_connections = await db.get_setting("allow_user_connections")
+    allow_streams = await db.get_setting("allow_user_streams")
+    return web.json_response({
+        "allow_user_connections": allow_connections != "false",
+        "allow_user_streams": allow_streams != "false",
+    })
+
+
+async def http_update_feature_permissions(request: web.Request) -> web.Response:
+    """PUT /api/settings/permissions - Update feature permission toggles (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    if "allow_user_connections" in data:
+        await db.set_setting("allow_user_connections", "true" if data["allow_user_connections"] else "false")
+    if "allow_user_streams" in data:
+        await db.set_setting("allow_user_streams", "true" if data["allow_user_streams"] else "false")
+
+    logger.info(f"Feature permissions updated by user {token.user_id}: {data}")
+    return web.json_response({"success": True})
 
 
 # =============================================================================
@@ -12309,6 +12359,7 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         return web.json_response({"error": "User not found"}, status=404)
 
     role = user.get("role") or ("admin" if user.get("is_admin") else "user")
+    is_admin = role in ("admin", "superadmin")
     # Parse avatar JSON
     avatar = {}
     if user.get("avatar"):
@@ -12325,13 +12376,15 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         "role": role,
         "chat_anonymous": bool(user.get("chat_anonymous")),
         "avatar": avatar,
-        "is_admin": bool(user["is_admin"]),
+        "is_admin": is_admin,
         "scopes": token.scopes,
         "permissions": {
             "can_manage_users": get_role_level(role) >= get_role_level("moderator"),
             "can_reset_passwords": get_role_level(role) >= get_role_level("admin"),
             "can_delete_users": role == "superadmin",
-            "manageable_roles": get_manageable_roles(role)
+            "manageable_roles": get_manageable_roles(role),
+            "can_add_connections": is_admin or (await db.get_setting("allow_user_connections")) != "false",
+            "can_add_streams": is_admin or (await db.get_setting("allow_user_streams")) != "false",
         }
     })
 
@@ -13220,6 +13273,8 @@ def create_app() -> web.Application:
     # Server Settings (admin only)
     app.router.add_get("/api/settings/hostname", http_get_server_hostname)
     app.router.add_put("/api/settings/hostname", http_update_server_hostname)
+    app.router.add_get("/api/settings/permissions", http_get_feature_permissions)
+    app.router.add_put("/api/settings/permissions", http_update_feature_permissions)
 
     # System Monitor (admin only)
     app.router.add_get("/api/sysmon/processes", http_sysmon_processes)

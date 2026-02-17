@@ -1091,6 +1091,33 @@
                         </div>
                     </div>
 
+                    <!-- User Permissions Card -->
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                            </svg>
+                            User Permissions
+                        </h3>
+                        <div style="display:flex; flex-direction:column; gap:1rem;">
+                            <p style="font-size:0.8rem; color:var(--text-secondary); margin:0;">Control what non-admin users and moderators can do. Admins always retain full access.</p>
+                            <label style="display:flex; align-items:center; gap:0.75rem; cursor:pointer;">
+                                <input type="checkbox" id="perm-allow-connections" onchange="saveFeaturePermissions()" style="width:auto; accent-color:var(--accent-blue);">
+                                <div>
+                                    <span style="color:var(--text-primary); font-size:0.9rem;">Allow users to add connections</span>
+                                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.15rem 0 0;">When disabled, only admins can create new remote connections (SSH, VNC, etc.)</p>
+                                </div>
+                            </label>
+                            <label style="display:flex; align-items:center; gap:0.75rem; cursor:pointer;">
+                                <input type="checkbox" id="perm-allow-streams" onchange="saveFeaturePermissions()" style="width:auto; accent-color:var(--accent-blue);">
+                                <div>
+                                    <span style="color:var(--text-primary); font-size:0.9rem;">Allow users to create streams</span>
+                                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.15rem 0 0;">When disabled, only admins can create new live streams</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
                     <!-- Data Retention Card -->
                     <div class="admin-card" style="grid-column: span 2;">
                         <h3>
@@ -2884,7 +2911,7 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings(), loadRetentionConfig()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig()]);
         }
 
         async function loadCertInfo() {
@@ -3028,6 +3055,38 @@
                         uptimeHrs > 0 ? `${uptimeHrs}h ${uptimeMins}m` : `${uptimeMins}m`;
                 }
             } catch (e) {}
+        }
+
+        async function loadFeaturePermissions() {
+            try {
+                const resp = await Portal.fetch('/api/settings/permissions');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    document.getElementById('perm-allow-connections').checked = data.allow_user_connections !== false;
+                    document.getElementById('perm-allow-streams').checked = data.allow_user_streams !== false;
+                }
+            } catch (e) {}
+        }
+
+        async function saveFeaturePermissions() {
+            try {
+                const resp = await Portal.fetch('/api/settings/permissions', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        allow_user_connections: document.getElementById('perm-allow-connections').checked,
+                        allow_user_streams: document.getElementById('perm-allow-streams').checked,
+                    })
+                });
+                if (resp.ok) {
+                    Portal.toast('Permissions updated', 'success');
+                } else {
+                    const data = await resp.json().catch(() => ({}));
+                    Portal.toast(data.error || 'Failed to update permissions', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Failed to update permissions', 'error');
+            }
         }
 
         function showCertMethod(method) {

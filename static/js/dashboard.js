@@ -67,6 +67,20 @@ async function loadUserInfo() {
         if (profileUsername) profileUsername.textContent = currentUser.username;
         if (profileRole) profileRole.textContent = roleLabels[role] || 'User';
 
+        // Hide add connection / stream UI when disabled by admin
+        if (currentUser.permissions) {
+            if (!currentUser.permissions.can_add_connections) {
+                const addConnBtn = document.getElementById('add-connection-btn');
+                const quickAddBar = document.getElementById('quick-add-bar');
+                if (addConnBtn) addConnBtn.style.display = 'none';
+                if (quickAddBar) quickAddBar.style.display = 'none';
+            }
+            if (!currentUser.permissions.can_add_streams) {
+                const addStreamBtn = document.getElementById('add-stream-btn');
+                if (addStreamBtn) addStreamBtn.style.display = 'none';
+            }
+        }
+
     } catch (error) {
         console.error('Failed to load user info:', error);
         Portal.toast('Failed to load user info', 'error');
