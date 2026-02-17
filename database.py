@@ -158,15 +158,11 @@ def get_config_encryption_key() -> bytes:
 
 
 def encrypt_message(plaintext: str) -> str:
-    """Encrypt a chat message."""
+    """Encrypt a chat message. Raises on failure to prevent plaintext storage."""
     if not CRYPTO_AVAILABLE or not plaintext:
         return plaintext
-    try:
-        f = Fernet(get_chat_encryption_key())
-        return f.encrypt(plaintext.encode()).decode()
-    except Exception as e:
-        logger.error(f"Message encryption failed, storing plaintext: {e}")
-        return plaintext
+    f = Fernet(get_chat_encryption_key())
+    return f.encrypt(plaintext.encode()).decode()
 
 
 def decrypt_message(ciphertext: str) -> str:

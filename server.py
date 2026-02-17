@@ -2845,9 +2845,10 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    user_id = data.get("user_id")
-    if not user_id:
-        return web.json_response({"error": "user_id required"}, status=400)
+    try:
+        user_id = int(data.get("user_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Valid user_id required"}, status=400)
 
     # Can't ban yourself
     if user_id == token.user_id:
@@ -3390,7 +3391,13 @@ async def http_stream_auth(request: web.Request) -> web.Response:
 
     Called by MediaMTX when a client tries to publish or play a stream.
     Validates stream key for publishing, allows viewing of public streams.
+    Only accepts requests from localhost (MediaMTX runs on the same machine).
     """
+    # Restrict to localhost — these are internal MediaMTX hooks, not public API
+    client_ip = get_client_ip(request)
+    if client_ip not in ("127.0.0.1", "::1"):
+        return web.json_response({"error": "Forbidden"}, status=403)
+
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -3576,7 +3583,13 @@ async def http_stream_event(request: web.Request) -> web.Response:
     """MediaMTX stream event hook.
 
     Called when streams start/stop for updating live status.
+    Only accepts requests from localhost (MediaMTX runs on the same machine).
     """
+    # Restrict to localhost — these are internal MediaMTX hooks, not public API
+    client_ip = get_client_ip(request)
+    if client_ip not in ("127.0.0.1", "::1"):
+        return web.json_response({"error": "Forbidden"}, status=403)
+
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -3710,7 +3723,8 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
 
     # MediaMTX uses the private stream_key for paths (not public_key)
     # When publishing via rtmp_ token, MediaMTX path is the token, not the live_ key
-    private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
+    async with _stream_state_lock:
+        private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
     # MediaMTX path includes the RTMP app name "live"
     mtx_path = f"live/{private_key}"
     url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
@@ -3801,7 +3815,8 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
 
     hls_port = mtx_config.get("hls_port", 8888)
     # When publishing via rtmp_ token, MediaMTX path is the token, not the live_ key
-    private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
+    async with _stream_state_lock:
+        private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
     hls_url = f"https://127.0.0.1:{hls_port}/live/{private_key}/index.m3u8"
 
     try:
@@ -8088,7 +8103,17 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                             elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
                                 break
 
-                    await asyncio.gather(_fwd_client(), _fwd_upstream())
+                    tasks = [
+                        asyncio.create_task(_fwd_client()),
+                        asyncio.create_task(_fwd_upstream()),
+                    ]
+                    try:
+                        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        for t in tasks:
+                            if not t.done():
+                                t.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error(f"Proxy WS {conn_uuid} error: {e}")
         return ws
@@ -9170,13 +9195,13 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
 
+    # Excluded: text/html, text/css, text/javascript, application/xml (XSS risk)
     ALLOWED_TYPES = {
         "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
         "application/pdf": ".pdf", "text/plain": ".txt", "text/markdown": ".md", "text/csv": ".csv",
         "application/zip": ".zip", "application/gzip": ".gz",
         "application/x-tar": ".tar", "application/x-7z-compressed": ".7z",
-        "application/json": ".json", "application/xml": ".xml",
-        "text/html": ".html", "text/css": ".css", "text/javascript": ".js",
+        "application/json": ".json",
         "application/x-python": ".py", "text/x-python": ".py",
         "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "video/mp4": ".mp4", "video/webm": ".webm",
         "application/octet-stream": None,  # allow if extension is valid
@@ -9185,7 +9210,7 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
         ".jpg", ".jpeg", ".png", ".gif", ".webp",
         ".pdf", ".txt", ".md", ".csv", ".log",
         ".zip", ".gz", ".tar", ".7z",
-        ".json", ".xml", ".html", ".css", ".js", ".py", ".go", ".rs", ".sh",
+        ".json", ".py", ".go", ".rs", ".sh",
         ".mp3", ".ogg", ".mp4", ".webm",
         ".conf", ".cfg", ".ini", ".yaml", ".yml", ".toml",
     }
@@ -10621,7 +10646,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         try:
                             target_user_id = int(target_user_id)
-                            duration = int(duration)
+                            duration = min(int(duration), 86400 * 30)  # max 30 days
                         except (ValueError, TypeError):
                             continue
                         target_user = await db.get_user_by_id(target_user_id)

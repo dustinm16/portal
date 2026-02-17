@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import secrets
+import time
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlencode
@@ -82,7 +83,8 @@ class GitHubPlugin(PluginBase):
         super().__init__()
         self._sessions: dict[int, GitHubSession] = {}
         self._http_session: Optional[aiohttp.ClientSession] = None
-        self._oauth_states: dict[str, int] = {}  # nonce -> user_id
+        self._oauth_states: dict[str, tuple[int, float]] = {}  # nonce -> (user_id, created_at)
+        self._OAUTH_STATE_TTL = 900  # 15 minutes
 
     async def initialize(self) -> None:
         """Initialize HTTP session."""
@@ -171,7 +173,13 @@ class GitHubPlugin(PluginBase):
             if client_id:
                 # OAuth flow
                 oauth_nonce = secrets.token_urlsafe(32)
-                self._oauth_states[oauth_nonce] = user_id
+                # Prune expired states to prevent unbounded memory growth
+                now = time.time()
+                self._oauth_states = {
+                    k: v for k, v in self._oauth_states.items()
+                    if now - v[1] < self._OAUTH_STATE_TTL
+                }
+                self._oauth_states[oauth_nonce] = (user_id, now)
                 params = {
                     'client_id': client_id,
                     'scope': 'repo,read:user,workflow',
@@ -554,7 +562,12 @@ class GitHubPlugin(PluginBase):
                 token_data = await resp.json()
 
             if "access_token" in token_data:
-                user_id = self._oauth_states.pop(state, None)
+                state_entry = self._oauth_states.pop(state, None)
+                user_id = None
+                if state_entry:
+                    uid, created_at = state_entry
+                    if time.time() - created_at < self._OAUTH_STATE_TTL:
+                        user_id = uid
                 if user_id is None:
                     return web.json_response({"error": "Invalid OAuth state"}, status=403)
                 token = token_data["access_token"]

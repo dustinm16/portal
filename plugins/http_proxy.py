@@ -245,10 +245,17 @@ class HTTPProxyPlugin(PluginBase):
             connector = aiohttp.TCPConnector(ssl=verify_ssl)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(ws_url) as upstream:
-                    await asyncio.gather(
-                        self._ws_to_upstream(ws, upstream),
-                        self._upstream_to_ws(upstream, ws),
-                    )
+                    tasks = [
+                        asyncio.create_task(self._ws_to_upstream(ws, upstream)),
+                        asyncio.create_task(self._upstream_to_ws(upstream, ws)),
+                    ]
+                    try:
+                        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        for t in tasks:
+                            if not t.done():
+                                t.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error(f"WebSocket proxy error: {e}")
 

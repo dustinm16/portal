@@ -17,9 +17,13 @@ logger = logging.getLogger("portal")
 
 # Files that should never be served or listed
 BLOCKED_FILES = {
-    ".env", "admin_credentials.txt", ".claude_test_creds",
+    ".env", ".env.backup", "admin_credentials.txt", ".claude_test_creds",
     ".git/config", "id_rsa", "id_ed25519",
+    ".encryption_salt", ".invite_code", "portal.db", "portal.db-wal",
+    "portal.db-shm",
 }
+# Prefix patterns blocked on both listing and direct access
+BLOCKED_PREFIXES = (".env",)
 
 
 def _validate_path(path: str, root: str) -> Path:
@@ -51,6 +55,10 @@ def _validate_path(path: str, root: str) -> Path:
     rel = str(resolved.relative_to(root_path))
     name = resolved.name
     if name in BLOCKED_FILES or rel in BLOCKED_FILES:
+        raise ValueError("Access to this file is not allowed")
+
+    # Block files matching prefix patterns (e.g. .env.backup, .env.production)
+    if any(name.startswith(p) for p in BLOCKED_PREFIXES):
         raise ValueError("Access to this file is not allowed")
 
     return resolved

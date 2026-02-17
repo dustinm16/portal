@@ -216,9 +216,19 @@ class TerminalPlugin(PluginBase):
             return
         working_dir = os.path.expanduser(config.get("working_dir", "~"))
 
-        # Build environment
+        # Build environment — filter dangerous keys from config overrides
+        _BLOCKED_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD", "LIBPATH", "SHLIB_PATH")
+        _BLOCKED_ENV_KEYS = {
+            "BASH_ENV", "ENV", "PYTHONSTARTUP", "PERL5OPT", "RUBYOPT",
+            "ZDOTDIR", "PYTHONPATH", "NODE_OPTIONS", "IFS",
+        }
         env = os.environ.copy()
-        env.update(config.get("env", {}))
+        for k, v in (config.get("env") or {}).items():
+            if k.upper() in _BLOCKED_ENV_KEYS:
+                continue
+            if any(k.upper().startswith(p) for p in _BLOCKED_ENV_PREFIXES):
+                continue
+            env[k] = v
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["LANG"] = env.get("LANG", "en_US.UTF-8")

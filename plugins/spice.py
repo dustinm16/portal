@@ -170,11 +170,18 @@ class SPICEPlugin(PluginBase):
             })
 
         try:
-            # Bidirectional relay
-            await asyncio.gather(
-                self._spice_to_ws(reader, ws, buffer_size, user_id),
-                self._ws_to_spice(ws, writer, user_id),
-            )
+            # Bidirectional relay with FIRST_COMPLETED cancellation
+            tasks = [
+                asyncio.create_task(self._spice_to_ws(reader, ws, buffer_size, user_id)),
+                asyncio.create_task(self._ws_to_spice(ws, writer, user_id)),
+            ]
+            try:
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error(f"SPICE relay error: {e}")
         finally:
