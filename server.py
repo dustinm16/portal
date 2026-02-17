@@ -5229,12 +5229,43 @@ async def http_stats(request: web.Request) -> web.Response:
     # Include traffic metrics summary
     metrics = traffic_metrics.get_summary()
 
+    # Additional DB-backed counts
+    users = await db.get_all_users()
+    channels_cursor = await db.conn.execute("SELECT COUNT(*) FROM chat_channels")
+    total_channels = (await channels_cursor.fetchone())[0]
+    messages_cursor = await db.conn.execute("SELECT COUNT(*) FROM chat_messages")
+    total_messages = (await messages_cursor.fetchone())[0]
+    streams_cursor = await db.conn.execute("SELECT COUNT(*) FROM user_streams")
+    total_streams = (await streams_cursor.fetchone())[0]
+    live_cursor = await db.conn.execute("SELECT COUNT(*) FROM user_streams WHERE is_live = 1")
+    live_streams = (await live_cursor.fetchone())[0]
+    api_keys_cursor = await db.conn.execute("SELECT COUNT(*) FROM api_keys")
+    total_api_keys = (await api_keys_cursor.fetchone())[0]
+    invite_cursor = await db.conn.execute("SELECT COUNT(*) FROM invite_codes")
+    total_invite_codes = (await invite_cursor.fetchone())[0]
+
+    # Database file size
+    db_size = 0
+    try:
+        db_size = os.path.getsize(Config.DATABASE_PATH)
+    except OSError:
+        pass
+
     return web.json_response({
         "active_connections": len(active_connections),
         "total_services": len(services),
         "rate_limit_entries": len(rate_limits),
         "uptime_check": datetime.now(timezone.utc).isoformat(),
-        "metrics": metrics
+        "metrics": metrics,
+        "total_users": len(users),
+        "total_channels": total_channels,
+        "total_messages": total_messages,
+        "total_streams": total_streams,
+        "live_streams": live_streams,
+        "db_size_bytes": db_size,
+        "peak_connections": metrics.get("peak_concurrent", 0),
+        "total_api_keys": total_api_keys,
+        "total_invite_codes": total_invite_codes,
     })
 
 
@@ -5313,6 +5344,32 @@ async def http_system_health(request: web.Request) -> web.Response:
     boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc)
     uptime_delta = datetime.now(timezone.utc) - boot_time
 
+    # Network I/O
+    net = psutil.net_io_counters()
+
+    # Disk I/O
+    try:
+        disk_io = psutil.disk_io_counters()
+        disk_io_data = {
+            "read_bytes": disk_io.read_bytes,
+            "write_bytes": disk_io.write_bytes,
+        }
+    except (AttributeError, RuntimeError):
+        disk_io_data = {"read_bytes": 0, "write_bytes": 0}
+
+    # Swap
+    swap = psutil.swap_memory()
+
+    # Process details
+    try:
+        open_files = len(proc.open_files())
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        open_files = 0
+    try:
+        proc_connections = len(proc.net_connections())
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        proc_connections = 0
+
     return web.json_response({
         "cpu": {
             "percent": cpu_percent,
@@ -5337,7 +5394,19 @@ async def http_system_health(request: web.Request) -> web.Response:
             "threads": proc.num_threads(),
             "pid": os.getpid()
         },
-        "uptime_seconds": int(uptime_delta.total_seconds())
+        "uptime_seconds": int(uptime_delta.total_seconds()),
+        "net_io": {
+            "bytes_sent": net.bytes_sent,
+            "bytes_recv": net.bytes_recv,
+        },
+        "disk_io": disk_io_data,
+        "swap": {
+            "total": swap.total,
+            "used": swap.used,
+            "percent": swap.percent,
+        },
+        "open_files": open_files,
+        "connections_count": proc_connections,
     })
 
 

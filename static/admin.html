@@ -597,6 +597,28 @@
                             <div class="loading"><div class="spinner"></div> Loading...</div>
                         </div>
                     </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            Community Stats
+                        </h3>
+                        <div id="community-stats">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                            </svg>
+                            Database &amp; Security
+                        </h3>
+                        <div id="db-security-stats">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="admin-card">
@@ -765,6 +787,30 @@
                             Plugin Breakdown
                         </h3>
                         <div id="plugin-breakdown">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin-grid" style="grid-template-columns: 1fr 1fr; margin-top: 1.5rem;">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                            </svg>
+                            Error Rate
+                        </h3>
+                        <div class="chart-container">
+                            <canvas id="chart-errors"></canvas>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                            </svg>
+                            System Resources
+                        </h3>
+                        <div id="system-resources-live">
                             <div class="loading"><div class="spinner"></div> Loading...</div>
                         </div>
                     </div>
@@ -1566,6 +1612,26 @@
                     document.getElementById('system-health').innerHTML = '<p style="color: var(--text-muted);">Health data unavailable</p>';
                 }
 
+                // Community stats (from expanded /api/stats)
+                document.getElementById('community-stats').innerHTML = `
+                    <div class="stat-row"><span class="stat-label">Total Users</span><span class="stat-value">${parseInt(stats.total_users) || 0}</span></div>
+                    <div class="stat-row"><span class="stat-label">Chat Channels</span><span class="stat-value">${parseInt(stats.total_channels) || 0}</span></div>
+                    <div class="stat-row"><span class="stat-label">Total Messages</span><span class="stat-value">${(parseInt(stats.total_messages) || 0).toLocaleString()}</span></div>
+                    <div class="stat-row"><span class="stat-label">Streams</span><span class="stat-value">${parseInt(stats.total_streams) || 0}</span></div>
+                    <div class="stat-row"><span class="stat-label">Live Now</span><span class="stat-value" style="color: ${stats.live_streams > 0 ? 'var(--accent-green)' : 'var(--text-muted)'};">${parseInt(stats.live_streams) || 0}</span></div>
+                `;
+
+                // Database & security stats
+                const dbSize = parseInt(stats.db_size_bytes) || 0;
+                document.getElementById('db-security-stats').innerHTML = `
+                    <div class="stat-row"><span class="stat-label">Database Size</span><span class="stat-value">${formatBytes(dbSize)}</span></div>
+                    <div class="stat-row"><span class="stat-label">Active API Keys</span><span class="stat-value">${parseInt(stats.total_api_keys) || 0}</span></div>
+                    <div class="stat-row"><span class="stat-label">Invite Codes</span><span class="stat-value">${parseInt(stats.total_invite_codes) || 0}</span></div>
+                    <div class="stat-row"><span class="stat-label">Peak Connections</span><span class="stat-value">${parseInt(stats.peak_connections) || 0}</span></div>
+                    ${health ? `<div class="stat-row"><span class="stat-label">Open Files</span><span class="stat-value">${parseInt(health.open_files) || 0}</span></div>` : ''}
+                    ${health ? `<div class="stat-row"><span class="stat-label">Net Connections</span><span class="stat-value">${parseInt(health.connections_count) || 0}</span></div>` : ''}
+                `;
+
             } catch (error) {
                 console.error('Failed to load overview:', error);
             }
@@ -1621,6 +1687,18 @@
                             <span class="metric-label">Errors</span>
                         </div>
                         <div class="metric-value">${summary.total_errors}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Unique Users Today</span>
+                        </div>
+                        <div class="metric-value">${summary.unique_users_today}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
+                            <span class="metric-label">Bandwidth/Hour</span>
+                        </div>
+                        <div class="metric-value">${formatBytes(summary.bandwidth_per_hour)}</div>
                     </div>
                 `;
 
@@ -1703,6 +1781,7 @@
         let connectionsChart = null;
         let bandwidthChart = null;
         let pluginsChart = null;
+        let errorsChart = null;
         let currentHours = 1;
 
         // Chart.js dark theme defaults
@@ -1895,6 +1974,80 @@
                             pluginCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No plugin data yet.</div>';
                         }
                     }
+                }
+
+                // Error rate line chart
+                const errCanvas = document.getElementById('chart-errors');
+                if (errCanvas && points.length > 0) {
+                    const errCtx = errCanvas.getContext('2d');
+                    if (errorsChart) errorsChart.destroy();
+                    errorsChart = new Chart(errCtx, {
+                        type: 'line',
+                        data: {
+                            labels,
+                            datasets: [{
+                                label: 'Errors',
+                                data: points.map(p => p.errors || 0),
+                                borderColor: '#ef4444',
+                                backgroundColor: 'rgba(239,68,68,0.1)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: currentHours <= 1 ? 3 : 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: { beginAtZero: true, ticks: { stepSize: 1 }, title: { display: true, text: 'Errors / min' } },
+                                x: { ticks: { maxTicksLimit: 12 } }
+                            },
+                            plugins: { legend: { position: 'top' } }
+                        }
+                    });
+                } else if (errCanvas) {
+                    errCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No error data yet.</div>';
+                }
+
+                // System resources live panel
+                try {
+                    const health = await Portal.fetchJSON('/api/system/health').catch(() => null);
+                    const resEl = document.getElementById('system-resources-live');
+                    if (health && resEl) {
+                        const cpuColor = health.cpu.percent > 80 ? 'var(--accent-red)' : health.cpu.percent > 50 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                        const memColor = health.memory.percent > 80 ? 'var(--accent-red)' : health.memory.percent > 50 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                        const diskColor = health.disk.percent > 90 ? 'var(--accent-red)' : health.disk.percent > 70 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                        const swapColor = health.swap && health.swap.percent > 50 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+                        resEl.innerHTML = `
+                            <div class="health-bar-group">
+                                <div class="health-bar-label"><span>CPU</span><span style="color: ${cpuColor}">${health.cpu.percent}%</span></div>
+                                <div class="health-bar"><div class="health-bar-fill" style="width: ${health.cpu.percent}%; background: ${cpuColor};"></div></div>
+                            </div>
+                            <div class="health-bar-group">
+                                <div class="health-bar-label"><span>Memory</span><span style="color: ${memColor}">${health.memory.percent}% (${formatBytes(health.memory.used)}/${formatBytes(health.memory.total)})</span></div>
+                                <div class="health-bar"><div class="health-bar-fill" style="width: ${health.memory.percent}%; background: ${memColor};"></div></div>
+                            </div>
+                            <div class="health-bar-group">
+                                <div class="health-bar-label"><span>Disk</span><span style="color: ${diskColor}">${health.disk.percent}% (${formatBytes(health.disk.used)}/${formatBytes(health.disk.total)})</span></div>
+                                <div class="health-bar"><div class="health-bar-fill" style="width: ${health.disk.percent}%; background: ${diskColor};"></div></div>
+                            </div>
+                            ${health.swap && health.swap.total > 0 ? `
+                            <div class="health-bar-group">
+                                <div class="health-bar-label"><span>Swap</span><span style="color: ${swapColor}">${health.swap.percent}% (${formatBytes(health.swap.used)}/${formatBytes(health.swap.total)})</span></div>
+                                <div class="health-bar"><div class="health-bar-fill" style="width: ${health.swap.percent}%; background: ${swapColor};"></div></div>
+                            </div>` : ''}
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem;">
+                                <div class="stat-row"><span class="stat-label">Net Sent</span><span class="stat-value">${formatBytes(health.net_io?.bytes_sent || 0)}</span></div>
+                                <div class="stat-row"><span class="stat-label">Net Recv</span><span class="stat-value">${formatBytes(health.net_io?.bytes_recv || 0)}</span></div>
+                                <div class="stat-row"><span class="stat-label">Disk Read</span><span class="stat-value">${formatBytes(health.disk_io?.read_bytes || 0)}</span></div>
+                                <div class="stat-row"><span class="stat-label">Disk Write</span><span class="stat-value">${formatBytes(health.disk_io?.write_bytes || 0)}</span></div>
+                            </div>
+                        `;
+                    } else if (resEl) {
+                        resEl.innerHTML = '<p style="color: var(--text-muted);">Health data unavailable</p>';
+                    }
+                } catch (e) {
+                    console.error('Failed to load system resources:', e);
                 }
 
             } catch (error) {
@@ -2976,11 +3129,11 @@
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Subject</span>
-                        <span class="stat-value">${escapeHtml(info.subject.CN || 'N/A')}</span>
+                        <span class="stat-value">${escapeHtml(info.subject?.CN || 'N/A')}</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Issuer</span>
-                        <span class="stat-value">${escapeHtml(info.issuer.CN || info.issuer.O || 'N/A')}</span>
+                        <span class="stat-value">${escapeHtml(info.issuer?.CN || info.issuer?.O || 'N/A')}</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">SANs</span>
@@ -3025,7 +3178,7 @@
                 }
 
                 // Pre-fill hostnames in cert forms
-                const cn = info.subject.CN || '';
+                const cn = info.subject?.CN || '';
                 document.getElementById('selfsigned-hostname').value = cn;
                 document.getElementById('le-hostname').value = cn;
             } catch (error) {

@@ -85,6 +85,7 @@ class TimeSeriesPoint:
     bytes_sent: int = 0
     bytes_received: int = 0
     active_users: int = 0
+    errors: int = 0
 
 
 class TrafficMetrics:
@@ -360,7 +361,8 @@ class TrafficMetrics:
                 active_users=len([
                     u for u, t in self._user_activity.items()
                     if (datetime.now(timezone.utc) - t).total_seconds() < 300
-                ])
+                ]),
+                errors=self._total_errors
             )
             self._time_series.append(point)
 
@@ -378,17 +380,21 @@ class TrafficMetrics:
         result = []
         prev_sent = 0
         prev_recv = 0
+        prev_errors = 0
         for p in points:
             delta_sent = max(0, p.bytes_sent - prev_sent) if prev_sent else 0
             delta_recv = max(0, p.bytes_received - prev_recv) if prev_recv else 0
+            delta_errors = max(0, p.errors - prev_errors) if prev_errors else 0
             prev_sent = p.bytes_sent
             prev_recv = p.bytes_received
+            prev_errors = p.errors
             result.append({
                 "timestamp": p.timestamp.isoformat(),
                 "connections": p.connections,
                 "active_users": p.active_users,
                 "bytes_sent": delta_sent,
                 "bytes_received": delta_recv,
+                "errors": delta_errors,
             })
         return result
 
