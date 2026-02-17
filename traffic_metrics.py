@@ -115,6 +115,14 @@ class TrafficMetrics:
         # IP-based tracking for security
         self._ip_connections: dict[str, list[datetime]] = defaultdict(list)
 
+        # Global peak concurrent connections
+        self._global_peak_concurrent = 0
+
+        # Plugin-level counters (total and active by plugin name)
+        self._plugin_total: dict[str, int] = defaultdict(int)
+        self._plugin_active: dict[str, int] = defaultdict(int)
+        self._plugin_errors: dict[str, int] = defaultdict(int)
+
         # Start time
         self._started_at = datetime.now(timezone.utc)
 
@@ -139,6 +147,14 @@ class TrafficMetrics:
 
         self._active[connection_id] = metrics
         self._total_connections += 1
+
+        # Update global peak
+        if len(self._active) > self._global_peak_concurrent:
+            self._global_peak_concurrent = len(self._active)
+
+        # Update plugin counters
+        self._plugin_total[plugin] += 1
+        self._plugin_active[plugin] += 1
 
         # Update service metrics
         svc = self._service_metrics[service_id]
@@ -171,6 +187,9 @@ class TrafficMetrics:
 
         metrics = self._active.pop(connection_id)
         metrics.disconnected_at = datetime.now(timezone.utc)
+
+        # Update plugin counters
+        self._plugin_active[metrics.plugin] = max(0, self._plugin_active[metrics.plugin] - 1)
 
         # Update service metrics
         svc = self._service_metrics[metrics.service_id]
@@ -219,10 +238,12 @@ class TrafficMetrics:
         new_svc.last_connection = metrics.connected_at
         new_svc.peak_concurrent = max(new_svc.peak_concurrent, new_svc.active_connections)
 
-    def record_error(self, service_id: int):
+    def record_error(self, service_id: int, plugin: Optional[str] = None):
         """Record an error for a service."""
         self._total_errors += 1
         self._service_metrics[service_id].errors += 1
+        if plugin:
+            self._plugin_errors[plugin] += 1
 
     def get_active_connections(self) -> list[dict]:
         """Get list of active connections."""
@@ -235,6 +256,19 @@ class TrafficMetrics:
     def get_all_service_metrics(self) -> list[dict]:
         """Get metrics for all services."""
         return [m.to_dict() for m in self._service_metrics.values()]
+
+    def get_plugin_breakdown(self) -> list[dict]:
+        """Get connection counts grouped by plugin type."""
+        plugins = set(self._plugin_total.keys()) | set(self._plugin_active.keys())
+        breakdown = []
+        for plugin in sorted(plugins):
+            breakdown.append({
+                "plugin": plugin,
+                "total_connections": self._plugin_total[plugin],
+                "active_connections": self._plugin_active[plugin],
+                "errors": self._plugin_errors[plugin],
+            })
+        return breakdown
 
     def get_summary(self) -> dict:
         """Get overall traffic summary."""
@@ -254,6 +288,7 @@ class TrafficMetrics:
             "uptime_seconds": uptime,
             "total_connections": self._total_connections,
             "active_connections": len(self._active),
+            "peak_concurrent": self._global_peak_concurrent,
             "total_bytes_sent": self._total_bytes_sent,
             "total_bytes_received": self._total_bytes_received,
             "total_bytes": self._total_bytes_sent + self._total_bytes_received,
@@ -263,6 +298,7 @@ class TrafficMetrics:
             "connections_per_hour": round(conn_per_hour, 2),
             "bandwidth_per_hour": round(bytes_per_hour),
             "services_active": sum(1 for m in self._service_metrics.values() if m.active_connections > 0),
+            "plugin_breakdown": self.get_plugin_breakdown(),
             "started_at": self._started_at.isoformat()
         }
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=41">
+    <link rel="stylesheet" href="/static/css/portal.css?v=42">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
     <script>
         if (typeof Chart === 'undefined') {
@@ -741,6 +741,31 @@
                         </h3>
                         <div class="chart-container">
                             <canvas id="chart-bandwidth"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="admin-grid" style="grid-template-columns: 1fr 1fr; margin-top: 1.5rem;">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+                            </svg>
+                            Connections by Plugin
+                        </h3>
+                        <div class="chart-container">
+                            <canvas id="chart-plugins"></canvas>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                            </svg>
+                            Plugin Breakdown
+                        </h3>
+                        <div id="plugin-breakdown">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
                         </div>
                     </div>
                 </div>
@@ -1542,6 +1567,12 @@
                     </div>
                     <div class="metric-card">
                         <div class="metric-card-header">
+                            <span class="metric-label">Peak Concurrent</span>
+                        </div>
+                        <div class="metric-value">${summary.peak_concurrent}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-card-header">
                             <span class="metric-label">Total Bandwidth</span>
                         </div>
                         <div class="metric-value">${formatBytes(summary.total_bytes)}</div>
@@ -1600,8 +1631,37 @@
                     document.getElementById('service-metrics').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
                 }
 
+                // Plugin breakdown table
+                const plugins = summary.plugin_breakdown || [];
+                if (plugins.length > 0) {
+                    document.getElementById('plugin-breakdown').innerHTML = `
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Plugin</th>
+                                    <th>Total</th>
+                                    <th>Active</th>
+                                    <th>Errors</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${plugins.filter(p => p.total_connections > 0).map(p => `
+                                    <tr>
+                                        <td>${escapeHtml(p.plugin)}</td>
+                                        <td>${parseInt(p.total_connections) || 0}</td>
+                                        <td>${parseInt(p.active_connections) || 0}</td>
+                                        <td>${parseInt(p.errors) || 0}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    document.getElementById('plugin-breakdown').innerHTML = '<p style="color: var(--text-muted);">No plugin data yet.</p>';
+                }
+
                 // Load charts after metric cards
-                loadCharts();
+                loadCharts(plugins);
 
             } catch (error) {
                 console.error('Failed to load metrics:', error);
@@ -1615,6 +1675,7 @@
 
         let connectionsChart = null;
         let bandwidthChart = null;
+        let pluginsChart = null;
         let currentHours = 1;
 
         // Chart.js dark theme defaults
@@ -1633,7 +1694,13 @@
             });
         });
 
-        async function loadCharts() {
+        const pluginColors = [
+            '#60a5fa', '#22c55e', '#f59e0b', '#ef4444', '#a78bfa',
+            '#ec4899', '#14b8a6', '#f97316', '#8b5cf6', '#06b6d4',
+            '#84cc16', '#e879f9'
+        ];
+
+        async function loadCharts(plugins) {
             if (typeof Chart === 'undefined') return;
 
             try {
@@ -1760,6 +1827,48 @@
                         }
                     }
                 });
+
+                // Plugins doughnut chart (only when called with plugin data)
+                if (plugins && plugins.length > 0) {
+                    const pluginCanvas = document.getElementById('chart-plugins');
+                    if (pluginCanvas) {
+                        const filtered = plugins.filter(p => p.total_connections > 0);
+                        if (filtered.length > 0) {
+                            const ctx = pluginCanvas.getContext('2d');
+                            if (pluginsChart) pluginsChart.destroy();
+                            pluginsChart = new Chart(ctx, {
+                                type: 'doughnut',
+                                data: {
+                                    labels: filtered.map(p => p.plugin),
+                                    datasets: [{
+                                        data: filtered.map(p => p.total_connections),
+                                        backgroundColor: filtered.map((_, i) => pluginColors[i % pluginColors.length]),
+                                        borderColor: 'rgba(0,0,0,0.3)',
+                                        borderWidth: 1
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: { position: 'right', labels: { padding: 12 } },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function(ctx) {
+                                                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                                    const pct = total > 0 ? ((ctx.raw / total) * 100).toFixed(1) : 0;
+                                                    return ctx.label + ': ' + ctx.raw + ' (' + pct + '%)';
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        } else {
+                            pluginCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No plugin data yet.</div>';
+                        }
+                    }
+                }
 
             } catch (error) {
                 console.error('Failed to load charts:', error);
