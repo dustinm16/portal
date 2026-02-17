@@ -3964,7 +3964,7 @@ class Database:
         batch_size = 500
         while True:
             cursor = await self.conn.execute(
-                "SELECT id FROM chat_messages WHERE created_at < ? LIMIT ?",
+                "SELECT id FROM chat_messages WHERE created_at < ? AND is_pinned = 0 LIMIT ?",
                 (cutoff, batch_size)
             )
             batch = [row["id"] for row in await cursor.fetchall()]

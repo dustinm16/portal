@@ -5000,6 +5000,12 @@
                 rp.classList.add('reply-deleted');
                 rp.removeAttribute('onclick');
             });
+            // Remove from pinned messages panel if present
+            const wasPinned = pinnedMessages.some(m => m.id === messageId);
+            if (wasPinned) {
+                pinnedMessages = pinnedMessages.filter(m => m.id !== messageId);
+                renderPinnedMessages(pinnedMessages);
+            }
         }
 
         function scrollToMessage(messageId) {
