@@ -1226,10 +1226,36 @@
             margin-bottom: 0.5rem;
             cursor: pointer;
             font-size: 0.85rem;
+            position: relative;
         }
 
         .pinned-message-item:hover {
             background: rgba(255,255,255,0.06);
+        }
+
+        .pinned-unpin-btn {
+            position: absolute;
+            top: 0.25rem;
+            right: 0.25rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            padding: 0.15rem 0.35rem;
+            border-radius: 3px;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+
+        .pinned-message-item:hover .pinned-unpin-btn {
+            opacity: 1;
+        }
+
+        .pinned-unpin-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: var(--text-primary);
         }
 
         .pinned-message-author {
@@ -4038,15 +4064,28 @@
 
             banner.style.display = '';
             count.textContent = pinnedMessages.length;
+            const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
             panel.innerHTML = pinnedMessages.map(m => {
                 const author = m.anonymous ? 'Anonymous' : (m.author_nickname || m.username);
                 const text = m.message || '';
                 const preview = text.length > 100 ? text.substring(0, 100) + '...' : text;
+                const unpinBtn = isMod ? `<button class="pinned-unpin-btn" data-unpin-id="${m.id}" title="Unpin">&times;</button>` : '';
                 return `<div class="pinned-message-item" onclick="scrollToMessage(${m.id})">
                     <span class="pinned-message-author">${escapeHtml(author)}</span>
                     <span class="pinned-message-text">${escapeHtml(preview)}</span>
+                    ${unpinBtn}
                 </div>`;
             }).join('');
+            // Attach unpin handlers (stop propagation so scrollToMessage doesn't fire)
+            panel.querySelectorAll('.pinned-unpin-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const msgId = parseInt(btn.dataset.unpinId, 10);
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'unpin_message', message_id: msgId }));
+                    }
+                });
+            });
         }
 
         function togglePinnedPanel() {

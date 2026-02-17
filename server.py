@@ -10823,22 +10823,23 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             message_id = int(message_id)
                         except (ValueError, TypeError):
                             continue
-                        # Verify message belongs to current channel
+                        # Verify message belongs to current channel (if it still exists)
                         unpin_msg = await db.get_chat_message(message_id)
-                        if not unpin_msg:
-                            continue
-                        unpin_ch = await db.get_chat_channel_by_name(current_channel)
-                        if not unpin_ch or unpin_msg["channel_id"] != unpin_ch["id"]:
-                            continue
-                        success = await db.unpin_message(message_id)
-                        if success:
-                            await broadcast_to_channel(current_channel, {
-                                "type": "message_unpinned",
-                                "message_id": message_id
-                            })
-                            await audit_log("unpin_message", user_id, username,
-                                            target_id=message_id, target_type="message",
-                                            channel_name=current_channel)
+                        if unpin_msg:
+                            unpin_ch = await db.get_chat_channel_by_name(current_channel)
+                            if not unpin_ch or unpin_msg["channel_id"] != unpin_ch["id"]:
+                                continue
+                        # Allow unpin even if message was deleted (cleans up stale pins in frontend)
+                        # Unpin in DB (no-op if message already deleted)
+                        await db.unpin_message(message_id)
+                        # Always broadcast so frontend cleans up stale pins
+                        await broadcast_to_channel(current_channel, {
+                            "type": "message_unpinned",
+                            "message_id": message_id
+                        })
+                        await audit_log("unpin_message", user_id, username,
+                                        target_id=message_id, target_type="message",
+                                        channel_name=current_channel)
 
                     elif msg_type == "timeout_user":
                         if not current_channel:
