@@ -3536,7 +3536,7 @@
                 reactionsHtml = '<div class="message-reactions">';
                 for (const r of data.reactions) {
                     const isMine = r.user_ids && r.user_ids.includes(currentUser?.id);
-                    reactionsHtml += `<button class="reaction-pill${isMine ? ' my-reaction' : ''}" onclick="toggleReaction(${data.id}, '${r.emoji}')" title="${r.count}">${r.emoji} ${r.count}</button>`;
+                    reactionsHtml += `<button class="reaction-pill${isMine ? ' my-reaction' : ''}" data-msg-id="${data.id}" data-emoji="${escapeHtml(r.emoji)}" title="${r.count}">${r.emoji} ${r.count}</button>`;
                 }
                 reactionsHtml += '</div>';
             }
@@ -4830,6 +4830,14 @@
             document.getElementById('channel-context-menu').classList.remove('show');
             document.getElementById('slowmode-menu').classList.remove('show');
         }
+
+        // Reaction pill click delegation (avoids inline onclick with user data)
+        document.getElementById('chat-messages').addEventListener('click', (e) => {
+            const pill = e.target.closest('.reaction-pill[data-msg-id]');
+            if (pill) {
+                toggleReaction(parseInt(pill.dataset.msgId), pill.dataset.emoji);
+            }
+        });
 
         // Message context menu
         document.getElementById('chat-messages').addEventListener('contextmenu', (e) => {

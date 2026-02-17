@@ -1357,7 +1357,7 @@
             return '<div class="watch-reactions" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">' +
                 msg.reactions.map(r => {
                     const isMine = r.user_ids && r.user_ids.includes(currentUser?.id);
-                    return `<button class="watch-reaction-pill${isMine ? ' my-reaction' : ''}" onclick="toggleWatchReaction(${msg.id},'${r.emoji}')" style="display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid ${isMine ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)'};background:${isMine ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.05)'};color:${isMine ? 'var(--accent-blue)' : 'var(--text-secondary)'};font-size:0.75rem;cursor:pointer;">${r.emoji} ${r.count}</button>`;
+                    return `<button class="watch-reaction-pill${isMine ? ' my-reaction' : ''}" data-msg-id="${msg.id}" data-emoji="${escapeHtml(r.emoji)}" style="display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;border:1px solid ${isMine ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)'};background:${isMine ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.05)'};color:${isMine ? 'var(--accent-blue)' : 'var(--text-secondary)'};font-size:0.75rem;cursor:pointer;">${r.emoji} ${r.count}</button>`;
                 }).join('') + '</div>';
         }
 
@@ -1523,11 +1523,14 @@
             menu.style.left = event.pageX + 'px';
             menu.style.top = event.pageY + 'px';
 
-            menu.innerHTML = `
-                <div class="mod-menu-item danger" onclick="banUser(${userId}, '${escapeHtml(username)}'); this.parentElement.remove();">
-                    Ban from chat
-                </div>
-            `;
+            const banItem = document.createElement('div');
+            banItem.className = 'mod-menu-item danger';
+            banItem.textContent = 'Ban from chat';
+            banItem.addEventListener('click', () => {
+                banUser(userId, username);
+                menu.remove();
+            });
+            menu.appendChild(banItem);
 
             document.body.appendChild(menu);
 
@@ -1561,6 +1564,14 @@
             div.textContent = text || '';
             return div.innerHTML;
         }
+
+        // Reaction pill click delegation (avoids inline onclick with user data)
+        document.getElementById('chat-messages').addEventListener('click', (e) => {
+            const pill = e.target.closest('.watch-reaction-pill[data-msg-id]');
+            if (pill) {
+                toggleWatchReaction(parseInt(pill.dataset.msgId), pill.dataset.emoji);
+            }
+        });
 
         // Context menu on chat messages
         document.getElementById('chat-messages').addEventListener('contextmenu', (e) => {

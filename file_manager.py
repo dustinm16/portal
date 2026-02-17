@@ -26,6 +26,13 @@ BLOCKED_FILES = {
 BLOCKED_PREFIXES = (".env",)
 
 
+def _is_blocked_name(name: str) -> bool:
+    """Check if a filename is blocked."""
+    if name in BLOCKED_FILES:
+        return True
+    return any(name.startswith(p) for p in BLOCKED_PREFIXES)
+
+
 def _validate_path(path: str, root: str) -> Path:
     """Resolve and validate a path is under root and not blocked.
 
@@ -51,14 +58,13 @@ def _validate_path(path: str, root: str) -> Path:
     if not str(resolved).startswith(str(root_path)):
         raise ValueError("Path traversal detected")
 
-    # Check blocked files
-    rel = str(resolved.relative_to(root_path))
-    name = resolved.name
-    if name in BLOCKED_FILES or rel in BLOCKED_FILES:
-        raise ValueError("Access to this file is not allowed")
+    # Post-resolve symlink check (narrows TOCTOU window)
+    if resolved.exists() and resolved.is_symlink():
+        raise ValueError("Symbolic links are not allowed")
 
-    # Block files matching prefix patterns (e.g. .env.backup, .env.production)
-    if any(name.startswith(p) for p in BLOCKED_PREFIXES):
+    # Check blocked files (by name and by relative path)
+    rel = str(resolved.relative_to(root_path))
+    if _is_blocked_name(resolved.name) or rel in BLOCKED_FILES:
         raise ValueError("Access to this file is not allowed")
 
     return resolved
@@ -121,9 +127,7 @@ def list_directory(path: str, root: str) -> list[dict]:
     try:
         for item in resolved.iterdir():
             # Skip blocked files
-            if item.name in BLOCKED_FILES:
-                continue
-            if item.name.startswith(".env"):
+            if _is_blocked_name(item.name):
                 continue
             entries.append(_file_entry(item))
     except PermissionError:
@@ -226,6 +230,18 @@ def delete_path(path: str, root: str, recursive: bool = False) -> None:
     try:
         if resolved.is_dir():
             if recursive:
+                # Pre-scan: reject if tree contains blocked files or symlinks
+                for dirpath, dirnames, filenames in os.walk(str(resolved)):
+                    for name in filenames + dirnames:
+                        if _is_blocked_name(name):
+                            raise ValueError(
+                                f"Cannot recursively delete: contains protected file '{name}'"
+                            )
+                        child = Path(dirpath) / name
+                        if child.is_symlink():
+                            raise ValueError(
+                                "Cannot recursively delete: contains symbolic links"
+                            )
                 shutil.rmtree(str(resolved))
             else:
                 resolved.rmdir()  # Only works on empty dirs

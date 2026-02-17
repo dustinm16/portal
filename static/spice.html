@@ -121,7 +121,7 @@
         const serviceId = '{{SERVICE_ID}}';
         const wsPath = '{{WS_PATH}}';
         let ws = null;
-        let spicePassword = null;
+        let _spiceAuth = null; // Cleared after use
         let spiceConn = null;
 
         // Initialize
@@ -181,7 +181,7 @@
                     break;
 
                 case 'auth':
-                    spicePassword = data.password;
+                    _spiceAuth = data.password;
                     break;
 
                 case 'error':
@@ -207,10 +207,11 @@
             // spiceConn = new SpiceMainConn({
             //     uri: wsUrl,
             //     screen_id: 'spice-screen',
-            //     password: spicePassword,
+            //     password: _spiceAuth,
             //     onerror: function(e) { showMessage('SPICE error: ' + e.message); },
             //     onsuccess: function() { updateStatus('connected', 'Connected'); }
             // });
+            _spiceAuth = null; // Clear from memory after use
 
             // For the proxy mode, we relay binary data directly
             console.log('SPICE connection established - binary proxy mode');

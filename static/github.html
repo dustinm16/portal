@@ -564,6 +564,7 @@
 
     <script src="/static/js/portal.js?v=32"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
     <script>
         const serviceId = window.location.pathname.split('/').pop();
         let ws = null;
@@ -772,7 +773,9 @@
         function renderReadme(content) {
             const container = document.getElementById('readme-content');
             if (content && content !== 'No README found') {
-                container.innerHTML = marked.parse(content);
+                container.innerHTML = typeof DOMPurify !== 'undefined'
+                    ? DOMPurify.sanitize(marked.parse(content))
+                    : escapeHtml(content);
             } else {
                 container.innerHTML = '<div class="empty-state">No README found</div>';
             }
@@ -782,9 +785,9 @@
             const container = document.getElementById('branches-list');
             container.innerHTML = branches.map(branch => `
                 <div class="branch-item">
-                    <span class="branch-name">${branch.name}</span>
+                    <span class="branch-name">${escapeHtml(branch.name)}</span>
                     ${branch.protected ? '<span class="branch-protected">Protected</span>' : ''}
-                    <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: auto;">${branch.sha.slice(0, 7)}</span>
+                    <span style="color: var(--text-muted); font-size: 0.75rem; margin-left: auto;">${escapeHtml(branch.sha.slice(0, 7))}</span>
                 </div>
             `).join('') || '<div class="empty-state">No branches found</div>';
         }
@@ -798,7 +801,7 @@
                         ${pr.draft ? '<span class="pr-draft">Draft</span>' : ''}
                     </div>
                     <div class="pr-meta">
-                        ${pr.user} wants to merge ${pr.head} into ${pr.base}
+                        ${escapeHtml(pr.user)} wants to merge ${escapeHtml(pr.head)} into ${escapeHtml(pr.base)}
                     </div>
                 </div>
             `).join('') || '<div class="empty-state">No pull requests</div>';
@@ -809,8 +812,8 @@
             container.innerHTML = workflows.map(wf => `
                 <div class="workflow-item">
                     <div>
-                        <div class="workflow-name">${wf.name}</div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted);">${wf.path}</div>
+                        <div class="workflow-name">${escapeHtml(wf.name)}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(wf.path)}</div>
                     </div>
                     <button class="btn btn-sm btn-secondary" onclick="triggerWorkflow(${wf.id})">Run</button>
                 </div>
@@ -822,16 +825,16 @@
             container.innerHTML = runs.map(run => `
                 <div class="run-item">
                     <div>
-                        <div style="font-weight: 500;">${run.name}</div>
+                        <div style="font-weight: 500;">${escapeHtml(run.name)}</div>
                         <div style="font-size: 0.75rem; color: var(--text-muted);">
-                            ${run.head_branch} - ${run.head_sha} - ${run.event}
+                            ${escapeHtml(run.head_branch)} - ${escapeHtml(run.head_sha)} - ${escapeHtml(run.event)}
                         </div>
                     </div>
                     <div class="run-status">
-                        <span class="status-badge status-${run.conclusion || run.status}">
-                            ${run.conclusion || run.status}
+                        <span class="status-badge status-${escapeHtml(run.conclusion || run.status)}">
+                            ${escapeHtml(run.conclusion || run.status)}
                         </span>
-                        <a href="${run.html_url}" target="_blank" class="btn btn-sm btn-secondary">View</a>
+                        <a href="${escapeHtml(run.html_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">View</a>
                     </div>
                 </div>
             `).join('') || '<div class="empty-state">No workflow runs</div>';
