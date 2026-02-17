@@ -9438,9 +9438,38 @@ async def http_get_chat_thread(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid message ID"}, status=400)
 
+    # Check the user can access the channel containing this message
+    root_msg = await db.get_chat_message(message_id)
+    if not root_msg:
+        return web.json_response({"error": "Message not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or "user") if user else "user"
+    ch_id = root_msg.get("channel_id")
+    if ch_id:
+        channel = await db.get_chat_channel(ch_id)
+        if channel and channel.get("visibility") == "private":
+            if user_role not in ("admin", "superadmin"):
+                is_member = await db.is_channel_member(ch_id, token.user_id)
+                if not is_member:
+                    return web.json_response({"error": "Access denied"}, status=403)
+
     chain = await db.get_reply_chain(message_id)
     if not chain:
         return web.json_response({"error": "Message not found"}, status=404)
+
+    # Filter out messages from private channels the user can't access
+    if user_role not in ("admin", "superadmin"):
+        filtered_chain = []
+        for m in chain:
+            m_ch_id = m.get("channel_id")
+            if m_ch_id and m_ch_id != ch_id:
+                m_channel = await db.get_chat_channel(m_ch_id)
+                if m_channel and m_channel.get("visibility") == "private":
+                    if not await db.is_channel_member(m_ch_id, token.user_id):
+                        continue
+            filtered_chain.append(m)
+        chain = filtered_chain
 
     # Enrich with user data
     user_ids = list(set(m["user_id"] for m in chain if m.get("user_id")))
@@ -10500,9 +10529,17 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     channel_viewer_ids = set()
                                     if current_channel in chat_rooms:
                                         channel_viewer_ids = {entry[1] for entry in chat_rooms[current_channel]}
+                                    is_private = channel.get("visibility") == "private"
                                     for mid in mentioned_ids:
                                         if mid == user_id or mid in channel_viewer_ids:
                                             continue
+                                        # Don't notify users who can't access private channels
+                                        if is_private:
+                                            m_user = await db.get_user_by_id(mid)
+                                            m_role = (m_user.get("role") or "user") if m_user else "user"
+                                            if m_role not in ("admin", "superadmin"):
+                                                if not await db.is_channel_member(channel["id"], mid):
+                                                    continue
                                         await send_notification(
                                             mid, "mention",
                                             f"{display_name} mentioned you in #{current_channel}",
@@ -10529,6 +10566,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         try:
                             message_id = int(message_id)
                         except (ValueError, TypeError):
+                            continue
+                        # Verify message belongs to current channel
+                        del_msg = await db.get_chat_message(message_id)
+                        if not del_msg:
+                            continue
+                        del_ch = await db.get_chat_channel_by_name(current_channel)
+                        if not del_ch or del_msg["channel_id"] != del_ch["id"]:
                             continue
                         # Admins/mods can delete any; users delete own only
                         is_mod = user_role in ("admin", "superadmin", "moderator")
@@ -10589,6 +10633,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         except (ValueError, TypeError):
                             continue
                         if len(new_text) > 4000:
+                            continue
+                        # Verify message belongs to current channel
+                        edit_msg = await db.get_chat_message(message_id)
+                        if not edit_msg:
+                            continue
+                        edit_ch = await db.get_chat_channel_by_name(current_channel)
+                        if not edit_ch or edit_msg["channel_id"] != edit_ch["id"]:
                             continue
                         updated = await db.edit_chat_message(message_id, user_id, new_text)
                         if updated:
@@ -10652,6 +10703,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         try:
                             message_id = int(message_id)
                         except (ValueError, TypeError):
+                            continue
+                        # Verify message belongs to current channel
+                        unpin_msg = await db.get_chat_message(message_id)
+                        if not unpin_msg:
+                            continue
+                        unpin_ch = await db.get_chat_channel_by_name(current_channel)
+                        if not unpin_ch or unpin_msg["channel_id"] != unpin_ch["id"]:
                             continue
                         success = await db.unpin_message(message_id)
                         if success:
@@ -10920,6 +10978,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not poll:
                             await ws.send_json({"type": "error", "message": "Poll not found"})
                             continue
+                        # Verify poll belongs to user's current channel
+                        poll_ch = await db.get_chat_channel(poll["channel_id"])
+                        if not poll_ch or poll_ch["name"] != current_channel:
+                            await ws.send_json({"type": "error", "message": "Poll not found"})
+                            continue
                         if poll.get("is_closed"):
                             await ws.send_json({"type": "error", "message": "Poll is closed"})
                             continue
@@ -10961,6 +11024,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         poll = await db.get_poll(poll_id)
                         if not poll:
+                            await ws.send_json({"type": "error", "message": "Poll not found"})
+                            continue
+                        # Verify poll belongs to user's current channel
+                        poll_ch = await db.get_chat_channel(poll["channel_id"])
+                        if not poll_ch or poll_ch["name"] != current_channel:
                             await ws.send_json({"type": "error", "message": "Poll not found"})
                             continue
                         # Only creator or mod+ can close

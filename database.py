@@ -166,8 +166,15 @@ def encrypt_message(plaintext: str) -> str:
 
 
 def decrypt_message(ciphertext: str) -> str:
-    """Decrypt a chat message. Falls back to legacy key for pre-migration data."""
+    """Decrypt a chat message. Falls back to legacy key for pre-migration data.
+
+    Plaintext (pre-encryption era data) is detected by checking for the Fernet
+    token prefix and returned as-is to avoid false "decryption failed" errors.
+    """
     if not CRYPTO_AVAILABLE or not ciphertext:
+        return ciphertext
+    # Fernet tokens always start with gAAAAAB — if it doesn't, it's plaintext
+    if not ciphertext.startswith("gAAAAAB"):
         return ciphertext
     try:
         f = Fernet(get_chat_encryption_key())
@@ -982,6 +989,9 @@ class Database:
         # Re-encrypt all data with machine-bound keys (one-time migration)
         await self._migrate_encryption_to_machine_key()
 
+        # Encrypt any remaining plaintext chat data (polls, automod, reply previews)
+        await self._migrate_encrypt_plaintext_chat_data()
+
         # Generate UUIDs for any connections that don't have one
         await self._populate_connection_uuids()
 
@@ -1473,6 +1483,99 @@ class Database:
         try:
             await self._connection.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_key_version', '2')"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass
+
+    async def _migrate_encrypt_plaintext_chat_data(self) -> None:
+        """Encrypt any remaining plaintext chat data (polls, automod, reply previews).
+
+        Detects plaintext by checking for absence of Fernet token prefix (gAAAAAB).
+        Uses a settings flag to avoid re-running.
+        """
+        if not CRYPTO_AVAILABLE:
+            return
+        import logging
+        log = logging.getLogger("portal.database")
+
+        try:
+            cursor = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = 'plaintext_chat_migrated'"
+            )
+            row = await cursor.fetchone()
+            if row and row["value"] == "1":
+                return
+        except Exception:
+            pass
+
+        total = 0
+
+        # 1. Encrypt plaintext reply_preview_text in chat_messages
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, reply_preview_text FROM chat_messages WHERE reply_preview_text IS NOT NULL AND reply_preview_text != ''"
+            )
+            for row in await cursor.fetchall():
+                val = row["reply_preview_text"]
+                if not val.startswith("gAAAAAB"):
+                    encrypted = encrypt_message(val)
+                    await self._connection.execute(
+                        "UPDATE chat_messages SET reply_preview_text = ? WHERE id = ?",
+                        (encrypted, row["id"])
+                    )
+                    total += 1
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                log.debug(f"Reply preview encryption skipped: {e}")
+
+        # 2. Encrypt plaintext poll questions and options
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, question, options FROM chat_polls"
+            )
+            for row in await cursor.fetchall():
+                updates = {}
+                if row["question"] and not row["question"].startswith("gAAAAAB"):
+                    updates["question"] = encrypt_message(row["question"])
+                if row["options"] and not row["options"].startswith("gAAAAAB"):
+                    updates["options"] = encrypt_message(row["options"])
+                if updates:
+                    sets = ", ".join(f"{k} = ?" for k in updates)
+                    await self._connection.execute(
+                        f"UPDATE chat_polls SET {sets} WHERE id = ?",
+                        (*updates.values(), row["id"])
+                    )
+                    total += 1
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                log.debug(f"Poll encryption skipped: {e}")
+
+        # 3. Encrypt plaintext automod action message_text
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, message_text FROM automod_actions WHERE message_text IS NOT NULL AND message_text != ''"
+            )
+            for row in await cursor.fetchall():
+                val = row["message_text"]
+                if not val.startswith("gAAAAAB"):
+                    encrypted = encrypt_message(val)
+                    await self._connection.execute(
+                        "UPDATE automod_actions SET message_text = ? WHERE id = ?",
+                        (encrypted, row["id"])
+                    )
+                    total += 1
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                log.debug(f"Automod encryption skipped: {e}")
+
+        if total:
+            await self._connection.commit()
+            log.info(f"Encrypted {total} plaintext chat data row(s) (polls, automod, reply previews)")
+
+        try:
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('plaintext_chat_migrated', '1')"
             )
             await self._connection.commit()
         except Exception:
@@ -4058,15 +4161,20 @@ class Database:
         await self.conn.commit()
 
     async def get_unread_counts(self, user_id: int) -> dict[int, int]:
-        """Get unread message counts per channel for a user."""
+        """Get unread message counts per channel for a user.
+
+        Only counts channels the user can access (public + private where member).
+        """
         cursor = await self.conn.execute(
             """SELECT c.id, COUNT(m.id) as unread
                FROM chat_channels c
                LEFT JOIN channel_read_positions rp ON rp.channel_id = c.id AND rp.user_id = ?
                INNER JOIN chat_messages m ON m.channel_id = c.id AND m.id > COALESCE(rp.last_read_message_id, 0)
+               WHERE c.visibility = 'public' OR c.visibility IS NULL
+                  OR c.id IN (SELECT channel_id FROM channel_members WHERE user_id = ?)
                GROUP BY c.id
                HAVING unread > 0""",
-            (user_id,)
+            (user_id, user_id)
         )
         rows = await cursor.fetchall()
         return {row["id"]: row["unread"] for row in rows}
