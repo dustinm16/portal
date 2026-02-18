@@ -368,6 +368,7 @@
                     <li><a href="#services">Services</a></li>
                     <li><a href="#connections">User Connections</a></li>
                     <li><a href="#streams">User Streams</a></li>
+                    <li><a href="#stream-relays">Stream Relays</a></li>
                     <li><a href="#encoder-settings">Encoder Settings</a></li>
                     <li><a href="#vods">VOD Storage</a></li>
                     <li><a href="#users">User Management</a></li>
@@ -1608,6 +1609,107 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 <span class="comment">// Service: WHIP</span>
 <span class="comment">// Server: https://portal.example.com/api/stream/{stream_key}/webrtc/whip</span>
 <span class="comment">// Bearer Token: (leave empty - key is in URL)</span></pre>
+                </div>
+
+                <!-- Stream Relays -->
+                <h2 id="stream-relays">Stream Relays</h2>
+                <p>Relay your stream to external platforms (Twitch, YouTube, Kick, other Portal instances, or custom RTMP destinations). Relays start automatically when you go live and stop when your stream ends. Maximum 10 relay destinations per stream. Relay credentials are encrypted at rest.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/relay-platforms</span>
+                        <span class="endpoint-desc">List supported relay platforms</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the list of supported relay platforms with their default RTMP ingest URLs.</p>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"platforms"</span>: [
+    { <span class="string">"id"</span>: <span class="string">"twitch"</span>, <span class="string">"name"</span>: <span class="string">"Twitch"</span>, <span class="string">"default_url"</span>: <span class="string">"rtmp://live.twitch.tv/app"</span> },
+    { <span class="string">"id"</span>: <span class="string">"youtube"</span>, <span class="string">"name"</span>: <span class="string">"YouTube"</span>, <span class="string">"default_url"</span>: <span class="string">"rtmp://a.rtmp.youtube.com/live2"</span> },
+    { <span class="string">"id"</span>: <span class="string">"kick"</span>, <span class="string">"name"</span>: <span class="string">"Kick"</span>, <span class="string">"default_url"</span>: <span class="string">"rtmps://fa723fc1b171.global-contribute.live-video.net/app"</span> },
+    { <span class="string">"id"</span>: <span class="string">"portal"</span>, <span class="string">"name"</span>: <span class="string">"Portal"</span>, <span class="string">"default_url"</span>: <span class="string">""</span> },
+    { <span class="string">"id"</span>: <span class="string">"custom"</span>, <span class="string">"name"</span>: <span class="string">"Custom"</span>, <span class="string">"default_url"</span>: <span class="string">""</span> }
+  ]
+}</pre>
+                        </div>
+                        <div class="try-it">
+                            <button class="btn btn-primary btn-sm" onclick="tryEndpoint('GET', '/api/relay-platforms', this)">Send Request</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/{id}/relays</span>
+                        <span class="endpoint-desc">List relay destinations</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all relay destinations configured for this stream (owner only). Stream keys are never returned; a <code>has_stream_key</code> boolean indicates whether one is set.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/relays</span>
+                        <span class="endpoint-desc">Add relay destination</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">platform</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Platform ID from <code>/api/relay-platforms</code> <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Display name for this destination <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">rtmp_url</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>RTMP ingest URL (must start with <code>rtmp://</code> or <code>rtmps://</code>) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">stream_key</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Stream key for the destination platform <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">enabled</span></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>Whether to relay when live (default: true)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/streams/{id}/relays/{relay_id}</span>
+                        <span class="endpoint-desc">Update relay destination</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update a relay destination's name, URL, stream key, or enabled state (owner only). All fields are optional; only provided fields are updated.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/streams/{id}/relays/{relay_id}</span>
+                        <span class="endpoint-desc">Delete relay destination</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Remove a relay destination (owner only). If the relay is currently active, it will be stopped.</p>
+                    </div>
                 </div>
 
                 <!-- VOD Storage -->

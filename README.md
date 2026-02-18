@@ -35,7 +35,7 @@ Open Relay Portal puts all of it on a server you own. One installation gives you
 ## What You Get
 
 ### Live Streaming
-Broadcast video to your community — like having your own private TV channel. Stream from OBS or any RTMP-compatible app, with support for hardware-accelerated encoding (NVENC, AMF, x264). Viewers watch in their browser over HLS. Every stream is automatically recorded as VOD clips and uploaded to your own storage. You keep full control — no platform cut, no algorithm deciding who sees your content, no surprise policy changes.
+Broadcast video to your community — like having your own private TV channel. Stream from OBS or any RTMP-compatible app, with support for hardware-accelerated encoding (NVENC, AMF, x264). Viewers watch in their browser over HLS. Every stream is automatically recorded as VOD clips and uploaded to your own storage. Relay your stream simultaneously to Twitch, YouTube, Kick, or any custom RTMP destination. You keep full control — no platform cut, no algorithm deciding who sees your content, no surprise policy changes.
 
 ### Encrypted Chat
 Message your team or community in real time — all messages are encrypted on the server so only your portal can read them. Organize conversations into channels, reply to specific messages, start threads, react with emoji, @mention people, share images, embed links and videos, and pin important messages. Search across everything with Ctrl+K. It's a full-featured chat system that lives entirely on your hardware.
@@ -226,7 +226,7 @@ Publish from OBS or any RTMP client:
 | RTMPS (recommended) | `rtmps://your-domain:1936/live` | Stream key (`live_xxx`) |
 | RTMP (optional) | `rtmp://your-domain:1935/live` | Temporary token |
 
-Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage.
+Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage. Multi-platform relay supports Twitch, YouTube, Kick, and custom RTMP destinations (up to 10 per stream).
 
 ## Connection Types
 

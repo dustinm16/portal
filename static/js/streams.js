@@ -305,6 +305,20 @@ async function showStreamDetails(streamId) {
                 <div class="info-section">
                     <h4>Stream Settings</h4>
                     <div class="form-group">
+                        <label>Stream Name</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="stream-name-input" value="${escapeHtml(stream.name)}" maxlength="100">
+                            <button class="btn btn-sm btn-primary" onclick="updateStreamName(${stream.id})">Save</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="stream-description-input" value="${escapeHtml(stream.description || '')}" maxlength="500" placeholder="Optional description">
+                            <button class="btn btn-sm btn-primary" onclick="updateStreamDescription(${stream.id})">Save</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
                         <label class="checkbox-label">
                             <input type="checkbox" ${stream.is_public ? 'checked' : ''} onchange="toggleStreamPublic(${stream.id}, this.checked)">
                             <span>Public stream (visible to all users)</span>
@@ -410,6 +424,59 @@ function toggleStreamKeyVisibility() {
         input.type = 'text';
     } else {
         input.type = 'password';
+    }
+}
+
+/**
+ * Update stream name
+ */
+async function updateStreamName(streamId) {
+    const input = document.getElementById('stream-name-input');
+    const name = input.value.trim();
+    if (!name) {
+        Portal.toast('Stream name cannot be empty', 'error');
+        return;
+    }
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        if (response.ok) {
+            document.getElementById('stream-details-title').textContent = name;
+            Portal.toast('Stream name updated', 'success');
+            loadUserStreams();
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to update name', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update stream name', 'error');
+    }
+}
+
+/**
+ * Update stream description
+ */
+async function updateStreamDescription(streamId) {
+    const input = document.getElementById('stream-description-input');
+    const description = input.value.trim();
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description })
+        });
+        if (response.ok) {
+            Portal.toast('Description updated', 'success');
+            loadUserStreams();
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to update description', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update description', 'error');
     }
 }
 
@@ -940,21 +1007,26 @@ async function showEditRelayModal(streamId, relayId) {
     showModal('relay-destination-modal');
 }
 
-function onRelayPlatformChange() {
+let _relayPlatformDefaults = null;
+
+async function onRelayPlatformChange() {
     const platform = document.getElementById('relay-platform').value;
     const urlInput = document.getElementById('relay-rtmp-url');
-    // Only auto-fill if empty or if it matches another platform's default
-    const defaults = {
-        twitch: 'rtmp://live.twitch.tv/app',
-        youtube: 'rtmp://a.rtmp.youtube.com/live2',
-        kick: 'rtmps://fa723fc1b171.global-contribute.live-video.net/app',
-    };
+
+    // Fetch platform defaults from server on first use
+    if (!_relayPlatformDefaults) {
+        try {
+            const data = await Portal.fetchJSON('/api/relay-platforms');
+            _relayPlatformDefaults = data.platforms || {};
+        } catch { _relayPlatformDefaults = {}; }
+    }
+
     const currentUrl = urlInput.value.trim();
-    const isDefault = !currentUrl || Object.values(defaults).includes(currentUrl);
-    if (isDefault && defaults[platform]) {
-        urlInput.value = defaults[platform];
-    } else if (isDefault) {
-        urlInput.value = '';
+    const allDefaults = Object.values(_relayPlatformDefaults).map(p => p.default_url).filter(Boolean);
+    const isDefault = !currentUrl || allDefaults.includes(currentUrl);
+    const platformDefault = (_relayPlatformDefaults[platform] || {}).default_url || '';
+    if (isDefault) {
+        urlInput.value = platformDefault;
     }
 }
 

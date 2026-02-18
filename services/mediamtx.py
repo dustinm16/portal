@@ -193,8 +193,9 @@ class MediaMTXService(ManagedService):
         api_port = cfg.get('api_port', 9997)
 
         # Portal API URL for authentication hooks
-        # Uses the hostname for proper TLS certificate validation
-        portal_url = cfg.get('portal_url', f'https://{Config.HOSTNAME}')
+        # Uses STREAM_HOSTNAME (direct DNS, not behind CDN) so requests arrive
+        # from a local/private IP. The LE cert covers both hostnames.
+        portal_url = cfg.get('portal_url', f'https://{Config.STREAM_HOSTNAME}')
 
         # RTMP plain (non-TLS) support for temporary token auth
         rtmp_plain_enabled = cfg.get('rtmp_plain_enabled', False)
@@ -249,7 +250,7 @@ apiServerCert: {cert_path}
 
 rtsp: yes
 protocols: [tcp]
-encryption: strict
+encryption: optional
 rtspAddress: 127.0.0.1:{rtsp_port}
 rtspsAddress: 127.0.0.1:{rtsps_port}
 

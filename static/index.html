@@ -1643,12 +1643,12 @@
 
                     <div class="form-group">
                         <label for="relay-name">Name</label>
-                        <input type="text" id="relay-name" placeholder="My Twitch Channel" required maxlength="100">
+                        <input type="text" id="relay-name" placeholder="e.g. My Channel" required maxlength="100">
                     </div>
 
                     <div class="form-group">
                         <label for="relay-rtmp-url">RTMP URL</label>
-                        <input type="text" id="relay-rtmp-url" placeholder="rtmp://live.twitch.tv/app" required>
+                        <input type="text" id="relay-rtmp-url" placeholder="rtmp:// or rtmps://" required>
                         <small style="color: var(--text-muted);">Must start with rtmp:// or rtmps://</small>
                     </div>
 
@@ -1764,7 +1764,7 @@
         </div>
     </div>
 
-    <script src="/static/js/streams.js?v=35"></script>
+    <script src="/static/js/streams.js?v=37"></script>
     <script src="/static/js/vods.js?v=5"></script>
     <script>
         function openLocalTerminal() {

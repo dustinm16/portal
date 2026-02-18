@@ -405,6 +405,7 @@
             <ul>
                 <li><a href="#guide-mediamtx">MediaMTX Stream</a></li>
                 <li><a href="#guide-stream">Media Stream</a></li>
+                <li><a href="#guide-stream_relay">Stream Relay</a></li>
                 <li><a href="#guide-minecraft_rcon">Minecraft RCON</a></li>
             </ul>
 
@@ -2623,6 +2624,41 @@
                     <li>Change default camera passwords (many ship with admin/admin)</li>
                     <li>Use RTSP over TCP instead of UDP where possible</li>
                     <li>Isolate cameras on a separate VLAN</li>
+                </ul>
+            </section>
+
+            <section id="guide-stream_relay">
+                <h3>Stream Relay</h3>
+                <p>Multi-platform stream relay allows you to simultaneously broadcast to external platforms (Twitch, YouTube, Kick, other Portal instances, or any custom RTMP destination) while streaming to your Portal.</p>
+                <h4>Requirements</h4>
+                <ul>
+                    <li>An active stream configured in Portal (My Streams tab)</li>
+                    <li>Account and stream key on each target platform</li>
+                    <li>Target platform's RTMP ingest URL</li>
+                </ul>
+                <h4>Setup in Portal</h4>
+                <ol>
+                    <li>Go to <strong>Dashboard &rarr; My Streams</strong> and open your stream details</li>
+                    <li>Scroll to the <strong>Relay Destinations</strong> section</li>
+                    <li>Click <strong>Add Relay</strong></li>
+                    <li>Select a platform (Twitch, YouTube, Kick, Portal, or Custom)</li>
+                    <li>Enter a display name for this destination</li>
+                    <li>The RTMP URL is pre-filled for known platforms &mdash; adjust if needed</li>
+                    <li>Enter the stream key from the target platform</li>
+                    <li>Save the destination</li>
+                </ol>
+                <p>When you go live, all enabled relay destinations start automatically. Relays use <code>ffmpeg -c copy</code> (no re-encoding) so there is minimal CPU overhead. You can enable or disable individual destinations without deleting them.</p>
+                <h4>Limits</h4>
+                <ul>
+                    <li>Maximum 10 relay destinations per stream</li>
+                    <li>RTMP URL must start with <code>rtmp://</code> or <code>rtmps://</code></li>
+                </ul>
+                <h4>Security Considerations</h4>
+                <ul>
+                    <li>Relay credentials (RTMP URL and stream key) are encrypted at rest on the server</li>
+                    <li>Stream keys are never returned by the API &mdash; only a <code>has_stream_key</code> flag is shown</li>
+                    <li>Only the stream owner can view, add, edit, or delete relay destinations</li>
+                    <li>Keep your target platform stream keys confidential &mdash; treat them like passwords</li>
                 </ul>
             </section>
 

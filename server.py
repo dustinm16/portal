@@ -16,6 +16,7 @@ import hashlib
 import html as _html
 import ipaddress
 import json
+import socket
 import logging
 import mimetypes
 import os
@@ -160,6 +161,55 @@ RELAY_PLATFORMS = {
 MAX_RELAYS_PER_STREAM = 10
 # active_relays: stream_id -> {relay_id -> {process, dest, started_at, monitor_task}}
 active_relays: dict[int, dict[int, dict]] = {}
+
+# Cached set of the server's own IPs (resolved from HOSTNAME/STREAM_HOSTNAME).
+# Populated lazily on first use. Handles cloud NAT hairpin where the server's
+# public IP appears as the TCP peer but isn't loopback or RFC 1918 private.
+_server_own_ips: set[str] | None = None
+
+
+def _get_server_own_ips() -> set[str]:
+    """Resolve and cache the server's own IPs from configured hostnames."""
+    global _server_own_ips
+    if _server_own_ips is not None:
+        return _server_own_ips
+
+    ips = {"127.0.0.1", "::1"}
+    for hostname in {Config.HOSTNAME, Config.STREAM_HOSTNAME}:
+        if not hostname:
+            continue
+        try:
+            for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+                ips.add(info[4][0])
+        except socket.gaierror:
+            pass
+    _server_own_ips = ips
+    logger.info(f"Server own IPs resolved: {ips}")
+    return ips
+
+
+def _is_internal_request(request: web.Request) -> bool:
+    """Check if a request originates from the server itself (loopback, private, or own public IP).
+
+    Used to restrict internal-only endpoints (MediaMTX auth/event hooks).
+    Checks raw transport peername — not get_client_ip() — so CDN headers
+    don't mask the real TCP connection source.
+    """
+    peername = request.transport.get_extra_info("peername")
+    peer_ip = peername[0] if peername else "unknown"
+    try:
+        addr = ipaddress.ip_address(peer_ip)
+        # Normalize IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1 → 127.0.0.1)
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped
+            peer_ip = str(addr)
+        if addr.is_loopback or addr.is_private:
+            return True
+        # Cloud NAT hairpin: server's own public IP appears as peer
+        return peer_ip in _get_server_own_ips()
+    except ValueError:
+        return False
+
 
 # Static files cache
 STATIC_DIR = Path(__file__).parent / "static"
@@ -3418,7 +3468,12 @@ async def _finalize_stream_offline(stream: dict) -> None:
 # =========================================================================
 
 async def start_stream_relays(stream: dict, stream_key: str) -> None:
-    """Start relay processes for all enabled relay destinations."""
+    """Start relay processes for all enabled relay destinations.
+
+    Waits briefly for MediaMTX to register the stream path (auth response
+    is sent before the path is fully set up), then spawns ffmpeg per dest
+    with retry on transient RTSPS failures.
+    """
     stream_id = stream["id"]
     destinations = await db.get_enabled_relay_destinations(stream_id)
     if not destinations:
@@ -3429,8 +3484,28 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
         logger.warning("MediaMTX not configured, cannot start relays")
         return
 
-    rtsps_port = 8322
-    source_url = f"rtsps://127.0.0.1:{rtsps_port}/live/{stream_key}"
+    # Stop any existing relay processes first (rapid reconnect race condition).
+    # Without this, a quick disconnect/reconnect spawns duplicate ffmpeg processes.
+    async with _stream_state_lock:
+        existing = active_relays.get(stream_id, {})
+    if existing:
+        logger.info(f"Stopping {len(existing)} existing relay(s) for stream {stream_id} before restart")
+        await stop_stream_relays(stream_id, force=True)
+
+    # Use plain RTSP on localhost for relay source — no TLS overhead
+    # for local IPC, and avoids cert hostname mismatch (LE cert is for
+    # stream.dddvm.xyz, not 127.0.0.1). RTSP port is localhost-only.
+    rtsp_port = 8554
+    source_url = f"rtsp://127.0.0.1:{rtsp_port}/live/{stream_key}"
+
+    # Wait for MediaMTX to finish registering the stream path.
+    # The auth webhook returns before the path is ready internally.
+    await asyncio.sleep(3)
+
+    # Verify stream is still live (may have disconnected during the delay)
+    current = await db.get_user_stream(stream_id)
+    if not current or not current.get("is_live"):
+        return
 
     async with _stream_state_lock:
         if stream_id not in active_relays:
@@ -3443,32 +3518,70 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
         target = f"{rtmp_url}/{relay_key}"
         platform = dest.get("platform", "custom")
 
-        try:
-            cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", "warning",
-                "-rtsp_transport", "tcp",
-                "-i", source_url,
-                "-c", "copy", "-f", "flv",
-                target
-            ]
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE
-            )
-            monitor_task = asyncio.create_task(
-                _monitor_relay_process(stream_id, relay_id, process, dest)
-            )
-            async with _stream_state_lock:
-                active_relays[stream_id][relay_id] = {
-                    "process": process,
-                    "dest": dest,
-                    "started_at": datetime.now(timezone.utc),
-                    "monitor_task": monitor_task,
-                }
-            logger.info(f"Relay started: stream {stream_id} -> {platform} ({dest['name']}), pid={process.pid}")
-        except Exception as e:
-            logger.error(f"Failed to start relay for stream {stream_id} -> {platform}: {e}")
+        # Retry loop — RTSPS path may take a moment to become available
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "warning",
+                    "-rtsp_transport", "tcp",
+                    "-i", source_url,
+                    "-c", "copy", "-f", "flv",
+                    target
+                ]
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                monitor_task = asyncio.create_task(
+                    _monitor_relay_process(stream_id, relay_id, process, dest)
+                )
+                async with _stream_state_lock:
+                    active_relays[stream_id][relay_id] = {
+                        "process": process,
+                        "dest": dest,
+                        "started_at": datetime.now(timezone.utc),
+                        "monitor_task": monitor_task,
+                    }
+                logger.info(f"Relay started: stream {stream_id} -> {platform} ({dest['name']}), pid={process.pid}")
+
+                # Wait briefly and check if ffmpeg exited immediately (e.g. 404)
+                await asyncio.sleep(2)
+                if process.returncode is not None and process.returncode != 0:
+                    stderr_tail = b""
+                    try:
+                        stderr_tail = await asyncio.wait_for(process.stderr.read(2048), timeout=1)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                    err_msg = _sanitize_relay_stderr(stderr_tail.decode(errors="replace").strip()[-500:])
+                    if attempt < max_attempts:
+                        logger.warning(f"Relay {platform}/{dest['name']} failed on attempt {attempt}/{max_attempts}: {err_msg}")
+                        # Clean up before retry
+                        async with _stream_state_lock:
+                            active_relays.get(stream_id, {}).pop(relay_id, None)
+                        monitor_task.cancel()
+                        await asyncio.sleep(3)
+                        continue
+                    else:
+                        logger.warning(f"Relay {platform}/{dest['name']} failed after {max_attempts} attempts: {err_msg}")
+                        async with _stream_state_lock:
+                            active_relays.get(stream_id, {}).pop(relay_id, None)
+                break  # Process is running or final attempt done
+
+            except Exception as e:
+                logger.error(f"Failed to start relay for stream {stream_id} -> {platform}: {e}")
+                break
+
+
+def _sanitize_relay_stderr(stderr_text: str) -> str:
+    """Redact third-party stream keys from ffmpeg relay stderr output.
+
+    ffmpeg stderr may contain the full target URL (e.g. rtmp://live.twitch.tv/app/sk_XXXX).
+    The existing SensitiveDataFilter only catches our own key prefixes (live_, pub_, rtmp_).
+    This strips everything after the last '/' in rtmp:// or rtmps:// URLs.
+    """
+    return re.sub(r'(rtmps?://[^\s/]+(?:/[^\s/]+)*/)([^\s"\']+)', r'\1[KEY_REDACTED]', stderr_text)
 
 
 async def _monitor_relay_process(stream_id: int, relay_id: int,
@@ -3491,7 +3604,7 @@ async def _monitor_relay_process(stream_id: int, relay_id: int,
         await process.wait()
         rc = process.returncode
         if rc != 0:
-            stderr_tail = stderr_data.decode(errors="replace")[-500:]
+            stderr_tail = _sanitize_relay_stderr(stderr_data.decode(errors="replace")[-500:])
             logger.warning(f"Relay {platform}/{name} exited with code {rc}: {stderr_tail}")
         else:
             logger.info(f"Relay {platform}/{name} ended normally")
@@ -3573,11 +3686,10 @@ async def http_stream_auth(request: web.Request) -> web.Response:
 
     Called by MediaMTX when a client tries to publish or play a stream.
     Validates stream key for publishing, allows viewing of public streams.
-    Only accepts requests from localhost (MediaMTX runs on the same machine).
+    Only accepts requests from local/private IPs (MediaMTX runs on the same machine).
     """
-    # Restrict to localhost — these are internal MediaMTX hooks, not public API
-    client_ip = get_client_ip(request)
-    if client_ip not in ("127.0.0.1", "::1"):
+    # Restrict to internal IPs — MediaMTX hooks only, not public API.
+    if not _is_internal_request(request):
         return web.json_response({"error": "Forbidden"}, status=403)
 
     try:
@@ -3768,11 +3880,10 @@ async def http_stream_event(request: web.Request) -> web.Response:
     """MediaMTX stream event hook.
 
     Called when streams start/stop for updating live status.
-    Only accepts requests from localhost (MediaMTX runs on the same machine).
+    Only accepts requests from local/private IPs (MediaMTX runs on the same machine).
     """
-    # Restrict to localhost — these are internal MediaMTX hooks, not public API
-    client_ip = get_client_ip(request)
-    if client_ip not in ("127.0.0.1", "::1"):
+    # Restrict to internal IPs — MediaMTX hooks only, not public API.
+    if not _is_internal_request(request):
         return web.json_response({"error": "Forbidden"}, status=403)
 
     try:
@@ -9632,7 +9743,7 @@ async def http_upload_emote(request: web.Request) -> web.Response:
                 file_data = b"".join(chunks)
 
         name = fields.get("name", "")
-        category = fields.get("category", "General") or "General"
+        category = (fields.get("category") or "General").strip()[:32]
 
         if not name or not re.match(r'^[a-zA-Z0-9_]{2,32}$', name):
             return web.json_response({"error": "Name must be 2-32 alphanumeric/underscore characters"}, status=400)
@@ -9686,6 +9797,8 @@ async def http_update_emote(request: web.Request) -> web.Response:
 
     name = body.get("name")
     category = body.get("category")
+    if category is not None:
+        category = str(category).strip()[:32]
 
     if name is not None:
         if not re.match(r'^[a-zA-Z0-9_]{2,32}$', name):
@@ -9802,16 +9915,20 @@ async def http_create_relay_destination(request: web.Request) -> web.Response:
 
     rtmp_url = (body.get("rtmp_url") or "").strip()
     if not rtmp_url:
-        # Use platform default
-        rtmp_url = RELAY_PLATFORMS[platform]["default_url"]
+        # Fall back to platform default if available
+        rtmp_url = RELAY_PLATFORMS.get(platform, {}).get("default_url", "")
     if not rtmp_url:
-        return web.json_response({"error": "RTMP URL required for custom/portal platforms"}, status=400)
+        return web.json_response({"error": "RTMP URL required"}, status=400)
     if not rtmp_url.startswith(("rtmp://", "rtmps://")):
         return web.json_response({"error": "URL must start with rtmp:// or rtmps://"}, status=400)
+    if len(rtmp_url) > 2048:
+        return web.json_response({"error": "RTMP URL too long (max 2048 chars)"}, status=400)
 
     stream_key = (body.get("stream_key") or "").strip()
     if not stream_key:
         return web.json_response({"error": "Stream key required"}, status=400)
+    if len(stream_key) > 512:
+        return web.json_response({"error": "Stream key too long (max 512 chars)"}, status=400)
 
     dest = await db.create_relay_destination(stream_id, platform, name, rtmp_url, stream_key)
     return web.json_response(dest, status=201)
@@ -9856,11 +9973,15 @@ async def http_update_relay_destination(request: web.Request) -> web.Response:
         rtmp_url = (body["rtmp_url"] or "").strip()
         if rtmp_url and not rtmp_url.startswith(("rtmp://", "rtmps://")):
             return web.json_response({"error": "URL must start with rtmp:// or rtmps://"}, status=400)
+        if rtmp_url and len(rtmp_url) > 2048:
+            return web.json_response({"error": "RTMP URL too long (max 2048 chars)"}, status=400)
         if rtmp_url:
             updates["rtmp_url"] = rtmp_url
 
     if "stream_key" in body:
         sk = (body["stream_key"] or "").strip()
+        if sk and len(sk) > 512:
+            return web.json_response({"error": "Stream key too long (max 512 chars)"}, status=400)
         if sk:
             updates["stream_key"] = sk
 
@@ -9913,7 +10034,7 @@ async def http_get_relay_platforms(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    platforms = {k: {"name": v["name"], "default_url": v["default_url"]} for k, v in RELAY_PLATFORMS.items()}
+    platforms = {k: {"name": v["name"], "default_url": v.get("default_url", "")} for k, v in RELAY_PLATFORMS.items()}
     return web.json_response({"platforms": platforms})
 
 

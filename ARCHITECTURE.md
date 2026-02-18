@@ -144,8 +144,8 @@ Permission Hierarchy:
 
 ```
 /opt/portal/
-├── server.py              # Main aiohttp server (~13,730 lines)
-├── database.py            # SQLite async database layer (~5,152 lines)
+├── server.py              # Main aiohttp server (~14,600 lines)
+├── database.py            # SQLite async database layer (~5,730 lines)
 ├── auth.py                # JWT/API key authentication (~467 lines)
 ├── config.py              # Environment configuration
 ├── logger.py              # Logging with rotation
@@ -317,6 +317,22 @@ CREATE TABLE rtmp_tokens (
 
 -- user_streams table also includes:
 --   rtmp_enabled INTEGER DEFAULT 0   -- Per-stream toggle for plain RTMP ingress
+
+-- Multi-platform relay destinations (per-stream)
+CREATE TABLE stream_relay_destinations (
+    id INTEGER PRIMARY KEY,
+    stream_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,          -- twitch, youtube, kick, portal, custom
+    name TEXT NOT NULL,
+    rtmp_url TEXT NOT NULL,          -- Encrypted (Fernet, machine-bound PBKDF2)
+    stream_key TEXT NOT NULL,        -- Encrypted (Fernet, machine-bound PBKDF2)
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 
 -- VOD remote storage config (per-user SFTP)
 CREATE TABLE vod_storage (
@@ -537,6 +553,11 @@ GET  /api/streams/open          - List currently live public streams
 POST /api/streams/:id/thumbnail - Upload custom thumbnail
 DELETE /api/streams/:id/thumbnail - Delete custom thumbnail
 POST /api/streams/:id/rtmp-token - Generate temporary RTMP publish token
+GET  /api/relay-platforms        - List supported relay platforms (Twitch, YouTube, Kick, etc.)
+GET  /api/streams/:id/relays    - List relay destinations (owner only)
+POST /api/streams/:id/relays    - Add relay destination (owner only)
+PUT  /api/streams/:id/relays/:rid - Update relay destination
+DELETE /api/streams/:id/relays/:rid - Delete relay destination
 GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
 GET  /api/stream/:key/hls/...   - HLS playback proxy
 POST /api/stream/event          - MediaMTX webhook (live/encoding/offline)
@@ -551,6 +572,17 @@ The MediaMTX managed service configuration is generated dynamically by Portal. K
 - **Publish auth** - All publish requests validated via MediaMTX external auth webhook back to Portal
 - **Playback** - Read/playback auth handled by Portal's HLS proxy, not MediaMTX
 - **RTMP path mapping** - When publishing via `rtmp_` token, MediaMTX creates the path using the token instead of the `live_` key (i.e., `live/rtmp_xxx` not `live/live_xxx`). Portal maintains an internal mapping (`_rtmp_stream_paths`) so HLS proxy, thumbnails, and VOD recording resolve to the correct MediaMTX path.
+- **Multi-platform relay** - Streams can be simultaneously relayed to external platforms (Twitch, YouTube, Kick, other Portal instances, or custom RTMP destinations). Relay processes use `ffmpeg -c copy -f flv` per destination. Relays start automatically on publish and stop on disconnect/shutdown. Max 10 relay destinations per stream. Relay credentials (RTMP URL + stream key) are encrypted at rest.
+
+### Stream Relay
+
+```
+GET  /api/relay-platforms              - List supported relay platforms
+GET  /api/streams/:id/relays           - List relay destinations (owner)
+POST /api/streams/:id/relays           - Add relay destination (owner)
+PUT  /api/streams/:id/relays/:rid      - Update relay destination (owner)
+DELETE /api/streams/:id/relays/:rid    - Delete relay destination (owner)
+```
 
 ### Stream Moderation
 
