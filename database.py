@@ -900,6 +900,21 @@ MIGRATIONS = [
         FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_custom_emotes_name ON custom_emotes(name)",
+    # Stream relay destinations (multi-platform relay)
+    """CREATE TABLE IF NOT EXISTS stream_relay_destinations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stream_id INTEGER NOT NULL,
+        platform TEXT NOT NULL DEFAULT 'custom',
+        name TEXT NOT NULL,
+        rtmp_url TEXT NOT NULL,
+        stream_key TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_relay_dest_stream ON stream_relay_destinations(stream_id)",
+    "CREATE INDEX IF NOT EXISTS idx_relay_dest_enabled ON stream_relay_destinations(stream_id, enabled)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -4142,6 +4157,103 @@ class Database:
         await self.conn.execute("DELETE FROM custom_emotes WHERE id = ?", (emote_id,))
         await self.conn.commit()
         return row["filename"]
+
+    # =========================================================================
+    # Stream Relay Destinations
+    # =========================================================================
+
+    async def create_relay_destination(self, stream_id: int, platform: str, name: str,
+                                       rtmp_url: str, stream_key: str) -> dict:
+        """Create a relay destination. rtmp_url and stream_key are encrypted at rest."""
+        enc_url = encrypt_config(rtmp_url)
+        enc_key = encrypt_config(stream_key)
+        cursor = await self.conn.execute(
+            """INSERT INTO stream_relay_destinations (stream_id, platform, name, rtmp_url, stream_key)
+               VALUES (?, ?, ?, ?, ?)""",
+            (stream_id, platform, name, enc_url, enc_key)
+        )
+        await self.conn.commit()
+        return {"id": cursor.lastrowid, "stream_id": stream_id, "platform": platform,
+                "name": name, "rtmp_url": rtmp_url, "has_stream_key": True, "enabled": 1}
+
+    async def get_relay_destinations(self, stream_id: int) -> list[dict]:
+        """Get all relay destinations for a stream (decrypted, key redacted)."""
+        cursor = await self.conn.execute(
+            """SELECT id, stream_id, platform, name, rtmp_url, stream_key, enabled,
+                      created_at, updated_at
+               FROM stream_relay_destinations WHERE stream_id = ? ORDER BY created_at""",
+            (stream_id,)
+        )
+        results = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["rtmp_url"] = decrypt_config(d["rtmp_url"])
+            d["has_stream_key"] = bool(d.get("stream_key"))
+            del d["stream_key"]
+            results.append(d)
+        return results
+
+    async def get_relay_destination(self, relay_id: int) -> Optional[dict]:
+        """Get a single relay destination by ID (decrypted, including stream_key)."""
+        cursor = await self.conn.execute(
+            """SELECT id, stream_id, platform, name, rtmp_url, stream_key, enabled,
+                      created_at, updated_at
+               FROM stream_relay_destinations WHERE id = ?""",
+            (relay_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["rtmp_url"] = decrypt_config(d["rtmp_url"])
+        d["stream_key"] = decrypt_config(d["stream_key"])
+        return d
+
+    async def get_enabled_relay_destinations(self, stream_id: int) -> list[dict]:
+        """Get enabled relay destinations for a stream (decrypted, including stream_key)."""
+        cursor = await self.conn.execute(
+            """SELECT id, stream_id, platform, name, rtmp_url, stream_key, enabled,
+                      created_at, updated_at
+               FROM stream_relay_destinations WHERE stream_id = ? AND enabled = 1
+               ORDER BY created_at""",
+            (stream_id,)
+        )
+        results = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["rtmp_url"] = decrypt_config(d["rtmp_url"])
+            d["stream_key"] = decrypt_config(d["stream_key"])
+            results.append(d)
+        return results
+
+    async def update_relay_destination(self, relay_id: int, **kwargs) -> bool:
+        """Update a relay destination. Encrypts rtmp_url and stream_key if provided."""
+        allowed = {"platform", "name", "rtmp_url", "stream_key", "enabled"}
+        fields, values = [], []
+        for key, val in kwargs.items():
+            if key not in allowed or val is None:
+                continue
+            if key in ("rtmp_url", "stream_key"):
+                val = encrypt_config(val)
+            fields.append(f"{key} = ?")
+            values.append(val)
+        if not fields:
+            return False
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(relay_id)
+        cursor = await self.conn.execute(
+            f"UPDATE stream_relay_destinations SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_relay_destination(self, relay_id: int) -> bool:
+        """Delete a relay destination by ID."""
+        cursor = await self.conn.execute(
+            "DELETE FROM stream_relay_destinations WHERE id = ?", (relay_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # =========================================================================
     # Message Editing

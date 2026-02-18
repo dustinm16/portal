@@ -149,6 +149,18 @@ _rtmp_stream_paths: dict[int, str] = {}
 _stream_state_lock = asyncio.Lock()
 VOD_TEMP_DIR = "/tmp/portal_vods"
 
+# Multi-platform relay state
+RELAY_PLATFORMS = {
+    "twitch": {"name": "Twitch", "default_url": "rtmp://live.twitch.tv/app"},
+    "youtube": {"name": "YouTube", "default_url": "rtmp://a.rtmp.youtube.com/live2"},
+    "kick": {"name": "Kick", "default_url": "rtmps://fa723fc1b171.global-contribute.live-video.net/app"},
+    "portal": {"name": "Open Relay Portal", "default_url": ""},
+    "custom": {"name": "Custom", "default_url": ""},
+}
+MAX_RELAYS_PER_STREAM = 10
+# active_relays: stream_id -> {relay_id -> {process, dest, started_at, monitor_task}}
+active_relays: dict[int, dict[int, dict]] = {}
+
 # Static files cache
 STATIC_DIR = Path(__file__).parent / "static"
 _static_cache: dict[str, str] = {}
@@ -3312,6 +3324,9 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             logger.info(f"Stream {stream_name} reconnected during grace period, aborting disconnect")
             return
 
+        # Stop multi-platform relays
+        await stop_stream_relays(stream_id)
+
         # Still disconnected — proceed with encoding/offline transition
         async with _stream_state_lock:
             has_vod = stream_id in active_recordings
@@ -3396,6 +3411,161 @@ async def _finalize_stream_offline(stream: dict) -> None:
             await db.set_stream_live(stream_id, False)
         except (OSError, ValueError):
             pass
+
+
+# =========================================================================
+# Multi-Platform Stream Relay
+# =========================================================================
+
+async def start_stream_relays(stream: dict, stream_key: str) -> None:
+    """Start relay processes for all enabled relay destinations."""
+    stream_id = stream["id"]
+    destinations = await db.get_enabled_relay_destinations(stream_id)
+    if not destinations:
+        return
+
+    mtx_config = await _get_mediamtx_config()
+    if not mtx_config:
+        logger.warning("MediaMTX not configured, cannot start relays")
+        return
+
+    rtsps_port = 8322
+    source_url = f"rtsps://127.0.0.1:{rtsps_port}/live/{stream_key}"
+
+    async with _stream_state_lock:
+        if stream_id not in active_relays:
+            active_relays[stream_id] = {}
+
+    for dest in destinations:
+        relay_id = dest["id"]
+        rtmp_url = dest["rtmp_url"].rstrip("/")
+        relay_key = dest["stream_key"]
+        target = f"{rtmp_url}/{relay_key}"
+        platform = dest.get("platform", "custom")
+
+        try:
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "warning",
+                "-rtsp_transport", "tcp",
+                "-i", source_url,
+                "-c", "copy", "-f", "flv",
+                target
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE
+            )
+            monitor_task = asyncio.create_task(
+                _monitor_relay_process(stream_id, relay_id, process, dest)
+            )
+            async with _stream_state_lock:
+                active_relays[stream_id][relay_id] = {
+                    "process": process,
+                    "dest": dest,
+                    "started_at": datetime.now(timezone.utc),
+                    "monitor_task": monitor_task,
+                }
+            logger.info(f"Relay started: stream {stream_id} -> {platform} ({dest['name']}), pid={process.pid}")
+        except Exception as e:
+            logger.error(f"Failed to start relay for stream {stream_id} -> {platform}: {e}")
+
+
+async def _monitor_relay_process(stream_id: int, relay_id: int,
+                                  process: asyncio.subprocess.Process, dest: dict) -> None:
+    """Monitor a single relay process and clean up on exit."""
+    platform = dest.get("platform", "custom")
+    name = dest.get("name", "?")
+    try:
+        stderr_data = b""
+        while True:
+            try:
+                chunk = await asyncio.wait_for(process.stderr.read(4096), timeout=30)
+                if not chunk:
+                    break
+                stderr_data = (stderr_data + chunk)[-2048:]
+            except asyncio.TimeoutError:
+                if process.returncode is not None:
+                    break
+                continue
+        await process.wait()
+        rc = process.returncode
+        if rc != 0:
+            stderr_tail = stderr_data.decode(errors="replace")[-500:]
+            logger.warning(f"Relay {platform}/{name} exited with code {rc}: {stderr_tail}")
+        else:
+            logger.info(f"Relay {platform}/{name} ended normally")
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Relay monitor error for {platform}/{name}: {e}")
+    finally:
+        async with _stream_state_lock:
+            relays = active_relays.get(stream_id, {})
+            relays.pop(relay_id, None)
+            if not relays:
+                active_relays.pop(stream_id, None)
+
+
+async def stop_stream_relays(stream_id: int, force: bool = False) -> None:
+    """Stop all relay processes for a stream."""
+    async with _stream_state_lock:
+        relays = active_relays.get(stream_id, {})
+        if not relays:
+            return
+        relay_items = list(relays.items())
+
+    for relay_id, info in relay_items:
+        await _stop_relay_process(stream_id, relay_id, info, force)
+
+
+async def stop_single_relay(stream_id: int, relay_id: int) -> None:
+    """Stop a single relay process (e.g., when a destination is deleted while live)."""
+    async with _stream_state_lock:
+        info = active_relays.get(stream_id, {}).get(relay_id)
+        if not info:
+            return
+    await _stop_relay_process(stream_id, relay_id, info, force=True)
+
+
+async def _stop_relay_process(stream_id: int, relay_id: int, info: dict,
+                               force: bool = False) -> None:
+    """Stop a relay ffmpeg process."""
+    process = info["process"]
+    platform = info["dest"].get("platform", "custom")
+    if process.returncode is not None:
+        return
+    try:
+        if force:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        else:
+            # Let ffmpeg exit naturally when source disappears
+            try:
+                await asyncio.wait_for(process.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+        logger.info(f"Relay stopped: stream {stream_id} -> {platform}")
+    except ProcessLookupError:
+        pass
+    finally:
+        monitor = info.get("monitor_task")
+        if monitor and not monitor.done():
+            monitor.cancel()
+        async with _stream_state_lock:
+            relays = active_relays.get(stream_id, {})
+            relays.pop(relay_id, None)
+            if not relays:
+                active_relays.pop(stream_id, None)
 
 
 async def http_stream_auth(request: web.Request) -> web.Response:
@@ -3553,6 +3723,9 @@ async def http_stream_auth(request: web.Request) -> web.Response:
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
         vod_stream_key = stream_key if stream_key.startswith("rtmp_") else (real_stream_key or stream_key)
         asyncio.create_task(start_vod_recording(stream, vod_stream_key))
+
+        # Start multi-platform relays
+        asyncio.create_task(start_stream_relays(stream, vod_stream_key))
 
         return web.json_response({"allowed": True})
 
@@ -9408,8 +9581,7 @@ async def http_list_emotes(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    async with Database() as db:
-        emotes = await db.get_all_custom_emotes()
+    emotes = await db.get_all_custom_emotes()
     for e in emotes:
         e["url"] = f"/static/uploads/emotes/{e['filename']}"
     return web.json_response({"emotes": emotes})
@@ -9420,8 +9592,7 @@ async def http_upload_emote(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    async with Database() as db:
-        user = await db.get_user(token.user_id)
+    user = await db.get_user(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
     if user_role not in ("admin", "superadmin", "moderator"):
         return web.json_response({"error": "Admin or moderator required"}, status=403)
@@ -9472,20 +9643,19 @@ async def http_upload_emote(request: web.Request) -> web.Response:
         if not file_data:
             return web.json_response({"error": "No file provided"}, status=400)
 
-        async with Database() as db:
-            existing = await db.get_custom_emote_by_name(name)
-            if existing:
-                return web.json_response({"error": f"Emote :{name}: already exists"}, status=409)
+        existing = await db.get_custom_emote_by_name(name)
+        if existing:
+            return web.json_response({"error": f"Emote :{name}: already exists"}, status=409)
 
-            filename = f"{uuid.uuid4().hex}{file_ext}"
-            upload_dir = Path(__file__).parent / "static" / "uploads" / "emotes"
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            filepath = upload_dir / filename
-            with open(filepath, "wb") as f:
-                f.write(file_data)
+        filename = f"{uuid.uuid4().hex}{file_ext}"
+        upload_dir = Path(__file__).parent / "static" / "uploads" / "emotes"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filepath = upload_dir / filename
+        with open(filepath, "wb") as f:
+            f.write(file_data)
 
-            emote = await db.create_custom_emote(name, filename, category, token.user_id)
-            emote["url"] = f"/static/uploads/emotes/{filename}"
+        emote = await db.create_custom_emote(name, filename, category, token.user_id)
+        emote["url"] = f"/static/uploads/emotes/{filename}"
 
         return web.json_response(emote, status=201)
 
@@ -9499,8 +9669,7 @@ async def http_update_emote(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    async with Database() as db:
-        user = await db.get_user(token.user_id)
+    user = await db.get_user(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
     if user_role not in ("admin", "superadmin", "moderator"):
         return web.json_response({"error": "Admin or moderator required"}, status=403)
@@ -9524,12 +9693,11 @@ async def http_update_emote(request: web.Request) -> web.Response:
         if name.lower() in _RESERVED_EMOTE_NAMES:
             return web.json_response({"error": "Name conflicts with built-in shortcode"}, status=409)
 
-    async with Database() as db:
-        if name is not None:
-            existing = await db.get_custom_emote_by_name(name)
-            if existing and existing["id"] != emote_id:
-                return web.json_response({"error": f"Emote :{name}: already exists"}, status=409)
-        updated = await db.update_custom_emote(emote_id, name=name, category=category)
+    if name is not None:
+        existing = await db.get_custom_emote_by_name(name)
+        if existing and existing["id"] != emote_id:
+            return web.json_response({"error": f"Emote :{name}: already exists"}, status=409)
+    updated = await db.update_custom_emote(emote_id, name=name, category=category)
 
     if not updated:
         return web.json_response({"error": "Emote not found"}, status=404)
@@ -9541,8 +9709,7 @@ async def http_delete_emote(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    async with Database() as db:
-        user = await db.get_user(token.user_id)
+    user = await db.get_user(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
     if user_role not in ("admin", "superadmin", "moderator"):
         return web.json_response({"error": "Admin or moderator required"}, status=403)
@@ -9552,8 +9719,7 @@ async def http_delete_emote(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
 
-    async with Database() as db:
-        filename = await db.delete_custom_emote(emote_id)
+    filename = await db.delete_custom_emote(emote_id)
     if not filename:
         return web.json_response({"error": "Emote not found"}, status=404)
 
@@ -9581,6 +9747,174 @@ async def http_serve_emote(request: web.Request) -> web.Response:
         "X-Content-Type-Options": "nosniff"
     })
 
+
+
+# =========================================================================
+# Stream Relay Destination API
+# =========================================================================
+
+async def http_list_relay_destinations(request: web.Request) -> web.Response:
+    """List relay destinations for a stream (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        stream_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
+    destinations = await db.get_relay_destinations(stream_id)
+    return web.json_response({"relays": destinations})
+
+
+async def http_create_relay_destination(request: web.Request) -> web.Response:
+    """Add a relay destination to a stream (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        stream_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Check relay limit
+    existing = await db.get_relay_destinations(stream_id)
+    if len(existing) >= MAX_RELAYS_PER_STREAM:
+        return web.json_response({"error": f"Maximum {MAX_RELAYS_PER_STREAM} relay destinations per stream"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    platform = body.get("platform", "custom")
+    if platform not in RELAY_PLATFORMS:
+        return web.json_response({"error": f"Invalid platform. Options: {', '.join(RELAY_PLATFORMS.keys())}"}, status=400)
+
+    name = (body.get("name") or "").strip()
+    if not name or len(name) > 100:
+        return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
+
+    rtmp_url = (body.get("rtmp_url") or "").strip()
+    if not rtmp_url:
+        # Use platform default
+        rtmp_url = RELAY_PLATFORMS[platform]["default_url"]
+    if not rtmp_url:
+        return web.json_response({"error": "RTMP URL required for custom/portal platforms"}, status=400)
+    if not rtmp_url.startswith(("rtmp://", "rtmps://")):
+        return web.json_response({"error": "URL must start with rtmp:// or rtmps://"}, status=400)
+
+    stream_key = (body.get("stream_key") or "").strip()
+    if not stream_key:
+        return web.json_response({"error": "Stream key required"}, status=400)
+
+    dest = await db.create_relay_destination(stream_id, platform, name, rtmp_url, stream_key)
+    return web.json_response(dest, status=201)
+
+
+async def http_update_relay_destination(request: web.Request) -> web.Response:
+    """Update a relay destination (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        stream_id = int(request.match_info["id"])
+        relay_id = int(request.match_info["relay_id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    dest = await db.get_relay_destination(relay_id)
+    if not dest or dest["stream_id"] != stream_id:
+        return web.json_response({"error": "Relay destination not found"}, status=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    updates = {}
+    if "platform" in body:
+        if body["platform"] not in RELAY_PLATFORMS:
+            return web.json_response({"error": f"Invalid platform"}, status=400)
+        updates["platform"] = body["platform"]
+
+    if "name" in body:
+        name = (body["name"] or "").strip()
+        if not name or len(name) > 100:
+            return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
+        updates["name"] = name
+
+    if "rtmp_url" in body:
+        rtmp_url = (body["rtmp_url"] or "").strip()
+        if rtmp_url and not rtmp_url.startswith(("rtmp://", "rtmps://")):
+            return web.json_response({"error": "URL must start with rtmp:// or rtmps://"}, status=400)
+        if rtmp_url:
+            updates["rtmp_url"] = rtmp_url
+
+    if "stream_key" in body:
+        sk = (body["stream_key"] or "").strip()
+        if sk:
+            updates["stream_key"] = sk
+
+    if "enabled" in body:
+        updates["enabled"] = 1 if body["enabled"] else 0
+
+    if not updates:
+        return web.json_response({"error": "No fields to update"}, status=400)
+
+    updated = await db.update_relay_destination(relay_id, **updates)
+    if not updated:
+        return web.json_response({"error": "Relay destination not found"}, status=404)
+
+    # If disabling while live, stop just that relay
+    if updates.get("enabled") == 0:
+        await stop_single_relay(stream_id, relay_id)
+
+    return web.json_response({"ok": True})
+
+
+async def http_delete_relay_destination(request: web.Request) -> web.Response:
+    """Delete a relay destination (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        stream_id = int(request.match_info["id"])
+        relay_id = int(request.match_info["relay_id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+    stream = await db.get_user_stream(stream_id)
+    if not stream or stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    dest = await db.get_relay_destination(relay_id)
+    if not dest or dest["stream_id"] != stream_id:
+        return web.json_response({"error": "Relay destination not found"}, status=404)
+
+    # Stop relay if active
+    await stop_single_relay(stream_id, relay_id)
+
+    deleted = await db.delete_relay_destination(relay_id)
+    if not deleted:
+        return web.json_response({"error": "Relay destination not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def http_get_relay_platforms(request: web.Request) -> web.Response:
+    """Get available relay platforms (any authenticated user)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    platforms = {k: {"name": v["name"], "default_url": v["default_url"]} for k, v in RELAY_PLATFORMS.items()}
+    return web.json_response({"platforms": platforms})
 
 
 class _SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
@@ -13543,6 +13877,12 @@ def create_app() -> web.Application:
     app.router.add_get("/api/streams/{id}/bans", http_get_stream_bans)
     app.router.add_post("/api/streams/{id}/bans", http_create_stream_ban)
     app.router.add_delete("/api/streams/{id}/bans/{user_id}", http_remove_stream_ban)
+    # Stream relay destinations
+    app.router.add_get("/api/streams/{id}/relays", http_list_relay_destinations)
+    app.router.add_post("/api/streams/{id}/relays", http_create_relay_destination)
+    app.router.add_put("/api/streams/{id}/relays/{relay_id}", http_update_relay_destination)
+    app.router.add_delete("/api/streams/{id}/relays/{relay_id}", http_delete_relay_destination)
+    app.router.add_get("/api/relay-platforms", http_get_relay_platforms)
     # MediaMTX hooks
     app.router.add_post("/api/stream/auth", http_stream_auth)
     app.router.add_post("/api/stream/event", http_stream_event)
@@ -14086,6 +14426,10 @@ class PortalServer:
     async def stop(self) -> None:
         """Stop the server gracefully."""
         logger.info("Shutting down...")
+
+        # Stop any active stream relays
+        for sid in list(active_relays.keys()):
+            await stop_stream_relays(sid, force=True)
 
         # Stop any active VOD recordings and upload to SFTP
         await stop_all_recordings()

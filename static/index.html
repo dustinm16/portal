@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=41">
+    <link rel="stylesheet" href="/static/css/portal.css?v=42">
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
@@ -1617,6 +1617,59 @@
         </div>
     </div>
 
+    <!-- Relay Destination Modal -->
+    <div id="relay-destination-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('relay-destination-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="relay-modal-title">Add Relay Destination</h3>
+                <button class="modal-close" onclick="closeModal('relay-destination-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="relay-form" onsubmit="submitRelayDestination(event)">
+                    <input type="hidden" id="relay-stream-id">
+                    <input type="hidden" id="relay-id">
+
+                    <div class="form-group">
+                        <label for="relay-platform">Platform</label>
+                        <select id="relay-platform" onchange="onRelayPlatformChange()">
+                            <option value="twitch">Twitch</option>
+                            <option value="youtube">YouTube</option>
+                            <option value="kick">Kick</option>
+                            <option value="portal">Open Relay Portal</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="relay-name">Name</label>
+                        <input type="text" id="relay-name" placeholder="My Twitch Channel" required maxlength="100">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="relay-rtmp-url">RTMP URL</label>
+                        <input type="text" id="relay-rtmp-url" placeholder="rtmp://live.twitch.tv/app" required>
+                        <small style="color: var(--text-muted);">Must start with rtmp:// or rtmps://</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="relay-stream-key">Stream Key</label>
+                        <div class="input-with-copy">
+                            <input type="password" id="relay-stream-key" placeholder="Platform stream key" required>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="this.previousElementSibling.type = this.previousElementSibling.type === 'password' ? 'text' : 'password'">Show</button>
+                        </div>
+                        <small class="warning-text">Encrypted at rest. Never exposed in API responses.</small>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Save</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('relay-destination-modal')">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- View Stream Modal (for watching community streams) -->
     <div id="view-stream-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('view-stream-modal')"></div>
@@ -1711,7 +1764,7 @@
         </div>
     </div>
 
-    <script src="/static/js/streams.js?v=34"></script>
+    <script src="/static/js/streams.js?v=35"></script>
     <script src="/static/js/vods.js?v=5"></script>
     <script>
         function openLocalTerminal() {

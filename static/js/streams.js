@@ -361,6 +361,13 @@ async function showStreamDetails(streamId) {
                     </div>
                 </div>
 
+                <div class="info-section">
+                    <h4>Multi-Platform Relay</h4>
+                    <p class="info-description">Relay your stream to external platforms (Twitch, YouTube, Kick, etc.) simultaneously.</p>
+                    <div id="relay-destinations-list"></div>
+                    <button class="btn btn-sm btn-primary" onclick="showAddRelayModal(${stream.id})" style="margin-top: 0.5rem;">Add Relay Destination</button>
+                </div>
+
                 <div class="form-actions">
                     <button class="btn btn-warning" onclick="regenerateStreamKey(${stream.id})">Regenerate Key</button>
                     ${stream.rtmp_enabled ? `<button class="btn btn-primary" onclick="generateRtmpToken(${stream.id})">Generate RTMP Token</button>` : ''}
@@ -370,6 +377,9 @@ async function showStreamDetails(streamId) {
         `;
 
         showModal('stream-details-modal');
+
+        // Load relay destinations
+        loadRelayDestinations(streamId);
 
         // Bind copy buttons programmatically to avoid inlining secrets in onclick attributes
         const copyValues = {
@@ -805,6 +815,231 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// =========================================================================
+// Multi-Platform Relay
+// =========================================================================
+
+const RELAY_PLATFORMS = {
+    twitch: { name: 'Twitch', color: '#9146ff' },
+    youtube: { name: 'YouTube', color: '#ff0000' },
+    kick: { name: 'Kick', color: '#53fc18' },
+    portal: { name: 'Open Relay Portal', color: '#3b82f6' },
+    custom: { name: 'Custom', color: '#6b7280' },
+};
+
+async function loadRelayDestinations(streamId) {
+    const listEl = document.getElementById('relay-destinations-list');
+    if (!listEl) return;
+
+    try {
+        const data = await Portal.fetchJSON(`/api/streams/${streamId}/relays`);
+        const relays = data.relays || [];
+
+        if (relays.length === 0) {
+            listEl.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem;">No relay destinations configured.</p>';
+            return;
+        }
+
+        listEl.innerHTML = relays.map(relay => {
+            const platform = RELAY_PLATFORMS[relay.platform] || RELAY_PLATFORMS.custom;
+            return `
+                <div class="relay-destination-row" data-relay-id="${relay.id}">
+                    <span class="relay-platform-badge" style="background: ${platform.color};">${escapeHtml(platform.name)}</span>
+                    <span class="relay-name">${escapeHtml(relay.name)}</span>
+                    <span class="relay-url" title="${escapeHtml(relay.rtmp_url)}">${escapeHtml(relay.rtmp_url)}</span>
+                    <div class="relay-actions">
+                        <label class="relay-toggle" title="${relay.enabled ? 'Enabled' : 'Disabled'}">
+                            <input type="checkbox" ${relay.enabled ? 'checked' : ''} data-relay-toggle="${relay.id}" data-stream-id="${streamId}">
+                            <span class="relay-toggle-slider"></span>
+                        </label>
+                        <button class="btn btn-sm btn-secondary" data-relay-edit="${relay.id}" data-stream-id="${streamId}">Edit</button>
+                        <button class="btn btn-sm btn-danger" data-relay-delete="${relay.id}" data-stream-id="${streamId}">Delete</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Bind events via data attributes
+        listEl.querySelectorAll('[data-relay-toggle]').forEach(input => {
+            input.addEventListener('change', () => {
+                toggleRelayEnabled(
+                    parseInt(input.dataset.streamId),
+                    parseInt(input.dataset.relayToggle),
+                    input.checked
+                );
+            });
+        });
+        listEl.querySelectorAll('[data-relay-edit]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                showEditRelayModal(
+                    parseInt(btn.dataset.streamId),
+                    parseInt(btn.dataset.relayEdit)
+                );
+            });
+        });
+        listEl.querySelectorAll('[data-relay-delete]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                deleteRelay(
+                    parseInt(btn.dataset.streamId),
+                    parseInt(btn.dataset.relayDelete)
+                );
+            });
+        });
+
+    } catch (error) {
+        console.error('Failed to load relay destinations:', error);
+        listEl.innerHTML = '<p style="color: var(--danger);">Failed to load relay destinations.</p>';
+    }
+}
+
+async function showAddRelayModal(streamId) {
+    const modal = document.getElementById('relay-destination-modal');
+    if (!modal) return;
+
+    document.getElementById('relay-modal-title').textContent = 'Add Relay Destination';
+    document.getElementById('relay-form').reset();
+    document.getElementById('relay-stream-id').value = streamId;
+    document.getElementById('relay-id').value = '';
+    document.getElementById('relay-stream-key').required = true;
+
+    // Pre-fill default URL on platform change
+    onRelayPlatformChange();
+
+    showModal('relay-destination-modal');
+}
+
+async function showEditRelayModal(streamId, relayId) {
+    const modal = document.getElementById('relay-destination-modal');
+    if (!modal) return;
+
+    document.getElementById('relay-modal-title').textContent = 'Edit Relay Destination';
+    document.getElementById('relay-stream-id').value = streamId;
+    document.getElementById('relay-id').value = relayId;
+    document.getElementById('relay-stream-key').required = false;
+    document.getElementById('relay-stream-key').placeholder = 'Leave blank to keep existing';
+
+    // Load current relay data via the list (keys are redacted)
+    try {
+        const data = await Portal.fetchJSON(`/api/streams/${streamId}/relays`);
+        const relay = (data.relays || []).find(r => r.id === relayId);
+        if (!relay) {
+            Portal.toast('Relay not found', 'error');
+            return;
+        }
+        document.getElementById('relay-platform').value = relay.platform;
+        document.getElementById('relay-name').value = relay.name;
+        document.getElementById('relay-rtmp-url').value = relay.rtmp_url;
+        document.getElementById('relay-stream-key').value = '';
+    } catch (error) {
+        Portal.toast('Failed to load relay', 'error');
+        return;
+    }
+
+    showModal('relay-destination-modal');
+}
+
+function onRelayPlatformChange() {
+    const platform = document.getElementById('relay-platform').value;
+    const urlInput = document.getElementById('relay-rtmp-url');
+    // Only auto-fill if empty or if it matches another platform's default
+    const defaults = {
+        twitch: 'rtmp://live.twitch.tv/app',
+        youtube: 'rtmp://a.rtmp.youtube.com/live2',
+        kick: 'rtmps://fa723fc1b171.global-contribute.live-video.net/app',
+    };
+    const currentUrl = urlInput.value.trim();
+    const isDefault = !currentUrl || Object.values(defaults).includes(currentUrl);
+    if (isDefault && defaults[platform]) {
+        urlInput.value = defaults[platform];
+    } else if (isDefault) {
+        urlInput.value = '';
+    }
+}
+
+async function submitRelayDestination(event) {
+    event.preventDefault();
+    const streamId = parseInt(document.getElementById('relay-stream-id').value);
+    const relayId = document.getElementById('relay-id').value;
+    const submitBtn = event.target.querySelector('button[type="submit"]');
+
+    const body = {
+        platform: document.getElementById('relay-platform').value,
+        name: document.getElementById('relay-name').value.trim(),
+        rtmp_url: document.getElementById('relay-rtmp-url').value.trim(),
+    };
+
+    const streamKey = document.getElementById('relay-stream-key').value.trim();
+    if (streamKey) {
+        body.stream_key = streamKey;
+    }
+
+    const isEdit = !!relayId;
+    const url = isEdit
+        ? `/api/streams/${streamId}/relays/${relayId}`
+        : `/api/streams/${streamId}/relays`;
+    const method = isEdit ? 'PUT' : 'POST';
+
+    Portal.setButtonLoading(submitBtn, true);
+    try {
+        const response = await Portal.fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        if (response.ok) {
+            Portal.flashButtonSuccess(submitBtn);
+            Portal.toast(isEdit ? 'Relay updated' : 'Relay added', 'success');
+            setTimeout(() => closeModal('relay-destination-modal'), 600);
+            loadRelayDestinations(streamId);
+        } else {
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to save relay', 'error');
+        }
+    } catch (error) {
+        console.error('Relay save error:', error);
+        Portal.toast('Failed to save relay', 'error');
+    } finally {
+        Portal.setButtonLoading(submitBtn, false);
+    }
+}
+
+async function toggleRelayEnabled(streamId, relayId, enabled) {
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}/relays/${relayId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to update relay', 'error');
+            loadRelayDestinations(streamId);
+        }
+    } catch (error) {
+        Portal.toast('Failed to update relay', 'error');
+        loadRelayDestinations(streamId);
+    }
+}
+
+async function deleteRelay(streamId, relayId) {
+    if (!confirm('Delete this relay destination?')) return;
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}/relays/${relayId}`, {
+            method: 'DELETE'
+        });
+        if (response.ok) {
+            Portal.toast('Relay deleted', 'success');
+            loadRelayDestinations(streamId);
+        } else {
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to delete relay', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to delete relay', 'error');
+    }
 }
 
 // Auto-refresh interval for community streams (30 seconds)
