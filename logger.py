@@ -133,9 +133,11 @@ def setup_logging(
     # Clear existing handlers
     root_logger.handlers.clear()
 
-    # Add sensitive data filter
+    # Sensitive data filter — must be on handlers, not the root logger.
+    # Filters on a logger only apply to records logged directly on that logger,
+    # NOT to records propagated from child loggers (e.g. "portal", "aiohttp.access").
+    # Adding the filter to each handler ensures ALL records are sanitized.
     sensitive_filter = SensitiveDataFilter()
-    root_logger.addFilter(sensitive_filter)
 
     # Create formatter based on settings
     if LOG_SETTINGS.get("structured", False):
@@ -151,6 +153,7 @@ def setup_logging(
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         console_handler.setLevel(getattr(logging, LOG_SETTINGS["level"]))
+        console_handler.addFilter(sensitive_filter)
         root_logger.addHandler(console_handler)
 
     # File handler with rotation
@@ -163,6 +166,7 @@ def setup_logging(
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(getattr(logging, LOG_SETTINGS["level"]))
+        file_handler.addFilter(sensitive_filter)
         root_logger.addHandler(file_handler)
 
     # Set levels for noisy loggers
