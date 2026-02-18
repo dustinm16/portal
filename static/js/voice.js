@@ -59,7 +59,7 @@ const VoiceChat = (() => {
 
     function init(ws, onStateChange, onScreenShareChange, myUserId) {
         _ws = ws;
-        _myUserId = myUserId || null;
+        _myUserId = myUserId != null ? Number(myUserId) : null;
         _onStateChange = onStateChange || null;
         _onScreenShareChange = onScreenShareChange || null;
         _loadPrefs();
@@ -452,7 +452,7 @@ const VoiceChat = (() => {
     }
 
     function _isMe(userId) {
-        return _myUserId !== null && userId === _myUserId;
+        return _myUserId !== null && Number(userId) === _myUserId;
     }
 
     async function _createAndOffer(userId) {

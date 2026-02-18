@@ -790,7 +790,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=32"></script>
-    <script src="/static/js/voice.js?v=4"></script>
+    <script src="/static/js/voice.js?v=5"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -1758,16 +1758,19 @@
                     label.textContent = 'You are sharing your screen';
                     video.srcObject = event.stream;
                     video.muted = true;
+                    panel.classList.add('active');
+                    video.play().catch(() => {});
                 } else {
                     label.textContent = escapeHtml(event.username) + ' is sharing';
+                    panel.classList.add('active');
                 }
-                panel.classList.add('active');
             } else if (event.action === 'stopped' || event.action === 'track_ended') {
                 panel.classList.remove('active');
                 video.srcObject = null;
             } else if (event.action === 'track') {
                 video.srcObject = event.stream;
                 panel.classList.add('active');
+                video.play().catch(() => {});
             }
         }
 

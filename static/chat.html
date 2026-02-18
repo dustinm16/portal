@@ -3003,7 +3003,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=32"></script>
-    <script src="/static/js/voice.js?v=4"></script>
+    <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -6288,18 +6288,20 @@
                 if (event.isSelf) {
                     label.textContent = 'You are sharing your screen';
                     video.srcObject = event.stream;
-                    video.muted = true; // Prevent audio feedback from own share
+                    video.muted = true;
+                    panel.classList.add('active');
+                    video.play().catch(() => {});
                 } else {
                     label.textContent = `${escapeHtml(event.username)} is sharing their screen`;
+                    panel.classList.add('active');
                 }
-                panel.classList.add('active');
             } else if (event.action === 'stopped') {
                 panel.classList.remove('active');
                 video.srcObject = null;
             } else if (event.action === 'track') {
-                // Video track received from the sharer
                 video.srcObject = event.stream;
                 panel.classList.add('active');
+                video.play().catch(() => {});
             } else if (event.action === 'track_ended') {
                 panel.classList.remove('active');
                 video.srcObject = null;

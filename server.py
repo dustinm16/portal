@@ -10895,27 +10895,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Channel not found"})
                             continue
 
-                        # Leave current channel
+                        # Leave current text channel (voice stays in its own room)
                         if current_channel and current_channel in chat_rooms:
-                            # Auto-leave voice in old room
-                            if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
-                                # Auto-stop screen share
-                                if voice_state[voice_room][user_id].get("screen_sharing"):
-                                    stop_bcast = {"type": "screen_share_stopped", "user_id": user_id}
-                                    if voice_room.startswith("dm:"):
-                                        await broadcast_to_voice_room(voice_room, stop_bcast)
-                                    else:
-                                        await broadcast_to_channel(voice_room, stop_bcast)
-                                del voice_state[voice_room][user_id]
-                                leave_msg = {"type": "voice_user_left", "user_id": user_id}
-                                if voice_room.startswith("dm:"):
-                                    await broadcast_to_voice_room(voice_room, leave_msg)
-                                else:
-                                    await broadcast_to_channel(voice_room, leave_msg)
-                                if not voice_state[voice_room]:
-                                    del voice_state[voice_room]
-                                voice_room = None
-
                             chat_rooms[current_channel].discard(user_entry)
                             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
                             await broadcast_to_channel(current_channel, {
@@ -12081,19 +12062,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "users": voice_users
                         })
 
-                        # Broadcast join to room participants
-                        if voice_room.startswith("dm:"):
-                            await broadcast_to_voice_room(voice_room, {
-                                "type": "voice_user_joined",
-                                "user_id": user_id,
-                                "username": display_name
-                            }, exclude=ws)
-                        else:
-                            await broadcast_to_channel(voice_room, {
-                                "type": "voice_user_joined",
-                                "user_id": user_id,
-                                "username": display_name
-                            }, exclude=ws)
+                        # Broadcast join to voice room participants
+                        await broadcast_to_voice_room(voice_room, {
+                            "type": "voice_user_joined",
+                            "user_id": user_id,
+                            "username": display_name
+                        }, exclude=ws)
+                        if not voice_room.startswith("dm:"):
                             await broadcast_users_list(voice_room)
                         logger.info(f"[Voice] {display_name} joined voice in {voice_room}")
 
@@ -12103,22 +12078,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if voice_room in voice_state and user_id in voice_state[voice_room]:
                             # Auto-stop screen share if leaving while sharing
                             if voice_state[voice_room][user_id].get("screen_sharing"):
-                                stop_bcast = {"type": "screen_share_stopped", "user_id": user_id}
-                                if voice_room.startswith("dm:"):
-                                    await broadcast_to_voice_room(voice_room, stop_bcast)
-                                else:
-                                    await broadcast_to_channel(voice_room, stop_bcast)
+                                await broadcast_to_voice_room(voice_room, {"type": "screen_share_stopped", "user_id": user_id})
                             del voice_state[voice_room][user_id]
-                            if voice_room.startswith("dm:"):
-                                await broadcast_to_voice_room(voice_room, {
-                                    "type": "voice_user_left",
-                                    "user_id": user_id
-                                })
-                            else:
-                                await broadcast_to_channel(voice_room, {
-                                    "type": "voice_user_left",
-                                    "user_id": user_id
-                                })
+                            await broadcast_to_voice_room(voice_room, {
+                                "type": "voice_user_left",
+                                "user_id": user_id
+                            })
+                            if not voice_room.startswith("dm:"):
                                 await broadcast_users_list(voice_room)
                             if not voice_state[voice_room]:
                                 del voice_state[voice_room]
@@ -12158,20 +12124,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
                             voice_state[voice_room][user_id]["muted"] = muted
                             bcast = {"type": "voice_mute_changed", "user_id": user_id, "muted": muted}
-                            if voice_room.startswith("dm:"):
-                                await broadcast_to_voice_room(voice_room, bcast)
-                            else:
-                                await broadcast_to_channel(voice_room, bcast)
+                            await broadcast_to_voice_room(voice_room, bcast)
 
                     elif msg_type == "voice_deafen":
                         deafened = bool(data.get("deafened", False))
                         if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
                             voice_state[voice_room][user_id]["deafened"] = deafened
                             bcast = {"type": "voice_deafen_changed", "user_id": user_id, "deafened": deafened}
-                            if voice_room.startswith("dm:"):
-                                await broadcast_to_voice_room(voice_room, bcast)
-                            else:
-                                await broadcast_to_channel(voice_room, bcast)
+                            await broadcast_to_voice_room(voice_room, bcast)
 
                     elif msg_type == "voice_speaking":
                         speaking = bool(data.get("speaking", False))
@@ -12186,10 +12146,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                             voice_state[voice_room][user_id]["speaking"] = speaking
                             bcast = {"type": "voice_speaking_changed", "user_id": user_id, "speaking": speaking}
-                            if voice_room.startswith("dm:"):
-                                await broadcast_to_voice_room(voice_room, bcast)
-                            else:
-                                await broadcast_to_channel(voice_room, bcast)
+                            await broadcast_to_voice_room(voice_room, bcast)
 
                     elif msg_type == "screen_share_start":
                         if not voice_room or voice_room not in voice_state or user_id not in voice_state[voice_room]:
@@ -12212,10 +12169,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         voice_state[voice_room][user_id]["screen_sharing"] = True
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
                         bcast = {"type": "screen_share_started", "user_id": user_id, "username": display_name}
-                        if voice_room.startswith("dm:"):
-                            await broadcast_to_voice_room(voice_room, bcast)
-                        else:
-                            await broadcast_to_channel(voice_room, bcast)
+                        await broadcast_to_voice_room(voice_room, bcast)
                         logger.info(f"[Voice] {display_name} started screen sharing in {voice_room}")
 
                     elif msg_type == "screen_share_stop":
@@ -12223,10 +12177,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         voice_state[voice_room][user_id]["screen_sharing"] = False
                         bcast = {"type": "screen_share_stopped", "user_id": user_id}
-                        if voice_room.startswith("dm:"):
-                            await broadcast_to_voice_room(voice_room, bcast)
-                        else:
-                            await broadcast_to_channel(voice_room, bcast)
+                        await broadcast_to_voice_room(voice_room, bcast)
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
                         logger.info(f"[Voice] {display_name} stopped screen sharing in {voice_room}")
 
@@ -12552,20 +12503,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 # Auto-stop screen share on disconnect
                 if vc_users[user_id].get("screen_sharing"):
                     try:
-                        stop_bcast = {"type": "screen_share_stopped", "user_id": user_id}
-                        if vc.startswith("dm:"):
-                            await broadcast_to_voice_room(vc, stop_bcast)
-                        else:
-                            await broadcast_to_channel(vc, stop_bcast)
+                        await broadcast_to_voice_room(vc, {"type": "screen_share_stopped", "user_id": user_id})
                     except (ConnectionError, ConnectionResetError, TypeError, KeyError):
                         pass
                 del vc_users[user_id]
                 try:
-                    leave_msg = {"type": "voice_user_left", "user_id": user_id}
-                    if vc.startswith("dm:"):
-                        await broadcast_to_voice_room(vc, leave_msg)
-                    else:
-                        await broadcast_to_channel(vc, leave_msg)
+                    await broadcast_to_voice_room(vc, {"type": "voice_user_left", "user_id": user_id})
+                    if not vc.startswith("dm:"):
                         await broadcast_users_list(vc)
                 except (ConnectionError, ConnectionResetError, TypeError, KeyError):
                     pass
