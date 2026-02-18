@@ -6,6 +6,7 @@
 const VoiceChat = (() => {
     // State
     let _ws = null;
+    let _myUserId = null;         // Our own user_id (to skip self-peering)
     let _inVoice = false;
     let _muted = false;
     let _deafened = false;
@@ -23,6 +24,7 @@ const VoiceChat = (() => {
     let _prefs = { mode: 'vad', pttKey: 'Space', vadThreshold: -50, noiseGate: true };
     let _pttActive = false;
     let _pendingCandidates = new Map(); // user_id -> [candidates] (buffered before remote desc set)
+    let _makingOffer = new Set();  // user_ids we're currently creating offers for
 
     // Screen sharing state
     let _screenStream = null;       // MediaStream from getDisplayMedia
@@ -55,8 +57,9 @@ const VoiceChat = (() => {
         }
     }
 
-    function init(ws, onStateChange, onScreenShareChange) {
+    function init(ws, onStateChange, onScreenShareChange, myUserId) {
         _ws = ws;
+        _myUserId = myUserId || null;
         _onStateChange = onStateChange || null;
         _onScreenShareChange = onScreenShareChange || null;
         _loadPrefs();
@@ -158,6 +161,7 @@ const VoiceChat = (() => {
         }
         _audioElements.clear();
         _pendingCandidates.clear();
+        _makingOffer.clear();
 
         // Stop local stream
         if (_localStream) {
@@ -351,8 +355,10 @@ const VoiceChat = (() => {
             }
         };
 
-        // Renegotiation (fires when tracks are added/removed)
+        // Renegotiation (fires when tracks are added/removed, only in stable state)
         pc.onnegotiationneeded = async () => {
+            if (_makingOffer.has(userId)) return;
+            _makingOffer.add(userId);
             try {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
@@ -365,6 +371,8 @@ const VoiceChat = (() => {
                 }
             } catch (e) {
                 console.error(`[Voice] Renegotiation failed for ${userId}:`, e);
+            } finally {
+                _makingOffer.delete(userId);
             }
         };
 
@@ -444,12 +452,11 @@ const VoiceChat = (() => {
     }
 
     function _isMe(userId) {
-        // Check by comparing with our voice state
-        // The server sends us in the users list too
-        return false; // We rely on the server not forwarding signals to ourselves
+        return _myUserId !== null && userId === _myUserId;
     }
 
     async function _createAndOffer(userId) {
+        _makingOffer.add(userId);
         const pc = _createPeerConnection(userId);
         try {
             const offer = await pc.createOffer();
@@ -463,6 +470,8 @@ const VoiceChat = (() => {
             }
         } catch (e) {
             console.error(`[Voice] Failed to create offer for ${userId}:`, e);
+        } finally {
+            _makingOffer.delete(userId);
         }
     }
 
@@ -470,7 +479,7 @@ const VoiceChat = (() => {
         const userId = data.user_id;
         _voiceUsers.set(userId, {
             username: data.username,
-            muted: false, deafened: false, speaking: false
+            muted: false, deafened: false, speaking: false, screen_sharing: false
         });
         // The new joiner will receive voice_state and create offers to us
         // We wait for their offer — no action needed here
@@ -502,13 +511,33 @@ const VoiceChat = (() => {
         const fromId = data.from_user_id;
         const signal = data.signal;
         if (!signal) return;
+        if (_isMe(fromId)) return; // Ignore self-signals
 
         if (signal.type === 'offer') {
-            // Received offer — create answer
+            // "Polite peer" pattern: lower user_id is polite (yields on glare)
+            const polite = _myUserId !== null && _myUserId < fromId;
+            const offerCollision = _makingOffer.has(fromId) ||
+                (_peers.get(fromId)?.signalingState !== 'stable' && _peers.has(fromId));
+
+            if (!polite && offerCollision) {
+                // Impolite peer ignores incoming offer during glare
+                return;
+            }
+
             let pc = _peers.get(fromId);
-            if (pc) { pc.close(); _peers.delete(fromId); }
-            pc = _createPeerConnection(fromId);
+            const isNewPc = !pc;
+            if (isNewPc) {
+                // Guard: prevent onnegotiationneeded from creating a competing
+                // offer while we handle this incoming offer on the new PC
+                _makingOffer.add(fromId);
+                pc = _createPeerConnection(fromId);
+            }
+
             try {
+                // If we have a pending local offer (glare), rollback first
+                if (pc.signalingState === 'have-local-offer') {
+                    await pc.setLocalDescription({ type: 'rollback' });
+                }
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }));
                 // Flush buffered candidates
                 const buffered = _pendingCandidates.get(fromId) || [];
@@ -527,6 +556,8 @@ const VoiceChat = (() => {
                 }
             } catch (e) {
                 console.error(`[Voice] Failed to handle offer from ${fromId}:`, e);
+            } finally {
+                if (isNewPc) _makingOffer.delete(fromId);
             }
         } else if (signal.type === 'answer') {
             const pc = _peers.get(fromId);
@@ -564,11 +595,17 @@ const VoiceChat = (() => {
         const user = _voiceUsers.get(data.user_id);
         if (user) user.screen_sharing = true;
         if (_onScreenShareChange) {
-            _onScreenShareChange({
+            const event = {
                 action: 'started',
                 userId: data.user_id,
                 username: data.username
-            });
+            };
+            // For the sharer: provide local screen stream so they can preview
+            if (_isMe(data.user_id) && _screenStream) {
+                event.stream = _screenStream;
+                event.isSelf = true;
+            }
+            _onScreenShareChange(event);
         }
         _notifyState();
     }

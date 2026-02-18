@@ -12137,6 +12137,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             target_user_id = int(target_user_id)
                         except (ValueError, TypeError):
                             continue
+                        if target_user_id == user_id:
+                            continue  # Don't relay signals to self
 
                         # Find target in voice state
                         if voice_room in voice_state and target_user_id in voice_state[voice_room]:
@@ -12192,6 +12194,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     elif msg_type == "screen_share_start":
                         if not voice_room or voice_room not in voice_state or user_id not in voice_state[voice_room]:
                             continue
+                        # Check timeout/mute in channel rooms (not DMs)
+                        if not voice_room.startswith("dm:"):
+                            ss_channel = await db.get_chat_channel_by_name(voice_room)
+                            if ss_channel:
+                                ss_timeout = await db.is_user_timed_out(user_id, ss_channel["id"])
+                                if ss_timeout:
+                                    await ws.send_json({"type": "error", "message": "You are timed out in this channel"})
+                                    continue
                         # Check nobody else is sharing in this room
                         already_sharing = any(
                             vd.get("screen_sharing") for vid, vd in voice_state[voice_room].items() if vid != user_id

@@ -3003,7 +3003,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=32"></script>
-    <script src="/static/js/voice.js?v=3"></script>
+    <script src="/static/js/voice.js?v=4"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -3494,7 +3494,7 @@
                 reconnectAttempts = 0;
 
                 // Initialize voice chat with this WebSocket
-                VoiceChat.init(ws, onVoiceStateChange, onScreenShareChange);
+                VoiceChat.init(ws, onVoiceStateChange, onScreenShareChange, currentUser?.id);
 
                 // Join current channel
                 ws.send(JSON.stringify({
@@ -6285,7 +6285,13 @@
             const label = document.getElementById('screen-share-label');
 
             if (event.action === 'started') {
-                label.textContent = `${escapeHtml(event.username)} is sharing their screen`;
+                if (event.isSelf) {
+                    label.textContent = 'You are sharing your screen';
+                    video.srcObject = event.stream;
+                    video.muted = true; // Prevent audio feedback from own share
+                } else {
+                    label.textContent = `${escapeHtml(event.username)} is sharing their screen`;
+                }
                 panel.classList.add('active');
             } else if (event.action === 'stopped') {
                 panel.classList.remove('active');
