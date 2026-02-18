@@ -1454,7 +1454,7 @@
             const msgEl = document.querySelector(`.chat-message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             const textEl = msgEl.querySelector('.chat-text');
-            if (textEl) textEl.textContent = data.message || '';
+            if (textEl) textEl.innerHTML = renderCustomEmotes(escapeHtml(data.message || ''));
         }
 
         function sendChatMessage(event) {
