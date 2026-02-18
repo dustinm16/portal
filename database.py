@@ -202,7 +202,7 @@ def encrypt_config(config_json: str) -> str:
         f = Fernet(get_config_encryption_key())
         return "enc:" + f.encrypt(config_json.encode()).decode()
     except Exception as e:
-        logger.debug(f"Config encryption failed, storing plaintext: {e}")
+        logger.warning(f"Config encryption failed, storing plaintext: {e}")
         return config_json
 
 
@@ -2930,7 +2930,7 @@ class Database:
         values = list(updates.values()) + [stream_id]
 
         query = f"UPDATE user_streams SET {set_clause} WHERE id = ?"
-        if user_id:
+        if user_id is not None:
             query += " AND user_id = ?"
             values.append(user_id)
 
@@ -3009,7 +3009,7 @@ class Database:
         query = "DELETE FROM user_streams WHERE id = ?"
         params = [stream_id]
 
-        if user_id:
+        if user_id is not None:
             query += " AND user_id = ?"
             params.append(user_id)
 
@@ -3025,7 +3025,7 @@ class Database:
         query = "UPDATE user_streams SET stream_key = ?, stream_key_hash = ?, updated_at = ? WHERE id = ?"
         params = [sk_encrypted, sk_hash, datetime.now(timezone.utc).isoformat(), stream_id]
 
-        if user_id:
+        if user_id is not None:
             query += " AND user_id = ?"
             params.append(user_id)
 

@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, time
 from typing import Optional
+from urllib.parse import urlparse
 import re
 
 import aiohttp
@@ -161,6 +162,41 @@ RELAY_PLATFORMS = {
 MAX_RELAYS_PER_STREAM = 10
 # active_relays: stream_id -> {relay_id -> {process, dest, started_at, monitor_task}}
 active_relays: dict[int, dict[int, dict]] = {}
+
+# Characters that must not appear in relay URLs or stream keys (null bytes, newlines).
+_BAD_RELAY_CHARS = {'\x00', '\n', '\r'}
+
+
+def _has_bad_chars(value: str) -> bool:
+    """Return True if value contains null bytes or newlines."""
+    return bool(_BAD_RELAY_CHARS & set(value))
+
+
+def _validate_relay_url(rtmp_url: str) -> str | None:
+    """Validate relay RTMP URL is not targeting internal/blocked hosts.
+
+    Returns an error string if invalid, or None if OK.
+    """
+    if _has_bad_chars(rtmp_url):
+        return "RTMP URL contains invalid characters"
+    try:
+        parsed = urlparse(rtmp_url)
+        hostname = parsed.hostname
+    except Exception:
+        return "Invalid RTMP URL"
+    if not hostname:
+        return "RTMP URL must include a hostname"
+    if is_blocked_host(hostname):
+        return "RTMP URL points to a blocked/internal host"
+    # Resolve DNS to catch rebinding (hostname resolves to private IP)
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            resolved_ip = info[4][0]
+            if is_blocked_host(resolved_ip):
+                return "RTMP URL resolves to a blocked/internal address"
+    except socket.gaierror:
+        return "Could not resolve RTMP hostname"
+    return None
 
 # Cached set of the server's own IPs (resolved from HOSTNAME/STREAM_HOSTNAME).
 # Populated lazily on first use. Handles cloud NAT hairpin where the server's
@@ -9965,12 +10001,17 @@ async def http_create_relay_destination(request: web.Request) -> web.Response:
         return web.json_response({"error": "URL must start with rtmp:// or rtmps://"}, status=400)
     if len(rtmp_url) > 2048:
         return web.json_response({"error": "RTMP URL too long (max 2048 chars)"}, status=400)
+    err = _validate_relay_url(rtmp_url)
+    if err:
+        return web.json_response({"error": err}, status=400)
 
     stream_key = (body.get("stream_key") or "").strip()
     if not stream_key:
         return web.json_response({"error": "Stream key required"}, status=400)
     if len(stream_key) > 512:
         return web.json_response({"error": "Stream key too long (max 512 chars)"}, status=400)
+    if _has_bad_chars(stream_key):
+        return web.json_response({"error": "Stream key contains invalid characters"}, status=400)
 
     dest = await db.create_relay_destination(stream_id, platform, name, rtmp_url, stream_key)
     return web.json_response(dest, status=201)
@@ -10018,6 +10059,9 @@ async def http_update_relay_destination(request: web.Request) -> web.Response:
         if rtmp_url and len(rtmp_url) > 2048:
             return web.json_response({"error": "RTMP URL too long (max 2048 chars)"}, status=400)
         if rtmp_url:
+            err = _validate_relay_url(rtmp_url)
+            if err:
+                return web.json_response({"error": err}, status=400)
             updates["rtmp_url"] = rtmp_url
 
     if "stream_key" in body:
@@ -10025,6 +10069,8 @@ async def http_update_relay_destination(request: web.Request) -> web.Response:
         if sk and len(sk) > 512:
             return web.json_response({"error": "Stream key too long (max 512 chars)"}, status=400)
         if sk:
+            if _has_bad_chars(sk):
+                return web.json_response({"error": "Stream key contains invalid characters"}, status=400)
             updates["stream_key"] = sk
 
     if "enabled" in body:
