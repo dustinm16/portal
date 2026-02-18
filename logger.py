@@ -34,7 +34,9 @@ SENSITIVE_PATTERNS = [
     (re.compile(r'(-----BEGIN[^-]+-----)[^-]+(-----END[^-]+-----)', re.DOTALL), r'\1[REDACTED]\2'),
     (re.compile(r'rtmp_[A-Za-z0-9_-]{20,}'), '[RTMP_TOKEN_REDACTED]'),
     (re.compile(r'live_[A-Za-z0-9_-]{16,}'), '[STREAM_KEY_REDACTED]'),
-    (re.compile(r'pub_[A-Za-z0-9_-]{16,}'), '[PUBLIC_KEY_REDACTED]'),
+    # pub_xxx (public/view keys) are intentionally NOT redacted — they're
+    # shared with all authenticated users for stream playback and carry no
+    # publish privilege. Only live_xxx (publish) and rtmp_xxx (temp tokens) matter.
 ]
 
 # Log settings (can be modified at runtime)
