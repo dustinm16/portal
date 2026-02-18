@@ -3714,8 +3714,8 @@
                     updatePollDisplay(data.poll);
                     break;
                 default:
-                    // Delegate voice_* messages to VoiceChat
-                    if (data.type && data.type.startsWith('voice_')) {
+                    // Delegate voice_* and screen_share_* messages to VoiceChat
+                    if (data.type && (data.type.startsWith('voice_') || data.type.startsWith('screen_share_'))) {
                         VoiceChat.handleMessage(data);
                     }
                     break;

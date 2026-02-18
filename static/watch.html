@@ -1319,7 +1319,7 @@
                     }
                     break;
                 default:
-                    if (data.type && data.type.startsWith('voice_')) {
+                    if (data.type && (data.type.startsWith('voice_') || data.type.startsWith('screen_share_'))) {
                         VoiceChat.handleMessage(data);
                     }
                     break;
