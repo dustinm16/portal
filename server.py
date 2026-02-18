@@ -3163,13 +3163,43 @@ async def _vod_chunk_uploader(recording: dict) -> None:
     session_dir = recording["session_dir"]
     uploaded: set = recording["uploaded"]
     process = recording["process"]
+    last_chunk_count = 0
+    stale_checks = 0
+    # Stale threshold: if no new chunk in 2x segment time, warn (checked every 30s)
+    stale_threshold = (VOD_SEGMENT_DURATION * 2) // 30
 
     while not stop_event.is_set():
         # Detect if ffmpeg exited on its own (e.g. HLS source 404)
         if process.returncode is not None:
             logger.info(f"VOD ffmpeg exited (code {process.returncode}), finalizing upload")
             break
-        await _do_vod_chunk_upload(recording, final=False)
+        try:
+            await _do_vod_chunk_upload(recording, final=False)
+        except Exception as e:
+            logger.error(f"VOD chunk upload error (will retry): {e}")
+
+        # Stale chunk detection: warn if ffmpeg stopped producing new segments
+        try:
+            current_count = sum(1 for _ in Path(session_dir).glob("chunk_*.mkv"))
+            if current_count == last_chunk_count and current_count > 0:
+                stale_checks += 1
+                if stale_checks >= stale_threshold:
+                    # Check if the single file is growing (ffmpeg stuck in one segment)
+                    files = sorted(Path(session_dir).glob("chunk_*.mkv"))
+                    if files:
+                        size_mb = files[-1].stat().st_size / (1024 * 1024)
+                        expected_mb = (VOD_SEGMENT_DURATION * 5)  # rough estimate per 5min at high bitrate
+                        if size_mb > expected_mb:
+                            logger.warning(
+                                f"VOD segmenter appears stuck: {files[-1].name} is {size_mb:.0f}MB "
+                                f"(expected ~{expected_mb}MB per segment), {stale_checks * 30}s without new chunk"
+                            )
+            else:
+                stale_checks = 0
+                last_chunk_count = current_count
+        except OSError:
+            pass
+
         # Wait up to 30 seconds or until stop signal
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=30)
@@ -3177,7 +3207,10 @@ async def _vod_chunk_uploader(recording: dict) -> None:
             pass
 
     # Final pass — ffmpeg has exited, all chunks are complete
-    await _do_vod_chunk_upload(recording, final=True)
+    try:
+        await _do_vod_chunk_upload(recording, final=True)
+    except Exception as e:
+        logger.error(f"VOD final upload error: {e}")
 
     # If ffmpeg exited on its own (not via stop_vod_recording), clean up
     if not stop_event.is_set():
@@ -3236,10 +3269,13 @@ async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
         for local_path in pending:
             remote_path = f"{remote_dir}/{local_path.name}"
             try:
-                await sftp.put(str(local_path), remote_path)
+                # 5-minute timeout per chunk upload (prevents hanging on dead connections)
+                await asyncio.wait_for(sftp.put(str(local_path), remote_path), timeout=300)
                 uploaded.add(str(local_path))
                 local_path.unlink()
                 logger.info(f"VOD chunk uploaded: {remote_path}")
+            except asyncio.TimeoutError:
+                logger.error(f"VOD chunk upload timed out ({local_path.name}), will retry")
             except Exception as e:
                 logger.error(f"VOD chunk upload failed ({local_path.name}): {e}")
     finally:
@@ -3322,8 +3358,14 @@ async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
         except asyncio.TimeoutError:
             logger.warning("VOD final upload timed out")
             upload_task.cancel()
-        except asyncio.CancelledError:
-            pass
+        except (asyncio.CancelledError, Exception) as e:
+            if not isinstance(e, asyncio.CancelledError):
+                logger.warning(f"VOD uploader task ended with error: {e}")
+            # Uploader crashed — do a final upload pass directly
+            try:
+                await _do_vod_chunk_upload(recording, final=True)
+            except Exception as upload_err:
+                logger.error(f"VOD recovery upload failed: {upload_err}")
 
     # Clean up local staging directory
     session_dir = recording["session_dir"]
