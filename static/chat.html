@@ -305,6 +305,7 @@
             color: var(--text-secondary);
             line-height: 1.5;
             word-break: break-word;
+            overflow: hidden;
         }
 
         .message-text a {
@@ -972,6 +973,8 @@
             padding: 0.5rem;
             margin-bottom: 0.5rem;
             max-width: 300px;
+            max-height: 320px;
+            overflow-y: auto;
             z-index: 100;
         }
 
@@ -983,6 +986,7 @@
             display: grid;
             grid-template-columns: repeat(8, 1fr);
             gap: 0.25rem;
+            overflow: hidden;
         }
 
         .emoji-item {
@@ -1015,6 +1019,8 @@
         .custom-emote-picker-img {
             width: 24px;
             height: 24px;
+            max-width: 24px;
+            max-height: 24px;
             object-fit: contain;
         }
 
@@ -1022,6 +1028,8 @@
             display: inline-block;
             width: 28px;
             height: 28px;
+            max-width: 28px;
+            max-height: 28px;
             object-fit: contain;
             vertical-align: middle;
             margin: 0 1px;
@@ -1031,6 +1039,8 @@
             display: inline-block;
             width: 16px;
             height: 16px;
+            max-width: 16px;
+            max-height: 16px;
             object-fit: contain;
             vertical-align: middle;
         }
@@ -1092,6 +1102,7 @@
             border-radius: 6px;
             background: rgba(255,255,255,0.03);
             position: relative;
+            overflow: hidden;
         }
 
         .emote-manager-item img {
@@ -3002,7 +3013,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=32"></script>
+    <script src="/static/js/portal.js?v=33"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
@@ -3882,7 +3893,7 @@
                 currentStreamPublicKey = data.stream_public_key || null;
 
                 watchBtn.style.display = 'inline-flex';
-                if (data.stream_is_live === 1 || data.stream_is_live === true) {
+                if (data.stream_is_live === 1) {
                     watchBtn.classList.add('is-live');
                     watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';
                 } else if (data.stream_is_live === 2) {
@@ -3910,7 +3921,7 @@
             // Update watch button for current channel
             if (data.stream_id === currentStreamId) {
                 const watchBtn = document.getElementById('watch-stream-btn');
-                if (data.is_live === 1 || data.is_live === true) {
+                if (data.is_live === 1) {
                     watchBtn.classList.add('is-live');
                     watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';
                 } else if (data.is_live === 2) {

@@ -2619,6 +2619,11 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
 
     is_owner = stream["user_id"] == token.user_id
     is_public = stream.get("is_public", False)
+    is_admin = token.has_scope("admin") or token.has_scope("*")
+
+    # Non-owners cannot access private streams (return 404 to prevent enumeration)
+    if not is_owner and not is_public and not is_admin:
+        return web.json_response({"error": "Stream not found"}, status=404)
 
     # Always strip internal hash fields — these are implementation details
     stream.pop("stream_key_hash", None)
@@ -3582,7 +3587,7 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
 
     # Verify stream is still live (may have disconnected during the delay)
     current = await db.get_user_stream(stream_id)
-    if not current or not current.get("is_live"):
+    if not current or current.get("is_live") != 1:
         return
 
     async with _stream_state_lock:
@@ -3886,7 +3891,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             logger.info(f"Stream {stream['name']} reconnected, cancelled disconnect grace period")
 
         # Mark stream as live (only log activity on state change)
-        was_live = stream.get("is_live")
+        was_live = stream.get("is_live") == 1
         await db.set_stream_live(stream_id, True)
         if not was_live:
             logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
@@ -3898,7 +3903,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                     await broadcast_to_channel(channel["name"], {
                         "type": "stream_status",
                         "stream_id": stream_id,
-                        "is_live": True
+                        "is_live": 1
                     })
             # Send notification to all users
             streamer_name = stream.get("owner_nickname") or stream.get("owner_username", "Someone")
@@ -13154,7 +13159,9 @@ async def http_mark_notification_read(request: web.Request) -> web.Response:
     if not notif_id or not notif_id.isdigit():
         return web.json_response({"error": "Invalid notification ID"}, status=400)
 
-    await db.mark_notification_read(int(notif_id), token.user_id)
+    updated = await db.mark_notification_read(int(notif_id), token.user_id)
+    if not updated:
+        return web.json_response({"error": "Notification not found"}, status=404)
     return web.json_response({"success": True})
 
 

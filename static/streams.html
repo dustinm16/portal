@@ -916,7 +916,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=32"></script>
+    <script src="/static/js/portal.js?v=33"></script>
     <script>
         let currentUser = null;
         let currentStream = null;
@@ -1405,7 +1405,7 @@
                 // Set up video
                 const video = document.getElementById('stream-video');
 
-                if (currentStream.is_live !== 1 && currentStream.is_live !== true) {
+                if (currentStream.is_live !== 1) {
                     const offlineMsg = currentStream.is_live === 2 ? 'Stream ended, encoding VODs...' : 'This stream is currently offline';
                     video.parentElement.innerHTML = `
                         <div class="stream-offline">

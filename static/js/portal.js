@@ -557,7 +557,7 @@ const Portal = {
                     (streamRes.value.streams || []).forEach(s => {
                         this._items.push({
                             type: 'stream', name: s.name,
-                            detail: s.is_live ? 'LIVE' : 'Offline',
+                            detail: s.is_live === 1 ? 'LIVE' : s.is_live === 2 ? 'Encoding' : 'Offline',
                             publicKey: s.public_key, icon: 'video'
                         });
                     });
@@ -877,10 +877,10 @@ const NotificationBell = {
 
     async loadCount() {
         try {
-            const data = await Portal.api('/api/notifications?unread=1');
+            const data = await Portal.api('/api/notifications?unread=1&limit=1');
             this._unreadCount = data.unread_count || 0;
             this.updateBadge();
-        } catch (e) { /* ignore */ }
+        } catch (e) { /* ignore - network errors during polling are normal */ }
     },
 
     updateBadge() {
@@ -950,7 +950,11 @@ const NotificationBell = {
 
     async markRead(id) {
         try {
-            await Portal.api(`/api/notifications/${id}/read`, { method: 'POST' });
+            const resp = await Portal.api(`/api/notifications/${id}/read`, { method: 'POST' });
+            if (resp.error) {
+                Portal.toast('Failed to dismiss notification', 'error');
+                return;
+            }
             this._unreadCount = Math.max(0, this._unreadCount - 1);
             this.updateBadge();
             const item = document.getElementById(`notif-${id}`);
@@ -960,17 +964,27 @@ const NotificationBell = {
             if (list && !list.querySelector('.notif-item')) {
                 list.innerHTML = '<div class="notif-empty">No notifications</div>';
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            Portal.toast('Failed to dismiss notification', 'error');
+        }
     },
 
     async markAllRead() {
         try {
-            await Portal.api('/api/notifications/read-all', { method: 'POST' });
+            const resp = await Portal.api('/api/notifications/read-all', { method: 'POST' });
+            if (resp.error) {
+                Portal.toast('Failed to clear notifications', 'error');
+                return;
+            }
             this._unreadCount = 0;
             this.updateBadge();
             const list = document.getElementById('notif-list');
             if (list) list.innerHTML = '<div class="notif-empty">No notifications</div>';
-        } catch (e) { /* ignore */ }
+            // Close dropdown after clearing
+            if (this._dropdown) this._dropdown.style.display = 'none';
+        } catch (e) {
+            Portal.toast('Failed to clear notifications', 'error');
+        }
     },
 
     // Handle real-time notification push from WebSocket

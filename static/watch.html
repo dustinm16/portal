@@ -789,7 +789,7 @@
         <img id="lightbox-img" src="" alt="Full size">
     </div>
 
-    <script src="/static/js/portal.js?v=32"></script>
+    <script src="/static/js/portal.js?v=33"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         let streamId = null;
@@ -914,7 +914,7 @@
                 document.getElementById('viewer-broadcaster').textContent = broadcasterName;
                 document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
 
-                if (streamData.is_live === 1 || streamData.is_live === true) {
+                if (streamData.is_live === 1) {
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
                     document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
@@ -1214,7 +1214,7 @@
                 const data = await response.json();
                 streamData = data.stream;
 
-                if (streamData.is_live === 1 || streamData.is_live === true) {
+                if (streamData.is_live === 1) {
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
                     document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
