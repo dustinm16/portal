@@ -404,6 +404,7 @@
                 <ul>
                     <li><a href="#embedded-browser">Embedded Browser</a></li>
                     <li><a href="#sftp-browser">SFTP Browser</a></li>
+                    <li><a href="#sftp-vod">SFTP VOD Storage</a></li>
                 </ul>
                 <div class="admin-only">
                     <h4>Admin Only</h4>
@@ -421,7 +422,6 @@
                         <li><a href="#server-settings">Server Settings</a></li>
                         <li><a href="#sysmon">System Monitor</a></li>
                         <li><a href="#file-manager">File Manager</a></li>
-                        <li><a href="#sftp-vod">SFTP VOD Storage</a></li>
                         <li><a href="#data-retention">Data Retention</a></li>
                         <li><a href="#audit-log">Audit Log</a></li>
                         <li><a href="#automod">Auto-Moderation</a></li>
@@ -3943,6 +3943,138 @@ Headers:
                     </div>
                 </div>
 
+
+                <h2 id="sftp-vod">SFTP VOD Storage</h2>
+                <p>Manage VOD files on your configured SFTP VOD storage server. These endpoints operate on your personal VOD storage connection (configured via the VOD Storage settings in the dashboard). Any authenticated user with VOD storage configured can use these endpoints.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/vod/list</span>
+                        <span class="endpoint-desc">List VOD storage directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List contents of a directory on the VOD SFTP storage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path (default: <code>/</code>)</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/vod/read</span>
+                        <span class="endpoint-desc">Read VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Read a text file from VOD SFTP storage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/vod/download</span>
+                        <span class="endpoint-desc">Download VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Download a file from VOD SFTP storage as a streaming attachment.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/mkdir</span>
+                        <span class="endpoint-desc">Create VOD storage directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path to create <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/upload</span>
+                        <span class="endpoint-desc">Upload to VOD storage</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Upload a file to VOD SFTP storage via multipart form data.</p>
+                        <h4>Form Fields</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/write</span>
+                        <span class="endpoint-desc">Write file to VOD storage</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/vod/rename</span>
+                        <span class="endpoint-desc">Rename VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current remote path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New remote path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/sftp/vod/delete</span>
+                        <span class="endpoint-desc">Delete VOD storage file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a file or empty directory from VOD SFTP storage.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote path to delete <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <!-- System Stats (Admin) -->
@@ -5118,140 +5250,6 @@ Headers:
                     </div>
                 </div>
                 </div>
-
-                <div class="admin-only">
-                <h2 id="sftp-vod">SFTP VOD Storage <span class="badge-admin">ADMIN</span></h2>
-                <p>Manage VOD files on the configured SFTP VOD storage server. These endpoints operate on the user's VOD storage connection (configured via the VOD Storage settings). Used internally by the VOD system for chunk uploads and available for administrative file management.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/sftp/vod/list</span>
-                        <span class="endpoint-desc">List VOD storage directory</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>List contents of a directory on the VOD SFTP storage.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path (default: <code>/</code>)</td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/sftp/vod/read</span>
-                        <span class="endpoint-desc">Read VOD storage file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Read a text file from VOD SFTP storage.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/sftp/vod/download</span>
-                        <span class="endpoint-desc">Download VOD storage file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Download a file from VOD SFTP storage as a streaming attachment.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/vod/mkdir</span>
-                        <span class="endpoint-desc">Create VOD storage directory</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path to create <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/vod/upload</span>
-                        <span class="endpoint-desc">Upload to VOD storage</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Upload a file to VOD SFTP storage via multipart form data.</p>
-                        <h4>Form Fields</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/vod/write</span>
-                        <span class="endpoint-desc">Write file to VOD storage</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/vod/rename</span>
-                        <span class="endpoint-desc">Rename VOD storage file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current remote path <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New remote path <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-delete">DELETE</span>
-                        <span class="endpoint-path">/api/sftp/vod/delete</span>
-                        <span class="endpoint-desc">Delete VOD storage file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Delete a file or empty directory from VOD SFTP storage.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote path to delete <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-                </div>
-
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2 id="data-retention">Data Retention <span class="badge-admin">ADMIN</span></h2>
