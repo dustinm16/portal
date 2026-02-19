@@ -1018,6 +1018,9 @@ class Database:
         # Encrypt any remaining plaintext chat data (polls, automod, reply previews)
         await self._migrate_encrypt_plaintext_chat_data()
 
+        # Encrypt notifications, automod rules, and audit log details
+        await self._migrate_encrypt_extended_data()
+
         # Generate UUIDs for any connections that don't have one
         await self._populate_connection_uuids()
 
@@ -1602,6 +1605,94 @@ class Database:
         try:
             await self._connection.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('plaintext_chat_migrated', '1')"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass
+
+    async def _migrate_encrypt_extended_data(self) -> None:
+        """Encrypt plaintext notifications, automod rules config, and audit log details."""
+        if not CRYPTO_AVAILABLE:
+            return
+        import logging
+        log = logging.getLogger("portal.database")
+        try:
+            cursor = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = 'extended_encryption_migrated'"
+            )
+            row = await cursor.fetchone()
+            if row and row["value"] == "1":
+                return
+        except Exception:
+            pass
+
+        total = 0
+
+        # 1. Encrypt notification title and message
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, title, message FROM notifications"
+            )
+            for row in await cursor.fetchall():
+                updates = {}
+                if row["title"] and not row["title"].startswith("gAAAAAB"):
+                    updates["title"] = encrypt_message(row["title"])
+                if row["message"] and not row["message"].startswith("gAAAAAB"):
+                    updates["message"] = encrypt_message(row["message"])
+                if updates:
+                    sets = ", ".join(f"{k} = ?" for k in updates)
+                    await self._connection.execute(
+                        f"UPDATE notifications SET {sets} WHERE id = ?",
+                        (*updates.values(), row["id"])
+                    )
+                    total += 1
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                log.debug(f"Notification encryption skipped: {e}")
+
+        # 2. Encrypt automod_rules config
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, config FROM automod_rules WHERE config IS NOT NULL AND config != ''"
+            )
+            for row in await cursor.fetchall():
+                val = row["config"]
+                if not val.startswith("gAAAAAB"):
+                    encrypted = encrypt_message(val)
+                    await self._connection.execute(
+                        "UPDATE automod_rules SET config = ? WHERE id = ?",
+                        (encrypted, row["id"])
+                    )
+                    total += 1
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                log.debug(f"Automod rules encryption skipped: {e}")
+
+        # 3. Encrypt audit_log details
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, details FROM audit_log WHERE details IS NOT NULL AND details != ''"
+            )
+            for row in await cursor.fetchall():
+                val = row["details"]
+                if not val.startswith("gAAAAAB"):
+                    encrypted = encrypt_message(val)
+                    await self._connection.execute(
+                        "UPDATE audit_log SET details = ? WHERE id = ?",
+                        (encrypted, row["id"])
+                    )
+                    total += 1
+        except Exception as e:
+            if "no such table" not in str(e).lower():
+                log.debug(f"Audit log encryption skipped: {e}")
+
+        if total:
+            await self._connection.commit()
+            log.info(f"Encrypted {total} plaintext row(s) (notifications, automod rules, audit log)")
+
+        try:
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('extended_encryption_migrated', '1')"
             )
             await self._connection.commit()
         except Exception:
@@ -3482,11 +3573,13 @@ class Database:
                                   target_name: str = None, details: dict = None,
                                   channel_id: int = None, channel_name: str = None) -> int:
         """Create an audit log entry."""
+        details_str = json.dumps(details) if details else None
+        enc_details = encrypt_message(details_str) if details_str else None
         cursor = await self.conn.execute(
             """INSERT INTO audit_log (action, actor_id, actor_username, target_id, target_type,
                target_name, details, channel_id, channel_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (action, actor_id, actor_username, target_id, target_type, target_name,
-             json.dumps(details) if details else None, channel_id, channel_name)
+             enc_details, channel_id, channel_name)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -3515,7 +3608,13 @@ class Database:
             f"SELECT * FROM audit_log{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             params
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        entries = []
+        for row in await cursor.fetchall():
+            e = dict(row)
+            if e.get("details"):
+                e["details"] = decrypt_message(e["details"])
+            entries.append(e)
+        return entries
 
     async def get_audit_log_count(self, action: str = None, actor_id: int = None,
                                    channel_id: int = None, since: str = None) -> int:
@@ -3558,16 +3657,23 @@ class Database:
             cursor = await self.conn.execute("SELECT * FROM automod_rules WHERE enabled = 1 ORDER BY id")
         else:
             cursor = await self.conn.execute("SELECT * FROM automod_rules ORDER BY id")
-        return [dict(row) for row in await cursor.fetchall()]
+        rules = []
+        for row in await cursor.fetchall():
+            r = dict(row)
+            if r.get("config"):
+                r["config"] = decrypt_message(r["config"])
+            rules.append(r)
+        return rules
 
     async def create_automod_rule(self, type: str, name: str, config: dict,
                                    action: str, created_by: int,
                                    action_duration: int = None) -> int:
         """Create an auto-moderation rule."""
+        enc_config = encrypt_message(json.dumps(config))
         cursor = await self.conn.execute(
             """INSERT INTO automod_rules (type, name, config, action, action_duration, created_by)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (type, name, json.dumps(config), action, action_duration, created_by)
+            (type, name, enc_config, action, action_duration, created_by)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -3578,7 +3684,10 @@ class Database:
         updates = {}
         for k, v in kwargs.items():
             if k in allowed:
-                updates[k] = json.dumps(v) if k == "config" and isinstance(v, dict) else v
+                if k == "config" and isinstance(v, dict):
+                    updates[k] = encrypt_message(json.dumps(v))
+                else:
+                    updates[k] = v
         if not updates:
             return False
         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -4666,10 +4775,12 @@ class Database:
     async def create_notification(self, user_id: int, type: str, title: str,
                                    message: str = "", data: dict = None) -> int:
         """Create a notification for a user. Returns notification ID."""
+        enc_title = encrypt_message(title) if title else title
+        enc_message = encrypt_message(message) if message else message
         cursor = await self.conn.execute(
             """INSERT INTO notifications (user_id, type, title, message, data)
                VALUES (?, ?, ?, ?, ?)""",
-            (user_id, type, title, message, json.dumps(data or {}))
+            (user_id, type, enc_title, enc_message, json.dumps(data or {}))
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -4684,8 +4795,15 @@ class Database:
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         cursor = await self.conn.execute(query, params)
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        notifications = []
+        for row in await cursor.fetchall():
+            n = dict(row)
+            if n.get("title"):
+                n["title"] = decrypt_message(n["title"])
+            if n.get("message"):
+                n["message"] = decrypt_message(n["message"])
+            notifications.append(n)
+        return notifications
 
     async def get_unread_notification_count(self, user_id: int) -> int:
         """Get count of unread notifications."""
