@@ -396,6 +396,10 @@
                     <li><a href="#polls">Polls</a></li>
                     <li><a href="#channel-permissions">Channel Permissions</a></li>
                 </ul>
+                <h4>Integrations</h4>
+                <ul>
+                    <li><a href="#webhooks">Webhooks</a></li>
+                </ul>
                 <h4>Files &amp; System</h4>
                 <ul>
                     <li><a href="#embedded-browser">Embedded Browser</a></li>
@@ -5323,6 +5327,220 @@ ws.send(JSON.stringify({
                     </div>
                 </div>
 
+                <!-- Webhooks -->
+                <h2 id="webhooks">Webhooks</h2>
+                <p>Webhooks let you receive real-time HTTP notifications when events happen in your portal (outgoing), or post messages into chat channels from external services (incoming). Outgoing webhooks sign payloads with HMAC-SHA256 for verification. Webhook URLs, secrets, and delivery log payloads are encrypted at rest. Admin+ required for management.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks</span>
+                        <span class="endpoint-desc">Create webhook</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create an outgoing or incoming webhook. Maximum 25 webhooks per user. The webhook secret is returned only once on creation.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Webhook name (1-100 chars) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><code>outgoing</code> or <code>incoming</code> <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">url</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Delivery URL (outgoing only, HTTPS required, SSRF-protected) <span class="param-required">required for outgoing</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">events</span></td>
+                                <td><span class="param-type">array</span></td>
+                                <td>Events to subscribe to (outgoing only): <code>message.created</code>, <code>message.deleted</code>, <code>stream.live</code>, <code>stream.offline</code>, <code>user.joined</code>, <code>user.connected</code>, <code>user.disconnected</code> <span class="param-required">required for outgoing</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">channel_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Target channel for incoming webhook messages <span class="param-required">required for incoming</span></td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  "id": 1,
+  "name": "My Webhook",
+  "type": "outgoing",
+  "url": "https://example.com/hook",
+  "secret": "abc123...",
+  "events": ["message.created"],
+  "enabled": true,
+  "token": null
+}</pre>
+                        </div>
+                        <p><strong>Note:</strong> The <code>secret</code> field is only returned on creation. Store it securely for HMAC verification.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/webhooks</span>
+                        <span class="endpoint-desc">List webhooks</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List your webhooks. Admins see all webhooks with owner usernames. Secrets are never returned in list responses.</p>
+                        <div class="code-block">
+<pre>{
+  "webhooks": [
+    {
+      "id": 1,
+      "name": "My Webhook",
+      "type": "outgoing",
+      "url": "https://example.com/hook",
+      "has_secret": true,
+      "events": ["message.created"],
+      "enabled": true,
+      "consecutive_failures": 0,
+      "created_at": "2026-02-19 12:00:00"
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/webhooks/{id}</span>
+                        <span class="endpoint-desc">Get webhook details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Get details for a specific webhook. Owner or admin required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/webhooks/{id}</span>
+                        <span class="endpoint-desc">Update webhook</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update webhook name, URL, events, channel, or enabled status. URL changes are SSRF-validated. Owner or admin required.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">name</span></td><td><span class="param-type">string</span></td><td>New name</td></tr>
+                            <tr><td><span class="param-name">url</span></td><td><span class="param-type">string</span></td><td>New delivery URL (outgoing only)</td></tr>
+                            <tr><td><span class="param-name">events</span></td><td><span class="param-type">array</span></td><td>Updated event list</td></tr>
+                            <tr><td><span class="param-name">channel_id</span></td><td><span class="param-type">integer</span></td><td>New target channel (incoming only)</td></tr>
+                            <tr><td><span class="param-name">enabled</span></td><td><span class="param-type">boolean</span></td><td>Enable/disable webhook</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/webhooks/{id}</span>
+                        <span class="endpoint-desc">Delete webhook</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a webhook and all its delivery logs. Owner or admin required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/logs</span>
+                        <span class="endpoint-desc">Delivery logs</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>View delivery logs for a webhook. Includes request payload, response status, success/failure, attempt number, and duration. Logs are encrypted at rest and auto-cleaned after 7 days.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">limit</span></td><td><span class="param-type">integer</span></td><td>Max results (default 50, max 100)</td></tr>
+                            <tr><td><span class="param-name">offset</span></td><td><span class="param-type">integer</span></td><td>Pagination offset</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/test</span>
+                        <span class="endpoint-desc">Send test event</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Send a <code>webhook.test</code> event to verify your webhook endpoint is working. Owner or admin required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/regenerate-secret</span>
+                        <span class="endpoint-desc">Regenerate HMAC secret</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Generate a new HMAC signing secret. The new secret is returned only once. The old secret is immediately invalidated.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/incoming/{token}</span>
+                        <span class="endpoint-desc">Post incoming webhook message</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Post a message to a chat channel via an incoming webhook. No authentication required &mdash; the token in the URL acts as the credential. Rate limited to 10 messages per 60 seconds per token.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">content</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Message content (1-4000 chars) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">username</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Display name override (max 50 chars, defaults to webhook name)</td>
+                            </tr>
+                        </table>
+                        <h4>Outgoing Webhook Payload Format</h4>
+                        <p>Outgoing webhooks receive a signed JSON POST with this structure:</p>
+                        <div class="code-block">
+<pre>{
+  "event": "message.created",
+  "timestamp": "2026-02-19T12:00:00Z",
+  "data": {
+    "message_id": 123,
+    "channel_id": 1,
+    "channel_name": "general",
+    "user_id": 10,
+    "username": "alice",
+    "content": "Hello world"
+  }
+}
+
+Headers:
+  X-Portal-Signature: sha256=abc123...
+  X-Portal-Event: message.created
+  Content-Type: application/json</pre>
+                        </div>
+                        <p>Verify the signature by computing <code>HMAC-SHA256(secret, request_body)</code> and comparing with the <code>X-Portal-Signature</code> header value.</p>
+                    </div>
+                </div>
+
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2>Rate Limits</h2>
@@ -5332,6 +5550,8 @@ ws.send(JSON.stringify({
                     <li><strong>General API:</strong> 60 requests per minute</li>
                     <li><strong>WebSocket connections:</strong> 10 concurrent per user</li>
                     <li><strong>Chat messages:</strong> 5 messages per 5 seconds per user</li>
+                    <li><strong>Outgoing webhooks:</strong> 30 deliveries per webhook per 60 seconds</li>
+                    <li><strong>Incoming webhooks:</strong> 10 messages per token per 60 seconds</li>
                 </ul>
                 <p>Rate limit headers are included in responses:</p>
                 <div class="code-block">
@@ -5355,7 +5575,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=33"></script>
+    <script src="/static/js/portal.js?v=34"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

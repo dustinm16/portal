@@ -915,6 +915,48 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_relay_dest_stream ON stream_relay_destinations(stream_id)",
     "CREATE INDEX IF NOT EXISTS idx_relay_dest_enabled ON stream_relay_destinations(stream_id, enabled)",
+    # User presence: last seen tracking
+    "ALTER TABLE users ADD COLUMN last_seen_at TEXT",
+    # Webhooks (outgoing + incoming)
+    """CREATE TABLE IF NOT EXISTS webhooks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'outgoing',
+        url TEXT,
+        secret TEXT NOT NULL,
+        token TEXT UNIQUE,
+        events TEXT NOT NULL DEFAULT '[]',
+        channel_id INTEGER,
+        enabled INTEGER DEFAULT 1,
+        consecutive_failures INTEGER DEFAULT 0,
+        last_delivery_at TEXT,
+        last_failure_at TEXT,
+        last_failure_reason TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE SET NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_webhooks_type_enabled ON webhooks(type, enabled)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_webhooks_token ON webhooks(token)",
+    # Webhook delivery logs
+    """CREATE TABLE IF NOT EXISTS webhook_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        webhook_id INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        request_payload TEXT,
+        response_status INTEGER,
+        response_body TEXT,
+        success INTEGER DEFAULT 0,
+        attempt INTEGER DEFAULT 1,
+        duration_ms INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (webhook_id) REFERENCES webhooks(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_webhook_logs_webhook ON webhook_logs(webhook_id)",
+    "CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1961,7 +2003,7 @@ class Database:
             return []
         placeholders = ",".join("?" * len(user_ids))
         cursor = await self.conn.execute(
-            f"SELECT id, username, nickname, status, status_message, role, chat_anonymous, avatar FROM users WHERE id IN ({placeholders})",
+            f"SELECT id, username, nickname, status, status_message, last_seen_at, role, chat_anonymous, avatar FROM users WHERE id IN ({placeholders})",
             user_ids
         )
         rows = await cursor.fetchall()
@@ -5852,6 +5894,226 @@ class Database:
         cursor = await self.conn.execute("SELECT id FROM services")
         rows = await cursor.fetchall()
         return [row["id"] for row in rows]
+
+    # =========================================================================
+    # User presence
+    # =========================================================================
+
+    async def update_last_seen(self, user_id: int) -> None:
+        """Update last_seen_at timestamp for a user."""
+        await self.conn.execute(
+            "UPDATE users SET last_seen_at = datetime('now') WHERE id = ?",
+            (user_id,)
+        )
+        await self.conn.commit()
+
+    # =========================================================================
+    # Webhooks
+    # =========================================================================
+
+    async def create_webhook(self, user_id: int, name: str, webhook_type: str,
+                             url: str = None, events: list[str] = None,
+                             channel_id: int = None) -> dict:
+        """Create a webhook. Secret/token auto-generated, encrypted at rest."""
+        import secrets as _s
+        secret = _s.token_hex(32)
+        token = _s.token_urlsafe(32) if webhook_type == "incoming" else None
+        enc_secret = encrypt_config(secret)
+        enc_url = encrypt_config(url) if url else None
+        events_json = json.dumps(events or [])
+        cursor = await self.conn.execute(
+            """INSERT INTO webhooks (user_id, name, type, url, secret, token, events, channel_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, webhook_type, enc_url, enc_secret, token, events_json, channel_id)
+        )
+        await self.conn.commit()
+        return {
+            "id": cursor.lastrowid, "user_id": user_id, "name": name,
+            "type": webhook_type, "url": url, "token": token,
+            "events": events or [], "channel_id": channel_id,
+            "enabled": 1, "consecutive_failures": 0,
+            "secret": secret
+        }
+
+    async def get_webhook(self, webhook_id: int) -> Optional[dict]:
+        """Get webhook by ID. Decrypts url, redacts secret."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["url"] = decrypt_config(d["url"]) if d["url"] else None
+        d["has_secret"] = bool(d.get("secret"))
+        del d["secret"]
+        d["events"] = json.loads(d["events"]) if d["events"] else []
+        return d
+
+    async def get_webhook_by_token(self, token: str) -> Optional[dict]:
+        """Get incoming webhook by URL token. Decrypts url and secret."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM webhooks WHERE token = ?", (token,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["url"] = decrypt_config(d["url"]) if d["url"] else None
+        d["secret"] = decrypt_config(d["secret"]) if d["secret"] else None
+        d["events"] = json.loads(d["events"]) if d["events"] else []
+        return d
+
+    async def get_webhooks_for_user(self, user_id: int) -> list[dict]:
+        """Get all webhooks for a user (secrets redacted)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM webhooks WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,))
+        results = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["url"] = decrypt_config(d["url"]) if d["url"] else None
+            d["has_secret"] = bool(d.get("secret"))
+            del d["secret"]
+            d["events"] = json.loads(d["events"]) if d["events"] else []
+            results.append(d)
+        return results
+
+    async def get_all_webhooks(self) -> list[dict]:
+        """Admin: get all webhooks (secrets redacted)."""
+        cursor = await self.conn.execute(
+            """SELECT w.*, u.username as owner_username
+               FROM webhooks w LEFT JOIN users u ON w.user_id = u.id
+               ORDER BY w.created_at DESC""")
+        results = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["url"] = decrypt_config(d["url"]) if d["url"] else None
+            d["has_secret"] = bool(d.get("secret"))
+            del d["secret"]
+            d["events"] = json.loads(d["events"]) if d["events"] else []
+            results.append(d)
+        return results
+
+    async def get_enabled_outgoing_webhooks_for_event(self, event: str) -> list[dict]:
+        """Get enabled outgoing webhooks subscribed to a specific event.
+        Decrypts url AND secret (needed for delivery signing)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM webhooks WHERE type = 'outgoing' AND enabled = 1")
+        results = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            events = json.loads(d["events"]) if d["events"] else []
+            if event not in events and "*" not in events:
+                continue
+            d["url"] = decrypt_config(d["url"]) if d["url"] else None
+            d["secret"] = decrypt_config(d["secret"]) if d["secret"] else None
+            d["events"] = events
+            results.append(d)
+        return results
+
+    async def update_webhook(self, webhook_id: int, **kwargs) -> bool:
+        """Update webhook fields. Encrypts url if provided."""
+        allowed = {"name", "url", "events", "channel_id", "enabled"}
+        fields, values = [], []
+        for key, val in kwargs.items():
+            if key not in allowed:
+                continue
+            if key == "url" and val is not None:
+                val = encrypt_config(val)
+            elif key == "events" and isinstance(val, list):
+                val = json.dumps(val)
+            fields.append(f"{key} = ?")
+            values.append(val)
+        if not fields:
+            return False
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(webhook_id)
+        cursor = await self.conn.execute(
+            f"UPDATE webhooks SET {', '.join(fields)} WHERE id = ?", values)
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_webhook(self, webhook_id: int) -> bool:
+        """Delete a webhook (cascades to logs)."""
+        cursor = await self.conn.execute(
+            "DELETE FROM webhooks WHERE id = ?", (webhook_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def increment_webhook_failures(self, webhook_id: int, reason: str) -> int:
+        """Increment failure counter. Returns new count."""
+        await self.conn.execute(
+            """UPDATE webhooks SET consecutive_failures = consecutive_failures + 1,
+               last_failure_at = datetime('now'), last_failure_reason = ?
+               WHERE id = ?""", (reason[:500], webhook_id))
+        await self.conn.commit()
+        cursor = await self.conn.execute(
+            "SELECT consecutive_failures FROM webhooks WHERE id = ?", (webhook_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def reset_webhook_failures(self, webhook_id: int) -> None:
+        """Reset failure counter on successful delivery."""
+        await self.conn.execute(
+            """UPDATE webhooks SET consecutive_failures = 0,
+               last_delivery_at = datetime('now') WHERE id = ?""", (webhook_id,))
+        await self.conn.commit()
+
+    async def disable_webhook(self, webhook_id: int) -> None:
+        """Disable a webhook (e.g. after too many failures)."""
+        await self.conn.execute(
+            "UPDATE webhooks SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (webhook_id,))
+        await self.conn.commit()
+
+    async def regenerate_webhook_secret(self, webhook_id: int) -> Optional[str]:
+        """Regenerate HMAC signing secret. Returns new secret (plaintext, shown once)."""
+        import secrets as _s
+        new_secret = _s.token_hex(32)
+        enc_secret = encrypt_config(new_secret)
+        cursor = await self.conn.execute(
+            "UPDATE webhooks SET secret = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (enc_secret, webhook_id))
+        await self.conn.commit()
+        return new_secret if cursor.rowcount > 0 else None
+
+    async def create_webhook_log(self, webhook_id: int, event: str,
+                                  request_payload: str, response_status: int = None,
+                                  response_body: str = None, success: bool = False,
+                                  attempt: int = 1, duration_ms: int = 0) -> int:
+        """Create delivery log entry. Payloads encrypted at rest."""
+        enc_req = encrypt_config(request_payload) if request_payload else None
+        enc_resp = encrypt_config(response_body) if response_body else None
+        cursor = await self.conn.execute(
+            """INSERT INTO webhook_logs (webhook_id, event, request_payload, response_status,
+               response_body, success, attempt, duration_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (webhook_id, event, enc_req, response_status, enc_resp, int(success), attempt, duration_ms))
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def get_webhook_logs(self, webhook_id: int, limit: int = 50,
+                                offset: int = 0) -> list[dict]:
+        """Get delivery logs (decrypted payloads)."""
+        cursor = await self.conn.execute(
+            """SELECT * FROM webhook_logs WHERE webhook_id = ?
+               ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (webhook_id, limit, offset))
+        results = []
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["request_payload"] = decrypt_config(d["request_payload"]) if d["request_payload"] else None
+            d["response_body"] = decrypt_config(d["response_body"]) if d["response_body"] else None
+            d["success"] = bool(d["success"])
+            results.append(d)
+        return results
+
+    async def cleanup_old_webhook_logs(self, max_age_days: int = 7) -> int:
+        """Delete webhook logs older than max_age_days."""
+        cursor = await self.conn.execute(
+            "DELETE FROM webhook_logs WHERE created_at < datetime('now', ?)",
+            (f"-{max_age_days} days",))
+        await self.conn.commit()
+        return cursor.rowcount
 
 
 # Global database instance

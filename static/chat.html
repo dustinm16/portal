@@ -936,6 +936,11 @@
             background: none;
             padding: 0;
         }
+        /* Override highlight.js theme to match chat dark theme */
+        .message-text pre code.hljs {
+            background: transparent;
+            padding: 0;
+        }
         .message-text del {
             text-decoration: line-through;
             opacity: 0.7;
@@ -2609,6 +2614,8 @@
             color: var(--text-primary);
         }
     </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
 </head>
 <body>
     <nav class="navbar">
@@ -3013,7 +3020,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=33"></script>
+    <script src="/static/js/portal.js?v=34"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
@@ -3828,6 +3835,13 @@
 
             container.appendChild(div);
 
+            // Syntax highlighting for code blocks
+            if (typeof hljs !== 'undefined') {
+                div.querySelectorAll('pre code').forEach(block => {
+                    hljs.highlightElement(block);
+                });
+            }
+
             // If message has a poll, replace the message text with poll card
             if (data.poll) {
                 div.classList.add('poll-message');
@@ -3974,7 +3988,7 @@
                     `<span class="user-voice-indicator">${user.voice_muted ? '🔇' : '🎙️'}${user.voice_deafened ? '🔈' : ''}</span>` : '';
                 const dmBtn = user.user_id !== currentUser?.id ? `<span class="dm-icon-btn" onclick="event.stopPropagation(); openDmWithUser(${user.user_id})" title="Direct Message">DM</span>` : '';
                 return `
-                <div class="user-item ${voiceClass}" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status)}"
+                <div class="user-item ${voiceClass}" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status, user.last_seen_at)}"
                      onclick="insertMention('${escapeHtml(user.nickname || user.username)}')" style="cursor: pointer;">
                     <span class="user-status ${user.status || 'online'}"></span>
                     <div class="user-info">
@@ -4652,7 +4666,7 @@
             document.getElementById('thread-panel').classList.remove('open');
         }
 
-        function getStatusLabel(status) {
+        function getStatusLabel(status, lastSeenAt) {
             const labels = {
                 'online': 'Online',
                 'away': 'Away',
@@ -4660,7 +4674,20 @@
                 'dnd': 'Do Not Disturb',
                 'offline': 'Offline'
             };
-            return labels[status] || 'Online';
+            let label = labels[status] || 'Online';
+            if (status === 'offline' && lastSeenAt) {
+                try {
+                    const seen = new Date(lastSeenAt + 'Z');
+                    const now = new Date();
+                    const diffMs = now - seen;
+                    const diffMin = Math.floor(diffMs / 60000);
+                    if (diffMin < 1) label += ' — just now';
+                    else if (diffMin < 60) label += ` — ${diffMin}m ago`;
+                    else if (diffMin < 1440) label += ` — ${Math.floor(diffMin / 60)}h ago`;
+                    else label += ` — ${Math.floor(diffMin / 1440)}d ago`;
+                } catch (e) { /* ignore parse errors */ }
+            }
+            return label;
         }
 
         function updateUserCount() {
@@ -4930,8 +4957,11 @@
                 return match;
             });
 
-            // Code blocks (```) - must be before inline code
-            text = text.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+            // Code blocks (```lang\n...\n```) - must be before inline code
+            text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (match, lang, code) => {
+                const cls = lang ? ` class="language-${escapeHtml(lang)}"` : '';
+                return `<pre><code${cls}>${code}</code></pre>`;
+            });
 
             // Inline code (`)
             text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
@@ -6731,6 +6761,50 @@
                 });
             }
         });
+
+        // =====================================================================
+        // Idle Detection — auto-away after 5 minutes, auto-online on activity
+        // =====================================================================
+        (function() {
+            const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+            let idleTimer = null;
+            let isAutoAway = false;
+            let manualStatus = null; // Track user's explicit status choice
+
+            function resetIdleTimer() {
+                if (idleTimer) clearTimeout(idleTimer);
+                // Only auto-manage if status is 'online' or already auto-away
+                const status = currentUser?.status;
+                if (isAutoAway) {
+                    // Returning from idle — restore online
+                    isAutoAway = false;
+                    setMyStatus('online');
+                }
+                if (status === 'busy' || status === 'dnd' || status === 'offline') return;
+                idleTimer = setTimeout(() => {
+                    if (currentUser?.status === 'online') {
+                        isAutoAway = true;
+                        setMyStatus('away');
+                    }
+                }, IDLE_TIMEOUT);
+            }
+
+            // Override setMyStatus to track manual changes
+            const origSetMyStatus = setMyStatus;
+            window.setMyStatus = async function(status) {
+                // If user manually picks a status, don't auto-manage it
+                if (!isAutoAway) manualStatus = status;
+                isAutoAway = false;
+                return origSetMyStatus(status);
+            };
+
+            ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(evt => {
+                document.addEventListener(evt, resetIdleTimer, { passive: true });
+            });
+
+            // Start the timer
+            resetIdleTimer();
+        })();
     </script>
 
     <!-- Voice Settings Modal -->

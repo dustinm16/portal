@@ -67,6 +67,9 @@
             "Two-factor authentication (TOTP)",
             "Role-based access control",
             "Machine-bound encryption keys",
+            "Outgoing and incoming webhooks with HMAC-SHA256 signing",
+            "User presence with auto-online/offline and idle detection",
+            "Syntax-highlighted code blocks in chat",
             "Open source and free"
         ],
         "author": {
@@ -117,7 +120,7 @@
                 "name": "Does it replace chat platforms?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, polls, user blocking, spoiler tags, per-channel permissions (public/private, open/read-only), auto-moderation, audit logging, and WebRTC voice chat (channels and DMs) — all self-hosted on your own infrastructure. Messages are encrypted at rest and you own all your data."
+                    "text": "Yes. Open Relay Portal provides encrypted chat with channels, DMs, message reactions, threads, pinned messages, emoji support, polls, user blocking, spoiler tags, per-channel permissions (public/private, open/read-only), auto-moderation, audit logging, WebRTC voice chat (channels and DMs), user presence with idle detection, and syntax-highlighted code blocks — all self-hosted on your own infrastructure. Messages are encrypted at rest and you own all your data."
                 }
             },
             {
@@ -125,7 +128,7 @@
                 "name": "Does it replace streaming platforms?",
                 "acceptedAnswer": {
                     "@type": "Answer",
-                    "text": "Yes. Open Relay Portal supports RTMPS live streaming with HLS playback, automatic VOD recording to your own SFTP storage, dynamic thumbnails, viewer counts, stream chat, and quality selection. It works with OBS, Streamlabs, and any RTMP-compatible encoder. You keep full control — no platform fees, no content restrictions."
+                    "text": "Yes. Open Relay Portal supports RTMPS live streaming with HLS playback, automatic VOD recording to your own SFTP storage, dynamic thumbnails, viewer counts, stream chat, quality selection, and multi-platform relay to Twitch/YouTube/Kick. Webhooks notify external services of stream events in real-time. It works with OBS, Streamlabs, and any RTMP-compatible encoder. You keep full control — no platform fees, no content restrictions."
                 }
             },
             {
@@ -848,15 +851,19 @@
                 <h3>Unread Badges</h3>
                 <p>Channels with unread messages show a badge count in the sidebar. Badges update in real-time and clear automatically when you view the channel.</p>
 
-                <h3>Profiles</h3>
+                <h3>Profiles &amp; Presence</h3>
                 <p>Customize your chat presence with:</p>
                 <ul>
                     <li><strong>Display Nickname</strong> &mdash; Set a custom name shown in chat and throughout the portal</li>
                     <li><strong>Avatar</strong> &mdash; Choose from a collection of avatar icons</li>
+                    <li><strong>Status</strong> &mdash; Set your status to Online, Away, Busy, Do Not Disturb, or Offline</li>
+                    <li><strong>Status Message</strong> &mdash; Add a custom status message visible to other users</li>
+                    <li><strong>Auto-Presence</strong> &mdash; Status automatically updates to online when you connect, away after 5 minutes idle, and offline when you disconnect</li>
+                    <li><strong>Last Seen</strong> &mdash; Offline users show "Last seen X ago" so you know when they were last active</li>
                 </ul>
 
                 <h3>Online Users</h3>
-                <p>The right sidebar shows currently online users with their roles indicated by color. Click a username to insert an @mention.</p>
+                <p>The right sidebar shows currently online users with their roles indicated by color and presence status indicators. Click a username to insert an @mention.</p>
 
                 <h3 id="voice-chat">Voice Chat</h3>
                 <p>Each chat channel supports live voice chat. Voice uses WebRTC for direct peer-to-peer audio &mdash; the server only relays connection setup, never processes or stores audio.</p>
@@ -1396,7 +1403,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=33"></script>
+    <script src="/static/js/portal.js?v=34"></script>
     <script>
         // Prevent Portal.fetch from redirecting to login on 401 (this is a public page)
         const _originalPortalFetch = Portal.fetch.bind(Portal);

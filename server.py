@@ -13,6 +13,7 @@ del _sys
 
 import asyncio
 import hashlib
+import hmac
 import html as _html
 import ipaddress
 import json
@@ -197,6 +198,33 @@ def _validate_relay_url(rtmp_url: str) -> str | None:
     except socket.gaierror:
         return "Could not resolve RTMP hostname"
     return None
+
+
+def _validate_webhook_url(url: str) -> str | None:
+    """Validate webhook URL is not targeting internal/blocked hosts.
+
+    Returns an error string if invalid, or None if OK.
+    """
+    if _has_bad_chars(url):
+        return "URL contains invalid characters"
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+    except Exception:
+        return "Invalid URL"
+    if not hostname:
+        return "URL must include a hostname"
+    if is_blocked_host(hostname):
+        return "URL points to a blocked/internal host"
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            resolved_ip = info[4][0]
+            if is_blocked_host(resolved_ip):
+                return "URL resolves to a blocked/internal address"
+    except socket.gaierror:
+        return "Could not resolve hostname"
+    return None
+
 
 # Cached set of the server's own IPs (resolved from HOSTNAME/STREAM_HOSTNAME).
 # Populated lazily on first use. Handles cloud NAT hairpin where the server's
@@ -1445,6 +1473,10 @@ async def http_register(request: web.Request) -> web.Response:
         if code_id:
             await db.increment_invite_code_usage(code_id)
             await db.set_user_invite_code(user["id"], code_id)
+
+        asyncio.create_task(fire_webhook_event("user.joined", {
+            "user_id": user["id"], "username": username
+        }))
 
         return web.json_response({
             "id": user["id"],
@@ -3491,6 +3523,10 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             await db.set_stream_live(stream_id, False)
             logger.info(f"Stream {stream_name} ended (after grace period)")
             await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream_name}' went offline")
+            asyncio.create_task(fire_webhook_event("stream.offline", {
+                "stream_id": stream_id, "stream_name": stream_name,
+                "owner_username": stream.get("owner_username")
+            }))
 
             if stream.get("chat_channel_id"):
                 channel = await db.get_chat_channel(stream["chat_channel_id"])
@@ -3526,6 +3562,10 @@ async def _finalize_stream_offline(stream: dict) -> None:
         await db.set_stream_live(stream_id, False)
         logger.info(f"Stream {stream_name} VOD finalized, now offline")
         await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream_name}' went offline")
+        asyncio.create_task(fire_webhook_event("stream.offline", {
+            "stream_id": stream_id, "stream_name": stream_name,
+            "owner_username": stream.get("owner_username")
+        }))
 
         # Broadcast offline status to chat channel
         if stream.get("chat_channel_id"):
@@ -3769,6 +3809,518 @@ async def _stop_relay_process(stream_id: int, relay_id: int, info: dict,
                 active_relays.pop(stream_id, None)
 
 
+# =========================================================================
+# Webhook Delivery Engine
+# =========================================================================
+
+_webhook_rate_limits: dict[int, list[float]] = {}
+_webhook_incoming_rate_limits: dict[str, list[float]] = {}
+_WEBHOOK_RATE_LIMIT = 30        # max deliveries per webhook per window
+_WEBHOOK_RATE_WINDOW = 60.0     # seconds
+_WEBHOOK_MAX_FAILURES = 10      # auto-disable threshold
+_WEBHOOK_RETRY_DELAYS = [10, 60, 300]  # backoff: 10s, 60s, 5min
+_WEBHOOK_INCOMING_RATE = 10     # max incoming messages per token per window
+_WEBHOOK_INCOMING_WINDOW = 60.0
+
+
+async def fire_webhook_event(event: str, payload: dict) -> None:
+    """Dispatch event to all subscribed outgoing webhooks (non-blocking)."""
+    try:
+        webhooks = await db.get_enabled_outgoing_webhooks_for_event(event)
+    except Exception as e:
+        logger.warning(f"Webhook event dispatch failed for {event}: {e}")
+        return
+    for webhook in webhooks:
+        asyncio.create_task(_deliver_webhook(webhook, event, payload))
+
+
+async def _deliver_webhook(webhook: dict, event: str, payload: dict,
+                            attempt: int = 1) -> None:
+    """Deliver payload to a single webhook endpoint with retry."""
+    webhook_id = webhook["id"]
+    url = webhook.get("url")
+    secret = webhook.get("secret")
+    if not url or not secret:
+        return
+
+    # Per-webhook rate limit
+    now = monotonic()
+    window_start = now - _WEBHOOK_RATE_WINDOW
+    times = _webhook_rate_limits.setdefault(webhook_id, [])
+    _webhook_rate_limits[webhook_id] = [t for t in times if t > window_start]
+    if len(_webhook_rate_limits[webhook_id]) >= _WEBHOOK_RATE_LIMIT:
+        logger.warning(f"Webhook {webhook_id} rate limited, dropping delivery for {event}")
+        return
+    _webhook_rate_limits[webhook_id].append(now)
+
+    # Build signed request
+    body_json = json.dumps({
+        "event": event,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": payload
+    }, default=str)
+
+    signature = hmac.new(
+        secret.encode(), body_json.encode(), hashlib.sha256
+    ).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Portal-Signature": f"sha256={signature}",
+        "X-Portal-Event": event,
+        "X-Portal-Delivery": secrets.token_hex(16),
+        "User-Agent": "OpenRelayPortal-Webhook/1.0"
+    }
+
+    start_time = monotonic()
+    response_status = None
+    response_body = None
+    success = False
+
+    try:
+        connector = _SSRFSafeConnector(ssl=False)
+        timeout_cfg = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.post(url, data=body_json, headers=headers,
+                                     timeout=timeout_cfg) as resp:
+                response_status = resp.status
+                response_body = (await resp.text())[:4096]
+                success = 200 <= resp.status < 300
+    except Exception as e:
+        response_body = str(e)[:1024]
+        logger.warning(f"Webhook {webhook_id} delivery failed (attempt {attempt}/{len(_WEBHOOK_RETRY_DELAYS)+1}): {e}")
+
+    duration_ms = int((monotonic() - start_time) * 1000)
+
+    try:
+        await db.create_webhook_log(
+            webhook_id, event,
+            request_payload=body_json[:8192],
+            response_status=response_status,
+            response_body=response_body,
+            success=success,
+            attempt=attempt,
+            duration_ms=duration_ms
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log webhook delivery: {e}")
+
+    if success:
+        await db.reset_webhook_failures(webhook_id)
+        return
+
+    # Handle failure
+    try:
+        new_count = await db.increment_webhook_failures(webhook_id, response_body or "Unknown error")
+        if new_count >= _WEBHOOK_MAX_FAILURES:
+            await db.disable_webhook(webhook_id)
+            logger.warning(f"Webhook {webhook_id} auto-disabled after {new_count} consecutive failures")
+            return
+    except Exception as e:
+        logger.warning(f"Failed to update webhook failure count: {e}")
+        return
+
+    # Retry with exponential backoff
+    if attempt <= len(_WEBHOOK_RETRY_DELAYS):
+        delay = _WEBHOOK_RETRY_DELAYS[attempt - 1]
+        await asyncio.sleep(delay)
+        try:
+            wh = await db.get_webhook(webhook_id)
+            if not wh or not wh.get("enabled"):
+                return
+            full_whs = await db.get_enabled_outgoing_webhooks_for_event(event)
+            for w in full_whs:
+                if w["id"] == webhook_id:
+                    await _deliver_webhook(w, event, payload, attempt + 1)
+                    return
+        except Exception:
+            pass
+
+
+# =========================================================================
+# Webhook API Handlers
+# =========================================================================
+
+_VALID_WEBHOOK_EVENTS = frozenset({
+    "message.created", "message.deleted", "stream.live", "stream.offline",
+    "user.joined", "user.connected", "user.disconnected", "*"
+})
+
+
+async def http_create_webhook(request: web.Request) -> web.Response:
+    """Create a new webhook (admin+ only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    is_admin = user.get("is_admin") or user.get("role") in ("admin", "superadmin")
+    if not is_admin:
+        return forbidden_response(request)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = (body.get("name") or "").strip()
+    if not name or len(name) > 100:
+        return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
+
+    webhook_type = body.get("type", "outgoing")
+    if webhook_type not in ("outgoing", "incoming"):
+        return web.json_response({"error": "Type must be 'outgoing' or 'incoming'"}, status=400)
+
+    events = body.get("events", [])
+    if webhook_type == "outgoing":
+        if not events or not isinstance(events, list):
+            return web.json_response({"error": "events list required for outgoing webhooks"}, status=400)
+        if not all(e in _VALID_WEBHOOK_EVENTS for e in events):
+            return web.json_response({"error": f"Invalid events. Valid: {', '.join(sorted(_VALID_WEBHOOK_EVENTS))}"}, status=400)
+
+    url = None
+    channel_id = None
+
+    if webhook_type == "outgoing":
+        url = (body.get("url") or "").strip()
+        if not url:
+            return web.json_response({"error": "URL required for outgoing webhooks"}, status=400)
+        if len(url) > 2048:
+            return web.json_response({"error": "URL too long (max 2048 chars)"}, status=400)
+        if not url.startswith(("http://", "https://")):
+            return web.json_response({"error": "URL must start with http:// or https://"}, status=400)
+        err = _validate_webhook_url(url)
+        if err:
+            return web.json_response({"error": err}, status=400)
+
+    if webhook_type == "incoming":
+        channel_id = body.get("channel_id")
+        if not channel_id:
+            return web.json_response({"error": "channel_id required for incoming webhooks"}, status=400)
+        try:
+            channel_id = int(channel_id)
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid channel_id"}, status=400)
+        channel = await db.get_chat_channel(channel_id)
+        if not channel:
+            return web.json_response({"error": "Channel not found"}, status=404)
+
+    existing = await db.get_webhooks_for_user(token.user_id)
+    if len(existing) >= 25:
+        return web.json_response({"error": "Maximum 25 webhooks per user"}, status=400)
+
+    webhook = await db.create_webhook(
+        token.user_id, name, webhook_type,
+        url=url, events=events, channel_id=channel_id
+    )
+    return web.json_response(webhook, status=201)
+
+
+async def http_list_webhooks(request: web.Request) -> web.Response:
+    """List webhooks. Admins see all with owner info."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+    is_admin = user.get("is_admin") or user.get("role") in ("admin", "superadmin")
+    if is_admin:
+        webhooks = await db.get_all_webhooks()
+    else:
+        webhooks = await db.get_webhooks_for_user(token.user_id)
+    return web.json_response({"webhooks": webhooks})
+
+
+async def http_get_webhook(request: web.Request) -> web.Response:
+    """Get a single webhook by ID (owner or admin)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid webhook ID"}, status=400)
+
+    webhook = await db.get_webhook(webhook_id)
+    if not webhook:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    if webhook["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    return web.json_response(webhook)
+
+
+async def http_update_webhook(request: web.Request) -> web.Response:
+    """Update webhook (owner or admin)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid webhook ID"}, status=400)
+
+    webhook = await db.get_webhook(webhook_id)
+    if not webhook:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    if webhook["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    updates = {}
+    if "name" in body:
+        name = (body["name"] or "").strip()
+        if not name or len(name) > 100:
+            return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
+        updates["name"] = name
+
+    if "url" in body and webhook["type"] == "outgoing":
+        url = (body["url"] or "").strip()
+        if not url or len(url) > 2048:
+            return web.json_response({"error": "URL required (max 2048 chars)"}, status=400)
+        if not url.startswith(("http://", "https://")):
+            return web.json_response({"error": "URL must start with http:// or https://"}, status=400)
+        err = _validate_webhook_url(url)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        updates["url"] = url
+
+    if "events" in body and webhook["type"] == "outgoing":
+        events = body["events"]
+        if not events or not isinstance(events, list):
+            return web.json_response({"error": "events list required"}, status=400)
+        if not all(e in _VALID_WEBHOOK_EVENTS for e in events):
+            return web.json_response({"error": "Invalid events"}, status=400)
+        updates["events"] = events
+
+    if "channel_id" in body and webhook["type"] == "incoming":
+        try:
+            ch_id = int(body["channel_id"])
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid channel_id"}, status=400)
+        ch = await db.get_chat_channel(ch_id)
+        if not ch:
+            return web.json_response({"error": "Channel not found"}, status=404)
+        updates["channel_id"] = ch_id
+
+    if "enabled" in body:
+        updates["enabled"] = 1 if body["enabled"] else 0
+
+    if updates:
+        await db.update_webhook(webhook_id, **updates)
+
+    updated = await db.get_webhook(webhook_id)
+    return web.json_response(updated)
+
+
+async def http_delete_webhook(request: web.Request) -> web.Response:
+    """Delete webhook (owner or admin)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid webhook ID"}, status=400)
+
+    webhook = await db.get_webhook(webhook_id)
+    if not webhook:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    if webhook["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    await db.delete_webhook(webhook_id)
+    _webhook_rate_limits.pop(webhook_id, None)
+    return web.json_response({"message": "Webhook deleted"})
+
+
+async def http_get_webhook_logs(request: web.Request) -> web.Response:
+    """Get delivery logs for a webhook (owner or admin)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid webhook ID"}, status=400)
+
+    webhook = await db.get_webhook(webhook_id)
+    if not webhook:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    if webhook["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    limit = min(int(request.query.get("limit", 50)), 200)
+    offset = int(request.query.get("offset", 0))
+    logs = await db.get_webhook_logs(webhook_id, limit=limit, offset=offset)
+    return web.json_response({"logs": logs})
+
+
+async def http_test_webhook(request: web.Request) -> web.Response:
+    """Send a test event to the webhook."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid webhook ID"}, status=400)
+
+    webhook = await db.get_webhook(webhook_id)
+    if not webhook:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    if webhook["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    if webhook["type"] != "outgoing":
+        return web.json_response({"error": "Can only test outgoing webhooks"}, status=400)
+
+    # Fetch full webhook with secret for delivery
+    full_whs = await db.get_enabled_outgoing_webhooks_for_event("webhook.test")
+    full_wh = None
+    for w in full_whs:
+        if w["id"] == webhook_id:
+            full_wh = w
+            break
+    if not full_wh:
+        # Webhook may not subscribe to 'webhook.test', so fetch directly
+        cursor = await db.conn.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+        row = await cursor.fetchone()
+        if row:
+            full_wh = dict(row)
+            full_wh["url"] = decrypt_config(full_wh["url"]) if full_wh["url"] else None
+            full_wh["secret"] = decrypt_config(full_wh["secret"]) if full_wh["secret"] else None
+
+    if not full_wh:
+        return web.json_response({"error": "Could not load webhook for test"}, status=500)
+
+    asyncio.create_task(_deliver_webhook(full_wh, "webhook.test", {
+        "test": True,
+        "webhook_id": webhook_id,
+        "triggered_by": user["username"] if user else "unknown"
+    }))
+
+    return web.json_response({"message": "Test event dispatched"})
+
+
+async def http_regenerate_webhook_secret(request: web.Request) -> web.Response:
+    """Regenerate the HMAC signing secret. Returns new secret (shown once)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "Invalid webhook ID"}, status=400)
+
+    webhook = await db.get_webhook(webhook_id)
+    if not webhook:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    user = await db.get_user_by_id(token.user_id)
+    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    if webhook["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Webhook not found"}, status=404)
+
+    new_secret = await db.regenerate_webhook_secret(webhook_id)
+    if not new_secret:
+        return web.json_response({"error": "Failed to regenerate secret"}, status=500)
+
+    return web.json_response({"secret": new_secret, "message": "Secret regenerated. Store it securely — it will not be shown again."})
+
+
+async def http_incoming_webhook(request: web.Request) -> web.Response:
+    """Receive an incoming webhook and post message to configured channel."""
+    client_ip = get_client_ip(request)
+    if not check_rate_limit(client_ip):
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+
+    token_str = request.match_info.get("token", "")
+    if not token_str or len(token_str) > 64:
+        return web.json_response({"error": "Not found"}, status=404)
+
+    webhook = await db.get_webhook_by_token(token_str)
+    if not webhook or webhook["type"] != "incoming" or not webhook.get("enabled"):
+        return web.json_response({"error": "Not found"}, status=404)
+
+    # Per-token rate limit
+    now = monotonic()
+    window_start = now - _WEBHOOK_INCOMING_WINDOW
+    times = _webhook_incoming_rate_limits.setdefault(token_str, [])
+    _webhook_incoming_rate_limits[token_str] = [t for t in times if t > window_start]
+    if len(_webhook_incoming_rate_limits[token_str]) >= _WEBHOOK_INCOMING_RATE:
+        return web.json_response({"error": "Rate limit exceeded"}, status=429)
+    _webhook_incoming_rate_limits[token_str].append(now)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    content = (body.get("content") or body.get("text") or "").strip()
+    if not content:
+        return web.json_response({"error": "content or text field required"}, status=400)
+    if len(content) > 4000:
+        return web.json_response({"error": "Message too long (max 4000 chars)"}, status=400)
+
+    display_name = (body.get("username") or webhook["name"] or "Webhook").strip()
+    if len(display_name) > 50:
+        display_name = display_name[:50]
+
+    channel_id = webhook["channel_id"]
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Target channel not found"}, status=404)
+
+    msg_id = await db.create_chat_message(
+        channel_id, webhook["user_id"], f"[hook] {display_name}",
+        content, message_type="webhook"
+    )
+
+    await broadcast_to_channel(channel["name"], {
+        "type": "message",
+        "id": msg_id,
+        "user_id": webhook["user_id"],
+        "username": f"[hook] {display_name}",
+        "message": content,
+        "webhook": True,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+    asyncio.create_task(fire_webhook_event("message.created", {
+        "message_id": msg_id,
+        "channel": channel["name"],
+        "channel_id": channel_id,
+        "username": f"[hook] {display_name}",
+        "message": content,
+        "source": "incoming_webhook",
+        "webhook_id": webhook["id"]
+    }))
+
+    return web.json_response({"ok": True, "message_id": msg_id})
+
+
 async def http_stream_auth(request: web.Request) -> web.Response:
     """MediaMTX stream authentication hook.
 
@@ -3918,6 +4470,11 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                 data={"stream_id": stream_id, "public_key": stream.get("public_key", "")},
                 exclude_user_id=stream.get("user_id")
             )
+            asyncio.create_task(fire_webhook_event("stream.live", {
+                "stream_id": stream_id, "stream_name": stream["name"],
+                "owner_username": stream.get("owner_username"),
+                "public_key": stream.get("public_key", "")
+            }))
 
         # Start VOD recording on every publish (guards against duplicates internally)
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
@@ -11152,6 +11709,30 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # Broadcast updated users list to all in channel
                         await broadcast_users_list(current_channel)
 
+                        # Fire webhook + auto-online on first connection
+                        if _online_users.get(user_id, 0) == 1:
+                            asyncio.create_task(fire_webhook_event("user.connected", {
+                                "user_id": user_id, "username": display_name
+                            }))
+                            # Auto-set online if currently offline
+                            try:
+                                u_status = await db.get_user_status(user_id)
+                                if u_status and u_status.get("status") == "offline":
+                                    await db.set_user_status(user_id, "online", u_status.get("status_message"))
+                                    for ch in list(chat_rooms.keys()):
+                                        for entry in chat_rooms.get(ch, set()):
+                                            if entry[1] == user_id:
+                                                await broadcast_to_channel(ch, {
+                                                    "type": "user_status_changed",
+                                                    "user_id": user_id,
+                                                    "username": display_name,
+                                                    "status": "online",
+                                                    "status_message": u_status.get("status_message")
+                                                })
+                                                break
+                            except Exception as e:
+                                logger.debug(f"Auto-online status update failed: {e}")
+
                     elif msg_type == "message":
                         if not current_channel:
                             continue
@@ -11376,6 +11957,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             broadcast_payload["attachment_type"] = attachment_type
                         await broadcast_to_channel(current_channel, broadcast_payload)
 
+                        # Fire webhook event
+                        asyncio.create_task(fire_webhook_event("message.created", {
+                            "message_id": msg_id, "channel": current_channel,
+                            "user_id": user_id, "username": display_name,
+                            "message": message_text,
+                            "created_at": broadcast_payload["created_at"]
+                        }))
+
                         # Send @mention notifications
                         if message_text and not my_state["anonymous"]:
                             try:
@@ -11441,6 +12030,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "message_id": message_id,
                                 "deleted_by": user_id
                             })
+                            asyncio.create_task(fire_webhook_event("message.deleted", {
+                                "message_id": message_id, "channel": current_channel,
+                                "deleted_by": user_id
+                            }))
                             if is_mod:
                                 channel_obj = await db.get_chat_channel_by_name(current_channel)
                                 await audit_log("message_delete", user_id, username,
@@ -12601,6 +13194,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 break
         if not has_other_ws:
             chat_user_state.pop(user_id, None)
+            # Auto-set offline + update last_seen
+            try:
+                await db.set_user_status(user_id, "offline", None)
+                await db.update_last_seen(user_id)
+                asyncio.create_task(fire_webhook_event("user.disconnected", {
+                    "user_id": user_id, "username": username
+                }))
+            except Exception as e:
+                logger.debug(f"Auto-offline status update failed: {e}")
 
         # Unsubscribe from notifications
         if user_id in notification_subscribers:
@@ -12975,11 +13577,22 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     except Exception as e:
         errors.append(f"invite_codes: {e}")
     try:
+        results["webhook_logs"] = await db.cleanup_old_webhook_logs(max_age_days=7)
+    except Exception as e:
+        errors.append(f"webhook_logs: {e}")
+    try:
         if config.get("auto_vacuum", "true") == "true":
             await db.vacuum_database()
             results["vacuumed"] = True
     except Exception as e:
         errors.append(f"vacuum: {e}")
+    # Clean stale webhook rate limit entries
+    stale_wh = [k for k, v in _webhook_rate_limits.items() if not v]
+    for k in stale_wh:
+        del _webhook_rate_limits[k]
+    stale_inc = [k for k, v in _webhook_incoming_rate_limits.items() if not v]
+    for k in stale_inc:
+        del _webhook_incoming_rate_limits[k]
     resp = {"cleanup_complete": True, "deleted": results}
     if errors:
         resp["errors"] = errors
@@ -13045,6 +13658,7 @@ async def broadcast_users_list(channel: str):
             "nickname": u.get("nickname"),
             "status": u.get("status", "online"),
             "status_message": u.get("status_message"),
+            "last_seen_at": u.get("last_seen_at"),
             "role": u.get("role", "user"),
             "anonymous": bool(u.get("chat_anonymous")),
             "avatar": avatar,
@@ -14248,6 +14862,17 @@ def create_app() -> web.Application:
     app.router.add_put("/api/admin/retention", http_set_retention_config)
     app.router.add_post("/api/admin/retention/run", http_run_cleanup_now)
 
+    # Webhooks (incoming token route must be before {id} wildcard)
+    app.router.add_post("/api/webhooks/incoming/{token}", http_incoming_webhook)
+    app.router.add_get("/api/webhooks", http_list_webhooks)
+    app.router.add_post("/api/webhooks", http_create_webhook)
+    app.router.add_get("/api/webhooks/{id}", http_get_webhook)
+    app.router.add_put("/api/webhooks/{id}", http_update_webhook)
+    app.router.add_delete("/api/webhooks/{id}", http_delete_webhook)
+    app.router.add_get("/api/webhooks/{id}/logs", http_get_webhook_logs)
+    app.router.add_post("/api/webhooks/{id}/test", http_test_webhook)
+    app.router.add_post("/api/webhooks/{id}/regenerate-secret", http_regenerate_webhook_secret)
+
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)
     # Chat WebSocket (before catch-all)
@@ -14519,6 +15144,15 @@ class PortalServer:
                 except Exception as e:
                     logger.error(f"[Retention] Automod actions cleanup failed: {e}")
 
+                # Webhook log cleanup (7 days)
+                try:
+                    d = await db.cleanup_old_webhook_logs(max_age_days=7)
+                    if d > 0:
+                        logger.info(f"[Retention] Cleaned {d} webhook logs older than 7 days")
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Webhook log cleanup failed: {e}")
+
                 # In-memory cache cleanup
                 try:
                     now_mono = monotonic()
@@ -14528,6 +15162,12 @@ class PortalServer:
                     stale = [k for k, v in _voice_speaking_last.items() if now_mono - v > 300]
                     for k in stale:
                         del _voice_speaking_last[k]
+                    stale_wh = [k for k, v in _webhook_rate_limits.items() if not v]
+                    for k in stale_wh:
+                        del _webhook_rate_limits[k]
+                    stale_inc = [k for k, v in _webhook_incoming_rate_limits.items() if not v]
+                    for k in stale_inc:
+                        del _webhook_incoming_rate_limits[k]
                     if stale:
                         logger.debug("[Retention] Cleaned stale in-memory rate-limit entries")
                 except Exception as e:
