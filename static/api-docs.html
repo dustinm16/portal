@@ -411,14 +411,14 @@
                         <li><a href="#admin-stats">System Stats</a></li>
                         <li><a href="#system-info">System Info</a></li>
                         <li><a href="#managed-services">Managed Services</a></li>
-                        <li><a href="#system-health">System Health</a></li>
-                        <li><a href="#activity">Activity Feed</a></li>
-                        <li><a href="#certificates">Certificate Management</a></li>
-                        <li><a href="#server-settings">Server Settings</a></li>
                         <li><a href="#metrics">Metrics</a></li>
                         <li><a href="#logs">Logs</a></li>
                         <li><a href="#shodan">Shodan Integration</a></li>
                         <li><a href="#vulnerability">Vulnerability Scanner</a></li>
+                        <li><a href="#system-health">System Health</a></li>
+                        <li><a href="#activity">Activity Feed</a></li>
+                        <li><a href="#certificates">Certificate Management</a></li>
+                        <li><a href="#server-settings">Server Settings</a></li>
                         <li><a href="#sysmon">System Monitor</a></li>
                         <li><a href="#file-manager">File Manager</a></li>
                         <li><a href="#sftp-vod">SFTP VOD Storage</a></li>
@@ -2811,689 +2811,6 @@ ws.send(JSON.stringify({
 }));</pre>
                 </div>
 
-                <!-- System Stats (Admin) -->
-                <div class="admin-only">
-                <h2 id="admin-stats">System Stats <span class="badge-admin">ADMIN</span></h2>
-                <p>Authenticated statistics with additional detail beyond the public stats endpoint.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/stats</span>
-                        <span class="endpoint-desc">Get system statistics</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns detailed system statistics including user counts, active connections, and service counts.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"total_users"</span>: <span class="number">10</span>,
-  <span class="string">"active_connections"</span>: <span class="number">5</span>,
-  <span class="string">"total_services"</span>: <span class="number">3</span>,
-  <span class="string">"uptime_check"</span>: <span class="string">"2026-02-09T12:00:00Z"</span>
-}</pre>
-                        </div>
-                    </div>
-                </div>
-                </div>
-
-                <!-- System Info (Admin) -->
-                <div class="admin-only">
-                <h2 id="system-info">System Info <span class="badge-admin">ADMIN</span></h2>
-                <p>Server configuration and capability queries.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/plugins</span>
-                        <span class="endpoint-desc">List available plugins</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns all available plugins with their configuration schemas.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"plugins"</span>: [
-    {
-      <span class="string">"name"</span>: <span class="string">"ssh"</span>,
-      <span class="string">"display_name"</span>: <span class="string">"SSH Terminal"</span>,
-      <span class="string">"description"</span>: <span class="string">"SSH connection over WebSocket"</span>,
-      <span class="string">"config_schema"</span>: {...}
-    }
-  ]
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/shells</span>
-                        <span class="endpoint-desc">List available shells</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns available shells on the server. Used by the terminal and SSH shell selectors.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"shells"</span>: [
-    {<span class="string">"path"</span>: <span class="string">"/usr/bin/bash"</span>, <span class="string">"name"</span>: <span class="string">"bash"</span>},
-    {<span class="string">"path"</span>: <span class="string">"/usr/bin/fish"</span>, <span class="string">"name"</span>: <span class="string">"fish"</span>},
-    {<span class="string">"path"</span>: <span class="string">"/usr/bin/zsh"</span>, <span class="string">"name"</span>: <span class="string">"zsh"</span>}
-  ]
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/tunnels</span>
-                        <span class="endpoint-desc">Get active tunnel sessions</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns active secure tunnel sessions with connection details.</p>
-                    </div>
-                </div>
-                </div>
-
-                <!-- Managed Services (Admin) -->
-                <div class="admin-only">
-                <h2 id="managed-services">Managed Services <span class="badge-admin">ADMIN</span></h2>
-                <p>Managed Services are background server processes that Portal can start, stop, and monitor. This includes the MediaMTX streaming server and other infrastructure components.</p>
-
-                <div class="alert alert-info">
-                    <strong>Service Lifecycle:</strong> Services are started automatically when needed. Logs are captured and retained for 7 days.
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services/types</span>
-                        <span class="endpoint-desc">List available service types</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns the list of available managed service types that can be created (e.g., mediamtx).</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services</span>
-                        <span class="endpoint-desc">List all managed services</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns all managed services and their current status.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"services"</span>: [
-    {
-      <span class="string">"id"</span>: <span class="number">1</span>,
-      <span class="string">"name"</span>: <span class="string">"mediamtx"</span>,
-      <span class="string">"display_name"</span>: <span class="string">"MediaMTX Streaming Server"</span>,
-      <span class="string">"status"</span>: <span class="string">"running"</span>,
-      <span class="string">"pid"</span>: <span class="number">12345</span>,
-      <span class="string">"started_at"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>,
-      <span class="string">"auto_start"</span>: <span class="keyword">true</span>
-    }
-  ]
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services</span>
-                        <span class="endpoint-desc">Create managed service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Create a new managed service instance.</p>
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">service_type</span></td><td><span class="param-type">string</span></td><td>Type of service (e.g., <code>mediamtx</code>) <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">display_name</span></td><td><span class="param-type">string</span></td><td>Display name <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">auto_start</span></td><td><span class="param-type">boolean</span></td><td>Start automatically on boot (default: false)</td></tr>
-                            <tr><td><span class="param-name">config</span></td><td><span class="param-type">object</span></td><td>Service-specific configuration</td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services/{id}</span>
-                        <span class="endpoint-desc">Get managed service details</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns detailed status for a specific managed service.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"name"</span>: <span class="string">"mediamtx"</span>,
-  <span class="string">"status"</span>: <span class="string">"running"</span>,
-  <span class="string">"pid"</span>: <span class="number">12345</span>,
-  <span class="string">"uptime_seconds"</span>: <span class="number">3600</span>,
-  <span class="string">"memory_mb"</span>: <span class="number">128</span>,
-  <span class="string">"cpu_percent"</span>: <span class="number">2.5</span>
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-put">PUT</span>
-                        <span class="endpoint-path">/api/managed-services/{id}</span>
-                        <span class="endpoint-desc">Update managed service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Update a managed service's display name, auto-start setting, or configuration.</p>
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">display_name</span></td><td><span class="param-type">string</span></td><td>New display name</td></tr>
-                            <tr><td><span class="param-name">auto_start</span></td><td><span class="param-type">boolean</span></td><td>Auto-start on boot</td></tr>
-                            <tr><td><span class="param-name">config</span></td><td><span class="param-type">object</span></td><td>Service-specific configuration</td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-delete">DELETE</span>
-                        <span class="endpoint-path">/api/managed-services/{id}</span>
-                        <span class="endpoint-desc">Delete managed service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Delete a managed service. Stops the service if running before removal.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services/{id}/start</span>
-                        <span class="endpoint-desc">Start a service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Start a stopped managed service.</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"status"</span>: <span class="string">"started"</span>,
-  <span class="string">"pid"</span>: <span class="number">12345</span>
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services/{id}/stop</span>
-                        <span class="endpoint-desc">Stop a service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Stop a running managed service.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/managed-services/{id}/restart</span>
-                        <span class="endpoint-desc">Restart a service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Stop and start a managed service.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services/{id}/status</span>
-                        <span class="endpoint-desc">Get service runtime status</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns the current runtime status of a managed service including health check results.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/managed-services/{id}/logs</span>
-                        <span class="endpoint-desc">Get service logs</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns recent log entries for a managed service.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">lines</span></td>
-                                <td><span class="param-type">integer</span></td>
-                                <td>Number of lines to return (default: 100)</td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">level</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Filter by level: debug, info, warning, error</td>
-                            </tr>
-                        </table>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"logs"</span>: [
-    {
-      <span class="string">"timestamp"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>,
-      <span class="string">"level"</span>: <span class="string">"info"</span>,
-      <span class="string">"message"</span>: <span class="string">"MediaMTX started on RTMPS port 1936"</span>
-    }
-  ]
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <h3>Available Services</h3>
-                <table class="param-table">
-                    <tr><th>Name</th><th>Description</th><th>Ports</th></tr>
-                    <tr>
-                        <td><span class="param-name">mediamtx</span></td>
-                        <td>MediaMTX streaming server for RTMPS/HLS/WebRTC</td>
-                        <td>1936, 8322, 8888, 8889</td>
-                    </tr>
-                </table>
-                </div>
-
-                <!-- Metrics (Admin) -->
-                <div class="admin-only">
-                <h2 id="metrics">Traffic Metrics <span class="badge-admin">ADMIN</span></h2>
-                <p>Real-time traffic monitoring and statistics.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/metrics</span>
-                        <span class="endpoint-desc">Get metrics summary</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns overall traffic metrics including active connections, bandwidth, and request counts.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/metrics/services</span>
-                        <span class="endpoint-desc">Per-service metrics</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns traffic breakdown by service.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/metrics/active</span>
-                        <span class="endpoint-desc">Active connections</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns list of currently active connections with user and service info.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/metrics/timeseries</span>
-                        <span class="endpoint-desc">Time-series data</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns time-series data for traffic metrics.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">period</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Time period: 1h, 6h, 24h, 7d (default: 24h)</td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/metrics/top</span>
-                        <span class="endpoint-desc">Top users &amp; services</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns top users and services by traffic volume.</p>
-                    </div>
-                </div>
-                </div>
-
-                <!-- Logs (Admin) -->
-                <div class="admin-only">
-                <h2 id="logs">Server Logs <span class="badge-admin">ADMIN</span></h2>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/logs</span>
-                        <span class="endpoint-desc">Get log contents</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">lines</span></td>
-                                <td><span class="param-type">integer</span></td>
-                                <td>Number of lines to return (default: 100)</td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">file</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Log file name (default: current)</td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/logs/files</span>
-                        <span class="endpoint-desc">List log files</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns available log files.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/logs/settings</span>
-                        <span class="endpoint-desc">Get log settings</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns current log configuration.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-put">PUT</span>
-                        <span class="endpoint-path">/api/logs/settings</span>
-                        <span class="endpoint-desc">Update log settings</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Update log level, rotation, and other settings.</p>
-                    </div>
-                </div>
-                </div>
-
-                <!-- Shodan Integration (Admin) -->
-                <div class="admin-only">
-                <h2 id="shodan">Shodan Integration <span class="badge-admin">ADMIN</span></h2>
-                <p>Shodan API integration for network reconnaissance and security monitoring.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/shodan/info</span>
-                        <span class="endpoint-desc">Get API key status</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Returns Shodan API key status and account information.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/shodan/api-key</span>
-                        <span class="endpoint-desc">Set Shodan API key</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">api_key</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Shodan API key <span class="param-required">required</span></td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/shodan/lookup/{ip}</span>
-                        <span class="endpoint-desc">Look up IP address</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Look up detailed information about an IP address from Shodan.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/shodan/search</span>
-                        <span class="endpoint-desc">Search Shodan</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">q</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Shodan search query <span class="param-required">required</span></td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-                </div>
-
-                <!-- Vulnerability Scanner (Admin) -->
-                <div class="admin-only">
-                <h2 id="vulnerability">Vulnerability Scanner <span class="badge-admin">ADMIN</span></h2>
-                <p>Scan hosts and services for known vulnerabilities using nmap and CVE databases.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/scan/{host}</span>
-                        <span class="endpoint-desc">Scan host for vulnerabilities</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">ports</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Port range to scan (default: "1-1000")</td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">scan_type</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>basic, version, vulnerability, or full</td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/cve/{cve_id}</span>
-                        <span class="endpoint-desc">Look up CVE details</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Fetch detailed information about a specific CVE from NVD.</p>
-                        <h4>Example</h4>
-                        <div class="code-block">
-<pre>GET /api/vuln/cve/CVE-2024-6387</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/scan-service/{service_id}</span>
-                        <span class="endpoint-desc">Scan a Portal service</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Scan a Portal service's host and port for vulnerabilities.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">scan_type</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>basic, version, vuln, or full (default: version)</td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/mitigations/{cve_id}</span>
-                        <span class="endpoint-desc">Get CVE mitigations</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Get mitigation steps for a specific CVE.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/known-cves</span>
-                        <span class="endpoint-desc">List known CVEs</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>List all known CVEs in the local database, sorted by CVSS score (highest first).</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/search</span>
-                        <span class="endpoint-desc">Search CVEs</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">q</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Search keyword (product, vendor, etc.)</td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/vuln/status</span>
-                        <span class="endpoint-desc">Scanner status</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Get vulnerability scanner status (nmap availability, NVD API config, cache info).</p>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  <span class="string">"nmap_available"</span>: <span class="keyword">true</span>,
-  <span class="string">"nvd_api_configured"</span>: <span class="keyword">false</span>,
-  <span class="string">"known_cves_count"</span>: <span class="number">42</span>
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/vuln/nvd-api-key</span>
-                        <span class="endpoint-desc">Set NVD API key</span>
-                        <span class="badge-admin">ADMIN</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Configure NVD API key for higher rate limits (50 requests/30 seconds).</p>
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">api_key</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>NVD API key <span class="param-required">required</span></td>
-                            </tr>
-                        </table>
-                    </div>
-                </div>
-                </div>
-
                 <!-- Voice Chat -->
                 <h2 id="voice-chat">Voice Chat</h2>
                 <p>Live voice chat using WebRTC P2P mesh (2-10 users per channel). The server acts purely as a signaling relay &mdash; no audio processing or storage. Audio is encrypted via WebRTC DTLS-SRTP. Voice signaling piggybacks on the existing <code>/ws/chat</code> WebSocket.</p>
@@ -4223,6 +3540,1094 @@ ws.send(JSON.stringify({
                     </div>
                 </div>
 
+                <!-- Webhooks -->
+                <h2 id="webhooks">Webhooks</h2>
+                <p>Webhooks let you receive real-time HTTP notifications when events happen in your portal (outgoing), or post messages into chat channels from external services (incoming). Outgoing webhooks sign payloads with HMAC-SHA256 for verification. Webhook URLs, secrets, and delivery log payloads are encrypted at rest. Admin+ required for management.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks</span>
+                        <span class="endpoint-desc">Create webhook</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create an outgoing or incoming webhook. Maximum 25 webhooks per user. The webhook secret is returned only once on creation.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">name</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Webhook name (1-100 chars) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><code>outgoing</code> or <code>incoming</code> <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">url</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Delivery URL (outgoing only, HTTPS required, SSRF-protected) <span class="param-required">required for outgoing</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">events</span></td>
+                                <td><span class="param-type">array</span></td>
+                                <td>Events to subscribe to (outgoing only): <code>message.created</code>, <code>message.deleted</code>, <code>stream.live</code>, <code>stream.offline</code>, <code>user.joined</code>, <code>user.connected</code>, <code>user.disconnected</code> <span class="param-required">required for outgoing</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">channel_id</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Target channel for incoming webhook messages <span class="param-required">required for incoming</span></td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  "id": 1,
+  "name": "My Webhook",
+  "type": "outgoing",
+  "url": "https://example.com/hook",
+  "secret": "abc123...",
+  "events": ["message.created"],
+  "enabled": true,
+  "token": null
+}</pre>
+                        </div>
+                        <p><strong>Note:</strong> The <code>secret</code> field is only returned on creation. Store it securely for HMAC verification.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/webhooks</span>
+                        <span class="endpoint-desc">List webhooks</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List your webhooks. Admins see all webhooks with owner usernames. Secrets are never returned in list responses.</p>
+                        <div class="code-block">
+<pre>{
+  "webhooks": [
+    {
+      "id": 1,
+      "name": "My Webhook",
+      "type": "outgoing",
+      "url": "https://example.com/hook",
+      "has_secret": true,
+      "events": ["message.created"],
+      "enabled": true,
+      "consecutive_failures": 0,
+      "created_at": "2026-02-19 12:00:00"
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/webhooks/{id}</span>
+                        <span class="endpoint-desc">Get webhook details</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Get details for a specific webhook. Owner or admin required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/webhooks/{id}</span>
+                        <span class="endpoint-desc">Update webhook</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update webhook name, URL, events, channel, or enabled status. URL changes are SSRF-validated. Owner or admin required.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">name</span></td><td><span class="param-type">string</span></td><td>New name</td></tr>
+                            <tr><td><span class="param-name">url</span></td><td><span class="param-type">string</span></td><td>New delivery URL (outgoing only)</td></tr>
+                            <tr><td><span class="param-name">events</span></td><td><span class="param-type">array</span></td><td>Updated event list</td></tr>
+                            <tr><td><span class="param-name">channel_id</span></td><td><span class="param-type">integer</span></td><td>New target channel (incoming only)</td></tr>
+                            <tr><td><span class="param-name">enabled</span></td><td><span class="param-type">boolean</span></td><td>Enable/disable webhook</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/webhooks/{id}</span>
+                        <span class="endpoint-desc">Delete webhook</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a webhook and all its delivery logs. Owner or admin required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/logs</span>
+                        <span class="endpoint-desc">Delivery logs</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>View delivery logs for a webhook. Includes request payload, response status, success/failure, attempt number, and duration. Logs are encrypted at rest and auto-cleaned after 7 days.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">limit</span></td><td><span class="param-type">integer</span></td><td>Max results (default 50, max 100)</td></tr>
+                            <tr><td><span class="param-name">offset</span></td><td><span class="param-type">integer</span></td><td>Pagination offset</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/test</span>
+                        <span class="endpoint-desc">Send test event</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Send a <code>webhook.test</code> event to verify your webhook endpoint is working. Owner or admin required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/regenerate-secret</span>
+                        <span class="endpoint-desc">Regenerate HMAC secret</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Generate a new HMAC signing secret. The new secret is returned only once. The old secret is immediately invalidated.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/incoming/{token}</span>
+                        <span class="endpoint-desc">Post incoming webhook message</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Post a message to a chat channel via an incoming webhook. No authentication required &mdash; the token in the URL acts as the credential. Rate limited to 10 messages per 60 seconds per token.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">content</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Message content (1-4000 chars) <span class="param-required">required</span></td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">username</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Display name override (max 50 chars, defaults to webhook name)</td>
+                            </tr>
+                        </table>
+                        <h4>Outgoing Webhook Payload Format</h4>
+                        <p>Outgoing webhooks receive a signed JSON POST with this structure:</p>
+                        <div class="code-block">
+<pre>{
+  "event": "message.created",
+  "timestamp": "2026-02-19T12:00:00Z",
+  "data": {
+    "message_id": 123,
+    "channel_id": 1,
+    "channel_name": "general",
+    "user_id": 10,
+    "username": "alice",
+    "content": "Hello world"
+  }
+}
+
+Headers:
+  X-Portal-Signature: sha256=abc123...
+  X-Portal-Event: message.created
+  Content-Type: application/json</pre>
+                        </div>
+                        <p>Verify the signature by computing <code>HMAC-SHA256(secret, request_body)</code> and comparing with the <code>X-Portal-Signature</code> header value.</p>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2 id="embedded-browser">Embedded Browser</h2>
+                <p>Portal's embedded browser provides a tabbed browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar, tabbed browsing (Ctrl+T/W/Tab), and multi-site navigation for browser-mode connections. A default "Web Browser" connection with DuckDuckGo as homepage is created for all users. Connection IDs use opaque string tokens.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/browser?connection={id}</span>
+                        <span class="endpoint-desc">Open embedded browser for HTTP proxy connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Opens the embedded browser page for browsing a remote web service through Portal. Requires authentication. The connection must use the <code>http_proxy</code> plugin type (includes <code>http</code>, <code>https</code>, <code>http_proxy</code>, and all web panel connection types such as Home Assistant, Grafana, Portainer, etc.). Connections with <code>browser_mode: true</code> support multi-site navigation to any website.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">connection</span></td><td><span class="param-type">string</span></td><td>Connection ID (opaque token) <span class="param-required">required</span></td></tr>
+                        </table>
+                        <h4>Notes</h4>
+                        <ul>
+                            <li>This is the user-facing page for HTTP/HTTPS connections. When users click <strong>Connect</strong> on a web-type connection, they are directed here.</li>
+                            <li>Supports tabbed browsing (Ctrl+T new tab, Ctrl+W close, Ctrl+Tab switch), keyboard shortcuts (Alt+arrows, Ctrl+L, Ctrl+R), and middle-click to close tabs.</li>
+                            <li>Browser-mode connections can navigate to any website. The address bar accepts full URLs, bare hostnames (auto-prefixed with https://), and relative paths.</li>
+                            <li>All proxied traffic is routed internally through <code>/proxy/{connection_id}/{path}</code>. Users should use <code>/browser?connection={id}</code> rather than accessing <code>/proxy/</code> directly.</li>
+                            <li>The embedded browser rewrites links and intercepts navigation (forms, fetch, XHR, WebSocket, Location.assign/replace, history API) to keep all traffic within Portal's proxy layer.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/proxy/{connection_id}/{path}</span>
+                        <span class="endpoint-desc">Reverse proxy passthrough (internal)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Proxies HTTP requests to the backend service configured for the given connection. This endpoint is used internally by the embedded browser and should not be accessed directly by users. Use <code>/browser?connection={id}</code> instead for the full browsing experience with navigation controls.</p>
+                        <h4>Path Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">connection_id</span></td><td><span class="param-type">string</span></td><td>Connection ID (opaque token) <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Path to proxy to the backend service</td></tr>
+                        </table>
+                        <h4>Behavior</h4>
+                        <ul>
+                            <li>Forwards all HTTP methods (GET, POST, PUT, DELETE, etc.) to the backend</li>
+                            <li>Proxies WebSocket upgrade requests for real-time features</li>
+                            <li>Enforces TLS for connections to HTTPS backends</li>
+                            <li>In browser mode, the path encodes the full target URL (e.g., <code>/proxy/{id}/https://example.com/page</code>) for multi-site navigation</li>
+                            <li>Localhost and private IPs are blocked for browser-mode targets</li>
+                            <li>Portal session cookies and Authorization headers are stripped from upstream requests</li>
+                            <li>Requires authentication &mdash; only the connection owner can access their proxy routes</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <h2 id="sftp-browser">SFTP Browser</h2>
+                <p>Browse and manage files on remote servers via your existing SSH/SFTP connections. Per-user access -- only connections you own are accessible. Ephemeral connections are opened per-request.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/list</span>
+                        <span class="endpoint-desc">List remote directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List remote directory contents.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path (default: <code>/</code>)</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/read</span>
+                        <span class="endpoint-desc">Read remote text file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Read remote text file for editing. Maximum file size: 5MB.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/download</span>
+                        <span class="endpoint-desc">Download remote file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Download a remote file as a streaming attachment.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/upload</span>
+                        <span class="endpoint-desc">Upload to remote server</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Upload a file to the remote server via multipart form data.</p>
+                        <h4>Form Fields</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/write</span>
+                        <span class="endpoint-desc">Write remote text file</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/mkdir</span>
+                        <span class="endpoint-desc">Create remote directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path to create <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/rename</span>
+                        <span class="endpoint-desc">Rename or move remote path</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current remote path <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New remote path <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/sftp/{conn_id}/delete</span>
+                        <span class="endpoint-desc">Delete remote file or directory</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a remote file or empty directory.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote path to delete <span class="param-required">required</span></td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
+
+                <!-- System Stats (Admin) -->
+                <div class="admin-only">
+                <h2 id="admin-stats">System Stats <span class="badge-admin">ADMIN</span></h2>
+                <p>Authenticated statistics with additional detail beyond the public stats endpoint.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/stats</span>
+                        <span class="endpoint-desc">Get system statistics</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns detailed system statistics including user counts, active connections, and service counts.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"total_users"</span>: <span class="number">10</span>,
+  <span class="string">"active_connections"</span>: <span class="number">5</span>,
+  <span class="string">"total_services"</span>: <span class="number">3</span>,
+  <span class="string">"uptime_check"</span>: <span class="string">"2026-02-09T12:00:00Z"</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+                </div>
+
+                <!-- System Info (Admin) -->
+                <div class="admin-only">
+                <h2 id="system-info">System Info <span class="badge-admin">ADMIN</span></h2>
+                <p>Server configuration and capability queries.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/plugins</span>
+                        <span class="endpoint-desc">List available plugins</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all available plugins with their configuration schemas.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"plugins"</span>: [
+    {
+      <span class="string">"name"</span>: <span class="string">"ssh"</span>,
+      <span class="string">"display_name"</span>: <span class="string">"SSH Terminal"</span>,
+      <span class="string">"description"</span>: <span class="string">"SSH connection over WebSocket"</span>,
+      <span class="string">"config_schema"</span>: {...}
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shells</span>
+                        <span class="endpoint-desc">List available shells</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns available shells on the server. Used by the terminal and SSH shell selectors.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"shells"</span>: [
+    {<span class="string">"path"</span>: <span class="string">"/usr/bin/bash"</span>, <span class="string">"name"</span>: <span class="string">"bash"</span>},
+    {<span class="string">"path"</span>: <span class="string">"/usr/bin/fish"</span>, <span class="string">"name"</span>: <span class="string">"fish"</span>},
+    {<span class="string">"path"</span>: <span class="string">"/usr/bin/zsh"</span>, <span class="string">"name"</span>: <span class="string">"zsh"</span>}
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/tunnels</span>
+                        <span class="endpoint-desc">Get active tunnel sessions</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns active secure tunnel sessions with connection details.</p>
+                    </div>
+                </div>
+                </div>
+
+                <!-- Managed Services (Admin) -->
+                <div class="admin-only">
+                <h2 id="managed-services">Managed Services <span class="badge-admin">ADMIN</span></h2>
+                <p>Managed Services are background server processes that Portal can start, stop, and monitor. This includes the MediaMTX streaming server and other infrastructure components.</p>
+
+                <div class="alert alert-info">
+                    <strong>Service Lifecycle:</strong> Services are started automatically when needed. Logs are captured and retained for 7 days.
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/types</span>
+                        <span class="endpoint-desc">List available service types</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the list of available managed service types that can be created (e.g., mediamtx).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services</span>
+                        <span class="endpoint-desc">List all managed services</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns all managed services and their current status.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"services"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">1</span>,
+      <span class="string">"name"</span>: <span class="string">"mediamtx"</span>,
+      <span class="string">"display_name"</span>: <span class="string">"MediaMTX Streaming Server"</span>,
+      <span class="string">"status"</span>: <span class="string">"running"</span>,
+      <span class="string">"pid"</span>: <span class="number">12345</span>,
+      <span class="string">"started_at"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>,
+      <span class="string">"auto_start"</span>: <span class="keyword">true</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services</span>
+                        <span class="endpoint-desc">Create managed service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Create a new managed service instance.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">service_type</span></td><td><span class="param-type">string</span></td><td>Type of service (e.g., <code>mediamtx</code>) <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">display_name</span></td><td><span class="param-type">string</span></td><td>Display name <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">auto_start</span></td><td><span class="param-type">boolean</span></td><td>Start automatically on boot (default: false)</td></tr>
+                            <tr><td><span class="param-name">config</span></td><td><span class="param-type">object</span></td><td>Service-specific configuration</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{id}</span>
+                        <span class="endpoint-desc">Get managed service details</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns detailed status for a specific managed service.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"name"</span>: <span class="string">"mediamtx"</span>,
+  <span class="string">"status"</span>: <span class="string">"running"</span>,
+  <span class="string">"pid"</span>: <span class="number">12345</span>,
+  <span class="string">"uptime_seconds"</span>: <span class="number">3600</span>,
+  <span class="string">"memory_mb"</span>: <span class="number">128</span>,
+  <span class="string">"cpu_percent"</span>: <span class="number">2.5</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/managed-services/{id}</span>
+                        <span class="endpoint-desc">Update managed service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update a managed service's display name, auto-start setting, or configuration.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">display_name</span></td><td><span class="param-type">string</span></td><td>New display name</td></tr>
+                            <tr><td><span class="param-name">auto_start</span></td><td><span class="param-type">boolean</span></td><td>Auto-start on boot</td></tr>
+                            <tr><td><span class="param-name">config</span></td><td><span class="param-type">object</span></td><td>Service-specific configuration</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/managed-services/{id}</span>
+                        <span class="endpoint-desc">Delete managed service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Delete a managed service. Stops the service if running before removal.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/start</span>
+                        <span class="endpoint-desc">Start a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Start a stopped managed service.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"status"</span>: <span class="string">"started"</span>,
+  <span class="string">"pid"</span>: <span class="number">12345</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/stop</span>
+                        <span class="endpoint-desc">Stop a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Stop a running managed service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/restart</span>
+                        <span class="endpoint-desc">Restart a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Stop and start a managed service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/status</span>
+                        <span class="endpoint-desc">Get service runtime status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns the current runtime status of a managed service including health check results.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/logs</span>
+                        <span class="endpoint-desc">Get service logs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns recent log entries for a managed service.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">lines</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Number of lines to return (default: 100)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">level</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Filter by level: debug, info, warning, error</td>
+                            </tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"logs"</span>: [
+    {
+      <span class="string">"timestamp"</span>: <span class="string">"2024-01-15T10:00:00Z"</span>,
+      <span class="string">"level"</span>: <span class="string">"info"</span>,
+      <span class="string">"message"</span>: <span class="string">"MediaMTX started on RTMPS port 1936"</span>
+    }
+  ]
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>Available Services</h3>
+                <table class="param-table">
+                    <tr><th>Name</th><th>Description</th><th>Ports</th></tr>
+                    <tr>
+                        <td><span class="param-name">mediamtx</span></td>
+                        <td>MediaMTX streaming server for RTMPS/HLS/WebRTC</td>
+                        <td>1936, 8322, 8888, 8889</td>
+                    </tr>
+                </table>
+                </div>
+
+                <!-- Metrics (Admin) -->
+                <div class="admin-only">
+                <h2 id="metrics">Traffic Metrics <span class="badge-admin">ADMIN</span></h2>
+                <p>Real-time traffic monitoring and statistics.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics</span>
+                        <span class="endpoint-desc">Get metrics summary</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns overall traffic metrics including active connections, bandwidth, and request counts.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/services</span>
+                        <span class="endpoint-desc">Per-service metrics</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns traffic breakdown by service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/active</span>
+                        <span class="endpoint-desc">Active connections</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns list of currently active connections with user and service info.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/timeseries</span>
+                        <span class="endpoint-desc">Time-series data</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns time-series data for traffic metrics.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">period</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Time period: 1h, 6h, 24h, 7d (default: 24h)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/metrics/top</span>
+                        <span class="endpoint-desc">Top users &amp; services</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns top users and services by traffic volume.</p>
+                    </div>
+                </div>
+                </div>
+
+                <!-- Logs (Admin) -->
+                <div class="admin-only">
+                <h2 id="logs">Server Logs <span class="badge-admin">ADMIN</span></h2>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/logs</span>
+                        <span class="endpoint-desc">Get log contents</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">lines</span></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Number of lines to return (default: 100)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">file</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Log file name (default: current)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/logs/files</span>
+                        <span class="endpoint-desc">List log files</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns available log files.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/logs/settings</span>
+                        <span class="endpoint-desc">Get log settings</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns current log configuration.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/logs/settings</span>
+                        <span class="endpoint-desc">Update log settings</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Update log level, rotation, and other settings.</p>
+                    </div>
+                </div>
+                </div>
+
+                <!-- Shodan Integration (Admin) -->
+                <div class="admin-only">
+                <h2 id="shodan">Shodan Integration <span class="badge-admin">ADMIN</span></h2>
+                <p>Shodan API integration for network reconnaissance and security monitoring.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shodan/info</span>
+                        <span class="endpoint-desc">Get API key status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns Shodan API key status and account information.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/shodan/api-key</span>
+                        <span class="endpoint-desc">Set Shodan API key</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">api_key</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Shodan API key <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shodan/lookup/{ip}</span>
+                        <span class="endpoint-desc">Look up IP address</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Look up detailed information about an IP address from Shodan.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/shodan/search</span>
+                        <span class="endpoint-desc">Search Shodan</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">q</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Shodan search query <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+                </div>
+
+                <!-- Vulnerability Scanner (Admin) -->
+                <div class="admin-only">
+                <h2 id="vulnerability">Vulnerability Scanner <span class="badge-admin">ADMIN</span></h2>
+                <p>Scan hosts and services for known vulnerabilities using nmap and CVE databases.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/scan/{host}</span>
+                        <span class="endpoint-desc">Scan host for vulnerabilities</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">ports</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Port range to scan (default: "1-1000")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">scan_type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>basic, version, vulnerability, or full</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/cve/{cve_id}</span>
+                        <span class="endpoint-desc">Look up CVE details</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Fetch detailed information about a specific CVE from NVD.</p>
+                        <h4>Example</h4>
+                        <div class="code-block">
+<pre>GET /api/vuln/cve/CVE-2024-6387</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/scan-service/{service_id}</span>
+                        <span class="endpoint-desc">Scan a Portal service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Scan a Portal service's host and port for vulnerabilities.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">scan_type</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>basic, version, vuln, or full (default: version)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/mitigations/{cve_id}</span>
+                        <span class="endpoint-desc">Get CVE mitigations</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Get mitigation steps for a specific CVE.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/known-cves</span>
+                        <span class="endpoint-desc">List known CVEs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>List all known CVEs in the local database, sorted by CVSS score (highest first).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/search</span>
+                        <span class="endpoint-desc">Search CVEs</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">q</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Search keyword (product, vendor, etc.)</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/vuln/status</span>
+                        <span class="endpoint-desc">Scanner status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Get vulnerability scanner status (nmap availability, NVD API config, cache info).</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"nmap_available"</span>: <span class="keyword">true</span>,
+  <span class="string">"nvd_api_configured"</span>: <span class="keyword">false</span>,
+  <span class="string">"known_cves_count"</span>: <span class="number">42</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/vuln/nvd-api-key</span>
+                        <span class="endpoint-desc">Set NVD API key</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Configure NVD API key for higher rate limits (50 requests/30 seconds).</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr>
+                                <td><span class="param-name">api_key</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>NVD API key <span class="param-required">required</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+                </div>
+
                 <!-- System Health -->
                 <h2 id="system-health">System Health <span class="badge-admin">ADMIN</span></h2>
                 <p>Detailed system resource monitoring including CPU, memory, disk, and Portal process metrics.</p>
@@ -4714,197 +5119,6 @@ ws.send(JSON.stringify({
                 </div>
                 </div>
 
-                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
-
-                <h2 id="embedded-browser">Embedded Browser</h2>
-                <p>Portal's embedded browser provides a tabbed browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar, tabbed browsing (Ctrl+T/W/Tab), and multi-site navigation for browser-mode connections. A default "Web Browser" connection with DuckDuckGo as homepage is created for all users. Connection IDs use opaque string tokens.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/browser?connection={id}</span>
-                        <span class="endpoint-desc">Open embedded browser for HTTP proxy connection</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Opens the embedded browser page for browsing a remote web service through Portal. Requires authentication. The connection must use the <code>http_proxy</code> plugin type (includes <code>http</code>, <code>https</code>, <code>http_proxy</code>, and all web panel connection types such as Home Assistant, Grafana, Portainer, etc.). Connections with <code>browser_mode: true</code> support multi-site navigation to any website.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">connection</span></td><td><span class="param-type">string</span></td><td>Connection ID (opaque token) <span class="param-required">required</span></td></tr>
-                        </table>
-                        <h4>Notes</h4>
-                        <ul>
-                            <li>This is the user-facing page for HTTP/HTTPS connections. When users click <strong>Connect</strong> on a web-type connection, they are directed here.</li>
-                            <li>Supports tabbed browsing (Ctrl+T new tab, Ctrl+W close, Ctrl+Tab switch), keyboard shortcuts (Alt+arrows, Ctrl+L, Ctrl+R), and middle-click to close tabs.</li>
-                            <li>Browser-mode connections can navigate to any website. The address bar accepts full URLs, bare hostnames (auto-prefixed with https://), and relative paths.</li>
-                            <li>All proxied traffic is routed internally through <code>/proxy/{connection_id}/{path}</code>. Users should use <code>/browser?connection={id}</code> rather than accessing <code>/proxy/</code> directly.</li>
-                            <li>The embedded browser rewrites links and intercepts navigation (forms, fetch, XHR, WebSocket, Location.assign/replace, history API) to keep all traffic within Portal's proxy layer.</li>
-                        </ul>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/proxy/{connection_id}/{path}</span>
-                        <span class="endpoint-desc">Reverse proxy passthrough (internal)</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Proxies HTTP requests to the backend service configured for the given connection. This endpoint is used internally by the embedded browser and should not be accessed directly by users. Use <code>/browser?connection={id}</code> instead for the full browsing experience with navigation controls.</p>
-                        <h4>Path Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">connection_id</span></td><td><span class="param-type">string</span></td><td>Connection ID (opaque token) <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Path to proxy to the backend service</td></tr>
-                        </table>
-                        <h4>Behavior</h4>
-                        <ul>
-                            <li>Forwards all HTTP methods (GET, POST, PUT, DELETE, etc.) to the backend</li>
-                            <li>Proxies WebSocket upgrade requests for real-time features</li>
-                            <li>Enforces TLS for connections to HTTPS backends</li>
-                            <li>In browser mode, the path encodes the full target URL (e.g., <code>/proxy/{id}/https://example.com/page</code>) for multi-site navigation</li>
-                            <li>Localhost and private IPs are blocked for browser-mode targets</li>
-                            <li>Portal session cookies and Authorization headers are stripped from upstream requests</li>
-                            <li>Requires authentication &mdash; only the connection owner can access their proxy routes</li>
-                        </ul>
-                    </div>
-                </div>
-
-                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
-
-                <h2 id="sftp-browser">SFTP Browser</h2>
-                <p>Browse and manage files on remote servers via your existing SSH/SFTP connections. Per-user access -- only connections you own are accessible. Ephemeral connections are opened per-request.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/list</span>
-                        <span class="endpoint-desc">List remote directory</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>List remote directory contents.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path (default: <code>/</code>)</td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/read</span>
-                        <span class="endpoint-desc">Read remote text file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Read remote text file for editing. Maximum file size: 5MB.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/download</span>
-                        <span class="endpoint-desc">Download remote file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Download a remote file as a streaming attachment.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/upload</span>
-                        <span class="endpoint-desc">Upload to remote server</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Upload a file to the remote server via multipart form data.</p>
-                        <h4>Form Fields</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Destination directory path <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">file</span></td><td><span class="param-type">file</span></td><td>File to upload <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/write</span>
-                        <span class="endpoint-desc">Write remote text file</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote file path <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">content</span></td><td><span class="param-type">string</span></td><td>File content <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/mkdir</span>
-                        <span class="endpoint-desc">Create remote directory</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote directory path to create <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/rename</span>
-                        <span class="endpoint-desc">Rename or move remote path</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">old_path</span></td><td><span class="param-type">string</span></td><td>Current remote path <span class="param-required">required</span></td></tr>
-                            <tr><td><span class="param-name">new_path</span></td><td><span class="param-type">string</span></td><td>New remote path <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-delete">DELETE</span>
-                        <span class="endpoint-path">/api/sftp/{conn_id}/delete</span>
-                        <span class="endpoint-desc">Delete remote file or directory</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Delete a remote file or empty directory.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">path</span></td><td><span class="param-type">string</span></td><td>Remote path to delete <span class="param-required">required</span></td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
-
                 <div class="admin-only">
                 <h2 id="sftp-vod">SFTP VOD Storage <span class="badge-admin">ADMIN</span></h2>
                 <p>Manage VOD files on the configured SFTP VOD storage server. These endpoints operate on the user's VOD storage connection (configured via the VOD Storage settings). Used internally by the VOD system for chunk uploads and available for administrative file management.</p>
@@ -5324,220 +5538,6 @@ ws.send(JSON.stringify({
   ]
 }</pre>
                         </div>
-                    </div>
-                </div>
-
-                <!-- Webhooks -->
-                <h2 id="webhooks">Webhooks</h2>
-                <p>Webhooks let you receive real-time HTTP notifications when events happen in your portal (outgoing), or post messages into chat channels from external services (incoming). Outgoing webhooks sign payloads with HMAC-SHA256 for verification. Webhook URLs, secrets, and delivery log payloads are encrypted at rest. Admin+ required for management.</p>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/webhooks</span>
-                        <span class="endpoint-desc">Create webhook</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Create an outgoing or incoming webhook. Maximum 25 webhooks per user. The webhook secret is returned only once on creation.</p>
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">name</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Webhook name (1-100 chars) <span class="param-required">required</span></td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">type</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td><code>outgoing</code> or <code>incoming</code> <span class="param-required">required</span></td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">url</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Delivery URL (outgoing only, HTTPS required, SSRF-protected) <span class="param-required">required for outgoing</span></td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">events</span></td>
-                                <td><span class="param-type">array</span></td>
-                                <td>Events to subscribe to (outgoing only): <code>message.created</code>, <code>message.deleted</code>, <code>stream.live</code>, <code>stream.offline</code>, <code>user.joined</code>, <code>user.connected</code>, <code>user.disconnected</code> <span class="param-required">required for outgoing</span></td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">channel_id</span></td>
-                                <td><span class="param-type">integer</span></td>
-                                <td>Target channel for incoming webhook messages <span class="param-required">required for incoming</span></td>
-                            </tr>
-                        </table>
-                        <h4>Response</h4>
-                        <div class="code-block">
-<pre>{
-  "id": 1,
-  "name": "My Webhook",
-  "type": "outgoing",
-  "url": "https://example.com/hook",
-  "secret": "abc123...",
-  "events": ["message.created"],
-  "enabled": true,
-  "token": null
-}</pre>
-                        </div>
-                        <p><strong>Note:</strong> The <code>secret</code> field is only returned on creation. Store it securely for HMAC verification.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/webhooks</span>
-                        <span class="endpoint-desc">List webhooks</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>List your webhooks. Admins see all webhooks with owner usernames. Secrets are never returned in list responses.</p>
-                        <div class="code-block">
-<pre>{
-  "webhooks": [
-    {
-      "id": 1,
-      "name": "My Webhook",
-      "type": "outgoing",
-      "url": "https://example.com/hook",
-      "has_secret": true,
-      "events": ["message.created"],
-      "enabled": true,
-      "consecutive_failures": 0,
-      "created_at": "2026-02-19 12:00:00"
-    }
-  ]
-}</pre>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/webhooks/{id}</span>
-                        <span class="endpoint-desc">Get webhook details</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Get details for a specific webhook. Owner or admin required.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-put">PUT</span>
-                        <span class="endpoint-path">/api/webhooks/{id}</span>
-                        <span class="endpoint-desc">Update webhook</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Update webhook name, URL, events, channel, or enabled status. URL changes are SSRF-validated. Owner or admin required.</p>
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">name</span></td><td><span class="param-type">string</span></td><td>New name</td></tr>
-                            <tr><td><span class="param-name">url</span></td><td><span class="param-type">string</span></td><td>New delivery URL (outgoing only)</td></tr>
-                            <tr><td><span class="param-name">events</span></td><td><span class="param-type">array</span></td><td>Updated event list</td></tr>
-                            <tr><td><span class="param-name">channel_id</span></td><td><span class="param-type">integer</span></td><td>New target channel (incoming only)</td></tr>
-                            <tr><td><span class="param-name">enabled</span></td><td><span class="param-type">boolean</span></td><td>Enable/disable webhook</td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-delete">DELETE</span>
-                        <span class="endpoint-path">/api/webhooks/{id}</span>
-                        <span class="endpoint-desc">Delete webhook</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Delete a webhook and all its delivery logs. Owner or admin required.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-get">GET</span>
-                        <span class="endpoint-path">/api/webhooks/{id}/logs</span>
-                        <span class="endpoint-desc">Delivery logs</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>View delivery logs for a webhook. Includes request payload, response status, success/failure, attempt number, and duration. Logs are encrypted at rest and auto-cleaned after 7 days.</p>
-                        <h4>Query Parameters</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><span class="param-name">limit</span></td><td><span class="param-type">integer</span></td><td>Max results (default 50, max 100)</td></tr>
-                            <tr><td><span class="param-name">offset</span></td><td><span class="param-type">integer</span></td><td>Pagination offset</td></tr>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/webhooks/{id}/test</span>
-                        <span class="endpoint-desc">Send test event</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Send a <code>webhook.test</code> event to verify your webhook endpoint is working. Owner or admin required.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/webhooks/{id}/regenerate-secret</span>
-                        <span class="endpoint-desc">Regenerate HMAC secret</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Generate a new HMAC signing secret. The new secret is returned only once. The old secret is immediately invalidated.</p>
-                    </div>
-                </div>
-
-                <div class="endpoint">
-                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-                        <span class="method method-post">POST</span>
-                        <span class="endpoint-path">/api/webhooks/incoming/{token}</span>
-                        <span class="endpoint-desc">Post incoming webhook message</span>
-                    </div>
-                    <div class="endpoint-body">
-                        <p>Post a message to a chat channel via an incoming webhook. No authentication required &mdash; the token in the URL acts as the credential. Rate limited to 10 messages per 60 seconds per token.</p>
-                        <h4>Request Body</h4>
-                        <table class="param-table">
-                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
-                            <tr>
-                                <td><span class="param-name">content</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Message content (1-4000 chars) <span class="param-required">required</span></td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">username</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Display name override (max 50 chars, defaults to webhook name)</td>
-                            </tr>
-                        </table>
-                        <h4>Outgoing Webhook Payload Format</h4>
-                        <p>Outgoing webhooks receive a signed JSON POST with this structure:</p>
-                        <div class="code-block">
-<pre>{
-  "event": "message.created",
-  "timestamp": "2026-02-19T12:00:00Z",
-  "data": {
-    "message_id": 123,
-    "channel_id": 1,
-    "channel_name": "general",
-    "user_id": 10,
-    "username": "alice",
-    "content": "Hello world"
-  }
-}
-
-Headers:
-  X-Portal-Signature: sha256=abc123...
-  X-Portal-Event: message.created
-  Content-Type: application/json</pre>
-                        </div>
-                        <p>Verify the signature by computing <code>HMAC-SHA256(secret, request_body)</code> and comparing with the <code>X-Portal-Signature</code> header value.</p>
                     </div>
                 </div>
 
