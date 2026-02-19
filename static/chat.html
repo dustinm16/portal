@@ -6769,7 +6769,6 @@
             const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
             let idleTimer = null;
             let isAutoAway = false;
-            let manualStatus = null; // Track user's explicit status choice
 
             function resetIdleTimer() {
                 if (idleTimer) clearTimeout(idleTimer);
@@ -6792,8 +6791,6 @@
             // Override setMyStatus to track manual changes
             const origSetMyStatus = setMyStatus;
             window.setMyStatus = async function(status) {
-                // If user manually picks a status, don't auto-manage it
-                if (!isAutoAway) manualStatus = status;
                 isAutoAway = false;
                 return origSetMyStatus(status);
             };

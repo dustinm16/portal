@@ -200,7 +200,7 @@ def _validate_relay_url(rtmp_url: str) -> str | None:
     return None
 
 
-def _validate_webhook_url(url: str) -> str | None:
+async def _validate_webhook_url(url: str) -> str | None:
     """Validate webhook URL is not targeting internal/blocked hosts.
 
     Returns an error string if invalid, or None if OK.
@@ -217,7 +217,8 @@ def _validate_webhook_url(url: str) -> str | None:
     if is_blocked_host(hostname):
         return "URL points to a blocked/internal host"
     try:
-        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+        loop = asyncio.get_event_loop()
+        for info in await loop.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM):
             resolved_ip = info[4][0]
             if is_blocked_host(resolved_ip):
                 return "URL resolves to a blocked/internal address"
@@ -3878,7 +3879,7 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     success = False
 
     try:
-        connector = _SSRFSafeConnector(ssl=False)
+        connector = _SSRFSafeConnector()
         timeout_cfg = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(connector=connector) as session:
             async with session.post(url, data=body_json, headers=headers,
@@ -3990,7 +3991,7 @@ async def http_create_webhook(request: web.Request) -> web.Response:
             return web.json_response({"error": "URL too long (max 2048 chars)"}, status=400)
         if not url.startswith(("http://", "https://")):
             return web.json_response({"error": "URL must start with http:// or https://"}, status=400)
-        err = _validate_webhook_url(url)
+        err = await _validate_webhook_url(url)
         if err:
             return web.json_response({"error": err}, status=400)
 
@@ -4092,7 +4093,7 @@ async def http_update_webhook(request: web.Request) -> web.Response:
             return web.json_response({"error": "URL required (max 2048 chars)"}, status=400)
         if not url.startswith(("http://", "https://")):
             return web.json_response({"error": "URL must start with http:// or https://"}, status=400)
-        err = _validate_webhook_url(url)
+        err = await _validate_webhook_url(url)
         if err:
             return web.json_response({"error": err}, status=400)
         updates["url"] = url
@@ -4168,8 +4169,11 @@ async def http_get_webhook_logs(request: web.Request) -> web.Response:
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
-    limit = min(int(request.query.get("limit", 50)), 200)
-    offset = int(request.query.get("offset", 0))
+    try:
+        limit = min(int(request.query.get("limit", 50)), 200)
+        offset = max(int(request.query.get("offset", 0)), 0)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid limit/offset"}, status=400)
     logs = await db.get_webhook_logs(webhook_id, limit=limit, offset=offset)
     return web.json_response({"logs": logs})
 
@@ -4205,7 +4209,9 @@ async def http_test_webhook(request: web.Request) -> web.Response:
             break
     if not full_wh:
         # Webhook may not subscribe to 'webhook.test', so fetch directly
-        cursor = await db.conn.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+        if not webhook.get("enabled"):
+            return web.json_response({"error": "Webhook is disabled"}, status=400)
+        cursor = await db.conn.execute("SELECT * FROM webhooks WHERE id = ? AND enabled = 1", (webhook_id,))
         row = await cursor.fetchone()
         if row:
             full_wh = dict(row)
@@ -13194,9 +13200,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 break
         if not has_other_ws:
             chat_user_state.pop(user_id, None)
-            # Auto-set offline + update last_seen
+            # Auto-set offline + update last_seen (preserve manual busy/dnd)
             try:
-                await db.set_user_status(user_id, "offline", None)
+                u_status = await db.get_user_status(user_id)
+                if u_status and u_status.get("status") in ("online", "away"):
+                    await db.set_user_status(user_id, "offline", u_status.get("status_message"))
                 await db.update_last_seen(user_id)
                 asyncio.create_task(fire_webhook_event("user.disconnected", {
                     "user_id": user_id, "username": username

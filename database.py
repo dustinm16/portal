@@ -5947,6 +5947,8 @@ class Database:
         d["has_secret"] = bool(d.get("secret"))
         del d["secret"]
         d["events"] = json.loads(d["events"]) if d["events"] else []
+        if d.get("last_failure_reason"):
+            d["last_failure_reason"] = decrypt_config(d["last_failure_reason"])
         return d
 
     async def get_webhook_by_token(self, token: str) -> Optional[dict]:
@@ -6044,7 +6046,7 @@ class Database:
         await self.conn.execute(
             """UPDATE webhooks SET consecutive_failures = consecutive_failures + 1,
                last_failure_at = datetime('now'), last_failure_reason = ?
-               WHERE id = ?""", (reason[:500], webhook_id))
+               WHERE id = ?""", (encrypt_config(reason[:500]), webhook_id))
         await self.conn.commit()
         cursor = await self.conn.execute(
             "SELECT consecutive_failures FROM webhooks WHERE id = ?", (webhook_id,))
