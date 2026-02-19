@@ -2661,8 +2661,8 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    if stream["user_id"] != token.user_id:
-        return web.json_response({"error": "Not authorized"}, status=403)
+    if stream["user_id"] is not None and stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
 
     # Create chat channel if one doesn't exist (for legacy streams)
     if not stream.get("chat_channel_id"):
@@ -2707,14 +2707,19 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Delete associated chat channel if exists
+    # Verify ownership before any mutations
+    if stream["user_id"] is not None and stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    success = await db.delete_user_stream(stream_id, user_id=token.user_id)
+    if not success:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Delete associated chat channel after successful stream deletion
     if stream.get("chat_channel_id"):
         await db.delete_chat_channel(stream["chat_channel_id"])
 
-    success = await db.delete_user_stream(stream_id, user_id=token.user_id)
-    if success:
-        return web.json_response({"success": True})
-    return web.json_response({"error": "Not authorized or stream not found"}, status=403)
+    return web.json_response({"success": True})
 
 
 async def http_regenerate_stream_key(request: web.Request) -> web.Response:
@@ -2801,8 +2806,8 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    if stream["user_id"] != token.user_id:
-        return web.json_response({"error": "Not authorized"}, status=403)
+    if stream["user_id"] is not None and stream["user_id"] != token.user_id:
+        return web.json_response({"error": "Stream not found"}, status=404)
 
     # Parse multipart data
     try:

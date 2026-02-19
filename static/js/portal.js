@@ -950,11 +950,7 @@ const NotificationBell = {
 
     async markRead(id) {
         try {
-            const resp = await Portal.api(`/api/notifications/${id}/read`, { method: 'POST' });
-            if (resp.error) {
-                Portal.toast('Failed to dismiss notification', 'error');
-                return;
-            }
+            await Portal.api(`/api/notifications/${id}/read`, { method: 'POST' });
             this._unreadCount = Math.max(0, this._unreadCount - 1);
             this.updateBadge();
             const item = document.getElementById(`notif-${id}`);
@@ -971,11 +967,7 @@ const NotificationBell = {
 
     async markAllRead() {
         try {
-            const resp = await Portal.api('/api/notifications/read-all', { method: 'POST' });
-            if (resp.error) {
-                Portal.toast('Failed to clear notifications', 'error');
-                return;
-            }
+            await Portal.api('/api/notifications/read-all', { method: 'POST' });
             this._unreadCount = 0;
             this.updateBadge();
             const list = document.getElementById('notif-list');
