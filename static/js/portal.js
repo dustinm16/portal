@@ -1044,6 +1044,9 @@ const NotificationBell = {
         }
         // Permission not yet requested — ask
         const result = await Notification.requestPermission();
+        if (result === 'granted') {
+            localStorage.setItem('portal_desktop_alerts_enabled', 'true');
+        }
         this._syncDesktopBtn();
         if (result === 'granted') {
             Portal.toast('Desktop alerts enabled', 'success');

@@ -957,6 +957,8 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_webhook_logs_webhook ON webhook_logs(webhook_id)",
     "CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at)",
+    # Status persistence: track user's explicit offline preference
+    "ALTER TABLE users ADD COLUMN status_preference TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1969,21 +1971,34 @@ class Database:
     async def get_user_status(self, user_id: int) -> Optional[dict]:
         """Get user status info."""
         cursor = await self.conn.execute(
-            "SELECT id, username, nickname, status, status_message FROM users WHERE id = ?",
+            "SELECT id, username, nickname, status, status_message, status_preference FROM users WHERE id = ?",
             (user_id,)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def set_user_status(self, user_id: int, status: str, status_message: str = None) -> bool:
-        """Set user status (online, away, busy, dnd, offline)."""
+    async def set_user_status(self, user_id: int, status: str, status_message: str = None,
+                              update_preference: bool = False) -> bool:
+        """Set user status (online, away, busy, dnd, offline).
+
+        update_preference=True: also record the user's explicit choice in status_preference.
+        When status is 'offline', status_preference is set to 'offline' (skip auto-online on reconnect).
+        When status is anything else, status_preference is cleared (allow auto-online).
+        """
         valid_statuses = ('online', 'away', 'busy', 'dnd', 'offline')
         if status not in valid_statuses:
             return False
-        cursor = await self.conn.execute(
-            "UPDATE users SET status = ?, status_message = ?, updated_at = ? WHERE id = ?",
-            (status, status_message, datetime.now(timezone.utc).isoformat(), user_id)
-        )
+        if update_preference:
+            pref = 'offline' if status == 'offline' else None
+            cursor = await self.conn.execute(
+                "UPDATE users SET status = ?, status_message = ?, status_preference = ?, updated_at = ? WHERE id = ?",
+                (status, status_message, pref, datetime.now(timezone.utc).isoformat(), user_id)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "UPDATE users SET status = ?, status_message = ?, updated_at = ? WHERE id = ?",
+                (status, status_message, datetime.now(timezone.utc).isoformat(), user_id)
+            )
         await self.conn.commit()
         return cursor.rowcount > 0
 

@@ -11720,10 +11720,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             asyncio.create_task(fire_webhook_event("user.connected", {
                                 "user_id": user_id, "username": display_name
                             }))
-                            # Auto-set online if currently offline
+                            # Auto-set online if currently offline, unless user explicitly chose offline
                             try:
                                 u_status = await db.get_user_status(user_id)
-                                if u_status and u_status.get("status") == "offline":
+                                if (u_status and u_status.get("status") == "offline"
+                                        and u_status.get("status_preference") != "offline"):
                                     await db.set_user_status(user_id, "online", u_status.get("status_message"))
                                     for ch in list(chat_rooms.keys()):
                                         for entry in chat_rooms.get(ch, set()):
@@ -13921,7 +13922,7 @@ async def http_update_user_status(request: web.Request) -> web.Response:
     if status_message and len(status_message) > 100:
         return web.json_response({"error": "Status message too long (max 100 chars)"}, status=400)
 
-    await db.set_user_status(token.user_id, status, status_message)
+    await db.set_user_status(token.user_id, status, status_message, update_preference=True)
 
     # Broadcast status change to all chat rooms the user is in
     user = await db.get_user_by_id(token.user_id)
