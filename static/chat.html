@@ -3678,6 +3678,11 @@
                         user.status_message = data.status_message;
                         renderUserList();
                     }
+                    // Keep own status indicator in sync (e.g. auto-online on reconnect)
+                    if (data.user_id === currentUser?.id) {
+                        if (currentUser) currentUser.status = data.status;
+                        updateMyStatusDisplay(data.status);
+                    }
                     break;
                 case 'user_nickname_changed':
                     if (onlineUsers.has(data.user_id)) {
