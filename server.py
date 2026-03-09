@@ -9919,7 +9919,7 @@ def _format_poll_for_client(poll: dict, user_id: int = None) -> dict:
         "message_id": poll.get("message_id"),
         "user_id": poll["user_id"],
         "question": poll["question"],
-        "options": poll.get("options", "[]"),
+        "options": poll.get("options_list", []),
         "allow_multiple": poll.get("allow_multiple"),
         "anonymous_votes": poll.get("anonymous_votes"),
         "is_closed": poll.get("is_closed", 0),
@@ -12449,7 +12449,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     continue
                             except (ValueError, TypeError):
                                 pass
-                        options = json.loads(poll["options"]) if isinstance(poll["options"], str) else poll["options"]
+                        options = poll.get("options_list", [])
                         if option_index < 0 or option_index >= len(options):
                             await ws.send_json({"type": "error", "message": "Invalid option"})
                             continue

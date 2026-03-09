@@ -3020,7 +3020,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=36"></script>
+    <script src="/static/js/portal.js?v=37"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
@@ -3748,7 +3748,7 @@
                 if (msg.username) knownChatNames.add(msg.username);
                 if (msg.nickname) knownChatNames.add(msg.nickname);
             });
-            messages.forEach(msg => appendMessage(msg, false));
+            messages.forEach(msg => { try { appendMessage(msg, false); } catch (e) { console.error('Failed to render message', msg?.id, e); } });
             container.scrollTop = container.scrollHeight;
         }
 
@@ -6536,7 +6536,7 @@
             // Restore voice/stream/poll buttons
             document.getElementById('voice-join-btn').style.display = '';
             document.getElementById('poll-btn').style.display = '';
-            joinChannel(channelName);
+            switchChannel(channelName);
             renderDmList();
         }
 
