@@ -51,11 +51,34 @@
             gap: 0.5rem;
             padding: 0.5rem 0.75rem;
             border-radius: 6px;
-            transition: background 0.15s ease;
             cursor: pointer;
             color: var(--text-secondary);
             transition: background 0.2s;
         }
+        .ch-item-label {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+        .ch-notif-bell {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 3px;
+            opacity: 0;
+            transition: opacity 0.15s, color 0.15s;
+            flex-shrink: 0;
+            line-height: 1;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+        }
+        .channel-item:hover .ch-notif-bell { opacity: 0.5; }
+        .ch-notif-bell:hover { opacity: 1 !important; color: var(--text-primary); }
+        .ch-notif-bell.active { opacity: 1; color: var(--accent-blue, #60a5fa); }
 
         .channel-item:hover {
             background: rgba(255,255,255,0.07);
@@ -3020,7 +3043,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=37"></script>
+    <script src="/static/js/portal.js?v=38"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
@@ -3063,6 +3086,66 @@
         let slowmodeCooldownTimer = null; // timer for slowmode countdown
         let blockedUsers = new Set(); // set of blocked user IDs
         let channelCanSend = true; // whether current user can send in current channel
+
+        // Per-channel/stream desktop notification subscriptions (localStorage)
+        let _subscribedChannels = new Set(JSON.parse(localStorage.getItem('portal_notif_channels') || '[]'));
+        let _subscribedStreams = new Set(JSON.parse(localStorage.getItem('portal_notif_streams') || '[]'));
+        function _saveNotifSubscriptions() {
+            localStorage.setItem('portal_notif_channels', JSON.stringify([..._subscribedChannels]));
+            localStorage.setItem('portal_notif_streams', JSON.stringify([..._subscribedStreams]));
+        }
+        function toggleChannelNotif(channelName, isStream, e) {
+            if (e) e.stopPropagation();
+            if (!('Notification' in window)) {
+                Portal.toast('Desktop notifications not supported in this browser', 'error');
+                return;
+            }
+            if (Notification.permission === 'denied') {
+                Portal.toast('Notifications blocked — enable them in your browser settings', 'error');
+                return;
+            }
+            const doToggle = () => {
+                if (isStream) {
+                    if (_subscribedStreams.has(channelName)) { _subscribedStreams.delete(channelName); Portal.toast('Stream live alerts off', 'info'); }
+                    else { _subscribedStreams.add(channelName); Portal.toast(`Will alert when ${channelName} goes live`, 'success'); }
+                } else {
+                    if (_subscribedChannels.has(channelName)) { _subscribedChannels.delete(channelName); Portal.toast('Message alerts off for #' + channelName, 'info'); }
+                    else { _subscribedChannels.add(channelName); Portal.toast('Will alert on new messages in #' + channelName, 'success'); }
+                }
+                _saveNotifSubscriptions();
+                renderChannels(channelsList);
+            };
+            if (Notification.permission === 'granted') { doToggle(); return; }
+            Notification.requestPermission().then(r => { if (r === 'granted') doToggle(); else Portal.toast('Desktop alerts blocked', 'error'); });
+        }
+        function _sendChannelDesktopNotification(data) {
+            if (typeof NotificationBell === 'undefined' || !NotificationBell._isEnabled()) return;
+            if (!document.hidden && document.hasFocus()) return;
+            const name = data.username || 'Someone';
+            const text = data.message || (data.image_url ? '[image]' : '[attachment]');
+            try {
+                const n = new Notification(`#${currentChannel} — ${name}`, {
+                    body: text.length > 120 ? text.slice(0, 120) + '…' : text,
+                    icon: '/favicon.ico',
+                    tag: 'portal-channel-' + currentChannel,
+                    silent: false
+                });
+                setTimeout(() => n.close(), 8000);
+            } catch (e) { /* ignore */ }
+        }
+        function _sendStreamLiveDesktopNotification(ch) {
+            if (typeof NotificationBell === 'undefined' || !NotificationBell._isEnabled()) return;
+            try {
+                const n = new Notification(`${ch.name} is now live!`, {
+                    body: 'Click to watch the stream',
+                    icon: '/favicon.ico',
+                    tag: 'portal-stream-live-' + (ch.stream_id || ch.name),
+                    silent: false
+                });
+                n.onclick = () => { window.focus(); n.close(); switchChannel(ch.name); };
+                setTimeout(() => n.close(), 10000);
+            } catch (e) { /* ignore */ }
+        }
 
         // DM state
         let currentView = 'channel'; // 'channel' or 'dm'
@@ -3456,12 +3539,18 @@
             const slowBadge = ch.slowmode_seconds > 0 ? `<span class="slowmode-badge" title="Slowmode: ${ch.slowmode_seconds}s">&#9201;</span>` : '';
             const lockIcon = ch.visibility === 'private' ? '<span title="Private" style="opacity:0.5;margin-right:2px;">&#128274;</span>' : '';
             const readonlyIcon = ch.mode === 'readonly' ? '<span title="Read-only" style="opacity:0.5;margin-right:2px;">&#128263;</span>' : '';
+            const isStream = !!ch.is_stream_channel;
+            const notifActive = isStream ? _subscribedStreams.has(ch.name) : _subscribedChannels.has(ch.name);
+            const bellTitle = isStream
+                ? (notifActive ? 'Stop stream live alerts' : 'Alert me when stream goes live')
+                : (notifActive ? 'Stop message alerts' : 'Alert me on new messages');
+            const bellBtn = `<button class="ch-notif-bell${notifActive ? ' active' : ''}" onclick="toggleChannelNotif('${CSS.escape(ch.name)}',${isStream},event)" title="${bellTitle}"><svg width="12" height="12" viewBox="0 0 24 24" fill="${notifActive ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>`;
             return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"
                      data-is-stream="${ch.is_stream_channel || false}"
                      data-stream-live="${ch.stream_is_live || false}">
-                    ${lockIcon}${readonlyIcon}${escapeHtml(ch.name)}${slowBadge}${badgeHtml}
+                    <span class="ch-item-label">${lockIcon}${readonlyIcon}${escapeHtml(ch.name)}${slowBadge}${badgeHtml}</span>${bellBtn}
                 </div>`;
         }
 
@@ -3546,6 +3635,7 @@
             switch (data.type) {
                 case 'message':
                     appendMessage(data);
+                    if (_subscribedChannels.has(currentChannel)) _sendChannelDesktopNotification(data);
                     break;
                 case 'history':
                     renderHistory(data.messages);
@@ -3950,8 +4040,12 @@
             // Update channel list grouping — update the stream's live status and re-render
             const ch = channelsList.find(c => c.is_stream_channel && c.stream_id === data.stream_id);
             if (ch) {
+                const wasLive = ch.stream_is_live;
                 ch.stream_is_live = data.is_live;
                 renderChannels(channelsList);
+                if (data.is_live === 1 && wasLive !== 1 && _subscribedStreams.has(ch.name)) {
+                    _sendStreamLiveDesktopNotification(ch);
+                }
             }
         }
 

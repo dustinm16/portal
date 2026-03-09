@@ -1002,7 +1002,24 @@ const NotificationBell = {
 
     // --- Desktop notification support ---
 
-    async requestDesktopPermission() {
+    _isEnabled() {
+        return 'Notification' in window &&
+               Notification.permission === 'granted' &&
+               localStorage.getItem('portal_desktop_alerts_enabled') !== 'false';
+    },
+
+    _fireTestNotification() {
+        try {
+            const n = new Notification('Portal alerts enabled', {
+                body: 'You\'ll be notified here when things happen.',
+                icon: '/favicon.ico',
+                tag: 'portal-test'
+            });
+            setTimeout(() => n.close(), 4000);
+        } catch (e) { /* ignore */ }
+    },
+
+    async toggleDesktopAlerts() {
         if (!('Notification' in window)) {
             Portal.toast('Desktop notifications not supported in this browser', 'error');
             return;
@@ -1011,23 +1028,33 @@ const NotificationBell = {
             Portal.toast('Notifications blocked — enable them in your browser settings', 'error');
             return;
         }
-        if (Notification.permission === 'granted') return;
-
+        if (Notification.permission === 'granted') {
+            if (this._isEnabled()) {
+                // Turn off
+                localStorage.setItem('portal_desktop_alerts_enabled', 'false');
+                Portal.toast('Desktop alerts disabled', 'info');
+            } else {
+                // Turn on + test
+                localStorage.setItem('portal_desktop_alerts_enabled', 'true');
+                Portal.toast('Desktop alerts enabled — test sent', 'success');
+                this._fireTestNotification();
+            }
+            this._syncDesktopBtn();
+            return;
+        }
+        // Permission not yet requested — ask
         const result = await Notification.requestPermission();
         this._syncDesktopBtn();
         if (result === 'granted') {
             Portal.toast('Desktop alerts enabled', 'success');
-            // Send a test notification so users know it worked
-            const n = new Notification('Portal alerts enabled', {
-                body: 'You\'ll be notified here when things happen.',
-                icon: '/favicon.ico',
-                tag: 'portal-test'
-            });
-            setTimeout(() => n.close(), 4000);
+            this._fireTestNotification();
         } else {
             Portal.toast('Desktop alerts blocked', 'error');
         }
     },
+
+    // Keep old name for any callers
+    requestDesktopPermission() { return this.toggleDesktopAlerts(); },
 
     _syncDesktopBtn() {
         const btn = document.getElementById('notif-desktop-btn');
@@ -1036,26 +1063,29 @@ const NotificationBell = {
             btn.style.display = 'none';
             return;
         }
-        if (Notification.permission === 'granted') {
-            btn.textContent = 'Alerts on';
-            btn.classList.add('notif-desktop-btn--on');
-            btn.title = 'Desktop alerts enabled';
-            btn.onclick = null; // no action needed
-        } else if (Notification.permission === 'denied') {
+        btn.classList.remove('notif-desktop-btn--on', 'notif-desktop-btn--off', 'notif-desktop-btn--blocked');
+        btn.onclick = () => NotificationBell.toggleDesktopAlerts();
+        if (Notification.permission === 'denied') {
             btn.textContent = 'Alerts blocked';
             btn.classList.add('notif-desktop-btn--blocked');
             btn.title = 'Enable notifications in your browser settings';
             btn.onclick = null;
+        } else if (this._isEnabled()) {
+            btn.textContent = 'Alerts on';
+            btn.classList.add('notif-desktop-btn--on');
+            btn.title = 'Click to disable desktop alerts';
+        } else if (Notification.permission === 'granted') {
+            btn.textContent = 'Alerts off';
+            btn.classList.add('notif-desktop-btn--off');
+            btn.title = 'Click to enable desktop alerts';
         } else {
             btn.textContent = 'Enable alerts';
-            btn.classList.remove('notif-desktop-btn--on', 'notif-desktop-btn--blocked');
             btn.title = 'Get desktop alerts for new notifications';
-            btn.onclick = () => NotificationBell.requestDesktopPermission();
         }
     },
 
     _sendDesktopNotification(notification) {
-        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        if (!this._isEnabled()) return;
         // Only show when page is in background — the toast covers the foreground case
         if (!document.hidden && document.hasFocus()) return;
 
@@ -1176,8 +1206,18 @@ notifStyle.textContent = `
     .notif-desktop-btn--on {
         border-color: var(--accent-green, #22c55e);
         color: var(--accent-green, #22c55e);
-        opacity: 0.7;
-        cursor: default;
+    }
+    .notif-desktop-btn--on:hover {
+        background: var(--accent-green, #22c55e);
+        color: #fff;
+    }
+    .notif-desktop-btn--off {
+        border-color: var(--text-muted, #888);
+        color: var(--text-muted, #888);
+    }
+    .notif-desktop-btn--off:hover {
+        background: var(--text-muted, #888);
+        color: #fff;
     }
     .notif-desktop-btn--blocked {
         border-color: var(--text-muted, #666);
