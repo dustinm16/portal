@@ -219,26 +219,42 @@ const Portal = {
     },
 
     /**
-     * Show toast notification
+     * Show toast notification (stacks vertically, newest at bottom)
      */
     toast(message, type = 'info') {
+        let container = document.getElementById('portal-toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'portal-toast-container';
+            container.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                display: flex;
+                flex-direction: column-reverse;
+                gap: 8px;
+                z-index: 9999;
+                pointer-events: none;
+            `;
+            document.body.appendChild(container);
+        }
+
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
         toast.textContent = message;
         toast.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
             padding: 12px 20px;
             background: ${type === 'error' ? 'rgba(239, 68, 68, 0.9)' : type === 'success' ? 'rgba(34, 197, 94, 0.9)' : 'rgba(96, 165, 250, 0.9)'};
             color: white;
             border-radius: 8px;
             font-size: 14px;
-            z-index: 9999;
+            pointer-events: auto;
             animation: slideIn 0.3s ease;
+            max-width: 320px;
+            word-wrap: break-word;
         `;
 
-        document.body.appendChild(toast);
+        container.appendChild(toast);
         setTimeout(() => {
             toast.style.animation = 'slideOut 0.3s ease';
             setTimeout(() => toast.remove(), 300);
@@ -854,7 +870,10 @@ const NotificationBell = {
         this._dropdown.innerHTML = `
             <div class="notif-header">
                 <span>Notifications</span>
-                <a href="#" onclick="NotificationBell.markAllRead(); return false;">Mark all read</a>
+                <div class="notif-header-actions">
+                    <button id="notif-desktop-btn" class="notif-desktop-btn" onclick="NotificationBell.requestDesktopPermission()" title="Enable desktop alerts"></button>
+                    <a href="#" onclick="NotificationBell.markAllRead(); return false;">Mark all read</a>
+                </div>
             </div>
             <div class="notif-list" id="notif-list">
                 <div class="notif-empty">No notifications</div>
@@ -869,8 +888,9 @@ const NotificationBell = {
             }
         });
 
-        // Load initial count
+        // Load initial count and sync desktop permission state
         this.loadCount();
+        this._syncDesktopBtn();
         // Poll every 30s
         this._pollInterval = setInterval(() => this.loadCount(), 30000);
     },
@@ -897,6 +917,7 @@ const NotificationBell = {
     async toggleDropdown() {
         if (this._dropdown.style.display === 'none') {
             await this.loadNotifications();
+            this._syncDesktopBtn();
             const bell = document.querySelector('.navbar-bell');
             const rect = bell.getBoundingClientRect();
             this._dropdown.style.top = rect.bottom + 4 + 'px';
@@ -979,12 +1000,91 @@ const NotificationBell = {
         }
     },
 
+    // --- Desktop notification support ---
+
+    async requestDesktopPermission() {
+        if (!('Notification' in window)) {
+            Portal.toast('Desktop notifications not supported in this browser', 'error');
+            return;
+        }
+        if (Notification.permission === 'denied') {
+            Portal.toast('Notifications blocked — enable them in your browser settings', 'error');
+            return;
+        }
+        if (Notification.permission === 'granted') return;
+
+        const result = await Notification.requestPermission();
+        this._syncDesktopBtn();
+        if (result === 'granted') {
+            Portal.toast('Desktop alerts enabled', 'success');
+            // Send a test notification so users know it worked
+            const n = new Notification('Portal alerts enabled', {
+                body: 'You\'ll be notified here when things happen.',
+                icon: '/favicon.ico',
+                tag: 'portal-test'
+            });
+            setTimeout(() => n.close(), 4000);
+        } else {
+            Portal.toast('Desktop alerts blocked', 'error');
+        }
+    },
+
+    _syncDesktopBtn() {
+        const btn = document.getElementById('notif-desktop-btn');
+        if (!btn) return;
+        if (!('Notification' in window)) {
+            btn.style.display = 'none';
+            return;
+        }
+        if (Notification.permission === 'granted') {
+            btn.textContent = 'Alerts on';
+            btn.classList.add('notif-desktop-btn--on');
+            btn.title = 'Desktop alerts enabled';
+            btn.onclick = null; // no action needed
+        } else if (Notification.permission === 'denied') {
+            btn.textContent = 'Alerts blocked';
+            btn.classList.add('notif-desktop-btn--blocked');
+            btn.title = 'Enable notifications in your browser settings';
+            btn.onclick = null;
+        } else {
+            btn.textContent = 'Enable alerts';
+            btn.classList.remove('notif-desktop-btn--on', 'notif-desktop-btn--blocked');
+            btn.title = 'Get desktop alerts for new notifications';
+            btn.onclick = () => NotificationBell.requestDesktopPermission();
+        }
+    },
+
+    _sendDesktopNotification(notification) {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        // Only show when page is in background — the toast covers the foreground case
+        if (!document.hidden && document.hasFocus()) return;
+
+        const n = new Notification(notification.title, {
+            body: notification.message || '',
+            icon: '/favicon.ico',
+            tag: notification.type || ('portal-notif-' + notification.id),
+            silent: false
+        });
+        n.onclick = () => {
+            window.focus();
+            n.close();
+            try {
+                const data = notification.data || {};
+                if (data.public_key) {
+                    window.open('/watch/' + data.public_key, '_blank');
+                }
+            } catch (e) { /* ignore */ }
+        };
+        // Auto-close after 8s in case browser doesn't do it
+        setTimeout(() => n.close(), 8000);
+    },
+
     // Handle real-time notification push from WebSocket
     handlePush(notification) {
         this._unreadCount++;
         this.updateBadge();
-        // Show toast
         Portal.toast(notification.title, 'info');
+        this._sendDesktopNotification(notification);
     },
 
     escapeHtml(str) {
@@ -1047,10 +1147,42 @@ notifStyle.textContent = `
         font-weight: 600;
         font-size: 0.875rem;
     }
+    .notif-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
     .notif-header a {
         font-size: 0.75rem;
         font-weight: 400;
         color: var(--accent-blue, #60a5fa);
+    }
+    .notif-desktop-btn {
+        font-size: 0.7rem;
+        font-weight: 500;
+        padding: 2px 7px;
+        border-radius: 4px;
+        border: 1px solid var(--accent-blue, #60a5fa);
+        background: transparent;
+        color: var(--accent-blue, #60a5fa);
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background 0.15s, color 0.15s;
+    }
+    .notif-desktop-btn:hover:not(.notif-desktop-btn--on):not(.notif-desktop-btn--blocked) {
+        background: var(--accent-blue, #60a5fa);
+        color: #fff;
+    }
+    .notif-desktop-btn--on {
+        border-color: var(--accent-green, #22c55e);
+        color: var(--accent-green, #22c55e);
+        opacity: 0.7;
+        cursor: default;
+    }
+    .notif-desktop-btn--blocked {
+        border-color: var(--text-muted, #666);
+        color: var(--text-muted, #666);
+        cursor: default;
     }
     .notif-list {
         max-height: 340px;

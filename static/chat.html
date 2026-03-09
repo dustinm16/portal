@@ -3020,7 +3020,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=34"></script>
+    <script src="/static/js/portal.js?v=36"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
@@ -5535,8 +5535,11 @@
         function copyMessageText() {
             hideContextMenus();
             if (contextMenuMessageText) {
-                navigator.clipboard.writeText(contextMenuMessageText).catch(err => {
+                navigator.clipboard.writeText(contextMenuMessageText).then(() => {
+                    Portal.toast('Message copied', 'success');
+                }).catch(err => {
                     console.error('Failed to copy:', err);
+                    Portal.toast('Copy failed — please select and copy manually', 'error');
                 });
             }
         }

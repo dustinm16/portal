@@ -204,7 +204,7 @@ Permission Hierarchy:
 │   ├── uploads/           # User-uploaded content (gitignored)
 │   │   └── chat/          # Chat image uploads
 │   └── js/
-│       ├── portal.js      # Core utilities, Portal.isAdmin(), Portal.getRoleLabel()
+│       ├── portal.js      # Core utilities: Portal.fetch/fetchJSON/postJSON, Portal.toast (stacking), Portal.isAdmin(), Portal.getRoleLabel(), Portal.setButtonLoading(), Portal.flashButtonSuccess(), NotificationBell (dropdown + desktop alerts), Portal.shortcuts, Portal.commandPalette, Portal.welcomeTour, sessionActivity
 │       ├── dashboard.js   # Dashboard logic
 │       ├── admin.js       # Admin panel
 │       ├── user-connections.js # Connection CRUD, edit, type schemas
@@ -799,6 +799,21 @@ POST   /api/sftp/:conn_id/mkdir      - Create remote directory (JSON)
 POST   /api/sftp/:conn_id/rename     - Rename/move remote path (JSON)
 DELETE /api/sftp/:conn_id/delete     - Delete remote path (?path=)
 ```
+
+### Notifications
+
+```
+GET  /api/notifications          - List notifications (?unread=1 for unread only, &limit=N)
+POST /api/notifications/:id/read - Mark single notification as read
+POST /api/notifications/read-all - Mark all notifications as read
+```
+
+Notifications are created server-side (e.g., stream goes live, DM received while offline) and pushed in real time over the chat WebSocket as `{"type": "notification", "notification": {...}}`. The `NotificationBell` frontend module (in `portal.js`) handles the full lifecycle:
+
+- **Bell icon** injected into the navbar, with a live unread badge (polled every 30s, updated instantly on WS push)
+- **Dropdown** shows up to 20 unread notifications; click to mark read and navigate (e.g., opens `/watch/:key` for stream-live events)
+- **Desktop alerts** — uses the browser `Notification` API. Users enable via an "Enable alerts" button in the dropdown header. Only fires when the page is hidden/unfocused (toast covers the foreground case). Clicking a desktop notification focuses the tab and navigates to the relevant resource.
+- **Toast fallback** — `Portal.toast()` always fires on push, regardless of desktop permission state
 
 ### WebSocket Endpoints
 

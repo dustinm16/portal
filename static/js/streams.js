@@ -143,9 +143,8 @@ function renderStreamCard(stream, isOwner = false) {
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                             </svg>
-                            Stream Key
+                            Manage
                         </button>
-                        <button class="btn btn-sm btn-secondary" onclick="editStream(${stream.id})">Edit</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteStream(${stream.id})">Delete</button>
                     </div>
                 </div>
@@ -308,14 +307,14 @@ async function showStreamDetails(streamId) {
                         <label>Stream Name</label>
                         <div class="input-with-copy">
                             <input type="text" id="stream-name-input" value="${escapeHtml(stream.name)}" maxlength="100">
-                            <button class="btn btn-sm btn-primary" onclick="updateStreamName(${stream.id})">Save</button>
+                            <button id="save-name-btn" class="btn btn-sm btn-primary" onclick="updateStreamName(${stream.id})">Save</button>
                         </div>
                     </div>
                     <div class="form-group">
                         <label>Description</label>
                         <div class="input-with-copy">
                             <input type="text" id="stream-description-input" value="${escapeHtml(stream.description || '')}" maxlength="500" placeholder="Optional description">
-                            <button class="btn btn-sm btn-primary" onclick="updateStreamDescription(${stream.id})">Save</button>
+                            <button id="save-description-btn" class="btn btn-sm btn-primary" onclick="updateStreamDescription(${stream.id})">Save</button>
                         </div>
                     </div>
                     <div class="form-group">
@@ -432,11 +431,13 @@ function toggleStreamKeyVisibility() {
  */
 async function updateStreamName(streamId) {
     const input = document.getElementById('stream-name-input');
+    const btn = document.getElementById('save-name-btn');
     const name = input.value.trim();
     if (!name) {
         Portal.toast('Stream name cannot be empty', 'error');
         return;
     }
+    Portal.setButtonLoading(btn, true);
     try {
         const response = await Portal.fetch(`/api/streams/${streamId}`, {
             method: 'PUT',
@@ -444,6 +445,7 @@ async function updateStreamName(streamId) {
             body: JSON.stringify({ name })
         });
         if (response.ok) {
+            Portal.flashButtonSuccess(btn);
             document.getElementById('stream-details-title').textContent = name;
             Portal.toast('Stream name updated', 'success');
             loadUserStreams();
@@ -453,6 +455,8 @@ async function updateStreamName(streamId) {
         }
     } catch (error) {
         Portal.toast('Failed to update stream name', 'error');
+    } finally {
+        Portal.setButtonLoading(btn, false);
     }
 }
 
@@ -461,7 +465,9 @@ async function updateStreamName(streamId) {
  */
 async function updateStreamDescription(streamId) {
     const input = document.getElementById('stream-description-input');
+    const btn = document.getElementById('save-description-btn');
     const description = input.value.trim();
+    Portal.setButtonLoading(btn, true);
     try {
         const response = await Portal.fetch(`/api/streams/${streamId}`, {
             method: 'PUT',
@@ -469,6 +475,7 @@ async function updateStreamDescription(streamId) {
             body: JSON.stringify({ description })
         });
         if (response.ok) {
+            Portal.flashButtonSuccess(btn);
             Portal.toast('Description updated', 'success');
             loadUserStreams();
         } else {
@@ -477,6 +484,8 @@ async function updateStreamDescription(streamId) {
         }
     } catch (error) {
         Portal.toast('Failed to update description', 'error');
+    } finally {
+        Portal.setButtonLoading(btn, false);
     }
 }
 
@@ -490,6 +499,7 @@ async function copyToClipboard(text) {
         setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 30000);
     } catch (error) {
         console.error('Failed to copy:', error);
+        Portal.toast('Copy failed — please select and copy manually', 'error');
     }
 }
 
@@ -720,14 +730,6 @@ async function regenerateStreamKey(streamId) {
         console.error('Failed to regenerate key:', error);
         Portal.toast('Failed to regenerate key', 'error');
     }
-}
-
-/**
- * Edit stream
- */
-async function editStream(streamId) {
-    // For now, just show details. Could add a dedicated edit modal later.
-    showStreamDetails(streamId);
 }
 
 /**

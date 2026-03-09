@@ -2339,6 +2339,16 @@ Delete a VOD file from remote storage. Only `.mkv` files allowed. Supports subdi
 
 ### Notifications
 
+Notifications are delivered two ways:
+1. **REST** — poll `/api/notifications` on page load and every 30 seconds
+2. **WebSocket push** — the chat WebSocket (`/ws/chat`) sends `{"type": "notification", "notification": {...}}` in real time when a new notification is created
+
+The browser's `Notification` API is used for **desktop alerts** when the page is in the background. Users opt in via the "Enable alerts" button in the notification bell dropdown. Desktop notifications are tagged by type (e.g., `stream_live`) so repeat events replace rather than stack.
+
+**Notification types:** `stream_live`, `stream_offline`, `dm_received`, `mention`, `system`
+
+---
+
 #### GET /api/notifications
 Get notifications for the current user. Supports filtering to unread-only.
 
