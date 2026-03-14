@@ -485,6 +485,10 @@ class ProxmoxPlugin(PluginBase):
         elif cmd == "ping":
             await ws.send_json({"type": "pong"})
 
+        else:
+            logger.warning(f"Unknown Proxmox command from user {user_id}: {cmd!r}")
+            await ws.send_json({"type": "error", "message": f"Unknown command: {cmd}"})
+
     async def handle_http(
         self,
         request: web.Request,

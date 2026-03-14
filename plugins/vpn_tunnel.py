@@ -160,7 +160,11 @@ class VPNTunnelPlugin(PluginBase):
 
                 if pkt_type == "connect":
                     # SOCKS connect request
-                    host, port = self._parse_address(payload)
+                    try:
+                        host, port = self._parse_address(payload)
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"SOCKS malformed connect address from user {user_id}: {e}")
+                        continue
                     conn_id = next_conn_id
                     next_conn_id += 1
 
@@ -173,8 +177,17 @@ class VPNTunnelPlugin(PluginBase):
                     conn_id = struct.unpack(">I", payload[:4])[0]
                     if conn_id in connections:
                         _, writer = connections[conn_id]
-                        writer.write(payload[4:])
-                        await writer.drain()
+                        try:
+                            writer.write(payload[4:])
+                            await writer.drain()
+                        except Exception as e:
+                            logger.debug(f"SOCKS data write failed on conn {conn_id}: {e}")
+                            del connections[conn_id]
+                            close_pkt = self._packet("closed", struct.pack(">I", conn_id))
+                            try:
+                                await ws.send_bytes(self._encrypt(close_pkt, cipher))
+                            except Exception:
+                                pass
 
                 elif pkt_type == "close":
                     # Close connection
@@ -346,7 +359,10 @@ class VPNTunnelPlugin(PluginBase):
                     if data:
                         pkt = self._packet("ip", data)
                         await ws.send_bytes(self._encrypt(pkt, cipher))
-                except Exception:
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.debug(f"TUN read error for user {user_id}: {e}")
                     break
 
         async def read_ws():

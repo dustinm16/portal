@@ -83,10 +83,18 @@ class VNCPlugin(PluginBase):
                 timeout=30
             )
         except asyncio.TimeoutError:
-            logger.error(f"VNC connection timeout: {host}:{port}")
+            logger.error(f"VNC connection timeout for user {user_id}: {host}:{port}")
+            try:
+                await ws.send_json({"type": "error", "message": "VNC connection timed out"})
+            except Exception:
+                pass
             return
         except Exception as e:
-            logger.error(f"VNC connection failed: {e}")
+            logger.error(f"VNC connection failed for user {user_id}: {host}:{port}: {e}")
+            try:
+                await ws.send_json({"type": "error", "message": "VNC connection failed"})
+            except Exception:
+                pass
             return
 
         logger.info(f"VNC connected to {host}:{port}")

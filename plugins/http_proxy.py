@@ -265,13 +265,18 @@ class HTTPProxyPlugin(PluginBase):
         upstream_ws: aiohttp.ClientWebSocketResponse
     ) -> None:
         """Forward client WebSocket to upstream."""
-        async for msg in client_ws:
-            if msg.type == WSMsgType.TEXT:
-                await upstream_ws.send_str(msg.data)
-            elif msg.type == WSMsgType.BINARY:
-                await upstream_ws.send_bytes(msg.data)
-            elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                break
+        try:
+            async for msg in client_ws:
+                if msg.type == WSMsgType.TEXT:
+                    await upstream_ws.send_str(msg.data)
+                elif msg.type == WSMsgType.BINARY:
+                    await upstream_ws.send_bytes(msg.data)
+                elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"WS-to-upstream relay error: {e}")
 
     async def _upstream_to_ws(
         self,
@@ -279,13 +284,18 @@ class HTTPProxyPlugin(PluginBase):
         client_ws: web.WebSocketResponse
     ) -> None:
         """Forward upstream WebSocket to client."""
-        async for msg in upstream_ws:
-            if msg.type == WSMsgType.TEXT:
-                await client_ws.send_str(msg.data)
-            elif msg.type == WSMsgType.BINARY:
-                await client_ws.send_bytes(msg.data)
-            elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                break
+        try:
+            async for msg in upstream_ws:
+                if msg.type == WSMsgType.TEXT:
+                    await client_ws.send_str(msg.data)
+                elif msg.type == WSMsgType.BINARY:
+                    await client_ws.send_bytes(msg.data)
+                elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Upstream-to-WS relay error: {e}")
 
     async def health_check(self, target: ServiceTarget) -> dict:
         """Check if target web service is reachable."""

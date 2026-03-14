@@ -145,20 +145,28 @@ class SSHPlugin(PluginBase):
 
             # Loop to skip non-auth messages (e.g. resize sent on WS open)
             # Timeout after 60s to prevent resource exhaustion from unauthenticated connections
-            while True:
-                msg = await asyncio.wait_for(ws.receive(), timeout=60)
-                if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                    return
-                if msg.type == WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    if data.get("type") == "auth":
-                        password = data.get("password")
-                        if data.get("username"):
-                            connect_opts["username"] = data["username"]
-                        break
-                    elif data.get("type") == "resize":
-                        term_cols = data.get("cols", 80)
-                        term_rows = data.get("rows", 24)
+            try:
+                while True:
+                    msg = await asyncio.wait_for(ws.receive(), timeout=60)
+                    if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                        return
+                    if msg.type == WSMsgType.TEXT:
+                        try:
+                            data = json.loads(msg.data)
+                        except json.JSONDecodeError:
+                            continue
+                        if data.get("type") == "auth":
+                            password = data.get("password")
+                            if data.get("username"):
+                                connect_opts["username"] = data["username"]
+                            break
+                        elif data.get("type") == "resize":
+                            term_cols = data.get("cols", 80)
+                            term_rows = data.get("rows", 24)
+            except asyncio.TimeoutError:
+                logger.warning(f"SSH auth timeout for user {user_id}: no credentials received within 60s")
+                await ws.send_json({"type": "error", "message": "Authentication timed out"})
+                return
 
             if password:
                 connect_opts["password"] = password
