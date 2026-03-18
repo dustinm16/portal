@@ -102,6 +102,7 @@ import cert_manager
 import system_monitor
 import file_manager
 import sftp_browser
+import update_manager
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -14531,6 +14532,205 @@ async def security_headers_middleware(request: web.Request, handler):
     return response
 
 
+# =========================================================================
+# Update Manager Handlers
+# =========================================================================
+
+async def http_admin_updates_status(request: web.Request) -> web.Response:
+    """Get cached update status (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        data = await update_manager.check_all(force=False)
+        return web.json_response(data)
+    except Exception as e:
+        logger.error(f"Failed to get update status: {e}")
+        return web.json_response({"error": "Failed to get update status"}, status=500)
+
+
+async def http_admin_updates_check(request: web.Request) -> web.Response:
+    """Force-refresh update check (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        data = await update_manager.check_all(force=True)
+        return web.json_response(data)
+    except Exception as e:
+        logger.error(f"Failed to check for updates: {e}")
+        return web.json_response({"error": "Failed to check for updates"}, status=500)
+
+
+async def http_admin_updates_apply(request: web.Request) -> web.Response:
+    """Start an update job (admin only). Body: {component, version?}"""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    component = (data.get("component") or "").strip().lower()
+    if component not in ("portal", "pip", "mediamtx", "system"):
+        return web.json_response({"error": "component must be one of: portal, pip, mediamtx, system"}, status=400)
+    version = (data.get("version") or "").strip() or None
+
+    try:
+        job_id = await update_manager.start_apply(component, version)
+        return web.json_response({"job_id": job_id})
+    except Exception as e:
+        logger.error(f"Failed to start update job: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def http_admin_updates_job(request: web.Request) -> web.Response:
+    """Get job status and log (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+
+    job_id = request.match_info.get("id", "")
+    job = update_manager.get_job(job_id)
+    if not job:
+        return web.json_response({"error": "Job not found"}, status=404)
+    return web.json_response(job)
+
+
+async def http_admin_updates_snapshots_list(request: web.Request) -> web.Response:
+    """List snapshots (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        snapshots = await update_manager.list_snapshots()
+        return web.json_response({"snapshots": snapshots})
+    except Exception as e:
+        logger.error(f"Failed to list snapshots: {e}")
+        return web.json_response({"error": "Failed to list snapshots"}, status=500)
+
+
+async def http_admin_updates_snapshots_create(request: web.Request) -> web.Response:
+    """Create a manual snapshot (admin only). Body: {reason?}"""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        data = await request.json()
+        reason = (data.get("reason") or "manual").strip()[:200]
+    except (json.JSONDecodeError, AttributeError):
+        reason = "manual"
+
+    try:
+        snap = await update_manager.create_snapshot(reason=reason)
+        return web.json_response(snap, status=201)
+    except Exception as e:
+        logger.error(f"Failed to create snapshot: {e}")
+        return web.json_response({"error": f"Failed to create snapshot: {e}"}, status=500)
+
+
+async def http_admin_updates_snapshots_delete(request: web.Request) -> web.Response:
+    """Delete a snapshot (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+
+    snap_id = request.match_info.get("id", "")
+    try:
+        deleted = await update_manager.delete_snapshot(snap_id)
+        if not deleted:
+            return web.json_response({"error": "Snapshot not found"}, status=404)
+        return web.json_response({"deleted": True})
+    except Exception as e:
+        logger.error(f"Failed to delete snapshot: {e}")
+        return web.json_response({"error": "Failed to delete snapshot"}, status=500)
+
+
+async def http_admin_updates_rollback(request: web.Request) -> web.Response:
+    """Start a rollback job (admin only). Body: {snapshot_id}"""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    snap_id = (data.get("snapshot_id") or "").strip()
+    if not snap_id:
+        return web.json_response({"error": "snapshot_id is required"}, status=400)
+    try:
+        job_id = await update_manager.start_rollback(snap_id)
+        return web.json_response({"job_id": job_id})
+    except Exception as e:
+        logger.error(f"Failed to start rollback: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def http_admin_updates_history(request: web.Request) -> web.Response:
+    """Get update history (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        user = await db.get_user_by_id(token.user_id)
+        role = (user.get("role") or "user") if user else "user"
+        if role not in ("admin", "superadmin"):
+            return web.json_response({"error": "Admin access required"}, status=403)
+    try:
+        try:
+            limit = int(request.query.get("limit", 50))
+            limit = min(max(limit, 1), 200)
+        except (ValueError, TypeError):
+            limit = 50
+        history = await update_manager.get_history(limit=limit)
+        return web.json_response({"history": history})
+    except Exception as e:
+        logger.error(f"Failed to get update history: {e}")
+        return web.json_response({"error": "Failed to get update history"}, status=500)
+
+
 def create_app() -> web.Application:
     """Create the aiohttp application."""
     app = web.Application(middlewares=[security_headers_middleware])
@@ -14870,6 +15070,17 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/retention", http_get_retention_config)
     app.router.add_put("/api/admin/retention", http_set_retention_config)
     app.router.add_post("/api/admin/retention/run", http_run_cleanup_now)
+
+    # Updates
+    app.router.add_get("/api/admin/updates/status", http_admin_updates_status)
+    app.router.add_post("/api/admin/updates/check", http_admin_updates_check)
+    app.router.add_post("/api/admin/updates/apply", http_admin_updates_apply)
+    app.router.add_get("/api/admin/updates/jobs/{id}", http_admin_updates_job)
+    app.router.add_get("/api/admin/updates/snapshots", http_admin_updates_snapshots_list)
+    app.router.add_post("/api/admin/updates/snapshots", http_admin_updates_snapshots_create)
+    app.router.add_delete("/api/admin/updates/snapshots/{id}", http_admin_updates_snapshots_delete)
+    app.router.add_post("/api/admin/updates/rollback", http_admin_updates_rollback)
+    app.router.add_get("/api/admin/updates/history", http_admin_updates_history)
 
     # Webhooks (incoming token route must be before {id} wildcard)
     app.router.add_post("/api/webhooks/incoming/{token}", http_incoming_webhook)
@@ -15535,6 +15746,22 @@ def main():
     # Install MediaMTX
     subparsers.add_parser("install-mediamtx", help="Download and install MediaMTX streaming server")
 
+    # Check updates
+    subparsers.add_parser("check-updates", help="Check for available updates")
+
+    # List snapshots
+    subparsers.add_parser("list-snapshots", help="List portal snapshots")
+
+    # Create snapshot
+    subparsers.add_parser("create-snapshot", help="Create a manual portal snapshot")
+
+    # Update component
+    update_cmd = subparsers.add_parser("update", help="Apply an update to a component")
+    update_cmd.add_argument("--component", required=True,
+                            choices=["portal", "pip", "mediamtx", "system"],
+                            help="Component to update")
+    update_cmd.add_argument("--version", default=None, help="Target version (optional)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -15562,6 +15789,47 @@ def main():
         from setup import install_mediamtx
         success = install_mediamtx()
         sys.exit(0 if success else 1)
+    elif args.command == "check-updates":
+        asyncio.run(update_manager._cli_check_updates())
+    elif args.command == "list-snapshots":
+        async def _list_snaps():
+            snaps = await update_manager.list_snapshots()
+            if not snaps:
+                print("No snapshots found.")
+                return
+            print(f"{'ID':<25}  {'Version':<15}  {'Created':<30}  {'Size':<10}  Reason")
+            print("-" * 100)
+            for s in snaps:
+                print(f"{s.get('id',''):<25}  {s.get('version',''):<15}  "
+                      f"{s.get('created_at',''):<30}  {s.get('size_human',''):<10}  "
+                      f"{s.get('reason','')}")
+        asyncio.run(_list_snaps())
+    elif args.command == "create-snapshot":
+        async def _create_snap():
+            print("Creating snapshot...")
+            snap = await update_manager.create_snapshot(reason="manual-cli")
+            print(f"Snapshot created: {snap['id']} (version: {snap['version']}, size: {snap['size_human']})")
+        asyncio.run(_create_snap())
+    elif args.command == "update":
+        async def _run_update():
+            print(f"Starting update: {args.component}" + (f" version {args.version}" if args.version else ""))
+            job_id = await update_manager.start_apply(args.component, args.version)
+            print(f"Job started: {job_id}")
+            # Poll until done
+            import time as _time
+            while True:
+                job = update_manager.get_job(job_id)
+                if not job:
+                    print("Job not found")
+                    break
+                for line in job["log"]:
+                    print(line)
+                job["log"].clear()
+                if job["status"] != "running":
+                    print(f"\nJob {job['status']}.")
+                    break
+                await asyncio.sleep(1)
+        asyncio.run(_run_update())
     else:
         parser.print_help()
 

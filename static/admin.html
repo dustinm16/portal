@@ -548,6 +548,7 @@
                 <button class="tab-btn" onclick="showTab('files', event)">Files</button>
                 <button class="tab-btn" onclick="showTab('audit', event)">Audit Log</button>
                 <button class="tab-btn" onclick="showTab('automod', event)">Auto-Mod</button>
+                <button class="tab-btn" onclick="showTab('updates', event)">Updates</button>
             </div>
 
             <!-- Overview Tab -->
@@ -1417,6 +1418,91 @@
                 </div>
             </div>
 
+            <!-- Updates Tab -->
+            <div id="tab-updates" class="tab-content">
+                <div class="section-header">
+                    <h2>Update Manager</h2>
+                    <button class="btn btn-primary" data-action="check-updates-now">Check for Updates</button>
+                </div>
+
+                <!-- Component Cards -->
+                <div class="admin-grid" id="update-cards-grid">
+                    <div class="admin-card" id="update-card-portal">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                    <div class="admin-card" id="update-card-pip">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                    <div class="admin-card" id="update-card-mediamtx">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                    <div class="admin-card" id="update-card-system">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <!-- Job Progress -->
+                <div id="update-job-panel" style="display:none;margin-bottom:2rem;">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width:18px;height:18px;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span id="update-job-title">Running Update...</span>
+                            <span id="update-job-status-badge" style="margin-left:auto;font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:var(--accent-blue);color:#fff;">running</span>
+                        </h3>
+                        <pre id="update-job-log" style="background:rgba(0,0,0,0.3);border-radius:6px;padding:0.75rem;font-size:0.75rem;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text-secondary);"></pre>
+                    </div>
+                </div>
+
+                <!-- Snapshots Section -->
+                <div class="section-header" style="margin-top:1rem;">
+                    <h2>Snapshots</h2>
+                    <button class="btn btn-primary" data-action="create-snapshot">Create Snapshot</button>
+                </div>
+                <div class="admin-card" style="margin-bottom:2rem;">
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Version</th>
+                                    <th>Created</th>
+                                    <th>Size</th>
+                                    <th>Reason</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="snapshots-body">
+                                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Update History Section -->
+                <div class="section-header">
+                    <h2>Update History</h2>
+                </div>
+                <div class="admin-card">
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Type</th>
+                                    <th>Component</th>
+                                    <th>Version / Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="update-history-body">
+                                <tr><td colspan="4" style="text-align:center;color:var(--text-muted);">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Files Edit Modal -->
             <div id="files-edit-modal" class="sys-logs-modal" style="display:none;" onclick="if(event.target===this)filesCloseEditModal()">
                 <div class="sys-logs-modal-content" style="max-width:900px;">
@@ -1458,7 +1544,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=39"></script>
+    <script src="/static/js/portal.js?v=40"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -1481,6 +1567,7 @@
                 case 'files': filesLoadDirectory(filesCurrentPath || '/'); break;
                 case 'audit': loadAuditLog(); break;
                 case 'automod': loadAutomodRules(); break;
+                case 'updates': loadUpdates(); break;
             }
         }
 
@@ -4301,6 +4388,377 @@
                 }
             } catch (e) {}
         })();
+
+        // ===================================================================
+        // Update Manager
+        // ===================================================================
+
+        // Wire up updates tab button actions (no inline onclick)
+        document.addEventListener('click', function(e) {
+            const action = e.target.getAttribute('data-action');
+            if (!action) return;
+            if (action === 'check-updates-now') checkUpdatesNow();
+            else if (action === 'create-snapshot') createSnapshot();
+        });
+
+        function renderUpdateCard(component, data) {
+            const el = document.getElementById('update-card-' + component);
+            if (!el) return;
+
+            const labels = {portal: 'Portal', pip: 'Python Dependencies', mediamtx: 'MediaMTX', system: 'System Packages'};
+            const label = labels[component] || component;
+
+            let badgeColor = 'var(--accent-green, #22c55e)';
+            let badgeText = 'Up to date';
+            let versionInfo = '';
+            let applyBtn = '';
+            let detailsHtml = '';
+
+            if (data.error && !data.current && !data.count && data.count !== 0) {
+                badgeColor = 'var(--accent-red, #ef4444)';
+                badgeText = 'Error';
+                versionInfo = `<span style="color:var(--text-muted);font-size:0.8rem;">${escapeHtml(data.error)}</span>`;
+            } else if (component === 'pip') {
+                const count = data.count || 0;
+                if (count > 0) {
+                    badgeColor = 'var(--accent-yellow, #f59e0b)';
+                    badgeText = `${count} outdated`;
+                    const pkgs = (data.packages || []).slice(0, 5).map(p =>
+                        `<div style="font-size:0.78rem;color:var(--text-secondary);padding:2px 0;">${escapeHtml(p.name)}: ${escapeHtml(p.current)} → <strong>${escapeHtml(p.latest)}</strong></div>`
+                    ).join('');
+                    const more = count > 5 ? `<div style="font-size:0.75rem;color:var(--text-muted);">...and ${count - 5} more</div>` : '';
+                    detailsHtml = `<div style="margin-top:0.5rem;">${pkgs}${more}</div>`;
+                    applyBtn = `<button class="range-btn" style="margin-top:0.75rem;" data-update-component="pip">Upgrade All</button>`;
+                } else {
+                    versionInfo = '<span style="color:var(--text-muted);font-size:0.8rem;">All packages up to date</span>';
+                }
+                if (data.error) {
+                    detailsHtml += `<div style="font-size:0.78rem;color:var(--accent-red,#ef4444);margin-top:4px;">${escapeHtml(data.error)}</div>`;
+                }
+            } else if (component === 'system') {
+                const count = data.count || 0;
+                if (count > 0) {
+                    badgeColor = 'var(--accent-yellow, #f59e0b)';
+                    badgeText = `${count} upgradable`;
+                    const pkgs = (data.packages || []).slice(0, 5).map(p =>
+                        `<div style="font-size:0.78rem;color:var(--text-secondary);padding:2px 0;">${escapeHtml(p.name)}: ${escapeHtml(p.current || '?')} → <strong>${escapeHtml(p.available || '?')}</strong></div>`
+                    ).join('');
+                    const more = count > 5 ? `<div style="font-size:0.75rem;color:var(--text-muted);">...and ${count - 5} more</div>` : '';
+                    detailsHtml = `<div style="margin-top:0.5rem;">${pkgs}${more}</div>`;
+                    applyBtn = `<button class="range-btn" style="margin-top:0.75rem;" data-update-component="system">Upgrade System</button>`;
+                } else {
+                    versionInfo = '<span style="color:var(--text-muted);font-size:0.8rem;">System packages up to date</span>';
+                }
+                if (data.error) {
+                    detailsHtml += `<div style="font-size:0.78rem;color:var(--accent-red,#ef4444);margin-top:4px;">${escapeHtml(data.error)}</div>`;
+                }
+            } else {
+                // portal or mediamtx
+                const current = data.current || 'unknown';
+                const latest = data.latest || 'unknown';
+                versionInfo = `<div style="display:flex;gap:1rem;font-size:0.85rem;margin-top:0.5rem;">
+                    <span>Current: <strong>${escapeHtml(current)}</strong></span>
+                    <span>Latest: <strong>${escapeHtml(latest)}</strong></span>
+                </div>`;
+                if (data.update_available) {
+                    badgeColor = 'var(--accent-yellow, #f59e0b)';
+                    badgeText = 'Update available';
+                    const targetVersion = latest !== 'unknown' ? latest.replace(/^v/, '') : '';
+                    applyBtn = `<button class="range-btn" style="margin-top:0.75rem;" data-update-component="${escapeHtml(component)}" data-update-version="${escapeHtml(targetVersion)}">Update to ${escapeHtml(latest)}</button>`;
+                }
+                if (data.release_url) {
+                    detailsHtml = `<a href="${escapeHtml(data.release_url)}" target="_blank" rel="noopener noreferrer" style="font-size:0.78rem;color:var(--accent-blue);">View Release Notes</a>`;
+                }
+                if (data.error) {
+                    detailsHtml += `<div style="font-size:0.78rem;color:var(--accent-red,#ef4444);margin-top:4px;">${escapeHtml(data.error)}</div>`;
+                }
+            }
+
+            el.innerHTML = `
+                <h3 style="display:flex;align-items:center;justify-content:space-between;">
+                    <span>${escapeHtml(label)}</span>
+                    <span style="font-size:0.75rem;padding:2px 10px;border-radius:9999px;background:${badgeColor};color:#fff;font-weight:600;">${escapeHtml(badgeText)}</span>
+                </h3>
+                ${versionInfo}
+                ${detailsHtml}
+                ${applyBtn}
+            `;
+
+            // Attach click handler to apply button if present
+            const btn = el.querySelector('[data-update-component]');
+            if (btn) {
+                btn.addEventListener('click', function() {
+                    const comp = this.getAttribute('data-update-component');
+                    const ver = this.getAttribute('data-update-version') || null;
+                    applyUpdate(comp, ver);
+                });
+            }
+        }
+
+        async function loadUpdates() {
+            // Show loading state in cards
+            ['portal', 'pip', 'mediamtx', 'system'].forEach(c => {
+                const el = document.getElementById('update-card-' + c);
+                if (el) el.innerHTML = '<div class="loading"><div class="spinner"></div> Checking...</div>';
+            });
+            try {
+                const resp = await Portal.fetch('/api/admin/updates/status');
+                if (!resp.ok) throw new Error('Failed to fetch update status');
+                const data = await resp.json();
+                ['portal', 'pip', 'mediamtx', 'system'].forEach(c => {
+                    renderUpdateCard(c, data[c] || {});
+                });
+            } catch (e) {
+                ['portal', 'pip', 'mediamtx', 'system'].forEach(c => {
+                    const el = document.getElementById('update-card-' + c);
+                    if (el) el.innerHTML = `<p style="color:var(--accent-red,#ef4444);">Error: ${escapeHtml(String(e))}</p>`;
+                });
+            }
+            await loadSnapshots();
+            await loadUpdateHistory();
+        }
+
+        async function checkUpdatesNow() {
+            // Show checking state
+            ['portal', 'pip', 'mediamtx', 'system'].forEach(c => {
+                const el = document.getElementById('update-card-' + c);
+                if (el) el.innerHTML = '<div class="loading"><div class="spinner"></div> Checking...</div>';
+            });
+            try {
+                const resp = await Portal.fetch('/api/admin/updates/check', {method: 'POST'});
+                if (!resp.ok) throw new Error('Failed to run update check');
+                const data = await resp.json();
+                ['portal', 'pip', 'mediamtx', 'system'].forEach(c => {
+                    renderUpdateCard(c, data[c] || {});
+                });
+                Portal.toast('Update check complete', 'success');
+            } catch (e) {
+                Portal.toast('Update check failed: ' + String(e), 'error');
+            }
+        }
+
+        async function applyUpdate(component, version) {
+            const labels = {portal: 'Portal', pip: 'Python Dependencies', mediamtx: 'MediaMTX', system: 'System Packages'};
+            const label = labels[component] || component;
+            const versionStr = version ? ` to ${version}` : '';
+            if (!confirm(`Apply update: ${label}${versionStr}?\n\nThis will run in the background. Portal may restart automatically.`)) return;
+
+            try {
+                const body = {component};
+                if (version) body.version = version;
+                const resp = await Portal.fetch('/api/admin/updates/apply', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${resp.status}`);
+                }
+                const {job_id} = await resp.json();
+                Portal.toast(`Update started (job: ${job_id})`, 'success');
+
+                const panel = document.getElementById('update-job-panel');
+                const titleEl = document.getElementById('update-job-title');
+                const logEl = document.getElementById('update-job-log');
+                if (panel && titleEl && logEl) {
+                    panel.style.display = '';
+                    titleEl.textContent = `Updating ${label}${versionStr}...`;
+                    logEl.textContent = '';
+                    pollJob(job_id, logEl);
+                }
+            } catch (e) {
+                Portal.toast('Failed to start update: ' + String(e), 'error');
+            }
+        }
+
+        async function pollJob(jobId, logEl) {
+            const statusBadge = document.getElementById('update-job-status-badge');
+            let lastLen = 0;
+            while (true) {
+                try {
+                    const resp = await Portal.fetch(`/api/admin/updates/jobs/${jobId}`);
+                    if (!resp.ok) break;
+                    const job = await resp.json();
+                    // Append new log lines
+                    const lines = job.log || [];
+                    if (lines.length > lastLen) {
+                        const newLines = lines.slice(lastLen);
+                        if (logEl) {
+                            logEl.textContent += newLines.join('\n') + '\n';
+                            logEl.scrollTop = logEl.scrollHeight;
+                        }
+                        lastLen = lines.length;
+                    }
+                    if (statusBadge) {
+                        statusBadge.textContent = job.status;
+                        if (job.status === 'completed') statusBadge.style.background = 'var(--accent-green, #22c55e)';
+                        else if (job.status === 'failed') statusBadge.style.background = 'var(--accent-red, #ef4444)';
+                        else statusBadge.style.background = 'var(--accent-blue)';
+                    }
+                    if (job.status !== 'running') {
+                        if (job.status === 'completed') {
+                            Portal.toast('Update completed successfully', 'success');
+                            await loadUpdates();
+                        } else {
+                            Portal.toast('Update failed. Check the log above.', 'error');
+                        }
+                        break;
+                    }
+                } catch (e) {
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+
+        async function loadSnapshots() {
+            const tbody = document.getElementById('snapshots-body');
+            if (!tbody) return;
+            try {
+                const resp = await Portal.fetch('/api/admin/updates/snapshots');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const snaps = data.snapshots || [];
+                if (snaps.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No snapshots yet</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = snaps.map(s => {
+                    const snapId = escapeHtml(s.id || '');
+                    const ts = s.created_at ? new Date(s.created_at).toLocaleString() : '';
+                    return `<tr>
+                        <td style="font-family:monospace;font-size:0.8rem;">${snapId}</td>
+                        <td>${escapeHtml(s.version || '')}</td>
+                        <td style="white-space:nowrap;">${escapeHtml(ts)}</td>
+                        <td>${escapeHtml(s.size_human || '')}</td>
+                        <td>${escapeHtml(s.reason || '')}</td>
+                        <td style="white-space:nowrap;">
+                            <button class="range-btn" data-snap-restore="${snapId}">Restore</button>
+                            <button class="range-btn" style="margin-left:4px;" data-snap-delete="${snapId}">Delete</button>
+                        </td>
+                    </tr>`;
+                }).join('');
+
+                tbody.querySelectorAll('[data-snap-restore]').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        rollbackSnapshot(this.getAttribute('data-snap-restore'));
+                    });
+                });
+                tbody.querySelectorAll('[data-snap-delete]').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        deleteSnapshot(this.getAttribute('data-snap-delete'));
+                    });
+                });
+            } catch (e) {
+                if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="color:var(--accent-red,#ef4444);">Error: ${escapeHtml(String(e))}</td></tr>`;
+            }
+        }
+
+        async function createSnapshot() {
+            const reason = prompt('Snapshot reason (optional):', 'manual');
+            if (reason === null) return; // cancelled
+            try {
+                const resp = await Portal.fetch('/api/admin/updates/snapshots', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({reason: reason || 'manual'}),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${resp.status}`);
+                }
+                const snap = await resp.json();
+                Portal.toast(`Snapshot created: ${snap.id}`, 'success');
+                await loadSnapshots();
+            } catch (e) {
+                Portal.toast('Failed to create snapshot: ' + String(e), 'error');
+            }
+        }
+
+        async function deleteSnapshot(snapId) {
+            if (!confirm(`Delete snapshot ${snapId}? This cannot be undone.`)) return;
+            try {
+                const resp = await Portal.fetch(`/api/admin/updates/snapshots/${encodeURIComponent(snapId)}`, {
+                    method: 'DELETE',
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${resp.status}`);
+                }
+                Portal.toast('Snapshot deleted', 'success');
+                await loadSnapshots();
+            } catch (e) {
+                Portal.toast('Failed to delete snapshot: ' + String(e), 'error');
+            }
+        }
+
+        async function rollbackSnapshot(snapId) {
+            if (!confirm(`Restore snapshot ${snapId}?\n\nThis will overwrite current portal files and restart the service.`)) return;
+            try {
+                const resp = await Portal.fetch('/api/admin/updates/rollback', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({snapshot_id: snapId}),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${resp.status}`);
+                }
+                const {job_id} = await resp.json();
+                Portal.toast(`Rollback started (job: ${job_id})`, 'success');
+
+                const panel = document.getElementById('update-job-panel');
+                const titleEl = document.getElementById('update-job-title');
+                const logEl = document.getElementById('update-job-log');
+                if (panel && titleEl && logEl) {
+                    panel.style.display = '';
+                    titleEl.textContent = `Rolling back to ${snapId}...`;
+                    logEl.textContent = '';
+                    pollJob(job_id, logEl);
+                }
+            } catch (e) {
+                Portal.toast('Failed to start rollback: ' + String(e), 'error');
+            }
+        }
+
+        async function loadUpdateHistory() {
+            const tbody = document.getElementById('update-history-body');
+            if (!tbody) return;
+            try {
+                const resp = await Portal.fetch('/api/admin/updates/history?limit=20');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const entries = data.history || [];
+                if (entries.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">No update history yet</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = entries.map(e => {
+                    const ts = e.ts ? new Date(e.ts).toLocaleString() : '';
+                    const typeMap = {
+                        update_applied: 'Update Applied',
+                        rollback: 'Rollback',
+                        snapshot_created: 'Snapshot Created',
+                        snapshot_deleted: 'Snapshot Deleted',
+                    };
+                    const typeBadge = typeMap[e.type] || escapeHtml(e.type || '');
+                    const component = escapeHtml(e.component || e.snap_id || '');
+                    let detail = '';
+                    if (e.version) detail = `v${escapeHtml(e.version)}`;
+                    else if (e.packages) detail = escapeHtml(e.packages);
+                    else if (e.reason) detail = escapeHtml(e.reason);
+                    return `<tr>
+                        <td style="white-space:nowrap;">${escapeHtml(ts)}</td>
+                        <td>${typeBadge}</td>
+                        <td>${component}</td>
+                        <td>${detail}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {
+                if (tbody) tbody.innerHTML = `<tr><td colspan="4" style="color:var(--accent-red,#ef4444);">Error: ${escapeHtml(String(e))}</td></tr>`;
+            }
+        }
     </script>
 </body>
 </html>

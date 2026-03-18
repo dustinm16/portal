@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for Open Relay Portal Updates Daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=3600
+
+[Install]
+WantedBy=timers.target

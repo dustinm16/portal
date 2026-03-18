@@ -1,0 +1,11 @@
+[Unit]
+Description=Open Relay Portal Auto-Update Check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/dustin/scripts/portal
+ExecStart=/home/dustin/scripts/portal/venv/bin/python server.py check-updates
+StandardOutput=journal
+StandardError=journal
