@@ -173,22 +173,27 @@ async def get_history(limit: int = 50) -> list[dict]:
 # Version detection
 # ---------------------------------------------------------------------------
 
+def _git_args(args: list) -> list:
+    """Prepend git safe.directory config to allow running as root in user-owned repos."""
+    return ["git", "-c", f"safe.directory={PORTAL_DIR}"] + args[1:]
+
+
 async def _get_portal_version() -> str:
     """Get current portal version from git tags."""
     rc, out, _ = await _run_cmd(
-        ["git", "describe", "--tags", "--exact-match", "HEAD"],
+        _git_args(["git", "describe", "--tags", "--exact-match", "HEAD"]),
         cwd=str(PORTAL_DIR),
     )
     if rc == 0 and out.strip():
         return out.strip()
     rc, out, _ = await _run_cmd(
-        ["git", "describe", "--tags"],
+        _git_args(["git", "describe", "--tags"]),
         cwd=str(PORTAL_DIR),
     )
     if rc == 0 and out.strip():
         return out.strip()
     rc, out, _ = await _run_cmd(
-        ["git", "rev-parse", "--short", "HEAD"],
+        _git_args(["git", "rev-parse", "--short", "HEAD"]),
         cwd=str(PORTAL_DIR),
     )
     if rc == 0 and out.strip():
@@ -235,7 +240,7 @@ async def _check_portal_updates() -> dict:
                         "latest": latest,
                         "update_available": latest != current and latest != "unknown",
                         "release_url": data.get("html_url", ""),
-                        "release_notes": (data.get("body") or "")[:500],
+                        "release_notes": data.get("body") or "",
                     }
                 else:
                     return {"current": current, "latest": "unknown", "update_available": False,
@@ -402,7 +407,7 @@ async def create_snapshot(reason: str = "manual") -> dict:
     # Stash any dirty git changes
     git_stash_ref = None
     rc, out, err = await _run_cmd(
-        ["git", "stash", "push", "-m", f"portal-snapshot-{snap_id}"],
+        _git_args(["git", "stash", "push", "-m", f"portal-snapshot-{snap_id}"]),
         cwd=str(PORTAL_DIR),
     )
     if rc == 0 and "Saved working directory" in out:
@@ -490,7 +495,7 @@ async def _apply_portal_update(job: dict, version: Optional[str]) -> None:
 
     _log(job, "Fetching latest tags from origin...")
     rc, out, err = await _run_cmd(
-        ["git", "fetch", "--tags", "--prune", "origin"],
+        _git_args(["git", "fetch", "--tags", "--prune", "origin"]),
         cwd=str(PORTAL_DIR),
         timeout=60,
     )
@@ -501,7 +506,7 @@ async def _apply_portal_update(job: dict, version: Optional[str]) -> None:
     target = version or "master"
     _log(job, f"Checking out {target}...")
     rc, out, err = await _run_cmd(
-        ["git", "checkout", target],
+        _git_args(["git", "checkout", target]),
         cwd=str(PORTAL_DIR),
         timeout=30,
     )
@@ -786,10 +791,8 @@ async def _cli_check_updates() -> None:
     if pip.get("error"):
         print(f"             Error: {pip['error']}")
     elif pip_count > 0:
-        for pkg in pip.get("packages", [])[:5]:
+        for pkg in pip.get("packages", []):
             print(f"             - {pkg['name']}: {pkg['current']} → {pkg['latest']}")
-        if pip_count > 5:
-            print(f"             ... and {pip_count - 5} more")
 
     mediamtx = data.get("mediamtx", {})
     print(f"MediaMTX:    {mediamtx.get('current', '?')} → {mediamtx.get('latest', '?')}"

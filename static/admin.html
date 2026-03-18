@@ -1544,7 +1544,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=40"></script>
+    <script src="/static/js/portal.js?v=41"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -4423,11 +4423,10 @@
                 if (count > 0) {
                     badgeColor = 'var(--accent-yellow, #f59e0b)';
                     badgeText = `${count} outdated`;
-                    const pkgs = (data.packages || []).slice(0, 5).map(p =>
+                    const pkgs = (data.packages || []).map(p =>
                         `<div style="font-size:0.78rem;color:var(--text-secondary);padding:2px 0;">${escapeHtml(p.name)}: ${escapeHtml(p.current)} → <strong>${escapeHtml(p.latest)}</strong></div>`
                     ).join('');
-                    const more = count > 5 ? `<div style="font-size:0.75rem;color:var(--text-muted);">...and ${count - 5} more</div>` : '';
-                    detailsHtml = `<div style="margin-top:0.5rem;">${pkgs}${more}</div>`;
+                    detailsHtml = `<div style="margin-top:0.5rem;">${pkgs}</div>`;
                     applyBtn = `<button class="range-btn" style="margin-top:0.75rem;" data-update-component="pip">Upgrade All</button>`;
                 } else {
                     versionInfo = '<span style="color:var(--text-muted);font-size:0.8rem;">All packages up to date</span>';
@@ -4440,11 +4439,10 @@
                 if (count > 0) {
                     badgeColor = 'var(--accent-yellow, #f59e0b)';
                     badgeText = `${count} upgradable`;
-                    const pkgs = (data.packages || []).slice(0, 5).map(p =>
+                    const pkgs = (data.packages || []).map(p =>
                         `<div style="font-size:0.78rem;color:var(--text-secondary);padding:2px 0;">${escapeHtml(p.name)}: ${escapeHtml(p.current || '?')} → <strong>${escapeHtml(p.available || '?')}</strong></div>`
                     ).join('');
-                    const more = count > 5 ? `<div style="font-size:0.75rem;color:var(--text-muted);">...and ${count - 5} more</div>` : '';
-                    detailsHtml = `<div style="margin-top:0.5rem;">${pkgs}${more}</div>`;
+                    detailsHtml = `<div style="margin-top:0.5rem;">${pkgs}</div>`;
                     applyBtn = `<button class="range-btn" style="margin-top:0.75rem;" data-update-component="system">Upgrade System</button>`;
                 } else {
                     versionInfo = '<span style="color:var(--text-muted);font-size:0.8rem;">System packages up to date</span>';
@@ -4726,7 +4724,7 @@
             const tbody = document.getElementById('update-history-body');
             if (!tbody) return;
             try {
-                const resp = await Portal.fetch('/api/admin/updates/history?limit=20');
+                const resp = await Portal.fetch('/api/admin/updates/history');
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const entries = data.history || [];
