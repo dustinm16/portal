@@ -571,6 +571,25 @@ async def _apply_pip_update(job: dict, packages: Optional[str]) -> None:
     for line in out.splitlines():
         if line.startswith("Successfully installed"):
             _log(job, line)
+
+    # Regenerate requirements.txt from current installed state
+    _log(job, "Regenerating requirements.txt...")
+    rc, freeze_out, freeze_err = await _run_cmd(
+        [sys.executable, "-m", "pip", "freeze"],
+        timeout=30,
+    )
+    if rc == 0 and freeze_out.strip():
+        req_path = PORTAL_DIR / "requirements.txt"
+        req_path.write_text(
+            "# Portal dependencies — auto-managed, regenerated after each pip upgrade\n"
+            "# Run: pip install -r requirements.txt\n"
+            + freeze_out,
+            encoding="utf-8",
+        )
+        _log(job, f"requirements.txt updated ({len(freeze_out.splitlines())} packages).")
+    else:
+        _log(job, f"WARNING: pip freeze failed, requirements.txt not updated: {freeze_err.strip()}")
+
     await _record_history({
         "type": "update_applied",
         "component": "pip",
