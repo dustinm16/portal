@@ -539,19 +539,20 @@ async def _apply_pip_update(job: dict, packages: Optional[str]) -> None:
     if packages:
         pkg_list = [p.strip() for p in packages.split(",") if p.strip()]
         _log(job, f"Upgrading packages: {', '.join(pkg_list)}")
-        args = [sys.executable, "-m", "pip", "install", "--upgrade"] + pkg_list
+        args = [sys.executable, "-m", "pip", "install", "--upgrade",
+                "--upgrade-strategy=eager"] + pkg_list
     else:
         _log(job, "Upgrading all packages from requirements.txt...")
-        args = [sys.executable, "-m", "pip", "install", "--upgrade", "-r",
-                str(PORTAL_DIR / "requirements.txt")]
+        args = [sys.executable, "-m", "pip", "install", "--upgrade",
+                "--upgrade-strategy=eager", "-r", str(PORTAL_DIR / "requirements.txt")]
 
     rc, out, err = await _run_cmd(args, timeout=300)
     if rc != 0:
         raise RuntimeError(f"pip upgrade failed: {err.strip()}")
     _log(job, "Pip upgrade complete.")
-    if out.strip():
-        for line in out.splitlines()[-10:]:  # last 10 lines
-            _log(job, line)
+    upgraded = [l for l in out.splitlines() if l.startswith("Successfully installed")]
+    for line in upgraded:
+        _log(job, line)
     await _record_history({
         "type": "update_applied",
         "component": "pip",
@@ -649,7 +650,7 @@ async def _apply_system_update(job: dict) -> None:
         raise RuntimeError(f"apt-get upgrade failed: {err.strip()}")
     _log(job, "System packages upgraded.")
     if out.strip():
-        for line in out.splitlines()[-20:]:
+        for line in out.splitlines():
             _log(job, line)
 
     await _record_history({"type": "update_applied", "component": "system", "job_id": job["id"]})
