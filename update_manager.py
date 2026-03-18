@@ -27,6 +27,14 @@ HISTORY_FILE = BACKUPS_DIR / "update_history.jsonl"
 GITHUB_PORTAL_REPO = "dustinm16/portal"
 GITHUB_MEDIAMTX_REPO = "bluenviron/mediamtx"
 
+# Minimal environment for system subprocesses — avoids leaking JWT_SECRET etc. into logs
+_APT_ENV = {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "LANG": "C.UTF-8",
+}
+
 # Cache: {key: {"data": ..., "ts": float}}
 _check_cache: dict = {}
 CACHE_TTL = 3600  # 1 hour
@@ -34,6 +42,27 @@ CACHE_TTL = 3600  # 1 hour
 # Jobs: {job_id: {id, name, status, log, started_at, finished_at}}
 _jobs: dict = {}
 MAX_JOBS = 20
+
+# Prevents concurrent update/rollback jobs from running simultaneously
+_update_lock: asyncio.Lock = None  # initialized lazily (needs running event loop)
+
+
+def _get_update_lock() -> asyncio.Lock:
+    global _update_lock
+    if _update_lock is None:
+        _update_lock = asyncio.Lock()
+    return _update_lock
+
+
+# Strict allowlist for portal version strings (semver tags + branch names)
+_VERSION_RE = re.compile(r'^v?\d+\.\d+\.\d+[\w.\-]*$')
+_BRANCH_ALLOWLIST = {"master", "main"}
+
+# Strict allowlist for pip package names (PEP 508)
+_PKG_NAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9._\-]*[A-Za-z0-9])?$')
+
+# Strict allowlist for mediamtx version (digits only)
+_MEDIAMTX_VERSION_RE = re.compile(r'^\d+\.\d+\.\d+$')
 
 # Callback registered by server.py to restart portal-managed mediamtx services.
 # Signature: async () -> None
@@ -185,6 +214,7 @@ async def get_history(limit: int = 50) -> list[dict]:
 
 def _git_args(args: list) -> list:
     """Prepend git safe.directory config to allow running as root in user-owned repos."""
+    assert args and args[0] == "git", f"_git_args expects ['git', ...], got {args!r}"
     return ["git", "-c", f"safe.directory={PORTAL_DIR}"] + args[1:]
 
 
@@ -245,11 +275,13 @@ async def _check_portal_updates() -> dict:
                 if resp.status == 200:
                     data = await resp.json()
                     latest = data.get("tag_name", "unknown")
+                    raw_url = data.get("html_url", "")
+                    release_url = raw_url if raw_url.startswith("https://github.com/") else ""
                     return {
                         "current": current,
                         "latest": latest,
                         "update_available": latest != current and latest != "unknown",
-                        "release_url": data.get("html_url", ""),
+                        "release_url": release_url,
                         "release_notes": data.get("body") or "",
                     }
                 else:
@@ -292,6 +324,7 @@ async def _check_mediamtx_updates() -> dict:
                     data = await resp.json()
                     latest_tag = data.get("tag_name", "unknown")
                     latest = latest_tag.lstrip("v")
+                    raw_url = data.get("html_url", "")
                     return {
                         "current": current,
                         "latest": latest,
@@ -301,7 +334,7 @@ async def _check_mediamtx_updates() -> dict:
                             and latest != "unknown"
                             and latest != current
                         ) or current == "not installed",
-                        "release_url": data.get("html_url", ""),
+                        "release_url": raw_url if raw_url.startswith("https://github.com/") else "",
                     }
                 else:
                     return {"current": current, "latest": "unknown", "update_available": False,
@@ -314,7 +347,7 @@ async def _check_system_updates() -> dict:
     """Check for apt upgradable packages."""
     rc, out, err = await _run_cmd(
         ["apt", "list", "--upgradable"],
-        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        env=_APT_ENV,
         timeout=60,
     )
     if rc not in (0, 1):  # apt list returns 0 or 1 on success
@@ -548,6 +581,10 @@ async def _apply_pip_update(job: dict, packages: Optional[str]) -> None:
     """Update pip packages."""
     if packages:
         pkg_list = [p.strip() for p in packages.split(",") if p.strip()]
+        # Validate each name (already checked in start_apply, double-check here)
+        for pkg in pkg_list:
+            if not _PKG_NAME_RE.match(pkg):
+                raise ValueError(f"Invalid package name: {pkg!r}")
     else:
         # Upgrade every package pip reports as outdated (not just requirements.txt entries)
         _log(job, "Checking for outdated packages...")
@@ -573,7 +610,7 @@ async def _apply_pip_update(job: dict, packages: Optional[str]) -> None:
         pkg_list = [p["name"] for p in outdated]
         _log(job, f"Upgrading {len(pkg_list)} outdated package(s): {', '.join(pkg_list)}")
 
-    args = [sys.executable, "-m", "pip", "install", "--upgrade"] + pkg_list
+    args = [sys.executable, "-m", "pip", "install", "--upgrade", "--"] + pkg_list
     rc, out, err = await _run_cmd(args, timeout=300)
     if rc != 0:
         raise RuntimeError(f"pip upgrade failed: {err.strip()}")
@@ -693,7 +730,7 @@ async def _apply_system_update(job: dict) -> None:
     _log(job, "Running apt-get update...")
     rc, out, err = await _run_cmd(
         ["apt-get", "update", "-qq"],
-        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        env=_APT_ENV,
         timeout=120,
     )
     if rc != 0:
@@ -702,7 +739,7 @@ async def _apply_system_update(job: dict) -> None:
 
     rc, out, err = await _run_cmd(
         ["apt-get", "upgrade", "-y", "-qq"],
-        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        env=_APT_ENV,
         timeout=600,
     )
     if rc != 0:
@@ -722,15 +759,40 @@ async def start_apply(component: str, version: Optional[str] = None) -> str:
     if component not in ("portal", "pip", "mediamtx", "system"):
         raise ValueError(f"Unknown component: {component}")
 
-    async def _run(job: dict):
+    # Validate version string to prevent git ref abuse and URL manipulation
+    if version:
+        if len(version) > 100:
+            raise ValueError("version too long (max 100 chars)")
         if component == "portal":
-            await _apply_portal_update(job, version)
-        elif component == "pip":
-            await _apply_pip_update(job, version)
+            if version not in _BRANCH_ALLOWLIST and not _VERSION_RE.match(version):
+                raise ValueError(f"Invalid portal version: {version!r} (must be semver tag or branch)")
         elif component == "mediamtx":
-            await _apply_mediamtx_update(job, version)
-        elif component == "system":
-            await _apply_system_update(job)
+            v = version.lstrip("v")
+            if not _MEDIAMTX_VERSION_RE.match(v):
+                raise ValueError(f"Invalid mediamtx version: {version!r} (must be X.Y.Z)")
+            version = v  # strip leading 'v' for URL construction
+        elif component == "pip":
+            # version field is reused as comma-separated package list for pip
+            for pkg in version.split(","):
+                pkg = pkg.strip()
+                if pkg and not _PKG_NAME_RE.match(pkg):
+                    raise ValueError(f"Invalid package name: {pkg!r}")
+
+    # Prevent concurrent destructive jobs
+    lock = _get_update_lock()
+    if lock.locked():
+        raise RuntimeError("Another update or rollback job is already running")
+
+    async def _run(job: dict):
+        async with lock:
+            if component == "portal":
+                await _apply_portal_update(job, version)
+            elif component == "pip":
+                await _apply_pip_update(job, version)
+            elif component == "mediamtx":
+                await _apply_mediamtx_update(job, version)
+            elif component == "system":
+                await _apply_system_update(job)
 
     name = f"Update {component}" + (f" to {version}" if version else "")
     return start_job(name, _run)
@@ -787,8 +849,11 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
             continue
         dest = PORTAL_DIR / item.name
         try:
-            if item.is_dir():
-                shutil.copytree(str(item), str(dest))
+            if item.is_symlink():
+                # Preserve symlinks as-is (don't follow — prevents symlink escape)
+                os.symlink(os.readlink(item), dest)
+            elif item.is_dir():
+                shutil.copytree(str(item), str(dest), symlinks=True)
             else:
                 shutil.copy2(str(item), str(dest))
         except Exception as e:
@@ -822,8 +887,13 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
 
 async def start_rollback(snap_id: str) -> str:
     """Start a rollback job. Returns job_id."""
+    lock = _get_update_lock()
+    if lock.locked():
+        raise RuntimeError("Another update or rollback job is already running")
+
     async def _run(job: dict):
-        await _apply_rollback(job, snap_id)
+        async with lock:
+            await _apply_rollback(job, snap_id)
 
     return start_job(f"Rollback to {snap_id}", _run)
 

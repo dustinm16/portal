@@ -14573,15 +14573,14 @@ async def http_admin_updates_check(request: web.Request) -> web.Response:
 
 
 async def http_admin_updates_apply(request: web.Request) -> web.Response:
-    """Start an update job (admin only). Body: {component, version?}"""
+    """Start an update job (superadmin only). Body: {component, version?}"""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        user = await db.get_user_by_id(token.user_id)
-        role = (user.get("role") or "user") if user else "user"
-        if role not in ("admin", "superadmin"):
-            return web.json_response({"error": "Admin access required"}, status=403)
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or "user") if user else "user"
+    if role != "superadmin" and not token.has_scope("*"):
+        return web.json_response({"error": "Superadmin access required"}, status=403)
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -14661,15 +14660,14 @@ async def http_admin_updates_snapshots_create(request: web.Request) -> web.Respo
 
 
 async def http_admin_updates_snapshots_delete(request: web.Request) -> web.Response:
-    """Delete a snapshot (admin only)."""
+    """Delete a snapshot (superadmin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        user = await db.get_user_by_id(token.user_id)
-        role = (user.get("role") or "user") if user else "user"
-        if role not in ("admin", "superadmin"):
-            return web.json_response({"error": "Admin access required"}, status=403)
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or "user") if user else "user"
+    if role != "superadmin" and not token.has_scope("*"):
+        return web.json_response({"error": "Superadmin access required"}, status=403)
 
     snap_id = request.match_info.get("id", "")
     try:
@@ -14683,15 +14681,14 @@ async def http_admin_updates_snapshots_delete(request: web.Request) -> web.Respo
 
 
 async def http_admin_updates_rollback(request: web.Request) -> web.Response:
-    """Start a rollback job (admin only). Body: {snapshot_id}"""
+    """Start a rollback job (superadmin only). Body: {snapshot_id}"""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        user = await db.get_user_by_id(token.user_id)
-        role = (user.get("role") or "user") if user else "user"
-        if role not in ("admin", "superadmin"):
-            return web.json_response({"error": "Admin access required"}, status=403)
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or "user") if user else "user"
+    if role != "superadmin" and not token.has_scope("*"):
+        return web.json_response({"error": "Superadmin access required"}, status=403)
     try:
         data = await request.json()
     except json.JSONDecodeError:
