@@ -538,25 +538,43 @@ async def _apply_pip_update(job: dict, packages: Optional[str]) -> None:
     """Update pip packages."""
     if packages:
         pkg_list = [p.strip() for p in packages.split(",") if p.strip()]
-        _log(job, f"Upgrading packages: {', '.join(pkg_list)}")
-        args = [sys.executable, "-m", "pip", "install", "--upgrade",
-                "--upgrade-strategy=eager"] + pkg_list
     else:
-        _log(job, "Upgrading all packages from requirements.txt...")
-        args = [sys.executable, "-m", "pip", "install", "--upgrade",
-                "--upgrade-strategy=eager", "-r", str(PORTAL_DIR / "requirements.txt")]
+        # Upgrade every package pip reports as outdated (not just requirements.txt entries)
+        _log(job, "Checking for outdated packages...")
+        rc, out, err = await _run_cmd(
+            [sys.executable, "-m", "pip", "list", "--outdated", "--format=json"],
+            timeout=60,
+        )
+        if rc != 0:
+            raise RuntimeError(f"pip list --outdated failed: {err.strip()}")
+        try:
+            outdated = json.loads(out)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse pip outdated list: {e}") from e
+        if not outdated:
+            _log(job, "All packages are up to date.")
+            await _record_history({
+                "type": "update_applied",
+                "component": "pip",
+                "packages": "none (already up to date)",
+                "job_id": job["id"],
+            })
+            return
+        pkg_list = [p["name"] for p in outdated]
+        _log(job, f"Upgrading {len(pkg_list)} outdated package(s): {', '.join(pkg_list)}")
 
+    args = [sys.executable, "-m", "pip", "install", "--upgrade"] + pkg_list
     rc, out, err = await _run_cmd(args, timeout=300)
     if rc != 0:
         raise RuntimeError(f"pip upgrade failed: {err.strip()}")
     _log(job, "Pip upgrade complete.")
-    upgraded = [l for l in out.splitlines() if l.startswith("Successfully installed")]
-    for line in upgraded:
-        _log(job, line)
+    for line in out.splitlines():
+        if line.startswith("Successfully installed"):
+            _log(job, line)
     await _record_history({
         "type": "update_applied",
         "component": "pip",
-        "packages": packages or "requirements.txt",
+        "packages": ", ".join(pkg_list),
         "job_id": job["id"],
     })
 
