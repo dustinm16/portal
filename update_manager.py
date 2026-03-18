@@ -644,18 +644,26 @@ async def _apply_mediamtx_update(job: dict, version: Optional[str]) -> None:
             raise RuntimeError("mediamtx binary not found in archive")
 
         dest = Path("/usr/local/bin/mediamtx")
+
+        # Stop service before replacing the running binary (avoids ETXTBSY)
+        _log(job, "Stopping mediamtx service...")
+        await _run_cmd(["systemctl", "stop", "mediamtx"], timeout=15)
+
         _log(job, f"Installing binary to {dest}...")
-        shutil.copy2(str(binary_src), str(dest))
-        dest.chmod(0o755)
+        # Write to a temp file beside the destination, then rename atomically
+        tmp_dest = dest.with_suffix(".tmp")
+        shutil.copy2(str(binary_src), str(tmp_dest))
+        tmp_dest.chmod(0o755)
+        tmp_dest.rename(dest)
         _log(job, "Binary installed.")
 
-    # Restart mediamtx if it's running
-    _log(job, "Restarting mediamtx service...")
-    rc, out, err = await _run_cmd(["systemctl", "restart", "mediamtx"], timeout=15)
+    # Start service again
+    _log(job, "Starting mediamtx service...")
+    rc, out, err = await _run_cmd(["systemctl", "start", "mediamtx"], timeout=15)
     if rc != 0:
-        _log(job, f"WARNING: systemctl restart mediamtx: {err.strip()}")
+        _log(job, f"WARNING: systemctl start mediamtx: {err.strip()}")
     else:
-        _log(job, "mediamtx service restarted.")
+        _log(job, "mediamtx service started.")
 
     await _record_history({
         "type": "update_applied",
