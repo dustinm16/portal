@@ -15184,6 +15184,15 @@ class PortalServer:
         _service_manager = await init_service_manager(db)
         logger.info("Managed services initialized")
 
+        # Register mediamtx restart callback with update manager
+        async def _restart_mediamtx_services():
+            for svc in _service_manager.get_all_services():
+                if getattr(svc, 'binary_name', None) == 'mediamtx':
+                    if svc.status == 'running':
+                        await _service_manager.stop_service(svc.id)
+                    await _service_manager.start_service(svc.id)
+        update_manager.register_mediamtx_restart(_restart_mediamtx_services)
+
         # Create SSL context
         ssl_context = create_ssl_context()
         logger.info("SSL context created")

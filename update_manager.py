@@ -35,6 +35,16 @@ CACHE_TTL = 3600  # 1 hour
 _jobs: dict = {}
 MAX_JOBS = 20
 
+# Callback registered by server.py to restart portal-managed mediamtx services.
+# Signature: async () -> None
+_restart_mediamtx_fn: Optional[object] = None
+
+
+def register_mediamtx_restart(fn) -> None:
+    """Register an async callback that stops and restarts all mediamtx services."""
+    global _restart_mediamtx_fn
+    _restart_mediamtx_fn = fn
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -645,9 +655,10 @@ async def _apply_mediamtx_update(job: dict, version: Optional[str]) -> None:
 
         dest = Path("/usr/local/bin/mediamtx")
 
-        # Stop service before replacing the running binary (avoids ETXTBSY)
+        # Stop portal-managed mediamtx before replacing the running binary (avoids ETXTBSY)
         _log(job, "Stopping mediamtx service...")
-        await _run_cmd(["systemctl", "stop", "mediamtx"], timeout=15)
+        await _run_cmd(["pkill", "-TERM", "-f", "mediamtx"], timeout=10)
+        await asyncio.sleep(2)  # Give process time to exit
 
         _log(job, f"Installing binary to {dest}...")
         # Write to a temp file beside the destination, then rename atomically
@@ -657,13 +668,16 @@ async def _apply_mediamtx_update(job: dict, version: Optional[str]) -> None:
         tmp_dest.rename(dest)
         _log(job, "Binary installed.")
 
-    # Start service again
-    _log(job, "Starting mediamtx service...")
-    rc, out, err = await _run_cmd(["systemctl", "start", "mediamtx"], timeout=15)
-    if rc != 0:
-        _log(job, f"WARNING: systemctl start mediamtx: {err.strip()}")
+    # Restart via portal service manager (regenerates config for new version)
+    if _restart_mediamtx_fn:
+        _log(job, "Restarting mediamtx via portal service manager...")
+        try:
+            await _restart_mediamtx_fn()
+            _log(job, "mediamtx restarted.")
+        except Exception as e:
+            _log(job, f"WARNING: mediamtx restart failed: {e}")
     else:
-        _log(job, "mediamtx service started.")
+        _log(job, "WARNING: No mediamtx restart callback registered; service not restarted.")
 
     await _record_history({
         "type": "update_applied",
