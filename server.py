@@ -643,6 +643,20 @@ Crawl-delay: 5
     return web.Response(text=body, content_type="text/plain")
 
 
+async def http_security_txt(request: web.Request) -> web.Response:
+    """Serve /.well-known/security.txt for responsible disclosure."""
+    hostname = Config.HOSTNAME or request.host
+    from datetime import datetime, timezone as _tz
+    expiry = datetime(datetime.now(_tz.utc).year + 1, 1, 1, tzinfo=_tz.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    body = f"""Contact: mailto:security@{hostname}
+Preferred-Languages: en
+Scope: https://{hostname}/
+Canonical: https://{hostname}/.well-known/security.txt
+Expires: {expiry}
+"""
+    return web.Response(text=body, content_type="text/plain")
+
+
 async def http_sitemap_xml(request: web.Request) -> web.Response:
     """Serve sitemap.xml for search engine indexing."""
     from datetime import datetime
@@ -3695,6 +3709,7 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
                         continue
                     else:
                         logger.warning(f"Relay {platform}/{dest['name']} failed after {max_attempts} attempts: {err_msg}")
+                        asyncio.create_task(db.update_relay_last_error(relay_id, err_msg or "Process exited immediately"))
                         async with _stream_state_lock:
                             active_relays.get(stream_id, {}).pop(relay_id, None)
                 break  # Process is running or final attempt done
@@ -3736,6 +3751,7 @@ async def _monitor_relay_process(stream_id: int, relay_id: int,
         if rc != 0:
             stderr_tail = _sanitize_relay_stderr(stderr_data.decode(errors="replace")[-500:])
             logger.warning(f"Relay {platform}/{name} exited with code {rc}: {stderr_tail}")
+            asyncio.create_task(db.update_relay_last_error(relay_id, f"Exit code {rc}: {stderr_tail}" if stderr_tail else f"Exit code {rc}"))
         else:
             logger.info(f"Relay {platform}/{name} ended normally")
     except asyncio.CancelledError:
@@ -9189,11 +9205,33 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         if query:
             upstream_url = f"{upstream_url}?{query}"
 
+    # Apply path rewrite rules (regex match/replace on the path component only)
+    rewrite_rules = config.get("path_rewrite_rules") or []
+    if rewrite_rules and isinstance(rewrite_rules, list):
+        from urllib.parse import urlsplit, urlunsplit
+        _split = urlsplit(upstream_url)
+        _path = _split.path
+        for rule in rewrite_rules:
+            _pattern = rule.get("match", "") if isinstance(rule, dict) else ""
+            _replace = rule.get("replace", "") if isinstance(rule, dict) else ""
+            if _pattern:
+                try:
+                    _path = re.sub(_pattern, _replace, _path, count=1)
+                except re.error:
+                    pass  # silently skip invalid regex
+        upstream_url = urlunsplit((_split.scheme, _split.netloc, _path, _split.query, _split.fragment))
+
     # Prepare headers — strip Portal auth and sensitive headers
+    _PROXY_BLOCKED_HEADERS = frozenset({
+        "host", "content-length", "transfer-encoding", "authorization",
+        "accept-encoding", "x-forwarded-for", "x-forwarded-proto", "x-real-ip",
+    })
+    forward_patterns = [p.lower() for p in (config.get("forward_headers") or [])
+                        if isinstance(p, str)][:20]
     fwd_headers = {}
     for key, value in request.headers.items():
         k = key.lower()
-        if k in ("host", "content-length", "transfer-encoding", "authorization", "accept-encoding"):
+        if k in _PROXY_BLOCKED_HEADERS:
             continue
         # Strip Portal session cookie from Cookie header
         if k == "cookie":
@@ -9202,7 +9240,12 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
             if cookies:
                 fwd_headers[key] = "; ".join(cookies)
             continue
-        fwd_headers[key] = value
+        # Forward header if it matches the user-configured whitelist
+        if forward_patterns:
+            import fnmatch as _fnmatch
+            if any(_fnmatch.fnmatch(k, p) for p in forward_patterns):
+                fwd_headers[key] = value
+        # (non-whitelisted headers are dropped — proxy default)
 
     fwd_headers["Host"] = parsed_target.netloc
     fwd_headers["X-Forwarded-For"] = request.remote or ""
@@ -10689,6 +10732,36 @@ async def http_delete_relay_destination(request: web.Request) -> web.Response:
     if not deleted:
         return web.json_response({"error": "Relay destination not found"}, status=404)
     return web.json_response({"ok": True})
+
+
+async def http_get_relay_logs(request: web.Request) -> web.Response:
+    """Get last error log for a relay destination (stream owner or admin)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        stream_id = int(request.match_info["id"])
+        relay_id = int(request.match_info["relay_id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+    stream = await db.get_user_stream(stream_id)
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+    is_admin = token.has_scope("admin") or token.has_scope("*")
+    if stream["user_id"] != token.user_id and not is_admin:
+        return web.json_response({"error": "Stream not found"}, status=404)
+    dest = await db.get_relay_destination(relay_id)
+    if not dest or dest["stream_id"] != stream_id:
+        return web.json_response({"error": "Relay destination not found"}, status=404)
+    # get_relay_destination returns raw encrypted value — decrypt here
+    last_error = dest.get("last_error")
+    if last_error:
+        last_error = decrypt_config(last_error)
+    return web.json_response({
+        "relay_id": relay_id,
+        "last_error": last_error,
+        "last_error_at": dest.get("last_error_at"),
+    })
 
 
 async def http_get_relay_platforms(request: web.Request) -> web.Response:
@@ -14752,6 +14825,7 @@ def create_app() -> web.Application:
         app.router.add_get(f"/{Config.INDEXNOW_API_KEY}.txt", http_indexnow_key)
     if Config.BING_SITE_VERIFICATION:
         app.router.add_get("/BingSiteAuth.xml", http_bing_verification)
+    app.router.add_get("/.well-known/security.txt", http_security_txt)
     app.router.add_get("/api/stats", http_stats)
     app.router.add_get("/api/stats/public", http_public_stats)
     app.router.add_get("/api/system/health", http_system_health)
@@ -14877,6 +14951,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/streams/{id}/relays", http_create_relay_destination)
     app.router.add_put("/api/streams/{id}/relays/{relay_id}", http_update_relay_destination)
     app.router.add_delete("/api/streams/{id}/relays/{relay_id}", http_delete_relay_destination)
+    app.router.add_get("/api/streams/{id}/relays/{relay_id}/logs", http_get_relay_logs)
     app.router.add_get("/api/relay-platforms", http_get_relay_platforms)
     # MediaMTX hooks
     app.router.add_post("/api/stream/auth", http_stream_auth)

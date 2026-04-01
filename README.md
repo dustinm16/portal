@@ -226,7 +226,20 @@ Publish from OBS or any RTMP client:
 | RTMPS (recommended) | `rtmps://your-domain:1936/live` | Stream key (`live_xxx`) |
 | RTMP (optional) | `rtmp://your-domain:1935/live` | Temporary token |
 
-Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage. Multi-platform relay supports Twitch, YouTube, Kick, and custom RTMP destinations (up to 10 per stream).
+Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage. Multi-platform relay supports Twitch, YouTube, Kick, and custom RTMP destinations (up to 10 per stream). When a relay fails, the last ffmpeg error is persisted and viewable from the stream management panel.
+
+## Reverse Proxy Configuration
+
+Web interface connections (`http_proxy` plugin) support the following per-connection config options, all configurable from the connection form:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `auth_header` | string (masked) | Authorization header value injected into every upstream request (e.g. `Bearer token123` or `Basic dXNlcjpwYXNz`) |
+| `timeout` | integer (5–300) | Upstream request timeout in seconds (default: 60) |
+| `path_rewrite_rules` | array | Regex match/replace pairs applied to the upstream request path before forwarding (e.g. strip a prefix, rewrite versioned paths) |
+| `forward_headers` | array | Header names or glob patterns forwarded from the client to upstream (e.g. `X-User-*`, `X-Request-ID`). `Authorization`, `Cookie`, and `Host` are never forwarded regardless of this setting. Max 20 entries. |
+| `verify_ssl` | boolean | Verify upstream SSL certificates (default: false — useful for self-signed internal certs) |
+| `preserve_host` | boolean | Preserve the original `Host` header instead of rewriting to the upstream host |
 
 ## Connection Types
 

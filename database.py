@@ -959,6 +959,9 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at)",
     # Status persistence: track user's explicit offline preference
     "ALTER TABLE users ADD COLUMN status_preference TEXT",
+    # Relay error tracking: persist last ffmpeg failure for operator visibility
+    "ALTER TABLE stream_relay_destinations ADD COLUMN last_error TEXT DEFAULT NULL",
+    "ALTER TABLE stream_relay_destinations ADD COLUMN last_error_at TEXT DEFAULT NULL",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -4346,7 +4349,7 @@ class Database:
         """Get all relay destinations for a stream (decrypted, key redacted)."""
         cursor = await self.conn.execute(
             """SELECT id, stream_id, platform, name, rtmp_url, stream_key, enabled,
-                      created_at, updated_at
+                      last_error, last_error_at, created_at, updated_at
                FROM stream_relay_destinations WHERE stream_id = ? ORDER BY created_at""",
             (stream_id,)
         )
@@ -4356,8 +4359,24 @@ class Database:
             d["rtmp_url"] = decrypt_config(d["rtmp_url"])
             d["has_stream_key"] = bool(d.get("stream_key"))
             del d["stream_key"]
+            # Decrypt last_error if present (may contain partial credential data)
+            if d.get("last_error"):
+                d["last_error"] = decrypt_config(d["last_error"])
             results.append(d)
         return results
+
+    async def update_relay_last_error(self, relay_id: int, error: Optional[str]) -> None:
+        """Persist the sanitized last ffmpeg error for a relay destination."""
+        from datetime import datetime, timezone as _tz
+        enc_error = encrypt_config(error) if error else None
+        now = datetime.now(_tz.utc).isoformat()
+        await self.conn.execute(
+            """UPDATE stream_relay_destinations
+               SET last_error = ?, last_error_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (enc_error, now if enc_error else None, now, relay_id)
+        )
+        await self.conn.commit()
 
     async def get_relay_destination(self, relay_id: int) -> Optional[dict]:
         """Get a single relay destination by ID (decrypted, including stream_key)."""

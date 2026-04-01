@@ -885,6 +885,110 @@ function createConnectionConfigField(key, prop, isRequired) {
         input.type = 'number';
         if (prop.minimum !== undefined) input.min = prop.minimum;
         if (prop.maximum !== undefined) input.max = prop.maximum;
+    } else if (prop.type === 'array') {
+        // Array editor — two subtypes:
+        //   items.type === 'object'  → key/value pair rows (e.g. path_rewrite_rules)
+        //   items.type === 'string'  → single-value rows  (e.g. forward_headers)
+        const isObjectItems = prop.items && prop.items.type === 'object';
+        const editor = document.createElement('div');
+        editor.className = 'array-field-editor';
+        editor.dataset.fieldKey = key;
+        editor.dataset.fieldType = isObjectItems ? 'array-object' : 'array-string';
+
+        // Hidden input holds the serialized JSON value collected by collectDynamicConfigFields
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.id = `connection-config-${key}`;
+        hidden.name = key;
+        hidden.dataset.jsonField = '1';
+        hidden.value = '[]';
+
+        const rowList = document.createElement('div');
+        rowList.className = 'array-field-rows';
+
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn btn-sm btn-secondary';
+        addBtn.style.marginTop = '0.4rem';
+        addBtn.textContent = isObjectItems ? '+ Add Rule' : '+ Add Header';
+
+        function syncHidden() {
+            const rows = rowList.querySelectorAll('.array-field-row');
+            const values = [];
+            rows.forEach(row => {
+                if (isObjectItems) {
+                    const inputs = row.querySelectorAll('input');
+                    const match = inputs[0] ? inputs[0].value.trim() : '';
+                    const replace = inputs[1] ? inputs[1].value : '';
+                    if (match) values.push({ match, replace });
+                } else {
+                    const val = row.querySelector('input') ? row.querySelector('input').value.trim() : '';
+                    if (val) values.push(val);
+                }
+            });
+            hidden.value = JSON.stringify(values);
+        }
+
+        function addArrayRow(matchVal, replaceVal) {
+            const row = document.createElement('div');
+            row.className = 'array-field-row';
+            row.style.cssText = 'display:flex;gap:0.4rem;align-items:center;margin-bottom:0.3rem;';
+
+            if (isObjectItems) {
+                const m = document.createElement('input');
+                m.type = 'text';
+                m.placeholder = 'Match (regex)';
+                m.style.flex = '1';
+                m.value = matchVal || '';
+                const r = document.createElement('input');
+                r.type = 'text';
+                r.placeholder = 'Replace';
+                r.style.flex = '1';
+                r.value = replaceVal || '';
+                m.addEventListener('input', syncHidden);
+                r.addEventListener('input', syncHidden);
+                row.appendChild(m);
+                row.appendChild(r);
+            } else {
+                const s = document.createElement('input');
+                s.type = 'text';
+                s.placeholder = 'e.g. X-User-* or X-Request-ID';
+                s.style.flex = '1';
+                s.value = matchVal || '';
+                s.addEventListener('input', syncHidden);
+                row.appendChild(s);
+            }
+
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'btn btn-sm btn-danger';
+            del.textContent = '×';
+            del.style.padding = '0 0.5rem';
+            del.addEventListener('click', () => { row.remove(); syncHidden(); });
+            row.appendChild(del);
+            rowList.appendChild(row);
+            syncHidden();
+        }
+
+        addBtn.addEventListener('click', () => addArrayRow());
+
+        editor.appendChild(rowList);
+        editor.appendChild(addBtn);
+        editor.appendChild(hidden);
+
+        group.appendChild(label);
+        group.appendChild(editor);
+
+        // Store addArrayRow on the editor so populateArrayField can call it
+        editor._addRow = addArrayRow;
+
+        if (prop.description) {
+            const help = document.createElement('small');
+            help.style.color = 'var(--text-muted)';
+            help.textContent = prop.description;
+            group.appendChild(help);
+        }
+        return group;
     } else {
         // Text/password input
         input = document.createElement('input');
@@ -932,6 +1036,12 @@ function collectDynamicConfigFields() {
         if (!key) return;
         if (input.type === 'checkbox') {
             config[key] = input.checked;
+        } else if (input.dataset.jsonField) {
+            // Array field — parse the JSON stored in the hidden input
+            try {
+                const parsed = JSON.parse(input.value);
+                if (Array.isArray(parsed) && parsed.length > 0) config[key] = parsed;
+            } catch (e) { /* skip malformed */ }
         } else if (input.value !== '') {
             config[key] = input.type === 'number' ? Number(input.value) : input.value;
         }
@@ -1175,12 +1285,25 @@ async function editConnection(connectionId) {
 function populateDynamicConfigFields(config) {
     Object.entries(config).forEach(([key, value]) => {
         const input = document.getElementById(`connection-config-${key}`);
-        if (input) {
-            if (input.type === 'checkbox') {
-                input.checked = !!value;
-            } else {
-                input.value = value;
-            }
+        if (!input) return;
+        if (input.dataset.jsonField) {
+            // Array field — populate editor rows from existing array value
+            const editor = input.closest('.array-field-editor');
+            if (!editor || !editor._addRow || !Array.isArray(value)) return;
+            // Clear existing rows
+            editor.querySelector('.array-field-rows').innerHTML = '';
+            const isObjectItems = editor.dataset.fieldType === 'array-object';
+            value.forEach(item => {
+                if (isObjectItems) {
+                    editor._addRow(item.match || '', item.replace || '');
+                } else {
+                    editor._addRow(item, '');
+                }
+            });
+        } else if (input.type === 'checkbox') {
+            input.checked = !!value;
+        } else {
+            input.value = value;
         }
     });
 }

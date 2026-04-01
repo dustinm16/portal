@@ -913,6 +913,7 @@ async function loadRelayDestinations(streamId) {
 
         listEl.innerHTML = relays.map(relay => {
             const platform = RELAY_PLATFORMS[relay.platform] || RELAY_PLATFORMS.custom;
+            const hasError = !!relay.last_error;
             return `
                 <div class="relay-destination-row" data-relay-id="${relay.id}">
                     <span class="relay-platform-badge" style="background: ${platform.color};">${escapeHtml(platform.name)}</span>
@@ -923,6 +924,7 @@ async function loadRelayDestinations(streamId) {
                             <input type="checkbox" ${relay.enabled ? 'checked' : ''} data-relay-toggle="${relay.id}" data-stream-id="${streamId}">
                             <span class="relay-toggle-slider"></span>
                         </label>
+                        ${hasError ? `<button class="btn btn-sm btn-warning" data-relay-logs="${relay.id}" data-stream-id="${streamId}" title="View last error">Last Error</button>` : ''}
                         <button class="btn btn-sm btn-secondary" data-relay-edit="${relay.id}" data-stream-id="${streamId}">Edit</button>
                         <button class="btn btn-sm btn-danger" data-relay-delete="${relay.id}" data-stream-id="${streamId}">Delete</button>
                     </div>
@@ -937,6 +939,14 @@ async function loadRelayDestinations(streamId) {
                     parseInt(input.dataset.streamId),
                     parseInt(input.dataset.relayToggle),
                     input.checked
+                );
+            });
+        });
+        listEl.querySelectorAll('[data-relay-logs]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                viewRelayError(
+                    parseInt(btn.dataset.streamId),
+                    parseInt(btn.dataset.relayLogs)
                 );
             });
         });
@@ -960,6 +970,50 @@ async function loadRelayDestinations(streamId) {
     } catch (error) {
         console.error('Failed to load relay destinations:', error);
         listEl.innerHTML = '<p style="color: var(--danger);">Failed to load relay destinations.</p>';
+    }
+}
+
+async function viewRelayError(streamId, relayId) {
+    try {
+        const data = await Portal.fetchJSON(`/api/streams/${streamId}/relays/${relayId}/logs`);
+        const error = data.last_error || 'No error details available.';
+        const when = data.last_error_at ? new Date(data.last_error_at).toLocaleString() : '';
+
+        const titleEl = document.getElementById('confirm-title');
+        const msgEl = document.getElementById('confirm-message');
+        const confirmBtn = document.getElementById('confirm-btn');
+        const cancelBtn = document.querySelector('#confirm-modal .btn-secondary');
+        if (!titleEl || !msgEl) return;
+
+        // Save original state
+        const origTitle = titleEl.textContent;
+        const origMsg = msgEl.innerHTML;
+        const origConfirmDisplay = confirmBtn ? confirmBtn.style.display : '';
+        const origCancelText = cancelBtn ? cancelBtn.textContent : '';
+
+        titleEl.textContent = 'Relay Error Log';
+        msgEl.innerHTML = (when ? `<small style="color:var(--text-muted)">Last failure: ${escapeHtml(when)}</small><br>` : '') +
+            `<pre style="white-space:pre-wrap;word-break:break-all;margin-top:0.5rem;font-size:0.8rem;max-height:300px;overflow-y:auto;background:var(--bg-secondary);padding:0.75rem;border-radius:4px;">${escapeHtml(error)}</pre>`;
+        if (confirmBtn) confirmBtn.style.display = 'none';
+        if (cancelBtn) cancelBtn.textContent = 'Close';
+
+        // Set pending action to null so the confirm button (if shown) just closes
+        pendingConfirmAction = null;
+
+        showModal('confirm-modal');
+
+        // Restore modal state on close (one-shot, covers ×, Cancel, and backdrop)
+        function restoreConfirmModal() {
+            titleEl.textContent = origTitle;
+            msgEl.innerHTML = origMsg;
+            if (confirmBtn) confirmBtn.style.display = origConfirmDisplay;
+            if (cancelBtn) cancelBtn.textContent = origCancelText;
+        }
+        document.querySelectorAll('#confirm-modal [onclick*="closeModal"], #confirm-modal .modal-backdrop').forEach(el => {
+            el.addEventListener('click', restoreConfirmModal, { once: true });
+        });
+    } catch (err) {
+        Portal.toast('Failed to load relay error log', 'error');
     }
 }
 

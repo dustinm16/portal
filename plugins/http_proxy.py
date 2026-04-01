@@ -73,7 +73,9 @@ class HTTPProxyPlugin(PluginBase):
                 },
                 "auth_header": {
                     "type": "string",
-                    "description": "Authorization header to inject"
+                    "format": "password",
+                    "title": "Auth Header",
+                    "description": "Authorization header value injected as the upstream Authorization header (e.g. Bearer token123)"
                 },
                 "extra_headers": {
                     "type": "object",
@@ -86,12 +88,35 @@ class HTTPProxyPlugin(PluginBase):
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Request timeout in seconds",
-                    "default": 60
+                    "title": "Timeout (seconds)",
+                    "description": "Upstream request timeout in seconds",
+                    "default": 60,
+                    "minimum": 5,
+                    "maximum": 300
                 },
                 "websocket_path": {
                     "type": "string",
                     "description": "WebSocket endpoint path (e.g., /api/websocket)"
+                },
+                "path_rewrite_rules": {
+                    "type": "array",
+                    "title": "Path Rewrite Rules",
+                    "description": "Regex match/replace pairs applied to the upstream request path (e.g. strip a prefix or rewrite versioned paths)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "match": {"type": "string", "description": "Regex pattern to match"},
+                            "replace": {"type": "string", "description": "Replacement string (supports \\1 backreferences)"}
+                        }
+                    },
+                    "default": []
+                },
+                "forward_headers": {
+                    "type": "array",
+                    "title": "Forward Headers",
+                    "description": "Header names or glob patterns to forward from the client to upstream (e.g. X-User-*, X-Request-ID). Authorization, Cookie, and Host are never forwarded.",
+                    "items": {"type": "string"},
+                    "default": []
                 }
             }
         }
