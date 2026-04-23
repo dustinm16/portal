@@ -63,6 +63,9 @@ See what's running on your server at a glance — active processes, systemd serv
 ### Data Retention
 Set policies for how long chat messages, DMs, notifications, activity logs, and expired tokens are kept. Automatic cleanup runs on a schedule (default every 6 hours) with optional database compaction. Run cleanup on demand anytime from the admin panel.
 
+### Visual Theming
+Ten built-in themes — switch with the palette icon in the navbar. **Dark** (navy, default), **Black** (OLED), **Grey**, **Slate**, **Blue**, **Green**, **Red**, **Orange**, **Light**, and **High Contrast**. Your preference persists across sessions via localStorage and applies before the first paint so there's no flash.
+
 ### Administration
 Manage users with a clear role hierarchy — Super Admin, Admin, Moderator, and User. Create invite codes to let people register (daily rotating, single-use, or time-limited). Require two-factor authentication. Issue API keys for automation. Manage SSH keys, monitor traffic patterns, and scan for vulnerabilities. All administration happens through the admin panel in your browser.
 
@@ -85,7 +88,13 @@ Here are a few ways people use Open Relay Portal:
 ## Screenshots
 
 ![Dashboard](docs/screenshots/dashboard.png)
-*Dashboard — My Connections, Quick Add bar, services, streams, and system stats*
+*Dashboard — Services, connections, streams, VODs, quick access, and system stats*
+
+![Theme Picker](docs/screenshots/themes.png)
+*Theme Switcher — 10 built-in themes: Dark, Black, Grey, Slate, Light, Blue, Green, Red, Orange, High Contrast*
+
+![Light Theme](docs/screenshots/dashboard-light.png)
+*Light Theme — full light mode with dark text and blue accent*
 
 ![Chat](docs/screenshots/chat.png)
 *Encrypted Chat — Channels, reactions, threads, @mentions, voice chat*
@@ -100,10 +109,10 @@ Here are a few ways people use Open Relay Portal:
 *Admin Panel — Server stats, traffic metrics, Shodan scanner, system resources*
 
 ![File Manager](docs/screenshots/files.png)
-*File Manager — Browse and manage server files (Admin Panel tab)*
+*File Manager — Browse and manage server files*
 
 ![System Monitor](docs/screenshots/sysmon.png)
-*System Monitor — Processes, systemd services, network interfaces (Admin Panel tab)*
+*System Monitor — Processes, systemd services, network interfaces*
 
 ![Streams](docs/screenshots/streams.png)
 *Community Streams — Live streaming with HLS playback and VOD recording*
@@ -116,6 +125,9 @@ Here are a few ways people use Open Relay Portal:
 
 <details>
 <summary>More screenshots</summary>
+
+![High Contrast Theme](docs/screenshots/dashboard-hc.png)
+*High Contrast Theme — maximum readability with yellow accent on pure black*
 
 ![Login](docs/screenshots/login.png)
 *Login page with TOTP 2FA support*
