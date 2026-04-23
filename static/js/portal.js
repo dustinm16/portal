@@ -1128,9 +1128,115 @@ const NotificationBell = {
     }
 };
 
+// ── Theme Switcher ──────────────────────────────────────────────────────────
+const ThemeSwitcher = {
+    THEMES: [
+        { id: 'dark',          label: 'Dark',     swatch: 'linear-gradient(135deg,#1a1a2e 55%,#60a5fa 100%)' },
+        { id: 'black',         label: 'Black',    swatch: 'linear-gradient(135deg,#000 55%,#3b82f6 100%)' },
+        { id: 'grey',          label: 'Grey',     swatch: 'linear-gradient(135deg,#242424 55%,#9ca3af 100%)' },
+        { id: 'slate',         label: 'Slate',    swatch: 'linear-gradient(135deg,#0f172a 55%,#7dd3fc 100%)' },
+        { id: 'light',         label: 'Light',    swatch: 'linear-gradient(135deg,#f0f4f8 55%,#2563eb 100%)' },
+        { id: 'blue',          label: 'Blue',     swatch: 'linear-gradient(135deg,#080f1a 55%,#3b82f6 100%)' },
+        { id: 'green',         label: 'Green',    swatch: 'linear-gradient(135deg,#071a07 55%,#4ade80 100%)' },
+        { id: 'red',           label: 'Red',      swatch: 'linear-gradient(135deg,#1a0505 55%,#f87171 100%)' },
+        { id: 'orange',        label: 'Orange',   swatch: 'linear-gradient(135deg,#1a1005 55%,#fb923c 100%)' },
+        { id: 'high-contrast', label: 'Hi-Con',   swatch: 'linear-gradient(135deg,#000 40%,#ffff00 100%)' },
+    ],
+    _dropdown: null,
+
+    current() {
+        return localStorage.getItem('portal-theme') || 'dark';
+    },
+
+    apply(name) {
+        if (name === 'dark') {
+            document.documentElement.removeAttribute('data-theme');
+        } else {
+            document.documentElement.setAttribute('data-theme', name);
+        }
+        localStorage.setItem('portal-theme', name);
+        this._updateSwatches();
+    },
+
+    init() {
+        // Apply saved theme immediately
+        const saved = this.current();
+        if (saved !== 'dark') document.documentElement.setAttribute('data-theme', saved);
+
+        const userLink = document.querySelector('.navbar-user');
+        if (!userLink) return;
+
+        // Build wrapper + button
+        const wrap = document.createElement('div');
+        wrap.className = 'navbar-theme-wrap';
+
+        const btn = document.createElement('button');
+        btn.className = 'navbar-theme-btn';
+        btn.title = 'Switch theme';
+        btn.setAttribute('aria-label', 'Switch theme');
+        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/>
+        </svg>`;
+        wrap.appendChild(btn);
+
+        // Build dropdown
+        this._dropdown = document.createElement('div');
+        this._dropdown.className = 'theme-picker-dropdown';
+        this.THEMES.forEach(t => {
+            const swatch = document.createElement('div');
+            swatch.className = 'theme-swatch' + (t.id === this.current() ? ' active' : '');
+            swatch.dataset.themeId = t.id;
+            swatch.innerHTML = `
+                <div class="theme-swatch-circle" style="background:${t.swatch}"></div>
+                <span class="theme-swatch-label">${t.label}</span>`;
+            swatch.addEventListener('click', () => {
+                this.apply(t.id);
+                this._dropdown.classList.remove('open');
+            });
+            this._dropdown.appendChild(swatch);
+        });
+        document.body.appendChild(this._dropdown);
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = this._dropdown.classList.contains('open');
+            if (!isOpen) {
+                const rect = btn.getBoundingClientRect();
+                this._dropdown.style.top = (rect.bottom + 4) + 'px';
+                this._dropdown.style.right = (window.innerWidth - rect.right) + 'px';
+            }
+            this._dropdown.classList.toggle('open');
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!wrap.contains(e.target) && !this._dropdown.contains(e.target)) {
+                this._dropdown.classList.remove('open');
+            }
+        });
+
+        userLink.parentNode.insertBefore(wrap, userLink);
+    },
+
+    _updateSwatches() {
+        if (!this._dropdown) return;
+        const cur = this.current();
+        this._dropdown.querySelectorAll('.theme-swatch').forEach(s => {
+            s.classList.toggle('active', s.dataset.themeId === cur);
+        });
+    },
+};
+
+// Apply theme before first paint (avoids flash on non-dark preference)
+(function () {
+    const t = localStorage.getItem('portal-theme');
+    if (t && t !== 'dark') document.documentElement.setAttribute('data-theme', t);
+}());
+
 // Auto-init notification bell on pages with navbar (skip login page)
 document.addEventListener('DOMContentLoaded', () => {
     if (document.querySelector('.navbar-user')) {
+        ThemeSwitcher.init();
         NotificationBell.init();
     }
 });
