@@ -238,7 +238,7 @@ Publish from OBS or any RTMP client:
 | RTMPS (recommended) | `rtmps://your-domain:1936/live` | Stream key (`live_xxx`) |
 | RTMP (optional) | `rtmp://your-domain:1935/live` | Temporary token |
 
-Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage. Multi-platform relay supports Twitch, YouTube, Kick, and custom RTMP destinations (up to 10 per stream). When a relay fails, the last ffmpeg error is persisted and viewable from the stream management panel.
+Playback is HLS over HTTPS. VODs are automatically recorded as 5-minute MKV chunks and uploaded to your configured SFTP storage. Multi-platform relay supports Twitch, YouTube, Kick, and custom RTMP destinations (up to 10 per stream). Relays are self-healing: a background health monitor automatically restarts any relay that dies without a reconnect event, and individual relays that crash after running for 30+ seconds are auto-restarted with exponential backoff (10s → 30s → 60s, 3 attempts). When a relay fails, the last ffmpeg error is persisted and viewable from the stream management panel.
 
 ## Reverse Proxy Configuration
 

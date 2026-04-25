@@ -164,6 +164,8 @@ RELAY_PLATFORMS = {
 MAX_RELAYS_PER_STREAM = 10
 # active_relays: stream_id -> {relay_id -> {process, dest, started_at, monitor_task}}
 active_relays: dict[int, dict[int, dict]] = {}
+# Timestamp of last relay restart per stream_id (for health-monitor cooldown)
+_relay_restart_cooldown: dict[int, float] = {}
 
 # Characters that must not appear in relay URLs or stream keys (null bytes, newlines).
 _BAD_RELAY_CHARS = {'\x00', '\n', '\r'}
@@ -3729,6 +3731,94 @@ def _sanitize_relay_stderr(stderr_text: str) -> str:
     return re.sub(r'(rtmps?://[^\s/]+(?:/[^\s/]+)*/)([^\s"\']+)', r'\1[KEY_REDACTED]', stderr_text)
 
 
+async def _restart_single_relay(stream_id: int, relay_id: int, dest: dict) -> None:
+    """Auto-restart one relay after an abnormal exit, with exponential backoff."""
+    platform = dest.get("platform", "custom")
+    name = dest.get("name", "?")
+    backoffs = [10, 30, 60]
+
+    for attempt, delay in enumerate(backoffs, start=1):
+        await asyncio.sleep(delay)
+
+        # Abort if stream is no longer live
+        current = await db.get_user_stream(stream_id)
+        if not current or current.get("is_live") != 1:
+            logger.info(f"Relay auto-restart aborted ({platform}/{name}): stream offline")
+            return
+
+        # Abort if already restarted by health monitor or another path
+        async with _stream_state_lock:
+            if relay_id in active_relays.get(stream_id, {}):
+                logger.info(f"Relay auto-restart skipped ({platform}/{name}): already running")
+                return
+
+        # Verify destination is still enabled and get fresh decrypted keys
+        dests = await db.get_enabled_relay_destinations(stream_id)
+        fresh_dest = next((d for d in dests if d["id"] == relay_id), None)
+        if not fresh_dest:
+            logger.info(f"Relay auto-restart aborted ({platform}/{name}): destination disabled or removed")
+            return
+
+        mtx_config = await _get_mediamtx_config()
+        if not mtx_config:
+            return
+
+        async with _stream_state_lock:
+            active_key = _rtmp_stream_paths.get(stream_id, current["stream_key"])
+        source_url = f"rtsp://127.0.0.1:8554/live/{active_key}"
+
+        rtmp_url = fresh_dest["rtmp_url"].rstrip("/")
+        target = f"{rtmp_url}/{fresh_dest['stream_key']}"
+
+        try:
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "warning",
+                "-rtsp_transport", "tcp",
+                "-i", source_url,
+                "-c", "copy", "-f", "flv",
+                target
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE
+            )
+            monitor_task = asyncio.create_task(
+                _monitor_relay_process(stream_id, relay_id, process, fresh_dest)
+            )
+            async with _stream_state_lock:
+                if stream_id not in active_relays:
+                    active_relays[stream_id] = {}
+                active_relays[stream_id][relay_id] = {
+                    "process": process,
+                    "dest": fresh_dest,
+                    "started_at": datetime.now(timezone.utc),
+                    "monitor_task": monitor_task,
+                }
+            logger.info(f"Relay auto-restarted (attempt {attempt}/{len(backoffs)}): "
+                        f"stream {stream_id} -> {platform} ({name}), pid={process.pid}")
+
+            # Brief check for immediate failure
+            await asyncio.sleep(2)
+            if process.returncode is not None and process.returncode != 0:
+                async with _stream_state_lock:
+                    active_relays.get(stream_id, {}).pop(relay_id, None)
+                monitor_task.cancel()
+                if attempt < len(backoffs):
+                    logger.warning(f"Relay auto-restart failed immediately ({platform}/{name}), "
+                                   f"attempt {attempt}/{len(backoffs)}")
+                    continue
+                logger.warning(f"Relay auto-restart exhausted all attempts ({platform}/{name})")
+                asyncio.create_task(db.update_relay_last_error(
+                    relay_id, "Auto-restart exhausted after repeated failures"))
+            return
+
+        except Exception as e:
+            logger.error(f"Relay auto-restart error ({platform}/{name}) attempt {attempt}: {e}")
+            if attempt >= len(backoffs):
+                return
+
+
 async def _monitor_relay_process(stream_id: int, relay_id: int,
                                   process: asyncio.subprocess.Process, dest: dict) -> None:
     """Monitor a single relay process and clean up on exit."""
@@ -3752,6 +3842,13 @@ async def _monitor_relay_process(stream_id: int, relay_id: int,
             stderr_tail = _sanitize_relay_stderr(stderr_data.decode(errors="replace")[-500:])
             logger.warning(f"Relay {platform}/{name} exited with code {rc}: {stderr_tail}")
             asyncio.create_task(db.update_relay_last_error(relay_id, f"Exit code {rc}: {stderr_tail}" if stderr_tail else f"Exit code {rc}"))
+            # Only auto-restart if the relay ran for >= 30s — quick-exits are likely
+            # in a failure loop (bad credentials, ingest down) and should not cascade.
+            async with _stream_state_lock:
+                info = active_relays.get(stream_id, {}).get(relay_id, {})
+            ran = (datetime.now(timezone.utc) - info["started_at"]).total_seconds() if info else 0
+            if ran >= 30:
+                asyncio.create_task(_restart_single_relay(stream_id, relay_id, dest))
         else:
             logger.info(f"Relay {platform}/{name} ended normally")
     except asyncio.CancelledError:
@@ -4809,6 +4906,17 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
 
         if proc.returncode != 0 or not stdout:
             logger.warning(f"ffmpeg thumbnail capture failed for {cache_key}: {stderr.decode()[:200]}")
+            # Serve last known good frame rather than a 500 during transient HLS hiccups
+            if cache_key in _thumbnail_cache:
+                _, stale_bytes = _thumbnail_cache[cache_key]
+                return web.Response(
+                    body=stale_bytes,
+                    content_type="image/jpeg",
+                    headers={
+                        "Cache-Control": "public, max-age=5",
+                        "Access-Control-Allow-Origin": "*",
+                    }
+                )
             return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
 
         # Cache the thumbnail
@@ -15237,6 +15345,9 @@ class PortalServer:
         # Start RTMP token cleanup task (runs every 5 minutes)
         asyncio.create_task(self._rtmp_token_cleanup_task())
 
+        # Start relay health monitor (restarts orphaned relays every 45 seconds)
+        asyncio.create_task(self._relay_health_monitor_task())
+
         # Initialize vulnerability scanner - check database for NVD API key (encrypted)
         nvd_api_key_raw = await db.get_setting("nvd_api_key")
         nvd_api_key = decrypt_config(nvd_api_key_raw) if nvd_api_key_raw else Config.NVD_API_KEY
@@ -15538,6 +15649,64 @@ class PortalServer:
                 break
             except Exception as e:
                 logger.error(f"[Viewer sync] Error: {e}")
+
+    async def _relay_health_monitor_task(self) -> None:
+        """Background task: restart relays for live streams that have no active relay processes.
+
+        Handles the case where the RTSP source drops briefly (causing ffmpeg to exit cleanly)
+        without triggering a full on_publish callback — leaving relays permanently dead while
+        the stream remains marked live in the DB.
+        """
+        await asyncio.sleep(60)  # Initial delay — let the server fully start up
+        while True:
+            try:
+                await asyncio.sleep(45)
+
+                # Get all currently live streams
+                cursor = await db.conn.execute(
+                    "SELECT id, stream_key FROM user_streams WHERE is_live = 1"
+                )
+                live_streams = await cursor.fetchall()
+                if not live_streams:
+                    continue
+
+                now = monotonic()
+                async with _stream_state_lock:
+                    relay_snapshot = dict(active_relays)
+
+                for row in live_streams:
+                    stream_id = row["id"]
+
+                    # Skip if stream has active relay processes
+                    if relay_snapshot.get(stream_id):
+                        continue
+
+                    # Skip if we restarted recently (90s cooldown to avoid thrash)
+                    if now - _relay_restart_cooldown.get(stream_id, 0) < 90:
+                        continue
+
+                    # Check if this stream has any enabled relay destinations
+                    dests = await db.get_enabled_relay_destinations(stream_id)
+                    if not dests:
+                        continue
+
+                    # Double-check stream is still live before acting
+                    current = await db.get_user_stream(stream_id)
+                    if not current or current.get("is_live") != 1:
+                        continue
+
+                    _relay_restart_cooldown[stream_id] = now
+                    async with _stream_state_lock:
+                        active_key = _rtmp_stream_paths.get(stream_id, current["stream_key"])
+
+                    logger.info(f"Relay health monitor: stream {stream_id} is live but has no "
+                                f"active relays — restarting {len(dests)} destination(s)")
+                    asyncio.create_task(start_stream_relays(current, active_key))
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Relay health monitor error: {e}")
 
     async def stop(self) -> None:
         """Stop the server gracefully."""
