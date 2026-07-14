@@ -89,3 +89,7 @@ Desktop.ini
 *.bak
 *.orig
 .cache/
+
+# Local test scripts (contain live credentials)
+test_screenshare.py
+test_browser_screenshare.py
