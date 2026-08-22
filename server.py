@@ -9397,7 +9397,8 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                              "proxy-authenticate", "proxy-authorization",
                              "te", "trailers", "upgrade",
                              "content-security-policy", "x-frame-options",
-                             "content-encoding", "content-length"):
+                             "content-encoding", "content-length",
+                             "cache-control", "expires", "age"):
                         continue
 
                     # Rewrite Location headers for redirects
@@ -9430,6 +9431,10 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                         value = re.sub(r'(?i)path=/', f'Path={cookie_prefix}/', value, count=1)
 
                     resp_headers[key] = value
+
+                # Proxied content is per-connection and session-scoped — never let a shared
+                # edge cache (e.g. Cloudflare) store it keyed by URL alone across sessions.
+                resp_headers["Cache-Control"] = "private, no-store"
 
                 # Check if response needs URL rewriting
                 content_type = resp.headers.get("Content-Type", "")
@@ -9561,6 +9566,27 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                                     f'if(window.EventSource){{var _E=window.EventSource;'
                                     f'window.EventSource=function(u,o){{return new _E(R(u),o)}};'
                                     f'window.EventSource.prototype=_E.prototype}}'
+                                    # Intercept src/href IDL property setters — dynamically-created
+                                    # elements (webpack/Vite chunk loading: el.src=url; append(el))
+                                    # start fetching the moment src is set, before MutationObserver
+                                    # (which only fires on insertion, as a microtask) can rewrite it.
+                                    f'[["HTMLScriptElement","src"],["HTMLImageElement","src"],'
+                                    f'["HTMLIFrameElement","src"],["HTMLSourceElement","src"],'
+                                    f'["HTMLEmbedElement","src"],["HTMLMediaElement","src"],'
+                                    f'["HTMLLinkElement","href"]].forEach(function(pair){{'
+                                    f'var ctor=window[pair[0]];if(!ctor)return;'
+                                    f'var proto=ctor.prototype;var prop=pair[1];'
+                                    f'var desc=Object.getOwnPropertyDescriptor(proto,prop);'
+                                    f'if(!desc||!desc.set)return;'
+                                    f'Object.defineProperty(proto,prop,{{configurable:true,enumerable:desc.enumerable,'
+                                    f'get:desc.get,set:function(v){{return desc.set.call(this,R(v))}}}})}});'
+                                    # Intercept setAttribute() for the same resource-bearing attrs —
+                                    # covers frameworks that set attributes directly rather than IDL props.
+                                    f'var _sa=Element.prototype.setAttribute;'
+                                    f'var _RA={{src:1,href:1,action:1,data:1,poster:1,formaction:1}};'
+                                    f'Element.prototype.setAttribute=function(name,value){{'
+                                    f'if(_RA[String(name).toLowerCase()])value=R(value);'
+                                    f'return _sa.call(this,name,value)}};'
                                     # window.open() — send to parent as new tab
                                     f'window.open=function(u){{if(u){{var ru=R(u);'
                                     f'try{{window.top.postMessage({{type:"openTab",url:ru}},location.origin)}}catch{{}}'
