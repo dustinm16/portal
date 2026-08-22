@@ -964,6 +964,17 @@ MIGRATIONS = [
     "ALTER TABLE stream_relay_destinations ADD COLUMN last_error_at TEXT DEFAULT NULL",
     # Bind any service (proxy or managed) to a systemd unit for lifecycle control
     "ALTER TABLE services ADD COLUMN systemd_unit TEXT DEFAULT NULL",
+    # App-wide IP blocking
+    """CREATE TABLE IF NOT EXISTS blocked_ips (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip_address TEXT NOT NULL UNIQUE,
+        reason TEXT,
+        blocked_by INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        expires_at TEXT DEFAULT NULL,
+        FOREIGN KEY (blocked_by) REFERENCES users(id) ON DELETE SET NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip_address)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -4827,6 +4838,57 @@ class Database:
             )"""
         )
         await self.conn.commit()
+
+    # IP blocking (app-wide, enforced in the security middleware)
+
+    async def block_ip(self, ip_address: str, reason: str = None,
+                        blocked_by: int = None, expires_at: str = None) -> bool:
+        """Block an IP address. Overwrites an existing block for the same IP."""
+        await self.conn.execute(
+            """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(ip_address) DO UPDATE SET
+                   reason = excluded.reason,
+                   blocked_by = excluded.blocked_by,
+                   created_at = CURRENT_TIMESTAMP,
+                   expires_at = excluded.expires_at""",
+            (ip_address, reason, blocked_by, expires_at)
+        )
+        await self.conn.commit()
+        return True
+
+    async def unblock_ip(self, ip_address: str) -> bool:
+        """Remove an IP block."""
+        cursor = await self.conn.execute(
+            "DELETE FROM blocked_ips WHERE ip_address = ?", (ip_address,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def list_blocked_ips(self) -> list[dict]:
+        """List all blocked IPs (including expired ones — caller filters)."""
+        cursor = await self.conn.execute(
+            """SELECT b.*, u.username AS blocked_by_username
+               FROM blocked_ips b
+               LEFT JOIN users u ON u.id = b.blocked_by
+               ORDER BY b.created_at DESC"""
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_active_blocked_ips(self) -> dict[str, Optional[str]]:
+        """Get a {ip: expires_at} map of currently-active blocks (expired ones excluded).
+
+        Loaded once at startup and kept in sync in-process on block/unblock —
+        this is what the request-path middleware check runs against, so it
+        never touches the database per-request.
+        """
+        cursor = await self.conn.execute(
+            """SELECT ip_address, expires_at FROM blocked_ips
+               WHERE expires_at IS NULL OR expires_at > datetime('now')"""
+        )
+        rows = await cursor.fetchall()
+        return {row["ip_address"]: row["expires_at"] for row in rows}
 
     # Activity types visible to all authenticated users (community events)
     PUBLIC_ACTIVITY_TYPES = {"stream_live", "stream_offline", "register"}

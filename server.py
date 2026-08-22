@@ -90,6 +90,7 @@ from ssh_keys import (
 )
 from shodan_integration import shodan_client, init_shodan, shutdown_shodan
 from traffic_metrics import traffic_metrics, start_metrics_recorder, stop_metrics_recorder
+from resource_metrics import resource_metrics, start_resource_metrics_recorder, stop_resource_metrics_recorder
 from vulnerability_scanner import vulnerability_scanner, init_scanner, shutdown_scanner
 from services import (
     ServiceManager,
@@ -108,6 +109,28 @@ logger = logging.getLogger("portal")
 
 # Rate limiting storage
 rate_limits: dict[str, list[float]] = defaultdict(list)
+
+# App-wide IP blocking — {ip: expires_at_iso_or_None}, loaded at startup from
+# blocked_ips and kept in sync in-process so the middleware check on every
+# request never touches the database.
+_blocked_ips: dict[str, Optional[str]] = {}
+
+
+def _is_ip_blocked(ip: str) -> bool:
+    """Check the in-process blocked-IP cache. Lazily evicts expired entries."""
+    if ip not in _blocked_ips:
+        return False
+    expires_at = _blocked_ips[ip]
+    if expires_at is None:
+        return True
+    try:
+        if datetime.now(timezone.utc) < datetime.fromisoformat(expires_at.replace(" ", "T")).replace(tzinfo=timezone.utc):
+            return True
+    except ValueError:
+        return True
+    # Expired — evict from cache (DB row is left for the admin's own record; harmless)
+    del _blocked_ips[ip]
+    return False
 
 
 def safe_error_message(e: Exception) -> str:
@@ -5346,6 +5369,26 @@ async def http_get_metrics_time_series(request: web.Request) -> web.Response:
     })
 
 
+async def http_get_resource_time_series(request: web.Request) -> web.Response:
+    """Get host CPU/memory/disk/network time series (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        hours = int(request.query.get("hours", "1"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid hours parameter"}, status=400)
+    hours = min(max(hours, 1), 24)  # Clamp between 1 and 24
+
+    return web.json_response({
+        "data": resource_metrics.get_time_series(hours)
+    })
+
+
 async def http_get_metrics_top(request: web.Request) -> web.Response:
     """Get top services and users (admin only)."""
     token = await authenticate_request(request)
@@ -7043,6 +7086,95 @@ async def http_sysmon_ports(request: web.Request) -> web.Response:
 
     ports = system_monitor.get_listening_ports()
     return web.json_response(ports)
+
+
+# =============================================================================
+# IP Blocking (app-wide, admin only)
+# =============================================================================
+
+async def http_list_blocked_ips(request: web.Request) -> web.Response:
+    """GET /api/admin/blocked-ips - List all blocked IPs."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    blocks = await db.list_blocked_ips()
+    return web.json_response({"blocked_ips": blocks})
+
+
+async def http_block_ip(request: web.Request) -> web.Response:
+    """POST /api/admin/blocked-ips - Block an IP address app-wide."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    ip_address = (data.get("ip_address") or "").strip()
+    reason = (data.get("reason") or "").strip() or None
+    duration_hours = data.get("duration_hours")
+
+    try:
+        ipaddress.ip_address(ip_address)
+    except ValueError:
+        return web.json_response({"error": "Invalid IP address"}, status=400)
+
+    if get_client_ip(request) == ip_address:
+        return web.json_response(
+            {"error": "Refusing to block your own current IP address"}, status=400
+        )
+
+    expires_at = None
+    if duration_hours is not None:
+        try:
+            duration_hours = float(duration_hours)
+            if duration_hours <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return web.json_response({"error": "duration_hours must be a positive number"}, status=400)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=duration_hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    await db.block_ip(ip_address, reason=reason, blocked_by=token.user_id, expires_at=expires_at)
+    _blocked_ips[ip_address] = expires_at
+
+    admin_user = await db.get_user_by_id(token.user_id)
+    await db.log_activity(
+        token.user_id, get_display_name(admin_user) if admin_user else "admin",
+        "ip_block", f"Blocked IP {ip_address}" + (f" ({reason})" if reason else "")
+    )
+    logger.info(f"IP {ip_address} blocked by user {token.user_id}" + (f": {reason}" if reason else ""))
+
+    return web.json_response({"success": True, "ip_address": ip_address, "expires_at": expires_at}, status=201)
+
+
+async def http_unblock_ip(request: web.Request) -> web.Response:
+    """DELETE /api/admin/blocked-ips/{ip} - Remove an IP block."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    ip_address = request.match_info.get("ip", "")
+    removed = await db.unblock_ip(ip_address)
+    _blocked_ips.pop(ip_address, None)
+
+    if removed:
+        admin_user = await db.get_user_by_id(token.user_id)
+        await db.log_activity(
+            token.user_id, get_display_name(admin_user) if admin_user else "admin",
+            "ip_unblock", f"Unblocked IP {ip_address}"
+        )
+        logger.info(f"IP {ip_address} unblocked by user {token.user_id}")
+        return web.json_response({"success": True})
+    return web.json_response({"error": "IP not found in block list"}, status=404)
 
 
 # =============================================================================
@@ -14759,13 +14891,16 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
 
 @web.middleware
 async def security_headers_middleware(request: web.Request, handler):
-    """Add security headers to all responses."""
-    try:
-        response = await handler(request)
-    except web.HTTPException as exc:
-        # HTTPException (redirects, 404s, etc.) are also Response objects.
-        # Catch them so we can add security headers before returning.
-        response = exc
+    """Block banned IPs app-wide, then add security headers to all responses."""
+    if _is_ip_blocked(get_client_ip(request)):
+        response = web.json_response({"error": "Access denied"}, status=403)
+    else:
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            # HTTPException (redirects, 404s, etc.) are also Response objects.
+            # Catch them so we can add security headers before returning.
+            response = exc
 
     # HSTS - Enforce HTTPS for 1 year, include subdomains
     response.headers.setdefault('Strict-Transport-Security',
@@ -15181,6 +15316,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/metrics/services", http_get_metrics_services)
     app.router.add_get("/api/metrics/active", http_get_metrics_active)
     app.router.add_get("/api/metrics/timeseries", http_get_metrics_time_series)
+    app.router.add_get("/api/metrics/resources", http_get_resource_time_series)
     app.router.add_get("/api/metrics/top", http_get_metrics_top)
 
     # Shodan Integration (admin only)
@@ -15232,6 +15368,10 @@ def create_app() -> web.Application:
     app.router.add_post("/api/sysmon/services/{name}/control", http_sysmon_service_control)
     app.router.add_get("/api/sysmon/network", http_sysmon_network)
     app.router.add_get("/api/sysmon/ports", http_sysmon_ports)
+
+    app.router.add_get("/api/admin/blocked-ips", http_list_blocked_ips)
+    app.router.add_post("/api/admin/blocked-ips", http_block_ip)
+    app.router.add_delete("/api/admin/blocked-ips/{ip}", http_unblock_ip)
 
     # File Manager (admin only)
     app.router.add_get("/api/files/list", http_list_files)
@@ -15433,10 +15573,17 @@ class PortalServer:
             shodan_client.set_api_key(shodan_api_key)  # Ensure client has the key
             logger.info("Shodan integration initialized (key from database)" if shodan_api_key_raw else "Shodan integration initialized (key from env)")
 
+        # Load blocked IPs into the in-process cache the middleware checks
+        global _blocked_ips
+        _blocked_ips = await db.get_active_blocked_ips()
+        if _blocked_ips:
+            logger.info(f"Loaded {len(_blocked_ips)} active IP block(s)")
+
         # Start traffic metrics recorder
         if Config.METRICS_ENABLED:
             await start_metrics_recorder()
             logger.info("Traffic metrics recorder started")
+            await start_resource_metrics_recorder()
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
@@ -15823,6 +15970,7 @@ class PortalServer:
 
         # Stop metrics recorder
         await stop_metrics_recorder()
+        await stop_resource_metrics_recorder()
 
         # Shutdown managed services (stops all running service processes)
         await shutdown_service_manager()

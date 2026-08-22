@@ -816,6 +816,30 @@
                         </div>
                     </div>
                 </div>
+                <div class="admin-grid" style="grid-template-columns: 1fr 1fr; margin-top: 1.5rem;">
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                            </svg>
+                            CPU &amp; Memory History
+                        </h3>
+                        <div class="chart-container">
+                            <canvas id="chart-resources"></canvas>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
+                            </svg>
+                            Network I/O (Host)
+                        </h3>
+                        <div class="chart-container">
+                            <canvas id="chart-network"></canvas>
+                        </div>
+                    </div>
+                </div>
                 <div class="admin-card" style="margin-top: 1.5rem;">
                     <h3>Per-Service Metrics</h3>
                     <div id="service-metrics">
@@ -1289,6 +1313,38 @@
                                     </tr>
                                 </thead>
                                 <tbody id="sys-ports-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="sys-net-section">
+                        <h3>Blocked IPs</h3>
+                        <p style="color: var(--text-muted); font-size: 0.8rem; margin: -0.5rem 0 0.75rem;">
+                            Blocked IPs are rejected app-wide (every page and API), before authentication runs.
+                        </p>
+                        <div class="sysmon-toolbar">
+                            <input type="text" id="block-ip-input" placeholder="IP address, e.g. 203.0.113.7" style="max-width: 220px;">
+                            <input type="text" id="block-ip-reason" placeholder="Reason (optional)" style="max-width: 260px;">
+                            <select id="block-ip-duration" style="max-width: 160px;">
+                                <option value="">Permanent</option>
+                                <option value="1">1 hour</option>
+                                <option value="24">24 hours</option>
+                                <option value="168">7 days</option>
+                            </select>
+                            <button class="range-btn" onclick="blockIpSubmit()">Block IP</button>
+                        </div>
+                        <div class="sys-table-scroll">
+                            <table class="sysmon-table">
+                                <thead>
+                                    <tr>
+                                        <th>IP Address</th>
+                                        <th>Reason</th>
+                                        <th>Blocked By</th>
+                                        <th>Blocked At</th>
+                                        <th>Expires</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="blocked-ips-body"></tbody>
                             </table>
                         </div>
                     </div>
@@ -1869,6 +1925,8 @@
         let bandwidthChart = null;
         let pluginsChart = null;
         let errorsChart = null;
+        let resourcesChart = null;
+        let networkChart = null;
         let currentHours = 1;
 
         // Chart.js dark theme defaults
@@ -2094,6 +2152,115 @@
                     });
                 } else if (errCanvas) {
                     errCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No error data yet.</div>';
+                }
+
+                // CPU/Memory and network history (independent of the traffic time series above)
+                try {
+                    const resData = await Portal.fetchJSON(`/api/metrics/resources?hours=${currentHours}`);
+                    const resPoints = resData.data || [];
+                    const resCanvas = document.getElementById('chart-resources');
+                    const netCanvas = document.getElementById('chart-network');
+
+                    if (resPoints.length === 0) {
+                        if (resourcesChart) { resourcesChart.destroy(); resourcesChart = null; }
+                        if (networkChart) { networkChart.destroy(); networkChart = null; }
+                        if (resCanvas) resCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No resource history yet. Data records every 60 seconds.</div>';
+                        if (netCanvas) netCanvas.parentElement.innerHTML = '<div style="height:280px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.875rem;">No network history yet.</div>';
+                    } else {
+                        const resLabels = resPoints.map(p => {
+                            const d = new Date(p.timestamp);
+                            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        });
+
+                        if (resCanvas) {
+                            const resCtx = resCanvas.getContext('2d');
+                            if (resourcesChart) resourcesChart.destroy();
+                            resourcesChart = new Chart(resCtx, {
+                                type: 'line',
+                                data: {
+                                    labels: resLabels,
+                                    datasets: [
+                                        {
+                                            label: 'CPU %',
+                                            data: resPoints.map(p => p.cpu_percent),
+                                            borderColor: '#f59e0b',
+                                            backgroundColor: 'rgba(245,158,11,0.1)',
+                                            fill: true,
+                                            tension: 0.3,
+                                            pointRadius: currentHours <= 1 ? 3 : 1
+                                        },
+                                        {
+                                            label: 'Memory %',
+                                            data: resPoints.map(p => p.mem_percent),
+                                            borderColor: '#a855f7',
+                                            backgroundColor: 'rgba(168,85,247,0.1)',
+                                            fill: true,
+                                            tension: 0.3,
+                                            pointRadius: currentHours <= 1 ? 3 : 1
+                                        }
+                                    ]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    interaction: { mode: 'index', intersect: false },
+                                    scales: {
+                                        y: { beginAtZero: true, max: 100, title: { display: true, text: '%' } },
+                                        x: { ticks: { maxTicksLimit: 12 } }
+                                    },
+                                    plugins: { legend: { position: 'top' } }
+                                }
+                            });
+                        }
+
+                        if (netCanvas) {
+                            const netCtx = netCanvas.getContext('2d');
+                            if (networkChart) networkChart.destroy();
+                            networkChart = new Chart(netCtx, {
+                                type: 'bar',
+                                data: {
+                                    labels: resLabels,
+                                    datasets: [
+                                        {
+                                            label: 'Sent',
+                                            data: resPoints.map(p => p.net_bytes_sent),
+                                            backgroundColor: 'rgba(96,165,250,0.6)',
+                                            borderRadius: 2
+                                        },
+                                        {
+                                            label: 'Received',
+                                            data: resPoints.map(p => p.net_bytes_recv),
+                                            backgroundColor: 'rgba(34,197,94,0.6)',
+                                            borderRadius: 2
+                                        }
+                                    ]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    scales: {
+                                        y: {
+                                            beginAtZero: true,
+                                            stacked: true,
+                                            ticks: { callback: function(val) { return formatBytes(val); } },
+                                            title: { display: true, text: 'Traffic / min' }
+                                        },
+                                        x: { stacked: true, ticks: { maxTicksLimit: 12 } }
+                                    },
+                                    plugins: {
+                                        legend: { position: 'top' },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function(ctx) { return ctx.dataset.label + ': ' + formatBytes(ctx.raw); }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to load resource history:', e);
                 }
 
                 // System resources live panel
@@ -3707,6 +3874,85 @@
                 `).join('');
             } catch (e) {
                 console.error('Failed to load network info:', e);
+            }
+            await loadBlockedIps();
+        }
+
+        async function loadBlockedIps() {
+            try {
+                const data = await Portal.fetchJSON('/api/admin/blocked-ips');
+                const blocks = data.blocked_ips || [];
+                const tbody = document.getElementById('blocked-ips-body');
+                if (!tbody) return;
+                if (blocks.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No IPs blocked</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = blocks.map(b => {
+                    const expired = b.expires_at && new Date(b.expires_at.replace(' ', 'T') + 'Z') < new Date();
+                    return `
+                    <tr${expired ? ' style="opacity:0.5;"' : ''}>
+                        <td><strong>${escapeHtml(b.ip_address)}</strong></td>
+                        <td>${escapeHtml(b.reason || '-')}</td>
+                        <td>${escapeHtml(b.blocked_by_username || 'system')}</td>
+                        <td>${escapeHtml(b.created_at)}</td>
+                        <td>${b.expires_at ? escapeHtml(b.expires_at) + (expired ? ' (expired)' : '') : 'Never'}</td>
+                        <td><button class="btn btn-secondary btn-sm" onclick="unblockIp('${escapeHtml(b.ip_address)}')">Unblock</button></td>
+                    </tr>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load blocked IPs:', e);
+            }
+        }
+
+        async function blockIpSubmit() {
+            const ip = document.getElementById('block-ip-input').value.trim();
+            const reason = document.getElementById('block-ip-reason').value.trim();
+            const duration = document.getElementById('block-ip-duration').value;
+            if (!ip) { Portal.toast('Enter an IP address', 'error'); return; }
+
+            try {
+                const response = await Portal.fetch('/api/admin/blocked-ips', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ip_address: ip,
+                        reason: reason || null,
+                        duration_hours: duration ? parseFloat(duration) : null
+                    })
+                });
+                if (response.ok) {
+                    Portal.toast('IP blocked', 'success');
+                    document.getElementById('block-ip-input').value = '';
+                    document.getElementById('block-ip-reason').value = '';
+                    await loadBlockedIps();
+                } else {
+                    const data = await response.json().catch(() => ({}));
+                    Portal.toast(data.error || 'Failed to block IP', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Failed to block IP', 'error');
+                console.error('Block IP error:', e);
+            }
+        }
+
+        async function unblockIp(ip) {
+            if (!confirm(`Unblock ${ip}?`)) return;
+            try {
+                const response = await Portal.fetch(`/api/admin/blocked-ips/${encodeURIComponent(ip)}`, {
+                    method: 'DELETE'
+                });
+                if (response.ok) {
+                    Portal.toast('IP unblocked', 'success');
+                    await loadBlockedIps();
+                } else {
+                    const data = await response.json().catch(() => ({}));
+                    Portal.toast(data.error || 'Failed to unblock IP', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Failed to unblock IP', 'error');
+                console.error('Unblock IP error:', e);
             }
         }
 
