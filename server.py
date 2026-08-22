@@ -897,6 +897,7 @@ async def http_list_services(request: web.Request) -> web.Response:
             "enabled": bool(s["enabled"]),
             "service_type": s.get("service_type", "proxy"),
             "icon": s.get("icon", "server"),
+            "systemd_unit": s.get("systemd_unit"),
         }
         # Include process management fields for managed services
         if s.get("service_type") == "managed":
@@ -907,6 +908,9 @@ async def http_list_services(request: web.Request) -> web.Response:
                 "pid": s.get("pid"),
                 "health_status": s.get("health_status", "unknown"),
             })
+        elif s.get("systemd_unit"):
+            unit_status = system_monitor.get_service_status(s["systemd_unit"])
+            result["status"] = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
         return result
 
     return web.json_response({
@@ -949,6 +953,7 @@ async def http_create_service(request: web.Request) -> web.Response:
     working_dir = data.get("working_dir")
     ports = data.get("ports", [])
     icon = data.get("icon", "server")
+    systemd_unit = (data.get("systemd_unit") or "").strip() or None
 
     # Handle scopes as string or list
     if isinstance(required_scopes, str):
@@ -966,6 +971,9 @@ async def http_create_service(request: web.Request) -> web.Response:
             {"error": "service_type must be 'proxy' or 'managed'"},
             status=400
         )
+
+    if systemd_unit and not system_monitor._validate_service_name(systemd_unit):
+        return web.json_response({"error": "Invalid systemd unit name"}, status=400)
 
     # For managed services, use 127.0.0.1 as default host
     if service_type == "managed" and host == "localhost":
@@ -986,7 +994,8 @@ async def http_create_service(request: web.Request) -> web.Response:
             description=description,
             binary_path=binary_path,
             working_dir=working_dir,
-            ports=ports
+            ports=ports,
+            systemd_unit=systemd_unit
         )
         logger.info(f"Service '{name}' ({service_type}) created by user {token.user_id}")
 
@@ -1000,6 +1009,7 @@ async def http_create_service(request: web.Request) -> web.Response:
             "required_scopes": required_scopes,
             "service_type": service_type,
             "icon": icon,
+            "systemd_unit": systemd_unit,
         }
         if service_type == "managed":
             response.update({
@@ -1081,6 +1091,12 @@ async def http_update_service(request: web.Request) -> web.Response:
     if "ports" in data:
         updates["ports"] = json.dumps(data["ports"])
 
+    if "systemd_unit" in data:
+        unit = (data["systemd_unit"] or "").strip() or None
+        if unit and not system_monitor._validate_service_name(unit):
+            return web.json_response({"error": "Invalid systemd unit name"}, status=400)
+        updates["systemd_unit"] = unit
+
     if not updates:
         return web.json_response({"error": "No fields to update"}, status=400)
 
@@ -1103,6 +1119,7 @@ async def http_update_service(request: web.Request) -> web.Response:
             "required_scopes": updated["required_scopes"],
             "service_type": updated.get("service_type", "proxy"),
             "icon": updated.get("icon", "server"),
+            "systemd_unit": updated.get("systemd_unit"),
         }
         if updated.get("service_type") == "managed":
             response.update({
@@ -1147,7 +1164,13 @@ async def http_get_service(request: web.Request) -> web.Response:
         "config": redact_service_config(service.get("config", {})),
         "service_type": service.get("service_type", "proxy"),
         "icon": service.get("icon", "server"),
+        "systemd_unit": service.get("systemd_unit"),
     }
+
+    if service.get("systemd_unit"):
+        unit_status = system_monitor.get_service_status(service["systemd_unit"])
+        response["systemd_status"] = unit_status["sub_state"] if unit_status else "unknown"
+        response["status"] = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
 
     # Include process management fields for managed services
     if service.get("service_type") == "managed":
@@ -1180,8 +1203,43 @@ async def http_get_service_types(request: web.Request) -> web.Response:
     return web.json_response({"types": types})
 
 
+async def _control_systemd_bound_service(
+    service: dict, action: str, token: "TokenPayload"
+) -> web.Response:
+    """Start/stop/restart a proxy-type (or any) service bound to a systemd unit.
+
+    This reuses system_monitor.control_service(), the same validated
+    `sudo systemctl <action> <unit>.service` call already exposed under
+    System Monitor — it's just wired into the Services panel here so a
+    service row (e.g. a game server or file share behind the reverse
+    proxy) doesn't need SSH access to be restarted.
+    """
+    unit = service["systemd_unit"]
+    success, message = system_monitor.control_service(unit, action)
+    if not success:
+        return web.json_response({"error": message}, status=400)
+
+    logger.info(f"Service {service['id']} ({unit}.service) {action} by user {token.user_id}")
+    admin_user = await db.get_user_by_id(token.user_id)
+    await db.log_activity(
+        token.user_id, get_display_name(admin_user) if admin_user else "admin",
+        f"service_{action}", f"{action.capitalize()}ed service '{service.get('name', service['id'])}' ({unit})"
+    )
+    unit_status = system_monitor.get_service_status(unit)
+    status = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
+    return web.json_response({
+        "success": True,
+        "service": {
+            "id": service["id"],
+            "name": service["name"],
+            "status": status,
+            "pid": unit_status.get("main_pid") if unit_status else None,
+        }
+    })
+
+
 async def http_start_service(request: web.Request) -> web.Response:
-    """Start a managed service (admin only)."""
+    """Start a managed service, or a proxy service bound to a systemd unit (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1189,21 +1247,27 @@ async def http_start_service(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    if not _service_manager:
-        return web.json_response({"error": "Service manager not initialized"}, status=503)
-
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     service_id = int(service_id)
 
-    # Check service exists and is managed type
     service = await db.get_service_by_id(service_id)
     if not service:
         return web.json_response({"error": "Service not found"}, status=404)
+
     if service.get("service_type") != "managed":
-        return web.json_response({"error": "Only managed services can be started"}, status=400)
+        if not service.get("systemd_unit"):
+            return web.json_response(
+                {"error": "This service has no start/stop/restart control configured. "
+                          "Bind it to a systemd unit to enable it."},
+                status=400
+            )
+        return await _control_systemd_bound_service(service, "start", token)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
 
     success, error = await _service_manager.start_service(service_id)
     if success:
@@ -1225,7 +1289,7 @@ async def http_start_service(request: web.Request) -> web.Response:
 
 
 async def http_stop_service(request: web.Request) -> web.Response:
-    """Stop a managed service (admin only)."""
+    """Stop a managed service, or a proxy service bound to a systemd unit (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1233,21 +1297,27 @@ async def http_stop_service(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    if not _service_manager:
-        return web.json_response({"error": "Service manager not initialized"}, status=503)
-
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     service_id = int(service_id)
 
-    # Check service exists and is managed type
     service = await db.get_service_by_id(service_id)
     if not service:
         return web.json_response({"error": "Service not found"}, status=404)
+
     if service.get("service_type") != "managed":
-        return web.json_response({"error": "Only managed services can be stopped"}, status=400)
+        if not service.get("systemd_unit"):
+            return web.json_response(
+                {"error": "This service has no start/stop/restart control configured. "
+                          "Bind it to a systemd unit to enable it."},
+                status=400
+            )
+        return await _control_systemd_bound_service(service, "stop", token)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
 
     success, error = await _service_manager.stop_service(service_id)
     if success:
@@ -1269,7 +1339,7 @@ async def http_stop_service(request: web.Request) -> web.Response:
 
 
 async def http_restart_service(request: web.Request) -> web.Response:
-    """Restart a managed service (admin only)."""
+    """Restart a managed service, or a proxy service bound to a systemd unit (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -1277,21 +1347,27 @@ async def http_restart_service(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    if not _service_manager:
-        return web.json_response({"error": "Service manager not initialized"}, status=503)
-
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     service_id = int(service_id)
 
-    # Check service exists and is managed type
     service = await db.get_service_by_id(service_id)
     if not service:
         return web.json_response({"error": "Service not found"}, status=404)
+
     if service.get("service_type") != "managed":
-        return web.json_response({"error": "Only managed services can be restarted"}, status=400)
+        if not service.get("systemd_unit"):
+            return web.json_response(
+                {"error": "This service has no start/stop/restart control configured. "
+                          "Bind it to a systemd unit to enable it."},
+                status=400
+            )
+        return await _control_systemd_bound_service(service, "restart", token)
+
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not initialized"}, status=503)
 
     success, error = await _service_manager.restart_service(service_id)
     if success:

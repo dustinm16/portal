@@ -962,6 +962,8 @@ MIGRATIONS = [
     # Relay error tracking: persist last ffmpeg failure for operator visibility
     "ALTER TABLE stream_relay_destinations ADD COLUMN last_error TEXT DEFAULT NULL",
     "ALTER TABLE stream_relay_destinations ADD COLUMN last_error_at TEXT DEFAULT NULL",
+    # Bind any service (proxy or managed) to a systemd unit for lifecycle control
+    "ALTER TABLE services ADD COLUMN systemd_unit TEXT DEFAULT NULL",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2198,7 +2200,8 @@ class Database:
         description: str = None,
         binary_path: str = None,
         working_dir: str = None,
-        ports: list = None
+        ports: list = None,
+        systemd_unit: str = None
     ) -> int:
         """Create a new service and return its ID.
 
@@ -2209,14 +2212,18 @@ class Database:
             binary_path: Path to executable (for managed services)
             working_dir: Working directory (for managed services)
             ports: Additional ports list (for managed services)
+            systemd_unit: Optional systemd unit name (without .service) to bind for
+                start/stop/restart control via systemctl — lets a proxy-type service
+                (e.g. a game server or file share behind the reverse proxy) be
+                controlled from the Services panel instead of requiring SSH.
         """
         import json
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO services (name, plugin, path, host, port, config, required_scopes,
                icon, category_id, service_type, display_name, description, binary_path,
-               working_dir, ports, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               working_dir, ports, systemd_unit, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 plugin,
@@ -2233,6 +2240,7 @@ class Database:
                 binary_path,
                 working_dir,
                 json.dumps(ports or []),
+                systemd_unit,
                 now,
                 now
             )
@@ -2460,7 +2468,7 @@ class Database:
             "service_type", "enabled", "command", "working_dir", "env_vars",
             "auto_start", "health_check_url", "status", "pid", "health_status",
             "error_message", "restart_count", "last_started_at", "last_stopped_at",
-            "last_health_check",
+            "last_health_check", "systemd_unit",
         }
         updates = {k: v for k, v in updates.items() if k in allowed_fields}
         if not updates:

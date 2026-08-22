@@ -274,9 +274,14 @@ def control_service(name: str, action: str) -> tuple[bool, str]:
 
 
 def _validate_service_name(name: str) -> bool:
-    """Validate a systemd service name to prevent injection."""
+    """Validate a systemd service name to prevent injection.
+
+    Allows '@' so templated units (e.g. game-server@zomboid) can be
+    controlled — the name is always passed as a single subprocess argv
+    element, never through a shell, so this doesn't add injection risk.
+    """
     import re
-    return bool(re.match(r'^[a-zA-Z0-9_\-\.]+$', name)) and 0 < len(name) < 256
+    return bool(re.match(r'^[a-zA-Z0-9_\-\.@]+$', name)) and 0 < len(name) < 256
 
 
 # =============================================================================

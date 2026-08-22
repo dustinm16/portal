@@ -464,6 +464,7 @@ async function submitAddService(event) {
     const host = document.getElementById('service-host').value;
     const port = document.getElementById('service-port').value;
     const scopes = document.getElementById('service-scopes').value || '*';
+    const systemdUnit = document.getElementById('service-systemd-unit').value.trim();
 
     const config = collectPluginConfig();
     const normalizedPath = path.startsWith('/') ? path : '/' + path;
@@ -480,7 +481,8 @@ async function submitAddService(event) {
                 host,
                 port: port ? parseInt(port, 10) || 0 : 0,
                 config,
-                required_scopes: scopes
+                required_scopes: scopes,
+                systemd_unit: systemdUnit || null
             })
         });
 
@@ -526,6 +528,7 @@ async function showEditServiceModal(serviceId) {
         document.getElementById('edit-service-host').value = service.host || '';
         document.getElementById('edit-service-port').value = service.port || '';
         document.getElementById('edit-service-enabled').checked = service.enabled !== false;
+        document.getElementById('edit-service-systemd-unit').value = service.systemd_unit || '';
 
         // Handle scopes - can be string or array
         const scopes = Array.isArray(service.required_scopes)
@@ -730,6 +733,7 @@ async function submitEditService(event) {
     const port = document.getElementById('edit-service-port').value;
     const enabled = document.getElementById('edit-service-enabled').checked;
     const scopes = document.getElementById('edit-service-scopes').value || '*';
+    const systemdUnit = document.getElementById('edit-service-systemd-unit').value.trim();
 
     // Collect plugin-specific config
     const config = collectEditPluginConfig();
@@ -749,7 +753,8 @@ async function submitEditService(event) {
                 port: port ? parseInt(port, 10) || 0 : 0,
                 enabled,
                 config,
-                required_scopes: scopes
+                required_scopes: scopes,
+                systemd_unit: systemdUnit || null
             })
         });
 

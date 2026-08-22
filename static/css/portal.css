@@ -713,7 +713,8 @@ body {
 
 /* Service process control buttons */
 .service-start-btn,
-.service-stop-btn {
+.service-stop-btn,
+.service-restart-btn {
     padding: 0.375rem;
     border: none;
     background: transparent;
@@ -726,7 +727,8 @@ body {
 }
 
 .service-start-btn svg,
-.service-stop-btn svg {
+.service-stop-btn svg,
+.service-restart-btn svg {
     width: 18px;
     height: 18px;
     transition: transform 0.15s ease;
@@ -751,6 +753,18 @@ body {
 
 .service-stop-btn:hover {
     background: rgba(239, 68, 68, 0.2);
+}
+
+.service-restart-btn {
+    color: var(--accent-blue, #60a5fa);
+}
+
+.service-restart-btn:hover {
+    background: rgba(96, 165, 250, 0.2);
+}
+
+.service-restart-btn:hover svg {
+    transform: rotate(90deg);
 }
 
 /* Terminal Page */

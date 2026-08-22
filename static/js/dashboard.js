@@ -181,18 +181,24 @@ function createServiceCard(service) {
     const pluginName = Portal.getPluginDisplayName(plugin);
     const isAdmin = Portal.isAdmin(currentUser);
     const isManaged = service.service_type === 'managed';
+    const hasProcessControl = isManaged || !!service.systemd_unit;
 
     let adminBtns = '';
     if (isAdmin) {
-        // Add start/stop buttons for managed services
+        // Add start/stop/restart buttons for managed services and services bound to a systemd unit
         let processControls = '';
-        if (isManaged) {
+        if (hasProcessControl) {
             if (service.status === 'running') {
                 processControls = `
                     <button class="service-stop-btn" onclick="event.stopPropagation(); stopService(${service.id})" title="Stop service">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                        </svg>
+                    </button>
+                    <button class="service-restart-btn" onclick="event.stopPropagation(); restartService(${service.id})" title="Restart service">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                         </svg>
                     </button>
                 `;
@@ -302,6 +308,26 @@ async function stopService(serviceId) {
     } catch (error) {
         console.error('Failed to stop service:', error);
         Portal.toast('Failed to stop service', 'error');
+    }
+}
+
+/**
+ * Restart a managed service, or a service bound to a systemd unit
+ */
+async function restartService(serviceId) {
+    try {
+        const data = await Portal.api(`/api/services/${serviceId}/restart`, {
+            method: 'POST'
+        });
+        if (data.success) {
+            Portal.toast('Service restarted successfully');
+            await loadServices();
+        } else {
+            Portal.toast(data.error || 'Failed to restart service', 'error');
+        }
+    } catch (error) {
+        console.error('Failed to restart service:', error);
+        Portal.toast('Failed to restart service', 'error');
     }
 }
 
