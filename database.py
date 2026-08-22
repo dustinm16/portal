@@ -1088,7 +1088,7 @@ class Database:
             if row:
                 return  # Already done
 
-            browser_config = encrypt_config('{"browser_mode": true}')
+            browser_config = encrypt_config('{}')
 
             # Create for users who don't have one
             cursor = await self._connection.execute(

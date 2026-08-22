@@ -117,6 +117,12 @@ class HTTPProxyPlugin(PluginBase):
                     "description": "Header names or glob patterns to forward from the client to upstream (e.g. X-User-*, X-Request-ID). Authorization, Cookie, and Host are never forwarded.",
                     "items": {"type": "string"},
                     "default": []
+                },
+                "browser_mode": {
+                    "type": "boolean",
+                    "title": "General Browsing Mode",
+                    "description": "Allow navigating to other domains and opening new tabs, like a sandboxed general-purpose browser. Leave off to keep this connection confined to its own target's root — recommended for admin panels (Proxmox, TrueNAS, etc.) and required for anything to work reliably.",
+                    "default": False
                 }
             }
         }

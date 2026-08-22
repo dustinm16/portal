@@ -1352,7 +1352,7 @@ async def _create_default_connections(user_id: int) -> None:
             conn_type="http_proxy",
             host="duckduckgo.com",
             port=443,
-            config=json.dumps({"browser_mode": True}),
+            config=json.dumps({}),
             icon="globe",
             portal_access=1,
             api_access=0
