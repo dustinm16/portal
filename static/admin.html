@@ -29,7 +29,39 @@
             border: 1px solid var(--card-border);
             border-radius: 12px;
             padding: 1.5rem;
+            min-width: 0;
         }
+        /* Grid items default to min-width:auto, so a wide table or a chart
+           legend forces the whole grid past its container. Let them shrink. */
+        .admin-grid { min-width: 0; }
+        .admin-grid > * { min-width: 0; }
+        /* Sub-tabs inside the Metrics tab (kept separate from .sys-sub-* so
+           their toggle handlers don't collide). */
+        .metrics-sub-tabs {
+            display: flex;
+            gap: 0.4rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .metrics-sub-tab {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-secondary);
+            padding: 0.45rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .metrics-sub-tab:hover { color: var(--text-primary); border-color: var(--accent-blue); }
+        .metrics-sub-tab.active { background: rgba(96,165,250,0.15); color: var(--accent-blue); border-color: var(--accent-blue); }
+        .metrics-sub-content { display: none; }
+        .metrics-sub-content.active { display: block; }
+        /* Device-metric tables carry long unit/IP strings — let them wrap
+           instead of forcing the card to scroll sideways. */
+        #dev-port-table .sysmon-table td,
+        #dev-ip-table .sysmon-table td { white-space: normal; word-break: break-word; }
+        #dev-proc-table .sysmon-table td:first-child { white-space: normal; word-break: break-word; }
         .admin-card h3 {
             display: flex;
             align-items: center;
@@ -565,7 +597,7 @@
             <div class="tab-nav">
                 <button class="tab-btn active" onclick="showTab('overview', event)">Overview</button>
                 <button class="tab-btn" onclick="showTab('services', event)">Managed Services</button>
-                <button class="tab-btn" onclick="showTab('metrics', event)">Traffic Metrics</button>
+                <button class="tab-btn" onclick="showTab('metrics', event)">Metrics</button>
                 <button class="tab-btn" onclick="showTab('vuln', event)">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan', event)">Shodan Scanner</button>
                 <button class="tab-btn" onclick="showTab('connections', event)">Active Connections</button>
@@ -798,10 +830,16 @@
                 </div>
             </div>
 
-            <!-- Traffic Metrics Tab -->
+            <!-- Metrics Tab -->
             <div id="tab-metrics" class="tab-content">
+                <div class="metrics-sub-tabs">
+                    <button class="metrics-sub-tab active" onclick="showMetricsSubTab('portal', event)">Portal Metrics</button>
+                    <button class="metrics-sub-tab" onclick="showMetricsSubTab('device', event)">Device-Wide</button>
+                </div>
+
+                <div id="metrics-sub-portal" class="metrics-sub-content active">
                 <div class="section-header">
-                    <h2>Traffic Metrics</h2>
+                    <h2>Portal Metrics</h2>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
                         <div class="chart-range-btns">
                             <button class="btn btn-sm range-btn active" data-hours="1">1H</button>
@@ -923,9 +961,11 @@
                         <div class="loading"><div class="spinner"></div> Loading...</div>
                     </div>
                 </div>
+                </div><!-- /metrics-sub-portal -->
 
                 <!-- Device-wide metrics (persisted, sampled every 60s) -->
-                <div class="section-header" style="margin-top: 2.5rem; align-items: flex-start;">
+                <div id="metrics-sub-device" class="metrics-sub-content">
+                <div class="section-header" style="align-items: flex-start;">
                     <div>
                         <h2>Device-Wide Metrics</h2>
                         <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0; max-width: 640px;">
@@ -964,7 +1004,7 @@
                 </div>
                 <div class="admin-card" style="margin-top: 1.5rem;">
                     <h3>Current Resource Usage <span id="dev-proc-trunc" style="font-size:0.7rem;color:var(--text-muted);font-weight:normal;"></span></h3>
-                    <div id="dev-proc-table" style="max-height: 460px; overflow-y: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+                    <div id="dev-proc-table" style="max-height: 460px; overflow: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
                 </div>
 
                 <div class="admin-grid" style="grid-template-columns: 3fr 2fr; margin-top: 1.5rem;">
@@ -974,7 +1014,7 @@
                     </div>
                     <div class="admin-card">
                         <h3>Listening Ports (now)</h3>
-                        <div id="dev-port-table" style="max-height: 320px; overflow-y: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+                        <div id="dev-port-table" style="max-height: 320px; overflow: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
                     </div>
                 </div>
 
@@ -984,8 +1024,9 @@
                 </div>
                 <div class="admin-card" style="margin-top: 1.5rem;">
                     <h3>Top Remote IPs <span id="dev-ip-trunc" style="font-size:0.7rem;color:var(--text-muted);font-weight:normal;"></span></h3>
-                    <div id="dev-ip-table" style="max-height: 480px; overflow-y: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+                    <div id="dev-ip-table" style="max-height: 480px; overflow: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
                 </div>
+                </div><!-- /metrics-sub-device -->
             </div>
 
             <!-- Shodan Tab -->
@@ -1754,7 +1795,10 @@
             switch(tabName) {
                 case 'overview': loadOverview(); break;
                 case 'services': loadManagedServices(); break;
-                case 'metrics': loadMetrics(); break;
+                case 'metrics':
+                    loadMetrics();
+                    if (document.getElementById('metrics-sub-device').classList.contains('active') && devMetricsLoaded) loadDeviceMetrics();
+                    break;
                 case 'vuln': loadKnownCVEs(); loadScannerStatus(); break;
                 case 'shodan': loadShodanConfig(); break;
                 case 'connections': loadActiveConnections(); break;
@@ -2050,11 +2094,25 @@
 
                 // Load charts after metric cards
                 loadCharts(plugins);
-                loadDeviceMetrics();
 
             } catch (error) {
                 console.error('Failed to load metrics:', error);
                 document.getElementById('metrics-grid').innerHTML = '<p style="color: var(--accent-red);">Failed to load metrics.</p>';
+            }
+        }
+
+        // Metrics sub-tab switching (Portal Metrics / Device-Wide)
+        let devMetricsLoaded = false;
+        function showMetricsSubTab(sub, evt) {
+            document.querySelectorAll('#tab-metrics .metrics-sub-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('#tab-metrics .metrics-sub-tab').forEach(el => el.classList.remove('active'));
+            document.getElementById('metrics-sub-' + sub).classList.add('active');
+            const btn = (evt && evt.target) || document.querySelector(`.metrics-sub-tab[onclick*="'${sub}'"]`);
+            if (btn) btn.classList.add('active');
+            if (sub === 'device') {
+                if (!devMetricsLoaded) { devMetricsLoaded = true; loadDeviceMetrics(); }
+                // charts sized while hidden render at 0 width — nudge them
+                Object.values(devCharts).forEach(c => { try { c.resize(); } catch (e) {} });
             }
         }
 
@@ -2268,10 +2326,11 @@
             Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
         }
 
-        // Time range button handler (scoped to chart range buttons only)
-        document.querySelectorAll('.chart-range-btns .range-btn').forEach(btn => {
+        // Time range button handler — Portal Metrics sub-tab only (the
+        // Device-Wide range buttons have their own handler, .dev-range-btns).
+        document.querySelectorAll('#metrics-sub-portal .chart-range-btns .range-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.chart-range-btns .range-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('#metrics-sub-portal .chart-range-btns .range-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentHours = parseInt(btn.dataset.hours);
                 loadCharts();
@@ -4762,7 +4821,10 @@
             if (activeTab) {
                 switch(activeTab.id) {
                     case 'tab-overview': loadOverview(); break;
-                    case 'tab-metrics': loadMetrics(); break;
+                    case 'tab-metrics':
+                        if (document.getElementById('metrics-sub-device').classList.contains('active')) loadDeviceMetrics();
+                        else loadMetrics();
+                        break;
                     case 'tab-connections': loadActiveConnections(); break;
                     case 'tab-system':
                         const activeSub = document.querySelector('.sys-sub-content.active');
