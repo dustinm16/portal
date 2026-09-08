@@ -3833,6 +3833,14 @@ html[data-theme="light"] .chat-message { background: rgba(0,0,0,0.04); }
     position: relative;
 }
 
+/* Standalone theme control for pages with no navbar (login, unauthorized, live) */
+.theme-mount-corner {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 10001;
+}
+
 .navbar-theme-btn {
     width: 32px;
     height: 32px;

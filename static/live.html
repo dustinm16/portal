@@ -63,7 +63,8 @@
         ]
     }
     </script>
-    <link rel="stylesheet" href="/static/css/portal.css?v=44">
+    <link rel="stylesheet" href="/static/css/portal.css?v=45">
+    <script src="/static/js/theme.js?v=1"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         .streams-container {
@@ -553,6 +554,7 @@
         </div>
         <div class="navbar-menu">
             <a href="/login">Sign In</a>
+            <span data-theme-mount></span>
         </div>
     </nav>
 
@@ -649,6 +651,8 @@
     </div>
 
     <script>
+        if (window.ThemeSwitcher) ThemeSwitcher.init();
+
         let currentStream = null;
         let hlsPlayer = null;
         let statsInterval = null;

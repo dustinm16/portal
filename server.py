@@ -9999,6 +9999,15 @@ _SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
 # Kept in sync with services/searxng.py DEFAULT_PORT (8888/8889 are MediaMTX).
 _SEARXNG_DEFAULT_PORT = 8890
 
+# Injected before </head> on SearXNG HTML pages so /search/ wears the portal
+# navbar and follows the active portal theme. See static/{css,js}/searxng-portal.*
+_SEARXNG_HEAD_INJECT = (
+    b'<script src="/static/js/theme.js?v=1"></script>'
+    b'<link rel="stylesheet" href="/static/css/portal.css?v=45">'
+    b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=2">'
+    b'<script src="/static/js/searxng-portal.js?v=2" defer></script>'
+)
+
 
 async def _searxng_status() -> tuple[bool, int]:
     """Return (available, port) for the SearXNG managed service.
@@ -10120,8 +10129,13 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                     if total > _PROXY_MAX_RESPONSE_SIZE:
                         return web.Response(status=502, text="Upstream response too large")
                     chunks.append(chunk)
-                return web.Response(status=resp.status, headers=resp_headers,
-                                    body=b"".join(chunks))
+                out = b"".join(chunks)
+
+                # Give SearXNG pages the portal chrome + theme.
+                if "text/html" in resp.headers.get("Content-Type", "") and b"</head>" in out:
+                    out = out.replace(b"</head>", _SEARXNG_HEAD_INJECT + b"</head>", 1)
+
+                return web.Response(status=resp.status, headers=resp_headers, body=out)
     except aiohttp.ClientError as e:
         logger.error(f"SearXNG proxy error: {e}")
         return web.Response(

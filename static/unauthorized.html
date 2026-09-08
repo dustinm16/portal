@@ -5,21 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Unauthorized</title>
+    <link rel="stylesheet" href="/static/css/portal.css?v=45">
+    <script src="/static/js/theme.js?v=1"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: #e4e4e7;
         }
 
         .container {
@@ -32,43 +24,43 @@
             width: 120px;
             height: 120px;
             margin: 0 auto 2rem;
-            background: rgba(239, 68, 68, 0.1);
+            background: rgba(var(--accent-blue-rgb), 0.1);
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            border: 2px solid rgba(239, 68, 68, 0.3);
+            border: 2px solid rgba(var(--accent-blue-rgb), 0.3);
         }
 
         .icon svg {
             width: 60px;
             height: 60px;
-            stroke: #ef4444;
+            stroke: var(--accent-blue);
         }
 
         h1 {
             font-size: 2rem;
             font-weight: 600;
             margin-bottom: 0.5rem;
-            color: #f4f4f5;
+            color: var(--text-primary);
         }
 
         .status-code {
             font-size: 1rem;
-            color: #ef4444;
+            color: var(--accent-blue);
             font-weight: 500;
             margin-bottom: 1.5rem;
         }
 
         p {
-            color: #a1a1aa;
+            color: var(--text-secondary);
             line-height: 1.6;
             margin-bottom: 2rem;
         }
 
         .info-box {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
             border-radius: 8px;
             padding: 1.5rem;
             text-align: left;
@@ -79,18 +71,18 @@
             font-size: 0.875rem;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            color: #71717a;
+            color: var(--text-muted);
             margin-bottom: 1rem;
         }
 
         .info-box code {
             display: block;
-            background: rgba(0, 0, 0, 0.3);
+            background: var(--code-bg);
             padding: 0.75rem 1rem;
             border-radius: 4px;
             font-family: 'Monaco', 'Consolas', monospace;
             font-size: 0.8rem;
-            color: #a5f3fc;
+            color: var(--code-text);
             overflow-x: auto;
             margin-bottom: 0.5rem;
         }
@@ -103,12 +95,12 @@
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            background: rgba(59, 130, 246, 0.1);
-            border: 1px solid rgba(59, 130, 246, 0.2);
+            background: rgba(var(--accent-blue-rgb), 0.1);
+            border: 1px solid rgba(var(--accent-blue-rgb), 0.2);
             padding: 0.25rem 0.75rem;
             border-radius: 9999px;
             font-size: 0.75rem;
-            color: #60a5fa;
+            color: var(--accent-blue);
             margin-bottom: 1.5rem;
         }
 
@@ -119,6 +111,8 @@
     </style>
 </head>
 <body>
+    <div data-theme-mount class="theme-mount-corner"></div>
+    <script>if (window.ThemeSwitcher) ThemeSwitcher.init();</script>
     <div class="container">
         <div class="portal-name">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">

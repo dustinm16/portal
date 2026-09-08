@@ -1,0 +1,141 @@
+/* =============================================================================
+   SearXNG <-> Open Relay Portal visual bridge
+   Injected by http_searxng_proxy into every SearXNG HTML page, AFTER
+   SearXNG's own stylesheet and AFTER portal.css.
+
+   portal.css is loaded alongside this file, so the portal theme tokens
+   (--bg-primary, --surface-color, --text-*, --accent-*, --card-*, every
+   html[data-theme] palette) and the .navbar* / .theme-* rules are already
+   available. This file only:
+     1. remaps SearXNG's ~105 --color-* vars onto the portal tokens
+     2. undoes the few portal.css global rules that fight SearXNG's layout
+     3. positions the injected portal navbar
+   searxng-portal.js strips SearXNG's own `theme-*` <html> class and sets the
+   portal `data-theme`, so the plain `:root` remap below always wins.
+   ============================================================================= */
+
+:root,
+:root.theme-auto,
+:root.theme-dark,
+:root.theme-light,
+:root.theme-black {
+    --color-base-background: var(--bg-primary);
+    --color-base-background-mobile: var(--bg-primary);
+    --color-base-font: var(--text-primary);
+    --color-base-font-rgb: 228, 228, 231;
+    --color-url-font: var(--accent-blue);
+    --color-url-visited-font: var(--accent-purple);
+
+    --color-header-background: var(--bg-secondary);
+    --color-header-border: var(--card-border);
+    --color-footer-background: var(--bg-secondary);
+    --color-footer-border: var(--card-border);
+    --color-sidebar-background: var(--surface-color);
+    --color-sidebar-border: var(--card-border);
+    --color-sidebar-font: var(--text-primary);
+    --color-backtotop-background: var(--surface-color);
+    --color-backtotop-border: var(--card-border);
+    --color-backtotop-font: var(--text-secondary);
+
+    --color-btn-background: var(--accent-blue);
+    --color-btn-font: #fff;
+    --color-show-btn-background: var(--card-bg);
+    --color-show-btn-font: var(--text-primary);
+
+    --color-search-background: var(--surface-color);
+    --color-search-border: var(--card-border);
+    --color-search-font: var(--text-primary);
+    --color-search-background-hover: var(--accent-blue);
+
+    --color-autocomplete-background: var(--surface-color);
+    --color-autocomplete-background-hover: var(--card-hover);
+    --color-autocomplete-border: var(--card-border);
+    --color-autocomplete-font: var(--text-primary);
+
+    --color-categories-item-selected-font: var(--accent-blue);
+    --color-categories-item-border-selected: var(--accent-blue);
+
+    --color-answer-background: var(--surface-color);
+    --color-answer-font: var(--text-secondary);
+
+    --color-result-background: var(--surface-color);
+    --color-result-border: var(--card-border);
+    --color-result-url-font: var(--text-secondary);
+    --color-result-link-font: var(--text-primary);
+    --color-result-link-font-highlight: var(--accent-blue);
+    --color-result-link-visited-font: var(--accent-purple);
+    --color-result-description-highlight-font: var(--text-primary);
+    --color-result-publishdate-font: var(--text-muted);
+    --color-result-engines-font: var(--text-muted);
+    --color-result-search-url-font: var(--text-secondary);
+    --color-result-search-url-border: var(--card-border);
+    --color-result-vim-selected: var(--card-hover);
+    --color-result-keyvalue-odd: var(--card-bg);
+    --color-result-keyvalue-even: var(--surface-color);
+    --color-result-keyvalue-col-table: var(--surface-color);
+
+    --color-settings-tr-hover: var(--card-hover);
+    --color-settings-engine-description-font: var(--text-muted);
+    --color-settings-table-group-background: var(--card-bg);
+
+    --color-toolkit-dialog-background: var(--bg-secondary);
+    --color-toolkit-dialog-border: var(--card-border);
+    --color-toolkit-badge-background: var(--card-bg);
+    --color-toolkit-badge-font: var(--text-secondary);
+    --color-toolkit-select-background: var(--code-bg);
+    --color-toolkit-select-border: var(--card-border);
+    --color-toolkit-select-background-hover: var(--card-hover);
+    --color-toolkit-input-text-font: var(--text-primary);
+    --color-toolkit-tabs-section-border: var(--card-border);
+    --color-toolkit-engine-tooltip-background: var(--bg-secondary);
+    --color-toolkit-engine-tooltip-border: var(--card-border);
+
+    --color-doc-code: var(--code-text);
+    --color-doc-code-background: var(--code-bg);
+    --color-favicon-background-color: var(--card-bg);
+    --color-favicon-border-color: var(--card-border);
+    --color-image-resolution-font: #fff;
+}
+
+html[data-theme="light"] {
+    --color-base-font-rgb: 30, 41, 59;
+}
+
+/* --- undo portal.css globals that would fight SearXNG's layout ------------- */
+
+/* portal.css sets a full-page gradient on body; keep it as the page backdrop
+   but let SearXNG's own surfaces (results, header) sit on the themed colors. */
+body {
+    min-height: 100vh;
+    line-height: 1.5;
+}
+
+/* portal.css styles bare <select> full-width with a custom arrow — SearXNG's
+   inline preference dropdowns must stay native-sized. */
+main select,
+#links_on_top select,
+.preferences_container select {
+    width: auto;
+    padding: 2px 6px;
+    background-image: none;
+    -webkit-appearance: menulist;
+    appearance: menulist;
+    font-size: inherit;
+}
+
+/* --- injected portal navbar --------------------------------------------------
+   .navbar and friends come from portal.css. Make it stick and give SearXNG's
+   absolutely-positioned top links room below it. */
+body > nav.navbar.portal-searxng-nav {
+    position: sticky;
+    top: 0;
+    z-index: 2000;
+    background: var(--bg-secondary);
+    backdrop-filter: blur(6px);
+}
+
+/* SearXNG's own top-right "About | Preferences" links are folded into the
+   portal navbar (see searxng-portal.js NAV_LINKS). */
+#links_on_top {
+    display: none;
+}
