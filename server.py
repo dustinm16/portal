@@ -1445,6 +1445,11 @@ async def http_get_service_logs(request: web.Request) -> web.Response:
 async def _create_default_connections(user_id: int) -> None:
     """Create default connections for a new user."""
     try:
+        # host stays duckduckgo.com deliberately: it is both the match key that
+        # http_browser_page uses to recognise the default Web Browser AND the
+        # home-page fallback when the SearXNG service is disabled. When SearXNG
+        # is enabled the home page is /search/ (decided per request, no config
+        # change here).
         await db.create_user_connection(
             user_id=user_id,
             name="Web Browser",
