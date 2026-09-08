@@ -6865,13 +6865,16 @@
             }
 
             // Deep link from the dashboard search bar: /chat?q=<query>
-            const q = new URLSearchParams(location.search).get('q');
+            const params = new URLSearchParams(location.search);
+            const q = params.get('q');
             if (q && searchInput) {
                 const bar = document.getElementById('search-bar');
                 if (bar && bar.style.display === 'none') toggleSearchBar();
                 searchInput.value = q;
                 executeSearch();
-                history.replaceState(null, '', location.pathname);
+                params.delete('q');
+                const rest = params.toString();
+                history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
             }
         });
 
