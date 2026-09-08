@@ -22,7 +22,7 @@
     --color-base-background: var(--bg-primary);
     --color-base-background-mobile: var(--bg-primary);
     --color-base-font: var(--text-primary);
-    --color-base-font-rgb: 228, 228, 231;
+    --color-base-font-rgb: var(--text-primary-rgb);
     --color-url-font: var(--accent-blue);
     --color-url-visited-font: var(--accent-purple);
 
@@ -95,10 +95,6 @@
     --color-favicon-background-color: var(--card-bg);
     --color-favicon-border-color: var(--card-border);
     --color-image-resolution-font: #fff;
-}
-
-html[data-theme="light"] {
-    --color-base-font-rgb: 30, 41, 59;
 }
 
 /* --- undo portal.css globals that would fight SearXNG's layout ------------- */

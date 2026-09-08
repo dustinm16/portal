@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=46">
-    <script src="/static/js/theme.js?v=1"></script>
+    <link rel="stylesheet" href="/static/css/portal.css?v=48">
+    <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
     <script>
         if (typeof Chart === 'undefined') {
@@ -96,7 +96,13 @@
             margin-bottom: 1.5rem;
             border-bottom: 1px solid var(--card-border);
             padding-bottom: 0.5rem;
+            /* 12 tabs don't fit under ~1400px — scroll them instead of
+               stretching .main-content and forcing a page-wide h-scrollbar. */
+            overflow-x: auto;
+            flex-wrap: nowrap;
+            scrollbar-width: thin;
         }
+        .tab-nav::-webkit-scrollbar { height: 4px; }
         .tab-btn {
             background: none;
             border: none;
@@ -106,6 +112,8 @@
             font-size: 0.875rem;
             border-radius: 6px;
             transition: all 0.2s;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
         .tab-btn:hover {
             color: var(--text-primary);

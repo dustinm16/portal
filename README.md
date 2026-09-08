@@ -67,7 +67,7 @@ See what's running on your server at a glance — active processes, systemd serv
 Set policies for how long chat messages, DMs, notifications, activity logs, and expired tokens are kept. Automatic cleanup runs on a schedule (default every 6 hours) with optional database compaction. Run cleanup on demand anytime from the admin panel.
 
 ### Visual Theming
-Ten built-in themes — switch with the palette icon in the navbar. **Dark** (navy, default), **Black** (OLED), **Grey**, **Slate**, **Blue**, **Green**, **Red**, **Orange**, **Light**, and **High Contrast**. Your preference persists across sessions via localStorage and applies before the first paint so there's no flash. The theme follows you everywhere — the login page, every public page, and the SearXNG search UI, which is re-skinned to the active portal theme and wears the portal navbar.
+Twenty-eight built-in themes — switch with the palette icon in the navbar. The core set: **Dark** (navy, default), **Black** (OLED), **Grey**, **Slate**, **Light**, and **High Contrast**; accent hues **Blue**, **Purple**, **Cyan**, **Green**, **Red**, **Rose**, **Orange**, **Amber**; developer palettes **Nord**, **Dracula**, **Solarized** (dark & light), **Gruvbox**, **Tokyo Night**; light readers **Sepia** and **Nord Light**; vibrant **Synthwave**, **Matrix**, **Cyberpunk**; and three animated gradients — **Aurora**, **Nebula**, **Ember** (which hold a static mid-blend under `prefers-reduced-motion`). Your preference persists across sessions via localStorage and applies before the first paint so there's no flash. The theme follows you everywhere — the login page, every public page, and the SearXNG search UI, which is re-skinned to the active portal theme and wears the portal navbar.
 
 ### Administration
 Manage users with a clear role hierarchy — Super Admin, Admin, Moderator, and User. Create invite codes to let people register (daily rotating, single-use, or time-limited). Require two-factor authentication. Issue API keys for automation. Manage SSH keys, monitor traffic patterns, and scan for vulnerabilities. All administration happens through the admin panel in your browser.
@@ -94,7 +94,7 @@ Here are a few ways people use Open Relay Portal:
 *Dashboard — Services, connections, streams, VODs, quick access, and system stats*
 
 ![Theme Picker](docs/screenshots/themes.png)
-*Theme Switcher — 10 built-in themes: Dark, Black, Grey, Slate, Light, Blue, Green, Red, Orange, High Contrast*
+*Theme Switcher — 28 built-in themes (core, accent hues, developer palettes, light readers, vibrant, and animated gradients)*
 
 ![Light Theme](docs/screenshots/dashboard-light.png)
 *Light Theme — full light mode with dark text and blue accent*

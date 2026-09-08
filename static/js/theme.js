@@ -8,6 +8,8 @@
  *
  * Theme id is stored in localStorage['portal-theme']; 'dark' is the default and
  * carries no attribute, every other id sets html[data-theme="<id>"].
+ * Light-mode themes additionally set html[data-theme-mode="light"] so the CSS
+ * can share the handful of "black overlay -> dark-on-light" tweaks.
  * The per-theme CSS variables live in static/css/portal.css.
  */
 (function () {
@@ -15,18 +17,42 @@
 
     var STORAGE_KEY = 'portal-theme';
 
+    // mode: 'light' flips a few element-level overlays in portal.css (and the
+    // SearXNG bridge) to dark-on-light. Everything else is driven by the CSS
+    // custom properties in the html[data-theme="<id>"] blocks.
     var THEMES = [
-        { id: 'dark',          label: 'Dark',     swatch: 'linear-gradient(135deg,#1a1a2e 55%,#60a5fa 100%)' },
-        { id: 'black',         label: 'Black',    swatch: 'linear-gradient(135deg,#000 55%,#3b82f6 100%)' },
-        { id: 'grey',          label: 'Grey',     swatch: 'linear-gradient(135deg,#242424 55%,#9ca3af 100%)' },
-        { id: 'slate',         label: 'Slate',    swatch: 'linear-gradient(135deg,#0f172a 55%,#7dd3fc 100%)' },
-        { id: 'light',         label: 'Light',    swatch: 'linear-gradient(135deg,#f0f4f8 55%,#2563eb 100%)' },
-        { id: 'blue',          label: 'Blue',     swatch: 'linear-gradient(135deg,#080f1a 55%,#3b82f6 100%)' },
-        { id: 'green',         label: 'Green',    swatch: 'linear-gradient(135deg,#071a07 55%,#4ade80 100%)' },
-        { id: 'red',           label: 'Red',      swatch: 'linear-gradient(135deg,#1a0505 55%,#f87171 100%)' },
-        { id: 'orange',        label: 'Orange',   swatch: 'linear-gradient(135deg,#1a1005 55%,#fb923c 100%)' },
-        { id: 'high-contrast', label: 'Hi-Con',   swatch: 'linear-gradient(135deg,#000 40%,#ffff00 100%)' },
+        { id: 'dark',            label: 'Dark',     swatch: 'linear-gradient(135deg,#1a1a2e 55%,#60a5fa 100%)' },
+        { id: 'black',           label: 'Black',    swatch: 'linear-gradient(135deg,#000 55%,#3b82f6 100%)' },
+        { id: 'grey',            label: 'Grey',     swatch: 'linear-gradient(135deg,#242424 55%,#9ca3af 100%)' },
+        { id: 'slate',           label: 'Slate',    swatch: 'linear-gradient(135deg,#0f172a 55%,#7dd3fc 100%)' },
+        { id: 'blue',            label: 'Blue',     swatch: 'linear-gradient(135deg,#080f1a 55%,#3b82f6 100%)' },
+        { id: 'purple',          label: 'Purple',   swatch: 'linear-gradient(135deg,#12081c 55%,#a78bfa 100%)' },
+        { id: 'cyan',            label: 'Cyan',     swatch: 'linear-gradient(135deg,#04161a 55%,#22d3ee 100%)' },
+        { id: 'green',           label: 'Green',    swatch: 'linear-gradient(135deg,#071a07 55%,#4ade80 100%)' },
+        { id: 'red',             label: 'Red',      swatch: 'linear-gradient(135deg,#1a0505 55%,#f87171 100%)' },
+        { id: 'rose',            label: 'Rose',     swatch: 'linear-gradient(135deg,#1a0510 55%,#fb7185 100%)' },
+        { id: 'orange',          label: 'Orange',   swatch: 'linear-gradient(135deg,#1a1005 55%,#fb923c 100%)' },
+        { id: 'amber',           label: 'Amber',    swatch: 'linear-gradient(135deg,#171205 55%,#f59e0b 100%)' },
+        { id: 'nord',            label: 'Nord',     swatch: 'linear-gradient(135deg,#2e3440 55%,#88c0d0 100%)' },
+        { id: 'dracula',         label: 'Dracula',  swatch: 'linear-gradient(135deg,#282a36 55%,#bd93f9 100%)' },
+        { id: 'solarized-dark',  label: 'Sol Dark', swatch: 'linear-gradient(135deg,#002b36 55%,#268bd8 100%)' },
+        { id: 'gruvbox',         label: 'Gruvbox',  swatch: 'linear-gradient(135deg,#282828 55%,#fabd2f 100%)' },
+        { id: 'tokyo-night',     label: 'Tokyo',    swatch: 'linear-gradient(135deg,#1a1b26 55%,#7aa2f7 100%)' },
+        { id: 'light',           label: 'Light',    swatch: 'linear-gradient(135deg,#f0f4f8 55%,#2563eb 100%)', mode: 'light' },
+        { id: 'solarized-light', label: 'Sol Lt',   swatch: 'linear-gradient(135deg,#fdf6e3 55%,#268bd8 100%)', mode: 'light' },
+        { id: 'sepia',           label: 'Sepia',    swatch: 'linear-gradient(135deg,#f4ecd9 55%,#9a6b3f 100%)', mode: 'light' },
+        { id: 'nord-light',      label: 'Nord Lt',  swatch: 'linear-gradient(135deg,#eceff4 55%,#5e81ac 100%)', mode: 'light' },
+        { id: 'synthwave',       label: 'Synth',    swatch: 'linear-gradient(135deg,#1b1035 40%,#ff2e97 100%)' },
+        { id: 'matrix',          label: 'Matrix',   swatch: 'linear-gradient(135deg,#000 55%,#00ff41 100%)' },
+        { id: 'cyberpunk',       label: 'Cyber',    swatch: 'linear-gradient(135deg,#0a0a02 45%,#00f0ff 100%)' },
+        { id: 'high-contrast',   label: 'Hi-Con',   swatch: 'linear-gradient(135deg,#000 40%,#ffff00 100%)' },
+        { id: 'aurora',          label: 'Aurora',   swatch: 'linear-gradient(135deg,#0e3a4a 0%,#1a2b5c 50%,#2d1b4e 100%)' },
+        { id: 'nebula',          label: 'Nebula',   swatch: 'linear-gradient(135deg,#1e1145 0%,#7d2a8f 55%,#24215e 100%)' },
+        { id: 'ember',           label: 'Ember',    swatch: 'linear-gradient(135deg,#1a0d05 30%,#fb923c 100%)' },
     ];
+
+    var LIGHT_IDS = THEMES.filter(function (t) { return t.mode === 'light'; })
+                          .map(function (t) { return t.id; });
 
     function readTheme() {
         try { return localStorage.getItem(STORAGE_KEY) || 'dark'; }
@@ -34,10 +60,16 @@
     }
 
     function applyThemeValue(name) {
+        var root = document.documentElement;
         if (!name || name === 'dark') {
-            document.documentElement.removeAttribute('data-theme');
+            root.removeAttribute('data-theme');
         } else {
-            document.documentElement.setAttribute('data-theme', name);
+            root.setAttribute('data-theme', name);
+        }
+        if (LIGHT_IDS.indexOf(name) !== -1) {
+            root.setAttribute('data-theme-mode', 'light');
+        } else {
+            root.removeAttribute('data-theme-mode');
         }
     }
 
@@ -107,12 +139,12 @@
 
             btn.addEventListener('click', function (e) {
                 e.stopPropagation();
-                if (!dropdown.classList.contains('open')) {
-                    var rect = btn.getBoundingClientRect();
-                    dropdown.style.top = (rect.bottom + 4) + 'px';
-                    dropdown.style.right = (window.innerWidth - rect.right) + 'px';
-                }
+                var willOpen = !dropdown.classList.contains('open');
                 dropdown.classList.toggle('open');
+                if (willOpen) self._position(btn, dropdown);
+            });
+            window.addEventListener('resize', function () {
+                if (dropdown.classList.contains('open')) self._position(btn, dropdown);
             });
             document.addEventListener('click', function (e) {
                 if (!wrap.contains(e.target) && !dropdown.contains(e.target)) {
@@ -124,6 +156,24 @@
                 mount.appendChild(wrap);
             } else {
                 userLink.parentNode.insertBefore(wrap, userLink);
+            }
+        },
+
+        // Anchor the (already-visible) dropdown to the button, keeping it on
+        // screen. With ~28 themes it can be taller than the gap below the
+        // button, so fall back to opening upward, then to pinning at the top
+        // (max-height + scroll in the CSS takes it from there).
+        _position: function (btn, dropdown) {
+            var rect = btn.getBoundingClientRect();
+            var margin = 8;
+            dropdown.style.right = (window.innerWidth - rect.right) + 'px';
+            var dh = dropdown.offsetHeight;
+            if (rect.bottom + 4 + dh <= window.innerHeight - margin) {
+                dropdown.style.top = (rect.bottom + 4) + 'px';
+            } else if (rect.top - 4 - dh >= margin) {
+                dropdown.style.top = (rect.top - 4 - dh) + 'px';
+            } else {
+                dropdown.style.top = margin + 'px';
             }
         },
 

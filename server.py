@@ -10002,10 +10002,10 @@ _SEARXNG_DEFAULT_PORT = 8890
 # Injected before </head> on SearXNG HTML pages so /search/ wears the portal
 # navbar and follows the active portal theme. See static/{css,js}/searxng-portal.*
 _SEARXNG_HEAD_INJECT = (
-    b'<script src="/static/js/theme.js?v=1"></script>'
-    b'<link rel="stylesheet" href="/static/css/portal.css?v=46">'
-    b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=2">'
-    b'<script src="/static/js/searxng-portal.js?v=2" defer></script>'
+    b'<script src="/static/js/theme.js?v=3"></script>'
+    b'<link rel="stylesheet" href="/static/css/portal.css?v=48">'
+    b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=4">'
+    b'<script src="/static/js/searxng-portal.js?v=3" defer></script>'
 )
 
 
