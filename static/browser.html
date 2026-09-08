@@ -502,7 +502,9 @@
                     try {
                         const href = iframe.contentWindow.location.href;
                         const iframePath = iframe.contentWindow.location.pathname;
-                        if (!iframePath.startsWith(proxyBase + '/')) {
+                        // The home page (a same-origin portal path like /search/) is
+                        // loaded directly, not through the proxy — don't "rescue" it.
+                        if (!iframePath.startsWith(proxyBase + '/') && !isPortalHomePath(iframePath)) {
                             // Navigation escaped the proxy — reconstruct target URL
                             const escaped = iframe.contentWindow.location.pathname +
                                 iframe.contentWindow.location.search +

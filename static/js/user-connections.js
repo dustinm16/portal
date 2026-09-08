@@ -10,6 +10,12 @@ let userSSHKeys = [];
 
 // Connection presets for quick setup
 const CONNECTION_PRESETS = {
+    // Browser — the default general-purpose web browser. Home page is Portal's
+    // own private search (SearXNG) when that service is enabled, else DuckDuckGo.
+    // host stays duckduckgo.com: it is the match key http_browser_page uses to
+    // recognise the default Web Browser and the no-SearXNG fallback target.
+    'web-browser': { name: 'Web Browser', type: 'http_proxy', host: 'duckduckgo.com', port: 443, icon: 'globe', config: {}, docs: null, guide: 'http_proxy' },
+
     // Remote Access
     'ssh-server': { name: 'SSH Server', type: 'ssh', port: 22, icon: 'terminal', config: { auth_method: 'password' }, docs: 'https://www.openssh.com/', guide: 'ssh' },
     'vnc-server': { name: 'VNC Desktop', type: 'vnc', port: 5900, icon: 'desktop', config: {}, docs: 'https://tigervnc.org/', guide: 'vnc' },
@@ -215,6 +221,7 @@ function applyConnectionPreset() {
     // Apply preset values
     document.getElementById('connection-name').value = preset.name;
     document.getElementById('connection-type').value = preset.type;
+    if (preset.host) document.getElementById('connection-host').value = preset.host;
     if (preset.port) document.getElementById('connection-port').value = preset.port;
     if (preset.icon) document.getElementById('connection-icon').value = preset.icon;
 
