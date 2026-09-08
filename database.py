@@ -975,6 +975,15 @@ MIGRATIONS = [
         FOREIGN KEY (blocked_by) REFERENCES users(id) ON DELETE SET NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip_address)",
+    # Device-wide metrics: one JSON blob row per category per sample tick
+    # (category in 'process' | 'port' | 'ip'). Written by device_metrics.py.
+    """CREATE TABLE IF NOT EXISTS device_metric_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        category TEXT NOT NULL,
+        entries_json TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_device_metrics_cat_ts ON device_metric_samples(category, ts)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -5753,6 +5762,7 @@ class Database:
         "retention_notifications_days": "30",
         "retention_activity_max": "500",
         "retention_service_logs_max": "1000",
+        "retention_device_metrics_days": "14",
         "cleanup_interval_hours": "6",
         "auto_vacuum": "true",
     }
@@ -5785,6 +5795,7 @@ class Database:
                         "retention_chat_days": 3650, "retention_dm_days": 3650,
                         "retention_notifications_days": 3650,
                         "retention_activity_max": 100000, "retention_service_logs_max": 100000,
+                        "retention_device_metrics_days": 365,
                         "cleanup_interval_hours": 168,  # max 1 week
                     }
                     if key in max_vals and int_val > max_vals[key]:
@@ -5822,6 +5833,36 @@ class Database:
             await self.conn.commit()
             total_deleted += len(batch)
         return total_deleted
+
+    async def add_device_metric_sample(self, category: str, entries_json: str, ts: str = None) -> None:
+        """Persist one device-wide metric sample row (see device_metrics.py)."""
+        ts = ts or datetime.now(timezone.utc).isoformat()
+        await self.conn.execute(
+            "INSERT INTO device_metric_samples (ts, category, entries_json) VALUES (?, ?, ?)",
+            (ts, category, entries_json),
+        )
+        await self.conn.commit()
+
+    async def get_device_metric_samples(
+        self, category: str, since_iso: str, limit: int = 5000
+    ) -> list[dict]:
+        """Return {ts, entries_json} rows for a category since `since_iso`, oldest first."""
+        cursor = await self.conn.execute(
+            """SELECT ts, entries_json FROM device_metric_samples
+               WHERE category = ? AND ts >= ?
+               ORDER BY ts ASC LIMIT ?""",
+            (category, since_iso, limit),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def cleanup_device_metrics(self, days: int = 14) -> int:
+        """Delete device metric samples older than `days`. Returns count deleted."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute(
+            "DELETE FROM device_metric_samples WHERE ts < ?", (cutoff,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
 
     async def cleanup_old_notifications(self, days: int = 30) -> int:
         """Delete notifications older than specified days. Returns count deleted."""

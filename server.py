@@ -91,6 +91,15 @@ from ssh_keys import (
 from shodan_integration import shodan_client, init_shodan, shutdown_shodan
 from traffic_metrics import traffic_metrics, start_metrics_recorder, stop_metrics_recorder
 from resource_metrics import resource_metrics, start_resource_metrics_recorder, stop_resource_metrics_recorder
+from device_metrics import (
+    device_metrics,
+    start_device_metrics_recorder,
+    stop_device_metrics_recorder,
+    SAMPLE_INTERVAL as DEVICE_SAMPLE_INTERVAL,
+    summarize_process_samples as device_metrics_summarize_process,
+    summarize_port_samples as device_metrics_summarize_port,
+    summarize_ip_samples as device_metrics_summarize_ip,
+)
 from vulnerability_scanner import vulnerability_scanner, init_scanner, shutdown_scanner
 from services import (
     ServiceManager,
@@ -5428,6 +5437,72 @@ async def http_get_metrics_top(request: web.Request) -> web.Response:
         "top_services": top_services,
         "top_users": traffic_metrics.get_top_users(limit)
     })
+
+
+# =============================================================================
+# Device-wide Metrics API (persisted samples — see device_metrics.py)
+# =============================================================================
+
+_DEVICE_METRIC_MAX_HOURS = 24 * 14  # matches the default retention window
+
+
+def _device_metrics_window(request: web.Request):
+    """Parse ?hours= (1 .. 336), return (hours, since_iso)."""
+    try:
+        hours = int(request.query.get("hours", "6"))
+    except (ValueError, TypeError):
+        hours = 6
+    hours = min(max(hours, 1), _DEVICE_METRIC_MAX_HOURS)
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    return hours, since
+
+
+async def http_get_device_process_metrics(request: web.Request) -> web.Response:
+    """Per-process / per-service resource usage over time (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    hours, since = _device_metrics_window(request)
+    rows = await db.get_device_metric_samples("process", since)
+    data = await asyncio.to_thread(device_metrics_summarize_process, rows)
+    data["hours"] = hours
+    data["sample_interval"] = DEVICE_SAMPLE_INTERVAL
+    return web.json_response(data)
+
+
+async def http_get_device_port_metrics(request: web.Request) -> web.Response:
+    """Listening ports and their connection counts over time (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    hours, since = _device_metrics_window(request)
+    rows = await db.get_device_metric_samples("port", since)
+    data = await asyncio.to_thread(device_metrics_summarize_port, rows)
+    data["hours"] = hours
+    data["sample_interval"] = DEVICE_SAMPLE_INTERVAL
+    return web.json_response(data)
+
+
+async def http_get_device_ip_metrics(request: web.Request) -> web.Response:
+    """Remote IPs with connections to the host over time (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+
+    hours, since = _device_metrics_window(request)
+    rows = await db.get_device_metric_samples("ip", since)
+    data = await asyncio.to_thread(device_metrics_summarize_ip, rows)
+    data["hours"] = hours
+    data["sample_interval"] = DEVICE_SAMPLE_INTERVAL
+    return web.json_response(data)
 
 
 # =============================================================================
@@ -14264,6 +14339,12 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     except Exception as e:
         errors.append(f"service_logs: {e}")
     try:
+        devm_days = int(config.get("retention_device_metrics_days", 14))
+        if devm_days > 0:
+            results["device_metrics"] = await db.cleanup_device_metrics(days=devm_days)
+    except Exception as e:
+        errors.append(f"device_metrics: {e}")
+    try:
         results["invite_codes"] = await db.cleanup_old_invite_codes(days=30)
     except Exception as e:
         errors.append(f"invite_codes: {e}")
@@ -15589,6 +15670,9 @@ def create_app() -> web.Application:
     app.router.add_get("/api/metrics/timeseries", http_get_metrics_time_series)
     app.router.add_get("/api/metrics/resources", http_get_resource_time_series)
     app.router.add_get("/api/metrics/top", http_get_metrics_top)
+    app.router.add_get("/api/metrics/device/processes", http_get_device_process_metrics)
+    app.router.add_get("/api/metrics/device/ports", http_get_device_port_metrics)
+    app.router.add_get("/api/metrics/device/ips", http_get_device_ip_metrics)
 
     # Shodan Integration (admin only)
     app.router.add_get("/api/shodan/info", http_shodan_api_info)
@@ -15855,6 +15939,7 @@ class PortalServer:
             await start_metrics_recorder()
             logger.info("Traffic metrics recorder started")
             await start_resource_metrics_recorder()
+            await start_device_metrics_recorder(db)
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
@@ -16037,6 +16122,17 @@ class PortalServer:
                         total += d
                 except Exception as e:
                     logger.error(f"[Retention] Service log cleanup failed: {e}")
+
+                # Device-wide metric samples
+                try:
+                    devm_days = int(config.get("retention_device_metrics_days", 14))
+                    if devm_days > 0:
+                        d = await db.cleanup_device_metrics(days=devm_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Cleaned {d} device metric samples older than {devm_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Device metrics cleanup failed: {e}")
 
                 # Revoked invite codes (purge after 30 days)
                 try:
@@ -16242,6 +16338,7 @@ class PortalServer:
         # Stop metrics recorder
         await stop_metrics_recorder()
         await stop_resource_metrics_recorder()
+        await stop_device_metrics_recorder()
 
         # Shutdown managed services (stops all running service processes)
         await shutdown_service_manager()
