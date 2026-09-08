@@ -292,6 +292,23 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        /* System > Services: keep the action buttons on one line (the cell used
+           to be display:flex;flex-wrap:wrap, which stacked 2-3 buttons and blew
+           every row up to ~70px) and stop the Service/Description columns from
+           hogging the width. */
+        #sys-sub-sysservices .sysmon-table td:first-child,
+        #sys-sub-sysservices .sysmon-table td:nth-child(4) {
+            max-width: 320px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #sys-sub-sysservices .sysmon-table td.svc-actions {
+            white-space: nowrap;
+            text-align: right;
+        }
+        #sys-sub-sysservices .sysmon-table td.svc-actions button + button {
+            margin-left: 0.25rem;
+        }
         .sysmon-toolbar {
             display: flex;
             gap: 0.75rem;
@@ -3788,7 +3805,7 @@
                     <td><span class="${badge}">${s.sub_state}</span></td>
                     <td>${s.active_state}</td>
                     <td>${escapeHtml(s.description)}</td>
-                    <td style="display:flex;gap:0.25rem;flex-wrap:wrap;">
+                    <td class="svc-actions">
                         ${isRunning
                             ? `<button class="range-btn" style="border-color:#ef4444;color:#ef4444;" onclick="sysControlService('${escapeHtml(s.name)}','stop')">Stop</button>
                                <button class="range-btn" style="border-color:#f59e0b;color:#f59e0b;" onclick="sysControlService('${escapeHtml(s.name)}','restart')">Restart</button>`
