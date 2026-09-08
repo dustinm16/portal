@@ -923,6 +923,69 @@
                         <div class="loading"><div class="spinner"></div> Loading...</div>
                     </div>
                 </div>
+
+                <!-- Device-wide metrics (persisted, sampled every 60s) -->
+                <div class="section-header" style="margin-top: 2.5rem; align-items: flex-start;">
+                    <div>
+                        <h2>Device-Wide Metrics</h2>
+                        <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0; max-width: 640px;">
+                            Whole-host activity, not just Portal traffic &mdash; sampled every 60&nbsp;seconds and
+                            kept per the <em>device metrics</em> retention setting. Connection counts are point-in-time
+                            samples; very short-lived connections may fall between ticks.
+                        </p>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <div class="chart-range-btns dev-range-btns">
+                            <button class="btn btn-sm range-btn" data-hours="6">6H</button>
+                            <button class="btn btn-sm range-btn active" data-hours="24">24H</button>
+                            <button class="btn btn-sm range-btn" data-hours="72">3D</button>
+                            <button class="btn btn-sm range-btn" data-hours="168">7D</button>
+                            <button class="btn btn-sm range-btn" data-hours="336">14D</button>
+                        </div>
+                        <button class="btn btn-secondary refresh-btn" onclick="loadDeviceMetrics()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <div class="admin-grid" style="grid-template-columns: 1fr 1fr;">
+                    <div class="admin-card">
+                        <h3>CPU by Service / Process</h3>
+                        <div class="chart-container"><canvas id="dev-chart-cpu"></canvas></div>
+                        <p style="font-size:0.7rem;color:var(--text-muted);margin:0.5rem 0 0;">Percent of a single core; a busy multi-threaded service can exceed 100%.</p>
+                    </div>
+                    <div class="admin-card">
+                        <h3>Memory by Service / Process</h3>
+                        <div class="chart-container"><canvas id="dev-chart-mem"></canvas></div>
+                    </div>
+                </div>
+                <div class="admin-card" style="margin-top: 1.5rem;">
+                    <h3>Current Resource Usage <span id="dev-proc-trunc" style="font-size:0.7rem;color:var(--text-muted);font-weight:normal;"></span></h3>
+                    <div id="dev-proc-table" style="max-height: 460px; overflow-y: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+                </div>
+
+                <div class="admin-grid" style="grid-template-columns: 3fr 2fr; margin-top: 1.5rem;">
+                    <div class="admin-card">
+                        <h3>Connections by Local Port</h3>
+                        <div class="chart-container"><canvas id="dev-chart-ports"></canvas></div>
+                    </div>
+                    <div class="admin-card">
+                        <h3>Listening Ports (now)</h3>
+                        <div id="dev-port-table" style="max-height: 320px; overflow-y: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+                    </div>
+                </div>
+
+                <div class="admin-card" style="margin-top: 1.5rem;">
+                    <h3>Remote IP Activity</h3>
+                    <div class="chart-container" style="height: 220px;"><canvas id="dev-chart-ips"></canvas></div>
+                </div>
+                <div class="admin-card" style="margin-top: 1.5rem;">
+                    <h3>Top Remote IPs <span id="dev-ip-trunc" style="font-size:0.7rem;color:var(--text-muted);font-weight:normal;"></span></h3>
+                    <div id="dev-ip-table" style="max-height: 480px; overflow-y: auto;"><div class="loading"><div class="spinner"></div> Loading...</div></div>
+                </div>
             </div>
 
             <!-- Shodan Tab -->
@@ -1987,11 +2050,202 @@
 
                 // Load charts after metric cards
                 loadCharts(plugins);
+                loadDeviceMetrics();
 
             } catch (error) {
                 console.error('Failed to load metrics:', error);
                 document.getElementById('metrics-grid').innerHTML = '<p style="color: var(--accent-red);">Failed to load metrics.</p>';
             }
+        }
+
+        // =================================================================
+        // Device-Wide Metrics (persisted samples)
+        // =================================================================
+
+        let devMetricsHours = 24;
+        const devCharts = {};
+        const devPalette = ['#60a5fa','#22c55e','#f59e0b','#ef4444','#a78bfa','#ec4899','#14b8a6','#f97316','#8b5cf6','#06b6d4','#84cc16','#e879f9','#fbbf24','#f472b6','#34d399'];
+
+        document.querySelectorAll('.dev-range-btns .range-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.dev-range-btns .range-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                devMetricsHours = parseInt(btn.dataset.hours);
+                loadDeviceMetrics();
+            });
+        });
+
+        function devFmtBytes(n) { return formatBytes(n || 0); }
+
+        function devTimeLabel(iso, hours) {
+            const d = new Date(iso);
+            return hours > 48
+                ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit' })
+                : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function devMultiLine(canvasId, series, valueFn, opts) {
+            if (typeof Chart === 'undefined') return;
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            opts = opts || {};
+            if (devCharts[canvasId]) { devCharts[canvasId].destroy(); devCharts[canvasId] = null; }
+            if (!series || series.length === 0) {
+                canvas.parentElement.innerHTML = '<div style="height:100%;min-height:200px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.85rem;">No samples in this range yet.</div>';
+                return;
+            }
+            // union of timestamps from the first (longest-lived) series
+            const base = series.reduce((a, b) => (b.points.length > a.points.length ? b : a), series[0]);
+            const labels = base.points.map(p => devTimeLabel(p.t, devMetricsHours));
+            const datasets = series.map((s, i) => {
+                const color = devPalette[i % devPalette.length];
+                const byT = {};
+                s.points.forEach(p => { byT[p.t] = valueFn(p); });
+                return {
+                    label: s.label || s.key,
+                    data: base.points.map(p => (p.t in byT ? byT[p.t] : null)),
+                    borderColor: color,
+                    backgroundColor: color + '22',
+                    fill: !!opts.fill,
+                    stepped: !!opts.stepped,
+                    tension: 0.25,
+                    spanGaps: true,
+                    pointRadius: base.points.length > 120 ? 0 : 2,
+                    borderWidth: 1.5,
+                };
+            });
+            devCharts[canvasId] = new Chart(canvas.getContext('2d'), {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
+                        tooltip: { callbacks: opts.tooltipLabel ? { label: opts.tooltipLabel } : {} },
+                    },
+                    scales: {
+                        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+                        y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: opts.yTick || undefined } },
+                    },
+                },
+            });
+        }
+
+        async function loadDeviceMetrics() {
+            if (typeof Chart === 'undefined') return;
+            const h = devMetricsHours;
+            let procs, ports, ips;
+            try {
+                [procs, ports, ips] = await Promise.all([
+                    Portal.fetchJSON(`/api/metrics/device/processes?hours=${h}`),
+                    Portal.fetchJSON(`/api/metrics/device/ports?hours=${h}`),
+                    Portal.fetchJSON(`/api/metrics/device/ips?hours=${h}`),
+                ]);
+            } catch (e) {
+                console.error('device metrics load failed', e);
+                document.getElementById('dev-proc-table').innerHTML = '<p style="color:var(--accent-red);">Failed to load device metrics.</p>';
+                return;
+            }
+
+            // --- processes ---
+            devMultiLine('dev-chart-cpu', procs.series, p => p.cpu, {
+                tooltipLabel: c => `${c.dataset.label}: ${c.parsed.y}%`,
+                yTick: v => v + '%',
+            });
+            devMultiLine('dev-chart-mem', procs.series, p => +(p.mem_rss / 1048576).toFixed(1), {
+                fill: false,
+                tooltipLabel: c => `${c.dataset.label}: ${devFmtBytes(c.parsed.y * 1048576)}`,
+                yTick: v => v >= 1024 ? (v / 1024).toFixed(1) + ' GB' : v + ' MB',
+            });
+            const cur = (procs.current || []).slice(0, 25);
+            document.getElementById('dev-proc-trunc').textContent =
+                procs.truncated ? `(+${procs.truncated} more groups not shown)` : '';
+            document.getElementById('dev-proc-table').innerHTML = cur.length ? `
+                <table class="sysmon-table">
+                    <thead><tr><th>Service / Process</th><th>Type</th><th>CPU %</th><th>Memory</th><th>Mem %</th><th>Procs</th></tr></thead>
+                    <tbody>${cur.map(g => `
+                        <tr>
+                            <td>${escapeHtml(g.label)}</td>
+                            <td style="color:var(--text-muted);">${g.kind}</td>
+                            <td>${g.cpu_percent}</td>
+                            <td>${devFmtBytes(g.mem_rss)}</td>
+                            <td>${g.mem_percent}</td>
+                            <td>${g.count}</td>
+                        </tr>`).join('')}</tbody>
+                </table>` : '<p style="color:var(--text-muted);">No sample recorded yet.</p>';
+
+            // --- ports ---
+            devMultiLine('dev-chart-ports', ports.series, p => p.established, {
+                stepped: true,
+                tooltipLabel: c => `${c.dataset.label}: ${c.parsed.y} conns`,
+            });
+            const pcur = (ports.current || []).slice(0, 60);
+            document.getElementById('dev-port-table').innerHTML = pcur.length ? `
+                <table class="sysmon-table">
+                    <thead><tr><th>Port</th><th>Proto</th><th>Process</th><th>Conns</th></tr></thead>
+                    <tbody>${pcur.map(p => `
+                        <tr>
+                            <td>${p.port} <span style="color:var(--text-muted);font-size:0.7rem;">${escapeHtml(p.addr)}</span></td>
+                            <td>${p.proto}</td>
+                            <td>${escapeHtml(p.process || '-')}${p.unit ? ` <span style="color:var(--text-muted);font-size:0.7rem;">${escapeHtml(p.unit)}</span>` : ''}</td>
+                            <td>${p.established}</td>
+                        </tr>`).join('')}</tbody>
+                </table>` : '<p style="color:var(--text-muted);">No sample recorded yet.</p>';
+
+            // --- IPs ---
+            const tl = ips.timeline || [];
+            if (devCharts['dev-chart-ips']) { devCharts['dev-chart-ips'].destroy(); devCharts['dev-chart-ips'] = null; }
+            const ipCanvas = document.getElementById('dev-chart-ips');
+            if (ipCanvas && tl.length) {
+                devCharts['dev-chart-ips'] = new Chart(ipCanvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: tl.map(p => devTimeLabel(p.t, h)),
+                        datasets: [
+                            { label: 'Distinct remote IPs', data: tl.map(p => p.distinct_ips), borderColor: '#60a5fa', backgroundColor: '#60a5fa22', fill: true, tension: 0.25, pointRadius: tl.length > 120 ? 0 : 2, borderWidth: 1.5, yAxisID: 'y' },
+                            { label: 'Total connections', data: tl.map(p => p.conns), borderColor: '#f59e0b', backgroundColor: '#f59e0b22', fill: false, tension: 0.25, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y1' },
+                        ],
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+                        scales: {
+                            x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+                            y: { beginAtZero: true, position: 'left', ticks: { font: { size: 10 } } },
+                            y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } } },
+                        },
+                    },
+                });
+            } else if (ipCanvas) {
+                ipCanvas.parentElement.innerHTML = '<div style="height:100%;min-height:180px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.85rem;">No samples in this range yet.</div>';
+            }
+
+            const ipRows = ips.ips || [];
+            document.getElementById('dev-ip-trunc').textContent =
+                (ips.unique_ips_window ? `${ips.unique_ips_window} distinct IPs in window` : '') +
+                (ips.truncated ? ` — latest sample dropped ${ips.truncated}` : '');
+            document.getElementById('dev-ip-table').innerHTML = ipRows.length ? `
+                <table class="sysmon-table">
+                    <thead><tr><th>Remote IP</th><th>Peak conns</th><th>Ports hit</th><th>Served by</th><th>Last seen</th><th></th></tr></thead>
+                    <tbody>${ipRows.map(r => `
+                        <tr>
+                            <td style="font-family:monospace;">${escapeHtml(r.ip)}</td>
+                            <td>${r.max_conns}</td>
+                            <td style="font-size:0.75rem;">${r.ports.slice(0, 12).join(', ')}</td>
+                            <td style="font-size:0.75rem;color:var(--text-muted);">${r.processes.map(escapeHtml).join(', ') || '-'}</td>
+                            <td style="font-size:0.75rem;">${devTimeLabel(r.last_seen, h)}</td>
+                            <td><button class="btn btn-sm range-btn" onclick="devLookupIp('${escapeHtml(r.ip)}')">Lookup</button></td>
+                        </tr>`).join('')}</tbody>
+                </table>` : '<p style="color:var(--text-muted);">No remote IPs sampled yet.</p>';
+        }
+
+        function devLookupIp(ip) {
+            showTab('shodan');
+            const input = document.getElementById('shodan-ip');
+            if (input) { input.value = ip; }
+            if (typeof lookupIP === 'function') lookupIP();
         }
 
         // =================================================================
@@ -4194,6 +4448,11 @@
                         <input type="number" id="ret-svc-logs" value="${c.retention_service_logs_max}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                     </div>
                     <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Device Metrics Retention (days)</label>
+                        <input type="number" id="ret-device-metrics" value="${c.retention_device_metrics_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
+                    </div>
+                    <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Cleanup Interval (hours)</label>
                         <input type="number" id="ret-interval" value="${c.cleanup_interval_hours}" min="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                     </div>
@@ -4220,6 +4479,7 @@
                 retention_notifications_days: pInt('ret-notif-days', 30),
                 retention_activity_max: pInt('ret-activity-max', 500),
                 retention_service_logs_max: pInt('ret-svc-logs', 1000),
+                retention_device_metrics_days: pInt('ret-device-metrics', 14),
                 cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
             };
