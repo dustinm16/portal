@@ -8063,18 +8063,23 @@ _service_manager: Optional[ServiceManager] = None
 
 
 async def http_list_managed_services(request: web.Request) -> web.Response:
-    """List all managed services."""
+    """List all managed services (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
 
     services = _service_manager.get_all_services()
-    return web.json_response({
-        "managed_services": [svc.get_status() for svc in services]
-    })
+    statuses = []
+    for svc in services:
+        enriched = await _service_manager.get_service_status(svc.id)
+        statuses.append(enriched or svc.get_status())
+    return web.json_response({"managed_services": statuses})
 
 
 async def http_get_managed_service_types(request: web.Request) -> web.Response:
@@ -8156,10 +8161,13 @@ async def http_create_managed_service(request: web.Request) -> web.Response:
 
 
 async def http_get_managed_service(request: web.Request) -> web.Response:
-    """Get a managed service by ID."""
+    """Get a managed service by ID (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8319,10 +8327,13 @@ async def http_restart_managed_service(request: web.Request) -> web.Response:
 
 
 async def http_managed_service_status(request: web.Request) -> web.Response:
-    """Get status of a managed service."""
+    """Get status of a managed service (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8339,10 +8350,13 @@ async def http_managed_service_status(request: web.Request) -> web.Response:
 
 
 async def http_managed_service_logs(request: web.Request) -> web.Response:
-    """Get logs for a managed service."""
+    """Get logs for a managed service (admin only)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)

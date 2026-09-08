@@ -350,12 +350,14 @@ class ManagedService(ABC):
             'id': self.id,
             'name': self.name,
             'display_name': self.display_name,
+            'description': self.description,
             'status': self.status,
             'pid': self.process.pid if self.process else None,
             'enabled': self.enabled,
             'port': self.port,
-            'config': self.config
         }
+        # NOTE: self.config is deliberately NOT included — it can hold generated
+        # secrets (e.g. SearXNG's secret_key). The edit form doesn't read it.
 
     async def cleanup(self):
         """Clean up resources (called on shutdown)."""

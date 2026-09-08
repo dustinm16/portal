@@ -391,6 +391,8 @@ class ServiceManager:
             status['last_started_at'] = svc_data.get('last_started_at')
             status['last_stopped_at'] = svc_data.get('last_stopped_at')
             status['error_message'] = svc_data.get('error_message')
+            if svc_data.get('description'):
+                status['description'] = svc_data['description']
 
         return status
 
