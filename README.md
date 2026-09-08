@@ -49,6 +49,9 @@ Find anything across your channels and DMs with full-text search. Filter by who 
 ### Voice Chat
 Talk to people in real time with encrypted audio. Choose between push-to-talk or automatic voice detection. Audio travels directly between participants using WebRTC — it never passes through or gets stored on the server. True peer-to-peer, end-to-end encrypted voice.
 
+### Private Search
+Search the web without the trackers. Portal can run [SearXNG](https://github.com/searxng/searxng) — a privacy-respecting metasearch engine that aggregates results from 70+ engines while stripping the profiling — as an optional managed service, available at `/search/` to logged-in users only. No search history, no cookies handed to upstream engines, no ads. It's a normal managed service: enable it from the Services panel to turn it on, disable it and the portal carries on exactly as before. A JSON API (`/search/search?q=...&format=json`) is available for automation.
+
 ### Remote Access
 Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, RDP sessions, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
 
@@ -180,6 +183,10 @@ python -c "import cert_manager; cert_manager.generate_self_signed_cert('localhos
 # Install MediaMTX for streaming (optional, Linux amd64)
 sudo python server.py install-mediamtx
 
+# Install SearXNG for private web search (optional, Debian/Ubuntu)
+sudo ./install-searxng.sh
+# then, in the admin Services panel: add a managed service of type "searxng" and enable it
+
 # Initialize database and create admin user
 python server.py init
 
@@ -199,6 +206,7 @@ Python/aiohttp backend ──── SQLite database (FTS5 search)
        │                         │
        ├── WebSocket relay ──── Plugins (SSH, VNC, RDP, SPICE, ...)
        ├── HLS streaming ────── MediaMTX (managed process)
+       ├── Private search ───── SearXNG (optional managed process)
        ├── Chat engine ──────── Fernet encryption at rest
        ├── Direct messages ──── Encrypted 1:1 & group DMs
        ├── Message search ───── FTS5 full-text index
@@ -272,6 +280,27 @@ Contributions welcome. The codebase is vanilla Python and vanilla JS — no fram
 pip install flake8
 flake8 server.py database.py auth.py --max-line-length=120
 ```
+
+## Third-Party Components
+
+Portal is a single Python/aiohttp application, but it can download and manage a few
+external open-source servers as optional local processes. They run on your hardware,
+bound to localhost, and Portal is the only thing that talks to them.
+
+| Component | Role | License | Source |
+|-----------|------|---------|--------|
+| [MediaMTX](https://github.com/bluenviron/mediamtx) | RTSP/RTMP/HLS/WebRTC media server behind the live-streaming feature | MIT | github.com/bluenviron/mediamtx |
+| [SearXNG](https://github.com/searxng/searxng) | Privacy-respecting metasearch engine behind `/search/` (optional) | AGPL-3.0 | github.com/searxng/searxng |
+| [uWSGI](https://github.com/unbit/uwsgi) | WSGI application server that hosts SearXNG | GPL-2.0-with-linking-exception | github.com/unbit/uwsgi |
+
+SearXNG is installed with `install-searxng.sh` (creates a dedicated `searxng`
+system user, clones the upstream source, builds a virtualenv). Portal generates its
+`settings.yml` and runs it under uWSGI on `127.0.0.1:8890`; the `/search/` route
+reverse-proxies to it behind Portal authentication. Enable or disable it like any
+other managed service — Portal is fully functional without it.
+
+All third-party components retain their own licenses and copyrights. Portal itself
+is AGPL-3.0.
 
 ## License
 

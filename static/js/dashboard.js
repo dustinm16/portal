@@ -12,7 +12,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadServices();
     await loadDashboardStats();
     await loadActivityFeed();
+    await loadSearchNavLink();
 });
+
+/**
+ * Show the "Search" nav link only when the SearXNG managed service is enabled
+ * and running. The portal is fully functional whether or not it is.
+ */
+async function loadSearchNavLink() {
+    const link = document.getElementById('search-nav-link');
+    if (!link) return;
+    try {
+        const { available } = await Portal.api('/api/search/status');
+        link.style.display = available ? '' : 'none';
+    } catch (e) {
+        link.style.display = 'none';
+    }
+}
 
 /**
  * Load current user info

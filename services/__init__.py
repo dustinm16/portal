@@ -508,6 +508,11 @@ def load_service_types():
     except ImportError as e:
         logger.warning(f"Failed to load mediamtx service: {e}")
 
+    try:
+        from . import searxng
+    except ImportError as e:
+        logger.warning(f"Failed to load searxng service: {e}")
+
     # Add more service imports here as they're implemented
     # from . import turn
     # from . import codeserver

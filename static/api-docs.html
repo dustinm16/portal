@@ -367,6 +367,7 @@
                     <li><a href="#public-stats">Public Stats</a></li>
                     <li><a href="#services">Services</a></li>
                     <li><a href="#connections">User Connections</a></li>
+                    <li><a href="#search">Private Search</a></li>
                     <li><a href="#streams">User Streams</a></li>
                     <li><a href="#stream-relays">Stream Relays</a></li>
                     <li><a href="#encoder-settings">Encoder Settings</a></li>
@@ -1096,6 +1097,42 @@
                             <tr><td>database, redis, tcp_tunnel, etc.</td><td>Info Toast</td><td>Shows host:port (no web viewer)</td></tr>
                         </table>
                         <p>All viewer pages connect via <code>wss://portal/ws/user-connection/{id}</code> which routes through the appropriate plugin based on the connection type.</p>
+                    </div>
+                </div>
+
+                <!-- Private Search -->
+                <h2 id="search">Private Search</h2>
+                <p>Portal can run <a href="https://github.com/searxng/searxng" target="_blank" rel="noopener">SearXNG</a> (AGPL-3.0), a privacy-respecting metasearch engine, as an optional managed service reverse-proxied under <code>/search/</code> behind Portal authentication.</p>
+
+                <div class="alert alert-info">
+                    <strong>Availability:</strong> These endpoints work only while an admin has added and <strong>enabled</strong> a managed service of type <code>searxng</code> (Services panel). Otherwise they return <code>503</code>, and the portal is unaffected.
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/search/status</span>
+                        <span class="endpoint-desc">Whether SearXNG search is available</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{ "available": true|false }</code> — whether the <code>searxng</code> service is enabled and running. The dashboard uses this to show or hide the "Search" nav link. Requires authentication.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">ALL</span>
+                        <span class="endpoint-path">/search/{path}</span>
+                        <span class="endpoint-desc">Auth-gated reverse proxy to SearXNG</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Any logged-in user may use it. Unauthenticated browser requests redirect to <code>/login</code>; unauthenticated API requests (<code>Accept: application/json</code> or <code>?format=json</code>) get <code>401</code>.</p>
+                        <p>Requests are forwarded verbatim — SearXNG mounts its whole app under <code>/search/</code> via its <code>base_url</code>. The Portal session cookie and <code>Authorization</code> header are stripped from the upstream request. Responses get <code>Cache-Control: private, no-store</code>.</p>
+                        <h4>Example — JSON results for automation</h4>
+                        <div class="code-block">
+<pre>curl -H <span class="string">"Authorization: Bearer $TOKEN"</span> \
+  <span class="string">"https://your-domain/search/search?q=debian&amp;format=json"</span></pre>
+                        </div>
                     </div>
                 </div>
 

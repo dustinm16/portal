@@ -9986,6 +9986,145 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         )
 
 
+_SEARXNG_REQUEST_HOP_HEADERS = frozenset({
+    "host", "content-length", "transfer-encoding", "connection", "keep-alive",
+    "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade",
+    "accept-encoding", "authorization",
+})
+_SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
+    "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailers", "upgrade", "content-encoding",
+    "content-length",
+})
+# Kept in sync with services/searxng.py DEFAULT_PORT (8888/8889 are MediaMTX).
+_SEARXNG_DEFAULT_PORT = 8890
+
+
+async def _searxng_status() -> tuple[bool, int]:
+    """Return (available, port) for the SearXNG managed service.
+
+    "Available" means the service row exists, is enabled (the admin toggle), and
+    is currently running. When SearXNG is not set up or is disabled, the portal
+    stays fully functional — the /search/ route and nav link just go dark.
+    """
+    port = _SEARXNG_DEFAULT_PORT
+    if not _service_manager:
+        return False, port
+    svc = await _service_manager.get_service_by_name("searxng")
+    if svc is None or not getattr(svc, "enabled", False):
+        return False, port
+    try:
+        port = int(svc.get_merged_config().get("port", port))
+    except (TypeError, ValueError):
+        pass
+    return (svc.status == "running"), port
+
+
+async def http_search_status(request: web.Request) -> web.Response:
+    """Report whether SearXNG search is available (used to show/hide the nav link)."""
+    token = await authenticate_request(request)
+    if not token:
+        return web.json_response({"available": False}, status=200)
+    available, _ = await _searxng_status()
+    return web.json_response({"available": available})
+
+
+def _searxng_unavailable_response(request: web.Request) -> web.Response:
+    if "application/json" in request.headers.get("Accept", "") or \
+            request.query.get("format") == "json":
+        return web.json_response({"error": "Search is not enabled on this portal"}, status=503)
+    return web.Response(
+        status=503, content_type="text/html",
+        text="<html><body style='background:#1a1a2e;color:#e0e0e0;"
+             "font-family:sans-serif;padding:2rem'>"
+             "<h2>Search is not enabled</h2>"
+             "<p>This portal does not currently have the SearXNG search service running. "
+             "An admin can enable it from the Services panel.</p>"
+             "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
+             "</body></html>")
+
+
+async def http_searxng_proxy(request: web.Request) -> web.Response:
+    """Auth-gated reverse proxy for the SearXNG managed service.
+
+    SearXNG mounts its whole app under ``/search/`` natively via
+    ``server.base_url``, so requests are forwarded verbatim — no path or body
+    rewriting. Only authenticated Portal users may reach it, and only when an
+    admin has enabled the ``searxng`` managed service.
+    """
+    token = await authenticate_request(request)
+    if not token:
+        if "application/json" in request.headers.get("Accept", "") or \
+                request.query.get("format") == "json":
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        raise web.HTTPFound("/login")
+
+    available, port = await _searxng_status()
+    if not available:
+        return _searxng_unavailable_response(request)
+
+    upstream_url = f"http://127.0.0.1:{port}{request.raw_path}"
+
+    fwd_headers = {}
+    for key, value in request.headers.items():
+        k = key.lower()
+        if k in _SEARXNG_REQUEST_HOP_HEADERS:
+            continue
+        if k == "cookie":
+            cookies = [c.strip() for c in value.split(";")
+                       if not c.strip().startswith(Config.SESSION_COOKIE_NAME + "=")]
+            if cookies:
+                fwd_headers[key] = "; ".join(cookies)
+            continue
+        fwd_headers[key] = value
+    fwd_headers["Host"] = f"127.0.0.1:{port}"
+    fwd_headers["X-Forwarded-For"] = request.remote or ""
+    fwd_headers["X-Forwarded-Proto"] = "https"
+    fwd_headers["X-Real-IP"] = request.remote or ""
+
+    body = None
+    if request.body_exists:
+        body = await request.content.read(_PROXY_MAX_REQUEST_SIZE + 1)
+        if len(body) > _PROXY_MAX_REQUEST_SIZE:
+            return web.Response(status=413, text="Request body too large")
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=60),
+            auto_decompress=True,
+        ) as session:
+            async with session.request(
+                method=request.method,
+                url=upstream_url,
+                headers=fwd_headers,
+                data=body,
+                allow_redirects=False,
+            ) as resp:
+                resp_headers = {
+                    key: value for key, value in resp.headers.items()
+                    if key.lower() not in _SEARXNG_RESPONSE_HOP_HEADERS
+                }
+                # Never let a shared edge cache store authenticated content.
+                resp_headers["Cache-Control"] = "private, no-store"
+
+                # Buffer the body (SearXNG responses are small) so
+                # security_headers_middleware can still attach CSP/HSTS/etc.
+                out = await resp.content.read(_PROXY_MAX_RESPONSE_SIZE + 1)
+                if len(out) > _PROXY_MAX_RESPONSE_SIZE:
+                    return web.Response(status=502, text="Upstream response too large")
+                return web.Response(status=resp.status, headers=resp_headers, body=out)
+    except aiohttp.ClientError as e:
+        logger.error(f"SearXNG proxy error: {e}")
+        return web.Response(
+            status=502, content_type="text/html",
+            text="<html><body style='background:#1a1a2e;color:#e0e0e0;"
+                 "font-family:sans-serif;padding:2rem'>"
+                 "<h2>Cannot reach SearXNG</h2>"
+                 "<p>The search backend is unreachable. Check that the service is running.</p>"
+                 "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
+                 "</body></html>")
+
+
 async def http_admin_page(request: web.Request) -> web.Response:
     """Serve admin panel page (admin only)."""
     token = await authenticate_request(request)
@@ -15158,6 +15297,11 @@ def create_app() -> web.Application:
 
     # Static files (CSS, JS, HTML - public for login page)
     app.router.add_static("/static", STATIC_DIR)
+
+    # SearXNG metasearch (managed service) — auth-gated reverse proxy, served under /search/
+    app.router.add_get("/api/search/status", http_search_status)
+    app.router.add_route("*", "/search", http_searxng_proxy)
+    app.router.add_route("*", "/search/{path:.*}", http_searxng_proxy)
 
     # HTTP API routes
     app.router.add_get("/health", http_health)
