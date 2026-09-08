@@ -99,17 +99,39 @@
             .catch(function () {});
     }
 
+    // Handle clicks on external result links while running inside the portal's
+    // embedded browser. If that browser is in browser_mode it can proxy any
+    // site, so open the result in a new *embedded* tab (through its proxy).
+    // Otherwise it's confined to one origin and can't show the result at all —
+    // open it in a real top-level tab.
     function enableFramedLinkEscape() {
+        var peb = null;
+        try {
+            if (window.parent && window.parent !== window) {
+                peb = window.parent.PORTAL_EMBEDDED_BROWSER || null;
+            }
+        } catch (e) { /* cross-origin parent — treat as confined */ }
+
         document.addEventListener('click', function (e) {
             var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
             if (!a) return;
-            try {
-                var u = new URL(a.href, location.href);
-                if (/^https?:$/.test(u.protocol) && u.origin !== location.origin) {
-                    a.target = '_blank';
-                    a.rel = 'noopener noreferrer';
+            var u;
+            try { u = new URL(a.href, location.href); } catch (err) { return; }
+            if (!/^https?:$/.test(u.protocol) || u.origin === location.origin) return;
+
+            if (peb && peb.browserMode && peb.proxyBase) {
+                // Open in a new tab inside the embedded browser, via its proxy.
+                e.preventDefault();
+                var proxied = peb.proxyBase + '/' + u.href;
+                try {
+                    window.parent.postMessage({ type: 'openTab', url: proxied }, location.origin);
+                } catch (err2) {
+                    window.top.location.href = proxied;
                 }
-            } catch (err) { /* ignore */ }
+            } else {
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+            }
         }, true);
     }
 

@@ -375,6 +375,9 @@
         // (e.g. "/search/" for the default Web Browser when SearXNG is enabled).
         // Empty string => fall back to the proxied connection target.
         const homeUrl = '{{HOME_URL}}';
+        // Exposed for same-origin home pages loaded in the iframe (e.g. SearXNG):
+        // `const` isn't a window property, so hand these out explicitly.
+        window.PORTAL_EMBEDDED_BROWSER = { connectionId, proxyBase, browserMode, homeUrl };
         const urlInput = document.getElementById('url-input');
         const statusEl = document.getElementById('connection-status');
         const statusTextEl = document.getElementById('status-text');
