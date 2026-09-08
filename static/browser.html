@@ -390,6 +390,7 @@
         let activeTabId = null;
         let tabIdCounter = 0;
         let urlPollInterval = null;
+        let sessionDead = false;
 
         function setStatus(state, text) {
             statusEl.className = 'connection-status ' + state;
@@ -622,12 +623,40 @@
             return d.innerHTML;
         }
 
+        // --- Session expiry ------------------------------------------------
+        // This is a long-lived window. If the user logs out (here or in another
+        // tab) the server 401s / redirects every proxied request to /login, but
+        // the already-rendered iframe stays on screen. Detect that and bounce
+        // the whole window to /login so a logged-out user can't keep using it.
+        function sessionEnded() {
+            if (sessionDead) return;
+            sessionDead = true;
+            stopUrlPolling();
+            tabs.forEach(t => { try { t.iframe.src = 'about:blank'; } catch (e) {} });
+            window.location.replace('/login');
+        }
+        async function checkSession() {
+            try {
+                const r = await fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' });
+                if (r.status === 401 || r.status === 403) sessionEnded();
+            } catch (e) { /* transient network error — ignore */ }
+        }
+        setInterval(checkSession, 20000);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) checkSession(); });
+        window.addEventListener('focus', checkSession);
+
         // --- URL bar + navigation ---
         function updateUrlBar() {
             const frame = getActiveFrame();
             if (!frame) return;
             try {
                 const loc = frame.contentWindow.location;
+                // A same-origin redirect to /login means the session ended.
+                if (loc.origin === window.location.origin &&
+                    loc.pathname === '/login' && homeUrl !== '/login') {
+                    sessionEnded();
+                    return;
+                }
                 const path = loc.pathname + loc.search + loc.hash;
                 urlInput.value = proxyPathToDisplay(path);
             } catch {}
