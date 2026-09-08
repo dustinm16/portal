@@ -99,7 +99,7 @@ class DeviceMetrics:
         listening: dict = {}
         established_by_port: dict = defaultdict(int)
         ip_agg: dict = defaultdict(
-            lambda: {"conns": 0, "ports": set(), "procs": set(), "states": defaultdict(int)}
+            lambda: {"conns": 0, "ports": set(), "procs": set()}
         )
 
         for c in conns:
@@ -126,7 +126,6 @@ class DeviceMetrics:
                 e["conns"] += 1
                 if c.laddr:
                     e["ports"].add(c.laddr.port)
-                e["states"][c.status or "?"] += 1
                 pn = _pid_name(c.pid, name_cache)
                 if pn:
                     e["procs"].add(pn)
@@ -146,7 +145,6 @@ class DeviceMetrics:
                 "conns": v["conns"],
                 "ports": sorted(v["ports"])[:MAX_PORTS_PER_IP],
                 "processes": sorted(v["procs"])[:MAX_PROCS_PER_IP],
-                "states": dict(v["states"]),
             })
         ip_entries.sort(key=lambda x: -x["conns"])
         ip_trunc = max(0, len(ip_entries) - MAX_IPS)
@@ -434,8 +432,8 @@ async def _recorder_loop(db) -> None:
     # one warm-up sample primes per-process cpu_percent; skip persisting it
     try:
         await asyncio.to_thread(device_metrics._collect)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Device metrics warm-up sample failed: {e}")
     await asyncio.sleep(SAMPLE_INTERVAL)
     while True:
         try:

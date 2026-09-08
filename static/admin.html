@@ -2094,7 +2094,9 @@
                 canvas.parentElement.innerHTML = '<div style="height:100%;min-height:200px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.85rem;">No samples in this range yet.</div>';
                 return;
             }
-            // union of timestamps from the first (longest-lived) series
+            // Every series in a category shares the summarizer's bucket timeline
+            // (identical ISO timestamps per bucket), so the byT[p.t] lookup below
+            // is an exact match. Pick the longest series as the label axis.
             const base = series.reduce((a, b) => (b.points.length > a.points.length ? b : a), series[0]);
             const labels = base.points.map(p => devTimeLabel(p.t, devMetricsHours));
             const datasets = series.map((s, i) => {

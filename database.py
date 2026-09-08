@@ -5844,16 +5844,37 @@ class Database:
         await self.conn.commit()
 
     async def get_device_metric_samples(
-        self, category: str, since_iso: str, limit: int = 5000
+        self, category: str, since_iso: str, max_rows: int = 2000
     ) -> list[dict]:
-        """Return {ts, entries_json} rows for a category since `since_iso`, oldest first."""
-        cursor = await self.conn.execute(
-            """SELECT ts, entries_json FROM device_metric_samples
-               WHERE category = ? AND ts >= ?
-               ORDER BY ts ASC LIMIT ?""",
-            (category, since_iso, limit),
+        """Return {ts, entries_json} rows for a category since `since_iso`, oldest first.
+
+        For windows with more than `max_rows` samples the result is strided
+        (every Nth sample, counting back from the newest) so the newest sample
+        is always included and memory stays bounded regardless of window size.
+        """
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS c FROM device_metric_samples WHERE category = ? AND ts >= ?",
+            (category, since_iso),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        total = (await cur.fetchone())["c"]
+
+        if total <= max_rows:
+            cur = await self.conn.execute(
+                """SELECT ts, entries_json FROM device_metric_samples
+                   WHERE category = ? AND ts >= ? ORDER BY ts ASC""",
+                (category, since_iso),
+            )
+            return [dict(row) for row in await cur.fetchall()]
+
+        stride = (total + max_rows - 1) // max_rows
+        cur = await self.conn.execute(
+            """SELECT ts, entries_json FROM (
+                 SELECT ts, entries_json, ROW_NUMBER() OVER (ORDER BY ts DESC) AS rn
+                 FROM device_metric_samples WHERE category = ? AND ts >= ?
+               ) WHERE (rn - 1) % ? = 0 ORDER BY ts ASC""",
+            (category, since_iso, stride),
+        )
+        return [dict(row) for row in await cur.fetchall()]
 
     async def cleanup_device_metrics(self, days: int = 14) -> int:
         """Delete device metric samples older than `days`. Returns count deleted."""
