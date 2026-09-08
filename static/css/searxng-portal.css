@@ -130,6 +130,27 @@ body > nav.navbar.portal-searxng-nav {
     backdrop-filter: blur(6px);
 }
 
+/* SearXNG's simple theme sets html{font-size:90%}, which would shrink every
+   rem in the injected navbar (28.8px pad, 65px tall). Pin it in px so it
+   matches every other portal page pixel-for-pixel. */
+body > nav.navbar.portal-searxng-nav { padding: 16px 32px; font-size: 16px; }
+/* SearXNG styles bare <a> with its own link colour — the brand is an <a> here
+   (a <div> on other pages), so force the portal token. */
+body > nav.navbar.portal-searxng-nav .navbar-brand {
+    font-size: 18px;
+    gap: 12px;
+    color: var(--text-primary);
+    -webkit-text-fill-color: var(--text-primary);  /* SearXNG paints <a> text via -webkit-text-fill-color */
+}
+body > nav.navbar.portal-searxng-nav .navbar-menu a {
+    color: var(--text-secondary);
+    -webkit-text-fill-color: var(--text-secondary);
+}
+body > nav.navbar.portal-searxng-nav .navbar-brand svg { width: 24px; height: 24px; }
+body > nav.navbar.portal-searxng-nav .navbar-menu { gap: 24px; }
+body > nav.navbar.portal-searxng-nav .navbar-menu a { font-size: 14px; }
+body > nav.navbar.portal-searxng-nav .navbar-user { font-size: 14px; }
+
 /* SearXNG's own top-right "About | Preferences" links are folded into the
    portal navbar (see searxng-portal.js NAV_LINKS). */
 #links_on_top {

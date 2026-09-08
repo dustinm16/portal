@@ -10362,8 +10362,8 @@ _SEARXNG_DEFAULT_PORT = 8890
 # navbar and follows the active portal theme. See static/{css,js}/searxng-portal.*
 _SEARXNG_HEAD_INJECT = (
     b'<script src="/static/js/theme.js?v=3"></script>'
-    b'<link rel="stylesheet" href="/static/css/portal.css?v=50">'
-    b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=4">'
+    b'<link rel="stylesheet" href="/static/css/portal.css?v=51">'
+    b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
 )
 

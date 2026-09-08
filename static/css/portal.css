@@ -1372,6 +1372,54 @@ select option {
 .log-line.level-ERROR { color: #f85149; }
 .log-line.level-CRITICAL { color: #ff7b72; font-weight: bold; }
 
+/* Navbar collapses to the hamburger well before phone width — the full
+   horizontal menu (7 links + section badge + terminal/theme/notif/user/logout)
+   stops fitting around 1100px, and without this it wraps to 2–3 lines at a
+   different height on every page. */
+@media (max-width: 1100px) {
+    .navbar {
+        flex-wrap: wrap;
+    }
+    .navbar-toggle {
+        display: block;
+    }
+    .navbar-menu {
+        display: none;
+        width: 100%;
+        flex-direction: column;
+        gap: 0;
+        padding-top: 0.75rem;
+        margin-top: 0.75rem;
+        border-top: 1px solid var(--card-border);
+    }
+    .navbar-menu.open {
+        display: flex;
+    }
+    .navbar-menu a {
+        padding: 0.6rem 0.5rem;
+        border-radius: 6px;
+    }
+    .navbar-menu a:hover {
+        background: var(--card-hover);
+    }
+    .navbar-terminal {
+        width: auto;
+        height: auto;
+        background: none;
+        border: none;
+        justify-content: flex-start;
+        gap: 0.5rem;
+        padding: 0.6rem 0.5rem;
+    }
+    .navbar-terminal::after {
+        content: 'Terminal';
+        font-size: 0.875rem;
+    }
+    .navbar-user {
+        padding: 0.6rem 0.5rem;
+    }
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .dashboard {
