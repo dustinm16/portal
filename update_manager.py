@@ -58,6 +58,19 @@ def _get_update_lock() -> asyncio.Lock:
 _VERSION_RE = re.compile(r'^v?\d+\.\d+\.\d+[\w.\-]*$')
 _BRANCH_ALLOWLIST = {"master", "main"}
 
+# `git describe --tags` output: v1.7.2  or  v1.7.2-3-gabc1234 (3 commits past the tag)
+_DESCRIBE_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)(?:-(\d+)-g[0-9a-f]+)?', re.IGNORECASE)
+
+
+def _parse_version(v: str):
+    """Return ((major, minor, patch), commits_ahead) or (None, 0) if unparseable."""
+    if not v:
+        return None, 0
+    m = _DESCRIBE_RE.match(v.strip())
+    if not m:
+        return None, 0
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))), int(m.group(4) or 0)
+
 # Strict allowlist for pip package names (PEP 508)
 _PKG_NAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9._\-]*[A-Za-z0-9])?$')
 
@@ -277,10 +290,27 @@ async def _check_portal_updates() -> dict:
                     latest = data.get("tag_name", "unknown")
                     raw_url = data.get("html_url", "")
                     release_url = raw_url if raw_url.startswith("https://github.com/") else ""
+
+                    # Compare by semver, not string equality — otherwise a checkout
+                    # that's ahead of the latest release (e.g. "v1.7.2-3-gabc1234")
+                    # reads as "!= v1.7.2" and the UI offers a downgrade.
+                    cur_v, cur_ahead = _parse_version(current)
+                    lat_v, _ = _parse_version(latest)
+                    if latest in ("unknown", ""):
+                        update_available = False
+                        dev_build = False
+                    elif cur_v and lat_v:
+                        update_available = lat_v > cur_v
+                        dev_build = not update_available and (lat_v < cur_v or cur_ahead > 0)
+                    else:
+                        update_available = latest != current
+                        dev_build = False
+
                     return {
                         "current": current,
                         "latest": latest,
-                        "update_available": latest != current and latest != "unknown",
+                        "update_available": update_available,
+                        "dev_build": dev_build,
                         "release_url": release_url,
                         "release_notes": data.get("body") or "",
                     }
@@ -546,7 +576,29 @@ async def _apply_portal_update(job: dict, version: Optional[str]) -> None:
         raise RuntimeError(f"git fetch failed: {err.strip()}")
     _log(job, "Fetch complete.")
 
+    # Also refresh moved tags — `git fetch --tags` won't clobber an existing tag
+    # whose target changed (e.g. after a history rewrite), so force it.
+    await _run_cmd(
+        _git_args(["git", "fetch", "--tags", "--force", "origin"]),
+        cwd=str(PORTAL_DIR), timeout=60,
+    )
+
     target = version or "master"
+
+    # Guard against a downgrade: if the requested tag is already an ancestor of
+    # HEAD, checking it out would silently drop unreleased commits. Roll back via
+    # the snapshot system instead.
+    if version:
+        rc_a, _, _ = await _run_cmd(
+            _git_args(["git", "merge-base", "--is-ancestor", target, "HEAD"]),
+            cwd=str(PORTAL_DIR), timeout=15,
+        )
+        if rc_a == 0:
+            raise RuntimeError(
+                f"{target} is already in this checkout's history — refusing to "
+                f"downgrade. Use a snapshot rollback instead."
+            )
+
     _log(job, f"Checking out {target}...")
     rc, out, err = await _run_cmd(
         _git_args(["git", "checkout", target]),
