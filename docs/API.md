@@ -837,6 +837,24 @@ Get connection details needed to establish a WebSocket relay (plugin info, WebSo
 
 ---
 
+#### GET /api/connections/{id}/shares
+List who a connection is shared with (owner only). → `{"shares": [{"user_id", "username", "created_at"}]}`
+
+#### POST /api/connections/{id}/shares
+Share a connection with users (owner only). Body `{"usernames": ["alice", "bob"]}` — unknown names and self are skipped. → `{"added": [...], "skipped": [...], "shares": [...]}`. Audited as `connection.share`.
+
+#### DELETE /api/connections/{id}/shares/{grantee_id}
+Revoke a share (owner only). `{grantee_id}` may be the literal `me` for a grantee removing their own access. Audited as `connection.unshare`.
+
+> A shared connection appears on the grantee's dashboard (`shared: true`, `owner_username`), is usable through the in-browser tools and `/proxy/{id}`, but **not** the raw `/ws` relay. Edit / delete / pin remain owner-only.
+
+---
+
+#### GET /api/users/lookup?q=
+Username prefix search for the share / grant pickers. Any authenticated user; returns at most 10 `{id, username}` — no role, email or status.
+
+---
+
 #### GET /api/connections/types
 Get available connection types with schemas.
 
@@ -2805,8 +2823,22 @@ within one health-monitor cycle (and immediately on any status read).
 
 ---
 
+#### Service access grants
+
+An admin can let a non-admin control or read one managed service:
+
+- `GET  /api/managed-services/{id}/grants` — list `[{user_id, username, actions, created_at}]`
+- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs"]}`. `control` = start/stop/restart; `logs` = logs + status. Audited `service.grant`.
+- `DELETE /api/managed-services/{id}/grants/{grantee_id}` — revoke. Audited `service.ungrant`.
+
+Once granted, `POST /api/services/{id}/start|stop|restart` (and the
+`/api/managed-services/{id}/...` equivalents) and the logs/status endpoints
+accept that user; `GET /api/me` returns `granted_services: {id: ["control","logs"]}`.
+
+---
+
 #### POST /api/services/:id/start
-Start a managed service (admin only). Only valid for `service_type: "managed"`.
+Start a managed service — admin, or a user holding a `control` grant.
 
 **Response:**
 ```json

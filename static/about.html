@@ -1124,6 +1124,10 @@
                     <li><strong>Managed Services</strong> &mdash; Processes Portal runs directly (e.g., MediaMTX streaming server, SearXNG), or&mdash;with the <code>systemd</code> type&mdash;an existing systemd unit on the host that Portal controls via <code>systemctl</code>. Start, stop, restart, edit, and view logs.</li>
                 </ul>
                 <p>Managed services auto-start on boot (if enabled), have health checks every 30 seconds, and auto-restart with exponential backoff on crash. A <code>systemd</code>-type service is never stopped by Portal implicitly &mdash; only when you explicitly stop it &mdash; and its card tracks the unit even when it changes outside Portal.</p>
+                <p><strong>Granting access.</strong> Use the <em>Grant</em> button on a managed-service card to let a specific non-admin user start / stop / restart it, view its logs, or both. Handy for handing a game server over to whoever runs it without making them an admin.</p>
+
+                <h3>Sharing a Connection</h3>
+                <p>On any connection card (dashboard or Manage Connections) click <em>Share</em> and type one or more usernames. Those users get the connection on their own dashboard &mdash; marked &ldquo;shared by you&rdquo; &mdash; and can open it in the embedded browser, web shell, xterm or VNC. They can't edit or delete it, and it never appears over the raw API relay. Remove someone and their access is gone on their next request.</p>
 
                 <h3>Device-Wide Metrics</h3>
                 <p>The Metrics tab keeps a persisted history of the <em>whole host</em>, not just Portal's traffic. Every 60&nbsp;seconds Portal records CPU and memory per service/process, every listening port and the connections on it, and the remote IPs talking to the box (with the ports they hit and the process serving them). Charts span 6&nbsp;hours to 14&nbsp;days and survive restarts; retention is set under Settings &rarr; Data Retention. Values are point-in-time samples, so very short-lived connections may not show up.</p>

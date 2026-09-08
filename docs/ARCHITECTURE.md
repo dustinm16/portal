@@ -137,6 +137,32 @@ Portal never stops an externally-owned (`systemd`) unit implicitly** — not on
 Portal shutdown, not when the wrapper service is deleted; only an explicit
 `stop` call does.
 
+### Shared access (session-based grants)
+
+Two grant tables let access cross the owner boundary without any credential
+exchange — the grant row *is* the authorization, checked on every request, and
+revoke is a row delete:
+
+- **`connection_shares`** `(connection_id, grantee_user_id, granted_by)` — a
+  connection owner shares their `user_connections` row with another user.
+  `db.get_accessible_connection(uuid, user_id)` (owner **or** share) replaces
+  `get_user_connection_by_uuid` at every *use* site — the popout tool pages
+  (`/terminal`, `/vnc`, `/spice`, `/proxmox`, `/media`, `/github`, `/browser`),
+  the user-connection WebSocket, and `/proxy/{uuid}`. Edit / delete / pin stay
+  owner-only (`get_user_connection_by_uuid`). Shared connections are **not**
+  reachable through the raw `/ws` relay used by native clients.
+- **`service_grants`** `(service_id, grantee_user_id, actions)` where `actions`
+  ⊆ `{control, logs}` — an admin grants a non-admin start/stop/restart and/or
+  log access to one managed service. `_can_control_service(token, id, need)`
+  gates the control and logs endpoints (`admin` OR a matching grant).
+  `GET /api/me` returns `granted_services: {id: [...]}` so the dashboard renders
+  the right buttons.
+
+`GET /api/users/lookup?q=` is a slim, any-authenticated-user username-prefix
+search (id + username only) powering the pickers in both grant modals. Every
+grant / revoke writes an `audit_log` entry (`connection.share`,
+`connection.unshare`, `service.grant`, `service.ungrant`).
+
 ### 2. Authentication Model
 
 ```

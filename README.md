@@ -57,6 +57,9 @@ Control other computers from your browser — no special software needed on your
 
 For web-based services, Portal includes a built-in embedded browser with tabbed browsing and keyboard shortcuts (Ctrl+T for new tab, Ctrl+W to close, Alt+arrows for back/forward). Browse web dashboards, admin panels, or any website through Portal's secure proxy. Every user gets a default **Web Browser** connection; its home page is Portal's own private search (SearXNG) when that service is enabled, otherwise DuckDuckGo. From the private-search home, clicking a result opens it in a new tab *inside* the embedded browser (multi-site connections) or in a real browser tab (single-site connections). The embedded browser is session-aware — log out anywhere and any open browser window returns to the login page. Add it from the connection form's **Web Browser (private search)** preset. No VPN required — if you can reach your portal, you can reach everything behind it.
 
+### Sharing Access
+Give another Portal user access to a connection you set up — click **Share** on the connection card, type their username (multiple people allowed), and they'll see it on their own dashboard and can use it through the embedded browser, web shell, xterm or VNC. They can't edit or delete it, and access is revoked the moment you remove them. Admins can likewise grant a non-admin user the ability to **start / stop / restart** or **view logs** for a single managed service (a game server, say) from that service's card in the admin panel — no full admin rights needed.
+
 ### File Management
 Browse, upload, download, and edit files on your server or on remote machines through the web. The file manager works with your server's local filesystem (for admins) and with any SFTP connection you've set up. When you have multiple SFTP connections, a dual-pane commander-style view lets you move files between remote machines side by side.
 
