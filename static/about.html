@@ -1125,6 +1125,9 @@
                 </ul>
                 <p>Managed services auto-start on boot (if enabled), have health checks every 30 seconds, and auto-restart with exponential backoff on crash. A <code>systemd</code>-type service is never stopped by Portal implicitly &mdash; only when you explicitly stop it &mdash; and its card tracks the unit even when it changes outside Portal.</p>
 
+                <h3>Device-Wide Metrics</h3>
+                <p>The Metrics tab keeps a persisted history of the <em>whole host</em>, not just Portal's traffic. Every 60&nbsp;seconds Portal records CPU and memory per service/process, every listening port and the connections on it, and the remote IPs talking to the box (with the ports they hit and the process serving them). Charts span 6&nbsp;hours to 14&nbsp;days and survive restarts; retention is set under Settings &rarr; Data Retention. Values are point-in-time samples, so very short-lived connections may not show up.</p>
+
                 <h3>User Management</h3>
                 <ul>
                     <li>View all registered users and their roles</li>

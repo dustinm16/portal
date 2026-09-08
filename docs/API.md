@@ -2972,6 +2972,66 @@ Get top users and services by traffic volume.
 
 ---
 
+### Device-Wide Metrics (Admin)
+
+Whole-host activity persisted to SQLite, sampled every 60s (independent of the
+Portal-traffic metrics above). Retained per the `retention_device_metrics_days`
+setting (default 14). All three endpoints take `?hours=N` (1–336, default 6)
+and return downsampled, chart-ready series plus the latest raw snapshot.
+
+#### GET /api/metrics/device/processes
+CPU and RSS over time, grouped by systemd unit (from each pid's cgroup) or, for
+unmanaged processes, by process name.
+
+```json
+{
+  "hours": 24, "sample_interval": 60, "ncpu": 4, "truncated": 6,
+  "series": [
+    {"key": "portal.service", "label": "portal", "kind": "service",
+     "points": [{"t": "...", "cpu": 3.1, "mem_rss": 512000000, "mem_percent": 3.0}]}
+  ],
+  "current": [{"key": "...", "label": "...", "kind": "service|process",
+               "cpu_percent": 3.1, "mem_rss": 512000000, "mem_percent": 3.0, "count": 7}]
+}
+```
+
+#### GET /api/metrics/device/ports
+Per listening port, the count of established connections on that local port over
+time, plus the owning process/unit.
+
+```json
+{
+  "series": [{"key": "tcp/443", "proto": "tcp", "port": 443,
+              "process": "python", "unit": "portal.service",
+              "points": [{"t": "...", "established": 12.0}]}],
+  "current": [{"proto": "tcp", "addr": "0.0.0.0", "port": 443, "pid": 1234,
+               "process": "python", "unit": "portal.service", "established": 12}],
+  "truncated": 0
+}
+```
+
+#### GET /api/metrics/device/ips
+Remote IPs with an active connection to the host. `ips` aggregates the whole
+window (peak connections, first/last seen, ports hit, serving processes);
+`timeline` is distinct-IP and total-connection counts over time.
+
+```json
+{
+  "ips": [{"ip": "203.0.113.4", "max_conns": 3, "samples": 40,
+           "first_seen": "...", "last_seen": "...",
+           "ports": [443], "processes": ["python"]}],
+  "timeline": [{"t": "...", "distinct_ips": 18, "conns": 42.0}],
+  "current": [{"ip": "203.0.113.4", "conns": 3, "ports": [443],
+               "processes": ["python"], "states": {"ESTABLISHED": 3}}],
+  "unique_ips_window": 220, "truncated": 0
+}
+```
+
+> Loopback addresses are excluded. Connection counts are point-in-time samples —
+> a connection that opens and closes between ticks is not recorded.
+
+---
+
 ### Server Logs (Admin)
 
 #### GET /api/logs
@@ -3227,6 +3287,7 @@ Get data retention configuration settings.
   "retention_notifications_days": "30",
   "retention_activity_max": "500",
   "retention_service_logs_max": "1000",
+  "retention_device_metrics_days": "14",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
 }
@@ -3247,6 +3308,7 @@ Update data retention settings.
   "retention_notifications_days": "30",
   "retention_activity_max": "500",
   "retention_service_logs_max": "1000",
+  "retention_device_metrics_days": "14",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
 }
@@ -3264,6 +3326,7 @@ Setting any value to `0` disables cleanup for that category (keeps forever).
     "retention_notifications_days": "30",
     "retention_activity_max": "500",
     "retention_service_logs_max": "1000",
+    "retention_device_metrics_days": "14",
     "cleanup_interval_hours": "6",
     "auto_vacuum": "true"
   }

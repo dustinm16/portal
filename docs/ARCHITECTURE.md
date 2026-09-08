@@ -187,7 +187,9 @@ Permission Hierarchy:
 ├── logger.py              # Logging with rotation (~279 lines)
 ├── ssh_keys.py            # SSH key generation/management (~260 lines)
 ├── shodan_integration.py  # Shodan API for recon (~307 lines)
-├── traffic_metrics.py     # Connection metrics, time series, Chart.js data (~399 lines)
+├── traffic_metrics.py     # Portal connection metrics, in-memory time series (~399 lines)
+├── resource_metrics.py    # Host CPU/mem/disk/net time series, in-memory 24h (~135 lines)
+├── device_metrics.py      # Device-wide per-process/port/IP samples, persisted to SQLite (~330 lines)
 ├── vulnerability_scanner.py # CVE/port scanning (~1,524 lines)
 ├── cert_manager.py        # TLS certificate lifecycle (~510 lines)
 ├── setup.py               # Interactive setup wizard + MediaMTX installer (~1,265 lines)
@@ -860,9 +862,23 @@ GET  /api/metrics/services           - Per-service metrics
 GET  /api/metrics/active             - Active connections (WebSocket + chat)
 GET  /api/metrics/timeseries         - Time-series data (?hours=1-24, per-minute bandwidth deltas)
 GET  /api/metrics/top                - Top services and users (?limit=1-50)
+GET  /api/metrics/resources          - Host CPU/mem/disk/net time series (?hours=1-24)
+GET  /api/metrics/device/processes   - Per service/process CPU + RSS over time (?hours=1-336)
+GET  /api/metrics/device/ports       - Established connections per listening port over time
+GET  /api/metrics/device/ips         - Remote IPs with connections to the host over time
 ```
 
 The admin panel visualizes time-series data with Chart.js: a dual-axis line chart (connections + active users) and a stacked bar chart (bandwidth sent/received per minute). Time range selectors allow 1H/6H/12H/24H views. Data is recorded every 60 seconds by a background task and retained for 24 hours.
+
+**Three metrics recorders run as background tasks** (all gated on `METRICS_ENABLED`):
+
+| Module | Tracks | Storage |
+|--------|--------|---------|
+| `traffic_metrics` | Portal-relayed connections (per service, plugin, user, IP) | in-memory, 24h |
+| `resource_metrics` | Host CPU / memory / disk / network totals | in-memory, 24h |
+| `device_metrics` | Whole host: CPU+RSS per systemd unit / process, established connections per listening port, remote IPs and the ports/processes they hit | **SQLite** (`device_metric_samples`), retention-configurable (default 14d) |
+
+`device_metrics` samples every 60s. Each tick writes one JSON-blob row per category (`process` / `port` / `ip`); the entry list is capped at write time (40 process groups / 250 ports / 120 IPs, dropped count recorded) so a port scan can't inflate a row. The sample body (`psutil.net_connections()` + `process_iter()` + per-pid cgroup reads) runs under `asyncio.to_thread` to keep the `/proc` walk off the event loop. Reads downsample to ~240 points and fold to the top-N entities per category. Systemd-unit attribution comes from `/proc/<pid>/cgroup` (cgroup v2); unmatched processes group by name. Everything is *sampled*, not a connection log — sub-60s connections may not appear.
 
 ### Server Logs (Admin)
 
@@ -956,6 +972,7 @@ Configurable retention policies:
 - **retention_notifications_days** (default 30) — Notification retention
 - **retention_activity_max** (default 500) — Max activity log entries
 - **retention_service_logs_max** (default 1000) — Max service log entries per service
+- **retention_device_metrics_days** (default 14) — Device-wide metric samples (`device_metric_samples`)
 - **cleanup_interval_hours** (default 6) — Auto-cleanup interval
 - **auto_vacuum** (default true) — VACUUM database after cleanup
 

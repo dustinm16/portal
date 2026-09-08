@@ -65,6 +65,9 @@ See what's running on your server at a glance — active processes, systemd serv
 
 You can also promote any installed systemd unit — a game server, a database, a file share — to a **managed service** of type `systemd`. Portal then shows it alongside MediaMTX and SearXNG with the same start/stop/restart controls, health, and (journal) logs, and reflects the unit's state even when it's changed outside Portal. Portal only ever stops such a unit when you explicitly click Stop — never on its own restart or when you remove the entry.
 
+### Device-Wide Metrics
+The Metrics tab keeps a persisted, whole-host history — not just Portal's own traffic. Every 60 seconds Portal samples CPU and memory per service/process, every listening port and the connections sitting on it, and which remote IPs are talking to the box (with the ports they're hitting and the process serving them). Charts cover anywhere from 6 hours to 14 days; history survives restarts. Retention is configurable under Settings → Data Retention (default 14 days). Counts are point-in-time samples, so a connection that opens and closes between ticks won't appear.
+
 ### Data Retention
 Set policies for how long chat messages, DMs, notifications, activity logs, and expired tokens are kept. Automatic cleanup runs on a schedule (default every 6 hours) with optional database compaction. Run cleanup on demand anytime from the admin panel.
 
