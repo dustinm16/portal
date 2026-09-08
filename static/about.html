@@ -1121,9 +1121,9 @@
                 <p>The <strong>Services</strong> tab on the Dashboard shows two types of services:</p>
                 <ul>
                     <li><strong>Proxy Services</strong> &mdash; Route traffic to external backends (e.g., web apps, APIs). Configure host, port, and path.</li>
-                    <li><strong>Managed Services</strong> &mdash; Processes that Portal runs directly (e.g., MediaMTX streaming server). Start, stop, restart, and view logs.</li>
+                    <li><strong>Managed Services</strong> &mdash; Processes Portal runs directly (e.g., MediaMTX streaming server, SearXNG), or&mdash;with the <code>systemd</code> type&mdash;an existing systemd unit on the host that Portal controls via <code>systemctl</code>. Start, stop, restart, edit, and view logs.</li>
                 </ul>
-                <p>Managed services auto-start on boot (if enabled), have health checks every 30 seconds, and auto-restart with exponential backoff on crash.</p>
+                <p>Managed services auto-start on boot (if enabled), have health checks every 30 seconds, and auto-restart with exponential backoff on crash. A <code>systemd</code>-type service is never stopped by Portal implicitly &mdash; only when you explicitly stop it &mdash; and its card tracks the unit even when it changes outside Portal.</p>
 
                 <h3>User Management</h3>
                 <ul>

@@ -63,6 +63,8 @@ Browse, upload, download, and edit files on your server or on remote machines th
 ### System Monitoring
 See what's running on your server at a glance — active processes, systemd services, network interfaces, and open ports. Start, stop, or restart services. Kill runaway processes. All integrated directly into the admin panel as a tab, so you don't need to open a terminal for routine server management.
 
+You can also promote any installed systemd unit — a game server, a database, a file share — to a **managed service** of type `systemd`. Portal then shows it alongside MediaMTX and SearXNG with the same start/stop/restart controls, health, and (journal) logs, and reflects the unit's state even when it's changed outside Portal. Portal only ever stops such a unit when you explicitly click Stop — never on its own restart or when you remove the entry.
+
 ### Data Retention
 Set policies for how long chat messages, DMs, notifications, activity logs, and expired tokens are kept. Automatic cleanup runs on a schedule (default every 6 hours) with optional database compaction. Run cleanup on demand anytime from the admin panel.
 

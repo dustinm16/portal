@@ -119,6 +119,24 @@ Services are stored in a single `services` table with a `service_type` field:
 - `POST /api/services/{id}/restart` - Restart a managed service
 - `GET /api/services/{id}/logs` - Get logs for a managed service
 
+**Managed service types** are registered via `@register_service("<type>")` on a
+`ManagedService` subclass in `services/`:
+
+| Type | Process model |
+|------|---------------|
+| `mediamtx` | Portal spawns the binary and owns the process |
+| `searxng` | Portal spawns uWSGI and owns the process |
+| `systemd` | Portal does **not** own the process — `start`/`stop`/`restart` shell out to `systemctl` for a unit already installed on the host; status/health from `systemctl show` + `is-active`; logs from `journalctl` |
+
+`create_service` writes the `enabled` flag explicitly (the column defaults to
+`1`, so a service must be created disabled deliberately). For `systemd`
+services a `sync_status()` hook — called by the 30s health monitor, on load,
+on create, and on every status read — reconciles the card with the unit's real
+state, so a unit started/stopped outside Portal is reflected. **Invariant:
+Portal never stops an externally-owned (`systemd`) unit implicitly** — not on
+Portal shutdown, not when the wrapper service is deleted; only an explicit
+`stop` call does.
+
 ### 2. Authentication Model
 
 ```
@@ -196,7 +214,8 @@ Permission Hierarchy:
 │   ├── __init__.py        # ServiceManager, registration system
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   ├── mediamtx.py        # MediaMTX process manager
-│   └── searxng.py         # SearXNG process manager (uWSGI)
+│   ├── searxng.py         # SearXNG process manager (uWSGI)
+│   └── systemd.py         # Wraps an existing systemd unit (systemctl control)
 │
 ├── static/                # 20 HTML pages, 9 JS modules, 1 CSS file (~41,655 lines frontend)
 │   ├── index.html         # Dashboard

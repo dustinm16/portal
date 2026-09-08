@@ -2717,6 +2717,8 @@ Update a service (admin only).
 ```json
 {
   "display_name": "Updated Name",
+  "description": "New description",
+  "port": 8555,
   "config": {
     "rtsp_port": 8555,
     "log_level": "debug"
@@ -2724,6 +2726,13 @@ Update a service (admin only).
   "enabled": true
 }
 ```
+
+All fields are optional. For managed services, `display_name`, `description`
+and `port` are metadata-only; changing `config` restarts the process to
+apply it (except for `systemd`-type services, whose `config` only selects
+which unit to track). `enabled` controls whether the service auto-starts on
+Portal boot — it is honored at creation time too (services are **not**
+force-enabled by default).
 
 ---
 
@@ -2764,10 +2773,35 @@ Get available managed service types (for creating managed services).
           "api_port": {"type": "integer", "default": 9997}
         }
       }
+    },
+    "systemd": {
+      "name": "systemd",
+      "display_name": "Systemd Unit",
+      "description": "Control a systemd service already installed on the host",
+      "version": "1.0.0",
+      "icon": "server",
+      "default_port": null,
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "unit": {"type": "string", "description": "unit name without .service"}
+        },
+        "required": ["unit"]
+      }
     }
   }
 }
 ```
+
+**`systemd` service type.** Wraps a unit that is already installed on the
+host (a game server, a file share, a database). Portal does not run the
+process — `start`/`stop`/`restart` shell out to `systemctl`, status and
+health come from `systemctl show` / `is-active`, and logs come from
+`journalctl`. `config.unit` must resolve to a real unit or the create/update
+call returns `400`. Portal never stops the unit implicitly: not on Portal
+shutdown, not when the wrapper is deleted — only an explicit `stop` call
+does. A unit started or stopped outside Portal is reconciled onto the card
+within one health-monitor cycle (and immediately on any status read).
 
 ---
 
