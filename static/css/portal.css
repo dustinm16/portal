@@ -3841,6 +3841,112 @@ html[data-theme="light"] .chat-message { background: rgba(0,0,0,0.04); }
     z-index: 10001;
 }
 
+/* =============================================================================
+   DASHBOARD SEARCH BAR — Portal (indexed) vs. Internet (SearXNG)
+   ============================================================================= */
+.dash-search {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.dash-search-modes {
+    display: inline-flex;
+    align-self: flex-start;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 9999px;
+    padding: 2px;
+    gap: 2px;
+}
+
+.dash-search-mode {
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 0.3rem 0.9rem;
+    border-radius: 9999px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.dash-search-mode:hover {
+    color: var(--text-primary);
+}
+
+.dash-search-mode.active {
+    background: var(--accent-blue);
+    color: #fff;
+}
+
+.dash-search-mode[hidden] {
+    display: none;
+}
+
+.dash-search-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--surface-color);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 0.7rem 0.9rem;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.dash-search-input-wrap:focus-within {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(var(--accent-blue-rgb), 0.2);
+}
+
+.dash-search-input-wrap svg {
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.dash-search-input-wrap input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+
+.dash-search-input-wrap input::placeholder {
+    color: var(--text-muted);
+}
+
+.dash-search-go {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent-blue);
+    color: #fff;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+
+.dash-search-go:hover {
+    background: var(--accent-blue-dark);
+}
+
+.dash-search-go svg {
+    width: 16px;
+    height: 16px;
+    color: #fff;
+}
+
 .navbar-theme-btn {
     width: 32px;
     height: 32px;

@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadDashboardStats();
     await loadActivityFeed();
     await loadSearchNavLink();
+    initDashSearch();
 });
 
 /**
@@ -28,6 +29,58 @@ async function loadSearchNavLink() {
     } catch (e) {
         link.style.display = 'none';
     }
+}
+
+/**
+ * Dashboard search bar. "Portal" mode searches the portal's indexed messages
+ * (opens the chat search); "Internet" mode runs a private web search via the
+ * SearXNG managed service, and only appears when that service is available.
+ */
+async function initDashSearch() {
+    const form = document.getElementById('dash-search');
+    if (!form) return;
+    const input = document.getElementById('dash-search-input');
+    const modeBtns = form.querySelectorAll('.dash-search-mode');
+    const internetBtn = form.querySelector('[data-mode="internet"]');
+
+    const PLACEHOLDERS = {
+        portal: 'Search messages, files and channels…',
+        internet: 'Search the web privately…',
+    };
+
+    let mode = localStorage.getItem('dash-search-mode') || 'portal';
+
+    // The Internet option only exists when SearXNG is enabled + running.
+    let internetAvailable = false;
+    try {
+        internetAvailable = (await Portal.api('/api/search/status')).available;
+    } catch (e) { /* leave false */ }
+    if (internetAvailable) {
+        internetBtn.hidden = false;
+    } else if (mode === 'internet') {
+        mode = 'portal';
+    }
+
+    function setMode(next) {
+        mode = next;
+        localStorage.setItem('dash-search-mode', next);
+        modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === next));
+        input.placeholder = PLACEHOLDERS[next] || PLACEHOLDERS.portal;
+    }
+    setMode(mode);
+
+    modeBtns.forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const q = input.value.trim();
+        if (!q) return;
+        if (mode === 'internet' && internetAvailable) {
+            window.location.href = '/search/search?q=' + encodeURIComponent(q);
+        } else {
+            window.location.href = '/chat?q=' + encodeURIComponent(q);
+        }
+    });
 }
 
 /**
