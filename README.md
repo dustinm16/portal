@@ -50,7 +50,7 @@ Find anything across your channels and DMs with full-text search. Filter by who 
 Talk to people in real time with encrypted audio. Choose between push-to-talk or automatic voice detection. Audio travels directly between participants using WebRTC — it never passes through or gets stored on the server. True peer-to-peer, end-to-end encrypted voice.
 
 ### Private Search
-Search the web without the trackers. Portal can run [SearXNG](https://github.com/searxng/searxng) — a privacy-respecting metasearch engine that aggregates results from 70+ engines while stripping the profiling — as an optional managed service, available at `/search/` to logged-in users only. No search history, no cookies handed to upstream engines, no ads. It's a normal managed service: enable it from the Services panel to turn it on, disable it and the portal carries on exactly as before. A JSON API (`/search/search?q=...&format=json`) is available for automation.
+Search the web without the trackers. Portal can run [SearXNG](https://github.com/searxng/searxng) — a privacy-respecting metasearch engine that aggregates results from 70+ engines while stripping the profiling — as an optional managed service, reachable at `/search/` by logged-in users (with a **Search** link on the dashboard). No search history, no cookies handed to upstream engines, no ads. It's a normal managed service: enable it from the Services panel to turn it on, disable it and the portal carries on exactly as before. A JSON API (`/search/search?q=...&format=json`) is available for automation.
 
 ### Remote Access
 Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, RDP sessions, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
@@ -297,7 +297,8 @@ SearXNG is installed with `install-searxng.sh` (creates a dedicated `searxng`
 system user, clones the upstream source, builds a virtualenv). Portal generates its
 `settings.yml` and runs it under uWSGI on `127.0.0.1:8890`; the `/search/` route
 reverse-proxies to it behind Portal authentication. Enable or disable it like any
-other managed service — Portal is fully functional without it.
+other managed service — Portal is fully functional without it, and the `/search/`
+route and the dashboard's Search link go dark until it is enabled and running.
 
 All third-party components retain their own licenses and copyrights. Portal itself
 is AGPL-3.0.
