@@ -10084,7 +10084,7 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
 
     body = None
     if request.body_exists:
-        body = await request.content.read(_PROXY_MAX_REQUEST_SIZE + 1)
+        body = await request.read()
         if len(body) > _PROXY_MAX_REQUEST_SIZE:
             return web.Response(status=413, text="Request body too large")
 
@@ -10107,12 +10107,21 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                 # Never let a shared edge cache store authenticated content.
                 resp_headers["Cache-Control"] = "private, no-store"
 
-                # Buffer the body (SearXNG responses are small) so
-                # security_headers_middleware can still attach CSP/HSTS/etc.
-                out = await resp.content.read(_PROXY_MAX_RESPONSE_SIZE + 1)
-                if len(out) > _PROXY_MAX_RESPONSE_SIZE:
-                    return web.Response(status=502, text="Upstream response too large")
-                return web.Response(status=resp.status, headers=resp_headers, body=out)
+                # Buffer the full body (StreamReader.read(n) can return early on a
+                # chunked response, so loop to EOF) so security_headers_middleware
+                # can still attach CSP/HSTS/etc.
+                chunks = []
+                total = 0
+                while True:
+                    chunk = await resp.content.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _PROXY_MAX_RESPONSE_SIZE:
+                        return web.Response(status=502, text="Upstream response too large")
+                    chunks.append(chunk)
+                return web.Response(status=resp.status, headers=resp_headers,
+                                    body=b"".join(chunks))
     except aiohttp.ClientError as e:
         logger.error(f"SearXNG proxy error: {e}")
         return web.Response(
