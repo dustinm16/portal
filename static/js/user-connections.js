@@ -653,23 +653,39 @@ function renderConnections() {
         const typeInfo = connectionTypes[conn.type] || { name: conn.type, icon: 'link' };
         const icon = getConnectionIcon(conn.icon || typeInfo.icon);
 
-        return `
-            <div class="connection-card" data-connection-id="${conn.id}">
+        const safeName = escapeHtml(conn.name).replace(/'/g, "\\'");
+        const actions = conn.shared ? `
                 <div class="connection-card-actions">
+                    <button class="btn-icon" onclick="event.stopPropagation(); leaveSharedConnection('${conn.id}')" title="Remove my access">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                        </svg>
+                    </button>
+                </div>` : `
+                <div class="connection-card-actions">
+                    <button class="btn-icon" onclick="event.stopPropagation(); showShareConnectionModal('${conn.id}')" title="Share">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                        </svg>
+                    </button>
                     <button class="btn-icon" onclick="event.stopPropagation(); editConnection('${conn.id}')" title="Edit">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                     </button>
-                    <button class="btn-icon btn-icon-danger" onclick="event.stopPropagation(); confirmDeleteConnection('${conn.id}', '${escapeHtml(conn.name).replace(/'/g, "\\'")}')" title="Delete">
+                    <button class="btn-icon btn-icon-danger" onclick="event.stopPropagation(); confirmDeleteConnection('${conn.id}', '${safeName}')" title="Delete">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                         </svg>
                     </button>
-                </div>
+                </div>`;
+
+        return `
+            <div class="connection-card" data-connection-id="${conn.id}">
+                ${actions}
                 <div class="connection-icon">${icon}</div>
                 <div class="connection-name">${escapeHtml(conn.name)}</div>
-                <div class="connection-type">${typeInfo.name}</div>
+                <div class="connection-type">${typeInfo.name}${conn.shared ? ` &middot; shared by ${escapeHtml(conn.owner_username || '?')}` : ''}</div>
                 <div class="connection-host">${escapeHtml(conn.host)}${conn.port ? ':' + conn.port : ''}</div>
                 <button class="btn btn-primary btn-sm connection-connect-btn" onclick="event.stopPropagation(); connectTo('${conn.id}')">
                     Connect
@@ -1355,6 +1371,135 @@ async function deleteConnection(connectionId) {
         console.error('[Connections] Error deleting:', error);
         Portal.toast(error.message || 'Failed to delete connection', 'error');
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reusable username picker (chips + typeahead against /api/users/lookup).
+// Also used by the admin panel's service-grant modal (its own inline copy).
+// ---------------------------------------------------------------------------
+function initUserPicker(boxId, inputId, resultsId) {
+    const box = document.getElementById(boxId);
+    const input = document.getElementById(inputId);
+    const results = document.getElementById(resultsId);
+    const chosen = new Map(); // username -> id
+    let timer = null;
+
+    function renderChips() {
+        box.querySelectorAll('.userpick-chip').forEach(c => c.remove());
+        [...chosen.keys()].forEach(name => {
+            const chip = document.createElement('span');
+            chip.className = 'userpick-chip';
+            chip.innerHTML = `${escapeHtml(name)} <button type="button" aria-label="remove">&times;</button>`;
+            chip.querySelector('button').onclick = () => { chosen.delete(name); renderChips(); };
+            box.insertBefore(chip, input);
+        });
+    }
+    async function search() {
+        const q = input.value.trim();
+        if (q.length < 1) { results.style.display = 'none'; return; }
+        try {
+            const data = await Portal.fetchJSON(`/api/users/lookup?q=${encodeURIComponent(q)}`);
+            const users = (data.users || []).filter(u => !chosen.has(u.username));
+            if (!users.length) { results.style.display = 'none'; return; }
+            results.innerHTML = users.map(u =>
+                `<button type="button" data-name="${escapeHtml(u.username)}" data-id="${u.id}">${escapeHtml(u.username)}</button>`
+            ).join('');
+            results.querySelectorAll('button').forEach(b => {
+                b.onclick = () => {
+                    chosen.set(b.dataset.name, parseInt(b.dataset.id, 10));
+                    input.value = '';
+                    results.style.display = 'none';
+                    renderChips();
+                    input.focus();
+                };
+            });
+            results.style.display = 'block';
+        } catch (e) { results.style.display = 'none'; }
+    }
+    input.oninput = () => { clearTimeout(timer); timer = setTimeout(search, 180); };
+    input.onkeydown = (e) => {
+        if (e.key === 'Backspace' && !input.value && chosen.size) {
+            const last = [...chosen.keys()].pop();
+            chosen.delete(last); renderChips();
+        }
+    };
+    document.addEventListener('click', (e) => {
+        if (!box.contains(e.target)) results.style.display = 'none';
+    });
+    return {
+        usernames: () => [...chosen.keys()],
+        reset: () => { chosen.clear(); input.value = ''; results.style.display = 'none'; renderChips(); },
+    };
+}
+
+let _sharePicker = null;
+
+async function showShareConnectionModal(uuid, name) {
+    const conn = (typeof userConnections !== 'undefined' ? userConnections : []).find(c => c.id === uuid);
+    document.getElementById('share-conn-uuid').value = uuid;
+    document.getElementById('share-conn-name').textContent = name || (conn ? conn.name : '');
+    if (!_sharePicker) _sharePicker = initUserPicker('share-chip-box', 'share-user-input', 'share-user-results');
+    _sharePicker.reset();
+    if (typeof showModal === 'function') showModal('share-connection-modal');
+    else document.getElementById('share-connection-modal').style.display = 'flex';
+    await loadConnectionShares(uuid);
+}
+
+async function loadConnectionShares(uuid) {
+    const list = document.getElementById('share-current-list');
+    try {
+        const data = await Portal.fetchJSON(`/api/connections/${uuid}/shares`);
+        const shares = data.shares || [];
+        list.innerHTML = shares.length ? shares.map(s => `
+            <div class="userpick-current-row">
+                <span>${escapeHtml(s.username)}</span>
+                <button class="btn btn-sm btn-danger" onclick="revokeConnectionShare('${uuid}', ${s.user_id})">Revoke</button>
+            </div>`).join('') : '<small style="color:var(--text-muted);">Not shared with anyone yet.</small>';
+    } catch (e) {
+        list.innerHTML = '<small style="color:var(--accent-red);">Failed to load.</small>';
+    }
+}
+
+async function submitConnectionShare() {
+    const uuid = document.getElementById('share-conn-uuid').value;
+    const usernames = _sharePicker ? _sharePicker.usernames() : [];
+    if (!usernames.length) { Portal.toast('Type a username first', 'error'); return; }
+    try {
+        const res = await Portal.fetch(`/api/connections/${uuid}/shares`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ usernames }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        if (data.added.length) Portal.toast(`Shared with ${data.added.join(', ')}`);
+        if (data.skipped.length) Portal.toast(`Skipped: ${data.skipped.join(', ')}`, 'error');
+        _sharePicker.reset();
+        await loadConnectionShares(uuid);
+        _refreshConnectionViews();
+    } catch (e) { Portal.toast(e.message || 'Failed to share', 'error'); }
+}
+
+function _refreshConnectionViews() {
+    if (typeof loadConnections === 'function' && document.getElementById('connections-grid')) loadConnections();
+    if (typeof loadInlineConnections === 'function') loadInlineConnections();
+}
+
+async function revokeConnectionShare(uuid, granteeId) {
+    try {
+        await Portal.fetch(`/api/connections/${uuid}/shares/${granteeId}`, { method: 'DELETE' });
+        Portal.toast('Access revoked');
+        await loadConnectionShares(uuid);
+        _refreshConnectionViews();
+    } catch (e) { Portal.toast('Failed to revoke', 'error'); }
+}
+
+async function leaveSharedConnection(uuid) {
+    if (!confirm('Remove your access to this shared connection?')) return;
+    try {
+        await Portal.fetch(`/api/connections/${uuid}/shares/me`, { method: 'DELETE' });
+        Portal.toast('Removed');
+        _refreshConnectionViews();
+    } catch (e) { Portal.toast('Failed', 'error'); }
 }
 
 /**

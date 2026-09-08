@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=49">
+    <link rel="stylesheet" href="/static/css/portal.css?v=50">
     <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
@@ -1610,6 +1610,49 @@
         </div>
     </div>
 
+    <!-- Share Connection Modal -->
+    <div id="share-connection-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('share-connection-modal')"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Share <span id="share-conn-name"></span></h3>
+                <button class="modal-close" onclick="closeModal('share-connection-modal')">&times;</button>
+            </div>
+            <input type="hidden" id="share-conn-uuid">
+            <div class="form-group">
+                <label for="share-user-input">Add people</label>
+                <div id="share-chip-box" class="userpick-box">
+                    <input type="text" id="share-user-input" class="userpick-input" autocomplete="off" placeholder="Type a username…">
+                    <div id="share-user-results" class="userpick-results" style="display:none;"></div>
+                </div>
+                <small style="color: var(--text-muted);">They'll use this connection from their own dashboard — browser, shell, xterm. They can't edit or delete it.</small>
+            </div>
+            <div class="form-actions" style="margin-bottom: 1rem;">
+                <button type="button" class="btn btn-primary" id="share-grant-btn" onclick="submitConnectionShare()">Grant access</button>
+            </div>
+            <div class="form-group">
+                <label>People with access</label>
+                <div id="share-current-list"><small style="color:var(--text-muted);">Loading…</small></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Managed Service Logs (dashboard — granted users) -->
+    <div id="svc-logs-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('svc-logs-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="svc-logs-title">Service Logs</h3>
+                <button class="modal-close" onclick="closeModal('svc-logs-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="svc-logs-content" style="max-height: 60vh; overflow: auto; background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
+                    <div class="loading"><div class="spinner"></div> Loading…</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Create Stream Modal -->
     <div id="create-stream-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('create-stream-modal')"></div>
@@ -1732,10 +1775,10 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=38"></script>
+    <script src="/static/js/dashboard.js?v=40"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
-    <script src="/static/js/user-connections.js?v=38"></script>
+    <script src="/static/js/user-connections.js?v=40"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

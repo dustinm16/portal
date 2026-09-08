@@ -251,40 +251,50 @@ function createServiceCard(service) {
     const isAdmin = Portal.isAdmin(currentUser);
     const isManaged = service.service_type === 'managed';
     const hasProcessControl = isManaged || !!service.systemd_unit;
+    const grant = (currentUser && currentUser.granted_services && currentUser.granted_services[service.id]) || [];
+    const canControl = isAdmin || grant.includes('control');
+    const canLogs = isAdmin || grant.includes('logs');
+
+    // start/stop/restart buttons — admins and users with a 'control' grant
+    let processControls = '';
+    if (hasProcessControl && canControl) {
+        if (service.status === 'running') {
+            processControls = `
+                <button class="service-stop-btn" onclick="event.stopPropagation(); stopService(${service.id})" title="Stop service">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                    </svg>
+                </button>
+                <button class="service-restart-btn" onclick="event.stopPropagation(); restartService(${service.id})" title="Restart service">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                </button>
+            `;
+        } else {
+            processControls = `
+                <button class="service-start-btn" onclick="event.stopPropagation(); startService(${service.id})" title="Start service">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </button>
+            `;
+        }
+    }
+    const logsBtn = (isManaged && canLogs) ? `
+        <button class="service-edit-btn" onclick="event.stopPropagation(); showServiceLogs(${service.id}, '${escapeHtml(service.display_name || service.name).replace(/'/g, "\\'")}')" title="View logs">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+        </button>` : '';
 
     let adminBtns = '';
     if (isAdmin) {
-        // Add start/stop/restart buttons for managed services and services bound to a systemd unit
-        let processControls = '';
-        if (hasProcessControl) {
-            if (service.status === 'running') {
-                processControls = `
-                    <button class="service-stop-btn" onclick="event.stopPropagation(); stopService(${service.id})" title="Stop service">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                        </svg>
-                    </button>
-                    <button class="service-restart-btn" onclick="event.stopPropagation(); restartService(${service.id})" title="Restart service">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                    </button>
-                `;
-            } else {
-                processControls = `
-                    <button class="service-start-btn" onclick="event.stopPropagation(); startService(${service.id})" title="Start service">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                    </button>
-                `;
-            }
-        }
         adminBtns = `
             <div class="service-admin-btns">
-                ${processControls}
+                ${processControls}${logsBtn}
                 <button class="service-edit-btn" onclick="event.stopPropagation(); showEditServiceModal(${service.id})" title="Edit service">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -297,6 +307,8 @@ function createServiceCard(service) {
                 </button>
             </div>
         `;
+    } else if (processControls || logsBtn) {
+        adminBtns = `<div class="service-admin-btns">${processControls}${logsBtn}</div>`;
     }
 
     // Determine status display
@@ -397,6 +409,29 @@ async function restartService(serviceId) {
     } catch (error) {
         console.error('Failed to restart service:', error);
         Portal.toast('Failed to restart service', 'error');
+    }
+}
+
+/**
+ * View managed-service logs (admins + users with a 'logs' grant)
+ */
+async function showServiceLogs(serviceId, name) {
+    document.getElementById('svc-logs-title').textContent = `Logs: ${name}`;
+    const box = document.getElementById('svc-logs-content');
+    box.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+    if (typeof showModal === 'function') showModal('svc-logs-modal');
+    else document.getElementById('svc-logs-modal').style.display = 'flex';
+    try {
+        const data = await Portal.fetchJSON(`/api/managed-services/${serviceId}/logs?limit=200`);
+        const logs = data.logs || [];
+        if (!logs.length) { box.innerHTML = '<span style="color:var(--text-muted);">No logs.</span>'; return; }
+        const colors = { error: 'var(--accent-red)', warn: 'var(--accent-yellow)', info: 'var(--accent-blue)' };
+        box.innerHTML = logs.map(l => {
+            const t = l.created_at ? new Date(l.created_at + 'Z').toLocaleTimeString() : '';
+            return `<div><span style="color:var(--text-muted);">${t}</span> <span style="color:${colors[l.level] || 'var(--text-secondary)'};">[${(l.level || '').toUpperCase()}]</span> ${escapeHtml(l.message)}</div>`;
+        }).join('');
+    } catch (e) {
+        box.innerHTML = `<span style="color:var(--accent-red);">Failed to load logs: ${escapeHtml(e.message || '')}</span>`;
     }
 }
 
@@ -604,6 +639,30 @@ async function loadInlineConnections() {
                 ? `<span class="conn-ssh-key" title="SSH Key: ${escapeHtml(conn.ssh_key_name)}"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="12" height="12"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg></span>`
                 : '';
             const pinnedClass = isPinned ? ' connection-card-pinned' : '';
+            const safeName = escapeHtml(conn.name).replace(/'/g, "\\'");
+            const shareIcon = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>';
+            const actions = conn.shared ? `
+                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo('${conn.id}')">Connect</button>
+                    <button class="btn btn-secondary btn-sm" onclick="leaveSharedConnection('${conn.id}')" title="Remove my access">Leave</button>
+                ` : `
+                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo('${conn.id}')">Connect</button>
+                    <button class="btn btn-sm ${isPinned ? 'btn-primary' : 'btn-secondary'}" onclick="togglePin('${conn.id}')" title="${isPinned ? 'Unpin' : 'Pin'}">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="${isPinned ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
+                    </button>
+                    <button class="btn btn-secondary btn-sm" onclick="showShareConnectionModal('${conn.id}', '${safeName}')" title="Share">${shareIcon}</button>
+                    <button class="btn btn-secondary btn-sm" onclick="editConnection('${conn.id}')" title="Edit">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                    </button>
+                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteConnection('${conn.id}', '${safeName}')" title="Delete">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                    </button>
+                `;
             return `<div class="connection-card${pinnedClass}">
                 <div class="connection-card-header">
                     <div class="connection-icon">
@@ -615,27 +674,11 @@ async function loadInlineConnections() {
                     </div>
                 </div>
                 <div class="connection-details">
-                    ${usageText ? `<span class="connection-time" title="${useCount} uses">Used ${usageText}</span>` : '<span class="connection-time">Never used</span>'}
+                    ${conn.shared ? `<span class="connection-time">Shared by ${escapeHtml(conn.owner_username || '?')}</span>`
+                        : (usageText ? `<span class="connection-time" title="${useCount} uses">Used ${usageText}</span>` : '<span class="connection-time">Never used</span>')}
                 </div>
                 <div class="connection-actions">
-                    <button class="btn btn-primary btn-sm connection-connect-btn" onclick="connectTo('${conn.id}')">
-                        Connect
-                    </button>
-                    <button class="btn btn-sm ${isPinned ? 'btn-primary' : 'btn-secondary'}" onclick="togglePin('${conn.id}')" title="${isPinned ? 'Unpin' : 'Pin'}">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="${isPinned ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                        </svg>
-                    </button>
-                    <button class="btn btn-secondary btn-sm" onclick="editConnection('${conn.id}')" title="Edit">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                    </button>
-                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteConnection('${conn.id}', '${escapeHtml(conn.name).replace(/'/g, "\\'")}')" title="Delete">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                    </button>
+                    ${actions}
                 </div>
             </div>`;
         }).join('');

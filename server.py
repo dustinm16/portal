@@ -1272,19 +1272,19 @@ async def _control_systemd_bound_service(
 
 
 async def http_start_service(request: web.Request) -> web.Response:
-    """Start a managed service, or a proxy service bound to a systemd unit (admin only)."""
+    """Start a managed/systemd-bound service (admin or a user with a 'control' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     service_id = int(service_id)
+
+    if not await _can_control_service(token, service_id, "control"):
+        return forbidden_response(request)
 
     service = await db.get_service_by_id(service_id)
     if not service:
@@ -1322,19 +1322,19 @@ async def http_start_service(request: web.Request) -> web.Response:
 
 
 async def http_stop_service(request: web.Request) -> web.Response:
-    """Stop a managed service, or a proxy service bound to a systemd unit (admin only)."""
+    """Stop a managed/systemd-bound service (admin or a user with a 'control' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     service_id = int(service_id)
+
+    if not await _can_control_service(token, service_id, "control"):
+        return forbidden_response(request)
 
     service = await db.get_service_by_id(service_id)
     if not service:
@@ -1372,19 +1372,19 @@ async def http_stop_service(request: web.Request) -> web.Response:
 
 
 async def http_restart_service(request: web.Request) -> web.Response:
-    """Restart a managed service, or a proxy service bound to a systemd unit (admin only)."""
+    """Restart a managed/systemd-bound service (admin or a user with a 'control' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
 
     service_id = int(service_id)
+
+    if not await _can_control_service(token, service_id, "control"):
+        return forbidden_response(request)
 
     service = await db.get_service_by_id(service_id)
     if not service:
@@ -2487,7 +2487,7 @@ async def http_get_user_connection(request: web.Request) -> web.Response:
     if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
 
@@ -2633,7 +2633,7 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
     if not conn_uuid:
         return web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return web.json_response({"error": "Connection not found"}, status=404)
 
@@ -2653,6 +2653,99 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
         "ssh_public_key": ssh_public_key,
         "websocket_url": f"/ws/user-connection/{conn_uuid}"
     })
+
+
+async def http_users_lookup(request: web.Request) -> web.Response:
+    """Username prefix search for the share/grant picker (any authed user).
+
+    Returns only {id, username} — no role, email or status."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    q = request.query.get("q", "")
+    results = await db.find_usernames(q, limit=10)
+    return web.json_response({"users": results})
+
+
+async def http_list_connection_shares(request: web.Request) -> web.Response:
+    """List who a connection is shared with (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    conn_uuid = request.match_info.get("id", "")
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    shares = await db.list_connection_shares(connection["id"])
+    return web.json_response({"shares": shares})
+
+
+async def http_add_connection_shares(request: web.Request) -> web.Response:
+    """Share a connection with one or more users by username (owner only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    conn_uuid = request.match_info.get("id", "")
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    usernames = data.get("usernames") or ([data["username"]] if data.get("username") else [])
+    added, skipped = [], []
+    for name in usernames[:50]:
+        u = await db.get_user_by_username(str(name).strip())
+        if not u or u["id"] == token.user_id:
+            skipped.append(name)
+            continue
+        if await db.add_connection_share(connection["id"], u["id"], token.user_id):
+            added.append(u["username"])
+        else:
+            skipped.append(name)
+    if added:
+        actor = await db.get_user_by_id(token.user_id)
+        await audit_log(
+            "connection.share", token.user_id, (actor or {}).get("username", "unknown"),
+            target_id=connection["id"], target_type="connection",
+            target_name=connection.get("name"), details={"grantees": added},
+        )
+    return web.json_response({"added": added, "skipped": skipped,
+                              "shares": await db.list_connection_shares(connection["id"])})
+
+
+async def http_remove_connection_share(request: web.Request) -> web.Response:
+    """Revoke a share. Owner may revoke anyone; a grantee may pass 'me'."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    conn_uuid = request.match_info.get("id", "")
+    grantee_raw = request.match_info.get("grantee", "")
+
+    if grantee_raw == "me":
+        connection = await db.get_accessible_connection(conn_uuid, token.user_id)
+        if not connection or not connection.get("shared"):
+            return web.json_response({"error": "Not a shared connection"}, status=404)
+        await db.remove_connection_share(connection["id"], token.user_id)
+        return web.json_response({"success": True})
+
+    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    if not connection:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    if not grantee_raw.isdigit():
+        return web.json_response({"error": "Invalid grantee"}, status=400)
+    ok = await db.remove_connection_share(connection["id"], int(grantee_raw))
+    if ok:
+        actor = await db.get_user_by_id(token.user_id)
+        await audit_log(
+            "connection.unshare", token.user_id, (actor or {}).get("username", "unknown"),
+            target_id=connection["id"], target_type="connection",
+            target_name=connection.get("name"), details={"grantee_id": int(grantee_raw)},
+        )
+    return web.json_response({"success": ok,
+                              "shares": await db.list_connection_shares(connection["id"])})
 
 
 # =============================================================================
@@ -7735,7 +7828,7 @@ async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     if not conn_uuid:
         return None, None, web.json_response({"error": "Invalid connection ID"}, status=400)
 
-    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return None, None, web.json_response({"error": "Connection not found"}, status=404)
 
@@ -8138,6 +8231,16 @@ async def http_service_health(request: web.Request) -> web.Response:
 _service_manager: Optional[ServiceManager] = None
 
 
+async def _can_control_service(token: TokenPayload, service_id: int, need: str = "control") -> bool:
+    """True if the token is admin, or holds a service_grant covering `need`.
+
+    `need` is 'control' (start/stop/restart) or 'logs' (logs + status)."""
+    if token.has_scope("admin") or token.has_scope("*"):
+        return True
+    grant = await db.user_service_grant(token.user_id, service_id)
+    return bool(grant and need in grant)
+
+
 async def http_list_managed_services(request: web.Request) -> web.Response:
     """List all managed services (admin only)."""
     token = await authenticate_request(request)
@@ -8395,13 +8498,10 @@ async def http_delete_managed_service(request: web.Request) -> web.Response:
 
 
 async def http_start_managed_service(request: web.Request) -> web.Response:
-    """Start a managed service (admin only)."""
+    """Start a managed service (admin or a user with a 'control' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8409,6 +8509,9 @@ async def http_start_managed_service(request: web.Request) -> web.Response:
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    if not await _can_control_service(token, int(service_id), "control"):
+        return forbidden_response(request)
 
     success, error = await _service_manager.start_service(int(service_id))
     if success:
@@ -8420,13 +8523,10 @@ async def http_start_managed_service(request: web.Request) -> web.Response:
 
 
 async def http_stop_managed_service(request: web.Request) -> web.Response:
-    """Stop a managed service (admin only)."""
+    """Stop a managed service (admin or a user with a 'control' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8434,6 +8534,9 @@ async def http_stop_managed_service(request: web.Request) -> web.Response:
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    if not await _can_control_service(token, int(service_id), "control"):
+        return forbidden_response(request)
 
     success, error = await _service_manager.stop_service(int(service_id))
     if success:
@@ -8445,13 +8548,10 @@ async def http_stop_managed_service(request: web.Request) -> web.Response:
 
 
 async def http_restart_managed_service(request: web.Request) -> web.Response:
-    """Restart a managed service (admin only)."""
+    """Restart a managed service (admin or a user with a 'control' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8459,6 +8559,9 @@ async def http_restart_managed_service(request: web.Request) -> web.Response:
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    if not await _can_control_service(token, int(service_id), "control"):
+        return forbidden_response(request)
 
     success, error = await _service_manager.restart_service(int(service_id))
     if success:
@@ -8470,13 +8573,10 @@ async def http_restart_managed_service(request: web.Request) -> web.Response:
 
 
 async def http_managed_service_status(request: web.Request) -> web.Response:
-    """Get status of a managed service (admin only)."""
+    """Get status of a managed service (admin or a user with a 'logs' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8484,6 +8584,9 @@ async def http_managed_service_status(request: web.Request) -> web.Response:
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    if not await _can_control_service(token, int(service_id), "logs"):
+        return forbidden_response(request)
 
     status = await _service_manager.get_service_status(int(service_id))
     if not status:
@@ -8493,13 +8596,10 @@ async def http_managed_service_status(request: web.Request) -> web.Response:
 
 
 async def http_managed_service_logs(request: web.Request) -> web.Response:
-    """Get logs for a managed service (admin only)."""
+    """Get logs for a managed service (admin or a user with a 'logs' grant)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-
-    if not token.has_scope("admin") and not token.has_scope("*"):
-        return forbidden_response(request)
 
     if not _service_manager:
         return web.json_response({"error": "Service manager not initialized"}, status=503)
@@ -8507,6 +8607,9 @@ async def http_managed_service_logs(request: web.Request) -> web.Response:
     service_id = request.match_info.get("id")
     if not service_id or not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
+
+    if not await _can_control_service(token, int(service_id), "logs"):
+        return forbidden_response(request)
 
     # Parse query params
     try:
@@ -8517,6 +8620,83 @@ async def http_managed_service_logs(request: web.Request) -> web.Response:
 
     logs = await _service_manager.get_service_logs(int(service_id), limit, level)
     return web.json_response({"logs": logs})
+
+
+async def http_list_service_grants(request: web.Request) -> web.Response:
+    """List users granted control/logs on a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+    sid = request.match_info.get("id", "")
+    if not sid.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+    return web.json_response({"grants": await db.list_service_grants(int(sid))})
+
+
+async def http_add_service_grant(request: web.Request) -> web.Response:
+    """Grant one or more users control/logs on a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+    sid = request.match_info.get("id", "")
+    if not sid.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+    sid = int(sid)
+    service = await db.get_service_by_id(sid)
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    actions = [a for a in (data.get("actions") or ["control"]) if a in ("control", "logs")] or ["control"]
+    usernames = data.get("usernames") or ([data["username"]] if data.get("username") else [])
+    added, skipped = [], []
+    for name in usernames[:50]:
+        u = await db.get_user_by_username(str(name).strip())
+        if not u:
+            skipped.append(name)
+            continue
+        if await db.add_service_grant(sid, u["id"], actions, token.user_id):
+            added.append(u["username"])
+        else:
+            skipped.append(name)
+    if added:
+        actor = await db.get_user_by_id(token.user_id)
+        await audit_log(
+            "service.grant", token.user_id, (actor or {}).get("username", "unknown"),
+            target_id=sid, target_type="service", target_name=service.get("name"),
+            details={"grantees": added, "actions": actions},
+        )
+    return web.json_response({"added": added, "skipped": skipped,
+                              "grants": await db.list_service_grants(sid)})
+
+
+async def http_remove_service_grant(request: web.Request) -> web.Response:
+    """Revoke a user's grant on a managed service (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+    sid = request.match_info.get("id", "")
+    grantee = request.match_info.get("grantee", "")
+    if not sid.isdigit() or not grantee.isdigit():
+        return web.json_response({"error": "Invalid parameters"}, status=400)
+    ok = await db.remove_service_grant(int(sid), int(grantee))
+    if ok:
+        actor = await db.get_user_by_id(token.user_id)
+        await audit_log(
+            "service.ungrant", token.user_id, (actor or {}).get("username", "unknown"),
+            target_id=int(sid), target_type="service",
+            details={"grantee_id": int(grantee)},
+        )
+    return web.json_response({"success": ok, "grants": await db.list_service_grants(int(sid))})
 
 
 # =============================================================================
@@ -8830,7 +9010,7 @@ async def handle_user_connection_ws(
     conn_uuid = match.group(1)
 
     # Fetch connection (ensures user owns it)
-    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         logger.warning(f"User {token.user_id} tried to access non-existent connection {conn_uuid}")
         await ws.send_json({"type": "error", "message": "Connection not found"})
@@ -8950,7 +9130,7 @@ async def handle_relay_ws(
         if match:
             potential_id = match.group(1)
             # Try as user connection UUID first, then integer ID for backwards compat
-            user_conn = await db.get_user_connection_by_uuid(potential_id, token.user_id)
+            user_conn = await db.get_accessible_connection(potential_id, token.user_id)
             if not user_conn and potential_id.isdigit():
                 user_conn = await db.get_user_connection(int(potential_id), token.user_id)
             if user_conn:
@@ -9271,7 +9451,7 @@ async def http_terminal_page(request: web.Request) -> web.Response:
     # Check for user connection mode: /terminal/connect?connection={uuid}
     conn_id = request.query.get("connection") if service_id == "connect" else None
     if conn_id:
-        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+        connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         conn_type = connection.get("type", "")
@@ -9315,7 +9495,7 @@ async def http_vnc_page(request: web.Request) -> web.Response:
     # Check for user connection mode: /vnc/connect?connection={uuid}
     conn_id = request.query.get("connection") if service_id == "connect" else None
     if conn_id:
-        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+        connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("vnc.html")
@@ -9351,7 +9531,7 @@ async def http_media_page(request: web.Request) -> web.Response:
     # Check for user connection mode
     conn_id = request.query.get("connection") if service_id == "connect" else None
     if conn_id:
-        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+        connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("mediamtx.html")
@@ -9387,7 +9567,7 @@ async def http_spice_page(request: web.Request) -> web.Response:
     # Check for user connection mode: /spice/connect?connection={uuid}
     conn_id = request.query.get("connection") if service_id == "connect" else None
     if conn_id:
-        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+        connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("spice.html")
@@ -9423,7 +9603,7 @@ async def http_proxmox_page(request: web.Request) -> web.Response:
     # Check for user connection mode
     conn_id = request.query.get("connection") if service_id == "connect" else None
     if conn_id:
-        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+        connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("proxmox.html")
@@ -9459,7 +9639,7 @@ async def http_github_page(request: web.Request) -> web.Response:
     # Check for user connection mode
     conn_id = request.query.get("connection") if service_id == "connect" else None
     if conn_id:
-        connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+        connection = await db.get_accessible_connection(conn_id, token.user_id)
         if not connection:
             return web.Response(status=404, text="Connection not found")
         html = load_static_file("github.html")
@@ -9487,7 +9667,7 @@ async def http_browser_page(request: web.Request) -> web.Response:
     if not conn_id:
         return web.Response(status=400, text="Missing connection parameter")
 
-    connection = await db.get_user_connection_by_uuid(conn_id, token.user_id)
+    connection = await db.get_accessible_connection(conn_id, token.user_id)
     if not connection:
         return web.Response(status=404, text="Connection not found")
 
@@ -9567,7 +9747,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     if not conn_uuid:
         return web.Response(status=400, text="Invalid connection ID")
 
-    connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
+    connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return web.Response(status=404, text="Connection not found")
 
@@ -10182,7 +10362,7 @@ _SEARXNG_DEFAULT_PORT = 8890
 # navbar and follows the active portal theme. See static/{css,js}/searxng-portal.*
 _SEARXNG_HEAD_INJECT = (
     b'<script src="/static/js/theme.js?v=3"></script>'
-    b'<link rel="stylesheet" href="/static/css/portal.css?v=49">'
+    b'<link rel="stylesheet" href="/static/css/portal.css?v=50">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=4">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
 )
@@ -14596,6 +14776,10 @@ async def http_get_current_user(request: web.Request) -> web.Response:
         "avatar": avatar,
         "is_admin": is_admin,
         "scopes": token.scopes,
+        # {service_id: ["control","logs"]} — managed services this (non-admin)
+        # user may control/read without being an admin. Empty for admins (they
+        # can already do everything).
+        "granted_services": {} if is_admin else await db.get_user_granted_service_ids(token.user_id),
         "permissions": {
             "can_manage_users": get_role_level(role) >= get_role_level("moderator"),
             "can_reset_passwords": get_role_level(role) >= get_role_level("admin"),
@@ -15561,6 +15745,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/managed-services/{id}/restart", http_restart_managed_service)
     app.router.add_get("/api/managed-services/{id}/status", http_managed_service_status)
     app.router.add_get("/api/managed-services/{id}/logs", http_managed_service_logs)
+    app.router.add_get("/api/managed-services/{id}/grants", http_list_service_grants)
+    app.router.add_post("/api/managed-services/{id}/grants", http_add_service_grant)
+    app.router.add_delete("/api/managed-services/{id}/grants/{grantee}", http_remove_service_grant)
 
     # User management
     app.router.add_get("/api/users", http_list_users)
@@ -15625,6 +15812,10 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
     app.router.add_post("/api/connections/{id}/pin", http_toggle_connection_pin)
     app.router.add_get("/api/connections/{id}/connect", http_connect_user_connection)
+    app.router.add_get("/api/connections/{id}/shares", http_list_connection_shares)
+    app.router.add_post("/api/connections/{id}/shares", http_add_connection_shares)
+    app.router.add_delete("/api/connections/{id}/shares/{grantee}", http_remove_connection_share)
+    app.router.add_get("/api/users/lookup", http_users_lookup)
 
     # User Streams (OBS/RTMP streaming)
     app.router.add_get("/api/streams", http_list_user_streams)

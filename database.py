@@ -984,6 +984,33 @@ MIGRATIONS = [
         entries_json TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_device_metrics_cat_ts ON device_metric_samples(category, ts)",
+    # Shared access: let a connection owner grant other users use of a
+    # connection, and an admin grant a user control/logs on one managed service.
+    """CREATE TABLE IF NOT EXISTS connection_shares (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id INTEGER NOT NULL,
+        grantee_user_id INTEGER NOT NULL,
+        granted_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE CASCADE,
+        FOREIGN KEY (grantee_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(connection_id, grantee_user_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS service_grants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service_id INTEGER NOT NULL,
+        grantee_user_id INTEGER NOT NULL,
+        actions TEXT NOT NULL DEFAULT 'control',
+        granted_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE,
+        FOREIGN KEY (grantee_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(service_id, grantee_user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_conn_shares_grantee ON connection_shares(grantee_user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_conn_shares_conn ON connection_shares(connection_id)",
+    "CREATE INDEX IF NOT EXISTS idx_service_grants_grantee ON service_grants(grantee_user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_service_grants_service ON service_grants(service_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2840,8 +2867,20 @@ class Database:
             return conn
         return None
 
+    def _decode_conn_rows(self, rows) -> list[dict]:
+        import json
+        out = []
+        for row in rows:
+            conn = dict(row)
+            try:
+                conn["config"] = json.loads(decrypt_config(conn.get("config", "{}")))
+            except (json.JSONDecodeError, Exception):
+                conn["config"] = {}
+            out.append(conn)
+        return out
+
     async def get_user_connections(self, user_id: int) -> list[dict]:
-        """Get all connections for a user (pinned first, then by last used)."""
+        """Get all connections for a user — owned (pinned first) then shared-with."""
         cursor = await self.conn.execute(
             """SELECT uc.*, sk.name as ssh_key_name, sk.fingerprint as ssh_key_fingerprint
                FROM user_connections uc
@@ -2850,17 +2889,19 @@ class Database:
                ORDER BY uc.is_pinned DESC, uc.last_used_at DESC NULLS LAST, uc.name""",
             (user_id,)
         )
-        rows = await cursor.fetchall()
-        import json
-        connections = []
-        for row in rows:
-            conn = dict(row)
-            try:
-                raw_config = conn.get("config", "{}")
-                conn["config"] = json.loads(decrypt_config(raw_config))
-            except (json.JSONDecodeError, Exception):
-                conn["config"] = {}
-            connections.append(conn)
+        connections = self._decode_conn_rows(await cursor.fetchall())
+
+        cursor = await self.conn.execute(
+            """SELECT uc.*, NULL as ssh_key_name, NULL as ssh_key_fingerprint,
+                      1 as shared, owner.username as owner_username
+               FROM connection_shares cs
+               JOIN user_connections uc ON uc.id = cs.connection_id
+               JOIN users owner ON owner.id = uc.user_id
+               WHERE cs.grantee_user_id = ?
+               ORDER BY uc.name""",
+            (user_id,)
+        )
+        connections.extend(self._decode_conn_rows(await cursor.fetchall()))
         return connections
 
     async def update_user_connection(
@@ -2933,7 +2974,7 @@ class Database:
         return bool(new_state)
 
     async def get_user_connections_by_type(self, user_id: int, conn_type: str) -> list[dict]:
-        """Get all connections of a specific type for a user."""
+        """Get all connections of a specific type — owned then shared-with."""
         cursor = await self.conn.execute(
             """SELECT uc.*, sk.name as ssh_key_name, sk.fingerprint as ssh_key_fingerprint
                FROM user_connections uc
@@ -2942,18 +2983,143 @@ class Database:
                ORDER BY uc.name""",
             (user_id, conn_type)
         )
-        rows = await cursor.fetchall()
-        import json
-        connections = []
-        for row in rows:
-            conn = dict(row)
-            try:
-                raw_config = conn.get("config", "{}")
-                conn["config"] = json.loads(decrypt_config(raw_config))
-            except (json.JSONDecodeError, Exception):
-                conn["config"] = {}
-            connections.append(conn)
+        connections = self._decode_conn_rows(await cursor.fetchall())
+
+        cursor = await self.conn.execute(
+            """SELECT uc.*, NULL as ssh_key_name, NULL as ssh_key_fingerprint,
+                      1 as shared, owner.username as owner_username
+               FROM connection_shares cs
+               JOIN user_connections uc ON uc.id = cs.connection_id
+               JOIN users owner ON owner.id = uc.user_id
+               WHERE cs.grantee_user_id = ? AND uc.type = ?
+               ORDER BY uc.name""",
+            (user_id, conn_type)
+        )
+        connections.extend(self._decode_conn_rows(await cursor.fetchall()))
         return connections
+
+    # ------------------------------------------------------------------
+    # Shared access — connection_shares + service_grants
+    # ------------------------------------------------------------------
+    async def get_accessible_connection(self, uuid: str, user_id: int) -> Optional[dict]:
+        """Connection by UUID if the user owns it OR it's shared with them.
+
+        Owner hits return exactly what get_user_connection_by_uuid does; shared
+        hits carry shared=True + owner_username and no ssh key join.
+        """
+        owned = await self.get_user_connection_by_uuid(uuid, user_id)
+        if owned:
+            return owned
+        cursor = await self.conn.execute(
+            """SELECT uc.*, 1 as shared, owner.username as owner_username
+               FROM connection_shares cs
+               JOIN user_connections uc ON uc.id = cs.connection_id
+               JOIN users owner ON owner.id = uc.user_id
+               WHERE uc.uuid = ? AND cs.grantee_user_id = ?""",
+            (uuid, user_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._decode_conn_rows([row])[0]
+
+    async def list_connection_shares(self, connection_id: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            """SELECT cs.grantee_user_id as user_id, u.username, cs.created_at
+               FROM connection_shares cs JOIN users u ON u.id = cs.grantee_user_id
+               WHERE cs.connection_id = ? ORDER BY u.username""",
+            (connection_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def add_connection_share(self, connection_id: int, grantee_id: int, owner_id: int) -> bool:
+        try:
+            await self.conn.execute(
+                """INSERT OR IGNORE INTO connection_shares
+                   (connection_id, grantee_user_id, granted_by) VALUES (?, ?, ?)""",
+                (connection_id, grantee_id, owner_id),
+            )
+            await self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"add_connection_share failed: {e}")
+            return False
+
+    async def remove_connection_share(self, connection_id: int, grantee_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM connection_shares WHERE connection_id = ? AND grantee_user_id = ?",
+            (connection_id, grantee_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def user_service_grant(self, user_id: int, service_id: int) -> Optional[set]:
+        """Set of granted actions ({'control','logs'}) for user on service, or None."""
+        cursor = await self.conn.execute(
+            "SELECT actions FROM service_grants WHERE grantee_user_id = ? AND service_id = ?",
+            (user_id, service_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {a.strip() for a in (row["actions"] or "").split(",") if a.strip()}
+
+    async def get_user_granted_service_ids(self, user_id: int) -> dict:
+        """{service_id: ['control','logs'], ...} for every grant this user holds."""
+        cursor = await self.conn.execute(
+            "SELECT service_id, actions FROM service_grants WHERE grantee_user_id = ?",
+            (user_id,),
+        )
+        out = {}
+        for row in await cursor.fetchall():
+            out[row["service_id"]] = [a.strip() for a in (row["actions"] or "").split(",") if a.strip()]
+        return out
+
+    async def list_service_grants(self, service_id: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            """SELECT sg.grantee_user_id as user_id, u.username, sg.actions, sg.created_at
+               FROM service_grants sg JOIN users u ON u.id = sg.grantee_user_id
+               WHERE sg.service_id = ? ORDER BY u.username""",
+            (service_id,),
+        )
+        return [
+            {**dict(r), "actions": [a.strip() for a in (r["actions"] or "").split(",") if a.strip()]}
+            for r in await cursor.fetchall()
+        ]
+
+    async def add_service_grant(self, service_id: int, grantee_id: int, actions: list, granted_by: int) -> bool:
+        clean = ",".join(sorted({a for a in actions if a in ("control", "logs")})) or "control"
+        try:
+            await self.conn.execute(
+                """INSERT INTO service_grants (service_id, grantee_user_id, actions, granted_by)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(service_id, grantee_user_id) DO UPDATE SET actions = excluded.actions""",
+                (service_id, grantee_id, clean, granted_by),
+            )
+            await self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"add_service_grant failed: {e}")
+            return False
+
+    async def remove_service_grant(self, service_id: int, grantee_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM service_grants WHERE service_id = ? AND grantee_user_id = ?",
+            (service_id, grantee_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def find_usernames(self, prefix: str, limit: int = 10) -> list[dict]:
+        """Case-insensitive username prefix search for the share/grant picker."""
+        prefix = (prefix or "").strip().replace("%", "").replace("_", "")
+        if not prefix:
+            return []
+        cursor = await self.conn.execute(
+            "SELECT id, username FROM users WHERE username LIKE ? ORDER BY username LIMIT ?",
+            (prefix + "%", min(max(limit, 1), 25)),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
 
     # User streams operations
     async def create_user_stream(

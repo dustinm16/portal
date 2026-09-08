@@ -1023,6 +1023,83 @@ body {
     margin-top: 0.5rem;
 }
 
+/* Username picker — shared by the connection "Share" and service "Grant" modals */
+.userpick-box {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+    min-height: 42px;
+    padding: 0.35rem 0.5rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+}
+.userpick-box .userpick-input {
+    flex: 1;
+    min-width: 120px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    outline: none;
+    padding: 0.25rem;
+    font-size: 0.9rem;
+}
+.userpick-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.55rem;
+    background: rgba(var(--accent-blue-rgb), 0.15);
+    color: var(--accent-blue);
+    border-radius: 9999px;
+    font-size: 0.8rem;
+}
+.userpick-chip button {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0;
+}
+.userpick-results {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 20;
+    background: var(--card-solid-bg, var(--surface-color));
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.userpick-results button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.875rem;
+}
+.userpick-results button:hover { background: var(--card-hover); }
+.userpick-current-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.25rem;
+    border-bottom: 1px solid var(--card-border);
+    font-size: 0.875rem;
+}
+.userpick-current-row:last-child { border-bottom: none; }
+
 /* Responsive table wrapper */
 .table-responsive {
     width: 100%;
