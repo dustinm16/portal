@@ -874,6 +874,31 @@ In `browser_mode`, the path encodes the full target URL (e.g., `/proxy/{id}/http
 
 ---
 
+### Private Search (SearXNG)
+
+Portal can run [SearXNG](https://github.com/searxng/searxng) (AGPL-3.0) as an optional managed service, reverse-proxied under `/search/` behind Portal authentication. Endpoints exist only while an admin has added and **enabled** a managed service of type `searxng`; otherwise they return `503`.
+
+#### GET /api/search/status
+Returns `{ "available": true|false }` — whether the `searxng` service is enabled and running. Used by the dashboard to show or hide the "Search" nav link. Requires authentication.
+
+#### ALL /search  •  ALL /search/{path}
+Auth-gated reverse proxy to the local SearXNG instance. Any logged-in user may use it. Unauthenticated browser requests redirect to `/login`; unauthenticated API requests (`Accept: application/json` or `?format=json`) get `401`.
+
+Requests are forwarded verbatim — SearXNG mounts its whole app under `/search/` via its `base_url`, so no path rewriting is done. The Portal session cookie and `Authorization` header are stripped from the upstream request. Responses get `Cache-Control: private, no-store`.
+
+```bash
+# HTML search UI
+GET /search/
+
+# JSON results for automation
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://your-domain/search/search?q=debian&format=json"
+```
+
+JSON output requires `formats: [html, json]` in the generated `settings.yml` (the default for Portal-managed SearXNG).
+
+---
+
 ### User Streams
 
 User streams allow broadcasting from OBS or other streaming software. All traffic is encrypted via RTMPS/RTSPS.

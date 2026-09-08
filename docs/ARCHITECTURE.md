@@ -195,7 +195,8 @@ Permission Hierarchy:
 ├── services/              # Managed service controllers
 │   ├── __init__.py        # ServiceManager, registration system
 │   ├── base.py            # ManagedService base class, ServiceInfo
-│   └── mediamtx.py        # MediaMTX process manager
+│   ├── mediamtx.py        # MediaMTX process manager
+│   └── searxng.py         # SearXNG process manager (uWSGI)
 │
 ├── static/                # 20 HTML pages, 9 JS modules, 1 CSS file (~41,655 lines frontend)
 │   ├── index.html         # Dashboard
@@ -705,6 +706,17 @@ The MediaMTX managed service configuration is generated dynamically by Portal. K
 - **Publish auth** - All publish requests validated via MediaMTX external auth webhook back to Portal
 - **Playback** - Read/playback auth handled by Portal's HLS proxy, not MediaMTX
 - **RTMP path mapping** - When publishing via `rtmp_` token, MediaMTX creates the path using the token instead of the `live_` key (i.e., `live/rtmp_xxx` not `live/live_xxx`). Portal maintains an internal mapping (`_rtmp_stream_paths`) so HLS proxy, thumbnails, and VOD recording resolve to the correct MediaMTX path.
+
+#### SearXNG Configuration
+
+SearXNG (privacy-respecting metasearch, [github.com/searxng/searxng](https://github.com/searxng/searxng), AGPL-3.0) is an **optional** managed service of type `searxng` (`services/searxng.py`).
+
+- **Install** - `install-searxng.sh` creates the `searxng` system user, clones upstream to `/usr/local/searxng/searxng-src`, builds a venv. Not downloaded by the setup wizard.
+- **Runtime** - Portal generates a uWSGI ini (`data/service_<id>.conf`) and `/etc/searxng/settings.yml` on every start, then runs `uwsgi --ini` bound to `127.0.0.1:8890` (8888/8889 are MediaMTX). uWSGI drops privileges to the `searxng` user.
+- **`settings.yml`** - `use_default_settings: true` plus overrides: `base_url: https://<host>/search/`, `limiter: false`, `public_instance: false`, `formats: [html, json]`. `server.secret_key` is generated once and persisted in the encrypted service config so it survives restarts.
+- **Sub-path** - SearXNG mounts its whole app under `/search/` natively via `base_url` — no `SCRIPT_NAME`/`mount` tricks.
+- **Exposure** - `http_searxng_proxy` handles `GET|POST /search` and `/search/{path:.*}`, gated by `authenticate_request` (any logged-in user; unauthenticated browsers redirect to `/login`). It reverse-proxies verbatim to the uWSGI socket, buffers the response so `security_headers_middleware` still applies, and forces `Cache-Control: private, no-store`.
+- **Admin toggle** - The route and the dashboard nav link are live only while the `searxng` service row exists, is `enabled`, and is `running`. `GET /api/search/status` reports `{available: bool}`. Disable the service and the portal is unaffected.
 
 ### Stream Moderation
 

@@ -10000,12 +10000,57 @@ _SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
 _SEARXNG_DEFAULT_PORT = 8890
 
 
+async def _searxng_status() -> tuple[bool, int]:
+    """Return (available, port) for the SearXNG managed service.
+
+    "Available" means the service row exists, is enabled (the admin toggle), and
+    is currently running. When SearXNG is not set up or is disabled, the portal
+    stays fully functional — the /search/ route and nav link just go dark.
+    """
+    port = _SEARXNG_DEFAULT_PORT
+    if not _service_manager:
+        return False, port
+    svc = await _service_manager.get_service_by_name("searxng")
+    if svc is None or not getattr(svc, "enabled", False):
+        return False, port
+    try:
+        port = int(svc.get_merged_config().get("port", port))
+    except (TypeError, ValueError):
+        pass
+    return (svc.status == "running"), port
+
+
+async def http_search_status(request: web.Request) -> web.Response:
+    """Report whether SearXNG search is available (used to show/hide the nav link)."""
+    token = await authenticate_request(request)
+    if not token:
+        return web.json_response({"available": False}, status=200)
+    available, _ = await _searxng_status()
+    return web.json_response({"available": available})
+
+
+def _searxng_unavailable_response(request: web.Request) -> web.Response:
+    if "application/json" in request.headers.get("Accept", "") or \
+            request.query.get("format") == "json":
+        return web.json_response({"error": "Search is not enabled on this portal"}, status=503)
+    return web.Response(
+        status=503, content_type="text/html",
+        text="<html><body style='background:#1a1a2e;color:#e0e0e0;"
+             "font-family:sans-serif;padding:2rem'>"
+             "<h2>Search is not enabled</h2>"
+             "<p>This portal does not currently have the SearXNG search service running. "
+             "An admin can enable it from the Services panel.</p>"
+             "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
+             "</body></html>")
+
+
 async def http_searxng_proxy(request: web.Request) -> web.Response:
     """Auth-gated reverse proxy for the SearXNG managed service.
 
     SearXNG mounts its whole app under ``/search/`` natively via
     ``server.base_url``, so requests are forwarded verbatim — no path or body
-    rewriting. Only authenticated Portal users may reach it.
+    rewriting. Only authenticated Portal users may reach it, and only when an
+    admin has enabled the ``searxng`` managed service.
     """
     token = await authenticate_request(request)
     if not token:
@@ -10014,23 +10059,9 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
             return web.json_response({"error": "Unauthorized"}, status=401)
         raise web.HTTPFound("/login")
 
-    port = _SEARXNG_DEFAULT_PORT
-    if _service_manager:
-        svc = await _service_manager.get_service_by_name("searxng")
-        if svc is not None:
-            if svc.status != "running":
-                return web.Response(
-                    status=503, content_type="text/html",
-                    text="<html><body style='background:#1a1a2e;color:#e0e0e0;"
-                         "font-family:sans-serif;padding:2rem'>"
-                         "<h2>SearXNG is not running</h2>"
-                         "<p>An admin can start it from the Services panel.</p>"
-                         "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
-                         "</body></html>")
-            try:
-                port = int(svc.get_merged_config().get("port", port))
-            except (TypeError, ValueError):
-                pass
+    available, port = await _searxng_status()
+    if not available:
+        return _searxng_unavailable_response(request)
 
     upstream_url = f"http://127.0.0.1:{port}{request.raw_path}"
 
@@ -15268,6 +15299,7 @@ def create_app() -> web.Application:
     app.router.add_static("/static", STATIC_DIR)
 
     # SearXNG metasearch (managed service) — auth-gated reverse proxy, served under /search/
+    app.router.add_get("/api/search/status", http_search_status)
     app.router.add_route("*", "/search", http_searxng_proxy)
     app.router.add_route("*", "/search/{path:.*}", http_searxng_proxy)
 
