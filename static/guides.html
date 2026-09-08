@@ -2472,6 +2472,7 @@
                     <li><strong>Address bar</strong> — type full URLs, bare hostnames, or relative paths</li>
                     <li><strong>Navigation</strong> — back/forward (Alt+arrows), refresh (Ctrl+R), focus URL bar (Ctrl+L)</li>
                     <li><strong>Link handling</strong> — Ctrl+click or middle-click opens in a new tab</li>
+                    <li><strong>Private-search home</strong> — when SearXNG is enabled the Web Browser opens on it; clicking a result opens a new tab inside the embedded browser (browser-mode) or a real browser tab (single-origin)</li>
                 </ul>
                 <h4>Security Considerations</h4>
                 <ul>
@@ -2479,6 +2480,7 @@
                     <li>Portal session cookies and auth headers are stripped from upstream requests</li>
                     <li>Browser-mode targets cannot access localhost or private IPs</li>
                     <li>Connection IDs use opaque tokens — no sequential enumeration possible</li>
+                    <li>The embedded browser window returns to the login page when the session ends (logout in any tab)</li>
                     <li>Configure the target service to trust Portal's IP as a proxy</li>
                 </ul>
             </section>

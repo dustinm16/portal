@@ -55,7 +55,7 @@ Search the web without the trackers. Portal can run [SearXNG](https://github.com
 ### Remote Access
 Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, RDP sessions, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
 
-For web-based services, Portal includes a built-in embedded browser with tabbed browsing and keyboard shortcuts (Ctrl+T for new tab, Ctrl+W to close, Alt+arrows for back/forward). Browse web dashboards, admin panels, or any website through Portal's secure proxy. A default "Web Browser" connection with a search engine homepage is created for every user. No VPN required — if you can reach your portal, you can reach everything behind it.
+For web-based services, Portal includes a built-in embedded browser with tabbed browsing and keyboard shortcuts (Ctrl+T for new tab, Ctrl+W to close, Alt+arrows for back/forward). Browse web dashboards, admin panels, or any website through Portal's secure proxy. Every user gets a default **Web Browser** connection; its home page is Portal's own private search (SearXNG) when that service is enabled, otherwise DuckDuckGo. From the private-search home, clicking a result opens it in a new tab *inside* the embedded browser (multi-site connections) or in a real browser tab (single-site connections). The embedded browser is session-aware — log out anywhere and any open browser window returns to the login page. Add it from the connection form's **Web Browser (private search)** preset. No VPN required — if you can reach your portal, you can reach everything behind it.
 
 ### File Management
 Browse, upload, download, and edit files on your server or on remote machines through the web. The file manager works with your server's local filesystem (for admins) and with any SFTP connection you've set up. When you have multiple SFTP connections, a dual-pane commander-style view lets you move files between remote machines side by side.
@@ -106,7 +106,7 @@ Here are a few ways people use Open Relay Portal:
 *Direct Messages — Private 1:1 and group DMs with encryption at rest*
 
 ![Embedded Browser](docs/screenshots/browser.png)
-*Embedded Browser — Tabbed browsing with address bar, navigation controls, and multi-site proxy*
+*Embedded Browser — Tabbed browsing with address bar, navigation controls, private-search home page, and multi-site proxy*
 
 ![Admin Panel](docs/screenshots/admin.png)
 *Admin Panel — Server stats, traffic metrics, Shodan scanner, system resources*

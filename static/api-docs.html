@@ -3815,6 +3815,8 @@ Headers:
                             <li>This is the user-facing page for HTTP/HTTPS connections. When users click <strong>Connect</strong> on a web-type connection, they are directed here.</li>
                             <li>Supports tabbed browsing (Ctrl+T new tab, Ctrl+W close, Ctrl+Tab switch), keyboard shortcuts (Alt+arrows, Ctrl+L, Ctrl+R), and middle-click to close tabs.</li>
                             <li>Browser-mode connections can navigate to any website. The address bar accepts full URLs, bare hostnames (auto-prefixed with https://), and relative paths.</li>
+                            <li>The default "Web Browser" connection opens on Portal's private search (SearXNG) when enabled. From there, an external result opens a new tab inside the embedded browser (browser-mode, through the proxy) or a real browser tab (single-origin). An explicit <code>config.home_url</code> (same-origin path) sets a custom home page.</li>
+                            <li>The window is session-aware: it polls <code>/api/me</code> and watches for a <code>/login</code> redirect, and navigates itself to <code>/login</code> when the session ends.</li>
                             <li>All proxied traffic is routed internally through <code>/proxy/{connection_id}/{path}</code>. Users should use <code>/browser?connection={id}</code> rather than accessing <code>/proxy/</code> directly.</li>
                             <li>The embedded browser rewrites links and intercepts navigation (forms, fetch, XHR, WebSocket, Location.assign/replace, history API) to keep all traffic within Portal's proxy layer.</li>
                         </ul>

@@ -863,7 +863,9 @@ Open the embedded browser for an HTTP proxy connection. `{id}` is the opaque con
 
 The embedded browser provides tabbed browsing, navigation controls (back/forward/refresh), an address bar, and keyboard shortcuts (Ctrl+T new tab, Ctrl+W close tab, Ctrl+Tab switch tabs, Alt+arrows navigate, Ctrl+L focus URL bar). Connections with `browser_mode: true` support multi-site navigation — users can browse any website through the proxy.
 
-A default "Web Browser" connection is created automatically for new users. Its home page is the portal's own private search (SearXNG at `/search/`, same origin) when that managed service is enabled, falling back to DuckDuckGo when it is not. An explicit `config.home_url` (any same-origin absolute path) overrides this.
+A default "Web Browser" connection is created automatically for new users (also available from the connection form's "Web Browser (private search)" preset). Its home page is the portal's own private search (SearXNG at `/search/`, same origin) when that managed service is enabled, falling back to DuckDuckGo when it is not. An explicit `config.home_url` (any same-origin absolute path) overrides this. From the private-search home page, clicking an external result opens a new tab **inside** the embedded browser (routed through the proxy) for `browser_mode` connections, or a real top-level browser tab for single-origin connections.
+
+The page polls `GET /api/me` and watches for a same-origin redirect to `/login`; when the session ends (logout in this or another tab) it navigates the whole window to `/login` so a logged-out user can't keep viewing a rendered page.
 
 ---
 
