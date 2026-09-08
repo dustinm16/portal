@@ -731,6 +731,15 @@
                                     <label for="service-description">Description</label>
                                     <textarea id="service-description" rows="2" placeholder="Optional description"></textarea>
                                 </div>
+                                <div class="form-group" id="service-unit-group" style="display: none;">
+                                    <label for="service-unit">Systemd Unit</label>
+                                    <input type="text" id="service-unit" placeholder="e.g., palworld or game@zomboid" pattern="[-a-zA-Z0-9_@.]+" title="Unit name without the .service suffix">
+                                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0;">Must already be installed on the host. Portal controls it with <code>systemctl</code> and never stops it on Portal restart.</p>
+                                </div>
+                                <div class="form-group" id="service-port-group" style="display: none;">
+                                    <label for="service-port">Port <span style="color: var(--text-muted); font-weight: normal;">(optional)</span></label>
+                                    <input type="number" id="service-port" min="1" max="65535" placeholder="Type default">
+                                </div>
                                 <div class="form-group">
                                     <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
                                         <input type="checkbox" id="service-enabled" style="width: auto;">
@@ -740,6 +749,48 @@
                                 <div class="form-actions" style="display: flex; gap: 0.5rem; justify-content: flex-end;">
                                     <button type="button" class="btn btn-secondary" onclick="closeCreateServiceModal()">Cancel</button>
                                     <button type="submit" class="btn btn-primary">Create Service</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Edit Service Modal -->
+                <div id="edit-service-modal" class="modal" style="display: none;">
+                    <div class="modal-content" style="max-width: 500px;">
+                        <div class="modal-header">
+                            <h3>Edit Service</h3>
+                            <button class="modal-close" onclick="closeEditServiceModal()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="edit-service-form" onsubmit="submitEditService(event)">
+                                <input type="hidden" id="edit-service-id">
+                                <div class="form-group">
+                                    <label for="edit-service-display-name">Display Name</label>
+                                    <input type="text" id="edit-service-display-name" placeholder="e.g., Main Media Server">
+                                </div>
+                                <div class="form-group">
+                                    <label for="edit-service-description">Description</label>
+                                    <textarea id="edit-service-description" rows="2" placeholder="Optional description"></textarea>
+                                </div>
+                                <div class="form-group" id="edit-service-unit-group" style="display: none;">
+                                    <label for="edit-service-unit">Systemd Unit</label>
+                                    <input type="text" id="edit-service-unit" placeholder="e.g., palworld" pattern="[-a-zA-Z0-9_@.]+" title="Unit name without the .service suffix">
+                                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0;">Stop the service before pointing it at a different unit.</p>
+                                </div>
+                                <div class="form-group" id="edit-service-port-group" style="display: none;">
+                                    <label for="edit-service-port">Port <span style="color: var(--text-muted); font-weight: normal;">(optional)</span></label>
+                                    <input type="number" id="edit-service-port" min="1" max="65535">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="edit-service-enabled" style="width: auto;">
+                                        <span>Enabled (auto-start on Portal boot)</span>
+                                    </label>
+                                </div>
+                                <div class="form-actions" style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                                    <button type="button" class="btn btn-secondary" onclick="closeEditServiceModal()">Cancel</button>
+                                    <button type="submit" class="btn btn-primary">Save Changes</button>
                                 </div>
                             </form>
                         </div>
@@ -3007,6 +3058,7 @@
         // =================================================================
 
         let serviceTypes = {};
+        let managedServicesCache = [];
 
         // Load managed services
         async function loadManagedServices() {
@@ -3018,6 +3070,7 @@
 
                 serviceTypes = typesData.types || {};
                 const services = servicesData.managed_services || [];
+                managedServicesCache = services;
 
                 if (services.length === 0) {
                     document.getElementById('managed-services-list').innerHTML = `
@@ -3080,6 +3133,7 @@
                         <div><span style="color: var(--text-muted);">PID:</span> <span style="font-family: monospace;">${svc.pid || '-'}</span></div>
                         <div><span style="color: var(--text-muted);">Port:</span> <span style="font-family: monospace;">${svc.port || '-'}</span></div>
                         <div><span style="color: var(--text-muted);">Health:</span> <span style="color: ${svc.health_status === 'healthy' ? 'var(--accent-green)' : svc.health_status === 'unhealthy' ? 'var(--accent-red)' : 'var(--text-muted)'};">${svc.health_status || 'unknown'}</span></div>
+                        ${svc.unit ? `<div style="grid-column: 1 / -1;"><span style="color: var(--text-muted);">Unit:</span> <span style="font-family: monospace;">${escapeHtml(svc.unit)}.service</span> <span style="color: var(--text-muted);">(systemd)</span></div>` : ''}
                     </div>
                     ${svc.error_message ? `<p style="font-size: 0.75rem; color: var(--accent-red); margin-bottom: 1rem; padding: 0.5rem; background: rgba(239,68,68,0.1); border-radius: 4px;">${escapeHtml(svc.error_message)}</p>` : ''}
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -3111,6 +3165,12 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
                             Logs
+                        </button>
+                        <button class="btn btn-secondary btn-sm" onclick="showEditServiceModal(${svc.id})">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                            Edit
                         </button>
                         <button class="btn btn-danger btn-sm" onclick="deleteService(${svc.id}, '${escapeHtml(svc.name)}')" style="margin-left: auto;">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
@@ -3242,6 +3302,9 @@
             document.getElementById('create-service-modal').style.display = 'flex';
             document.getElementById('create-service-form').reset();
             document.getElementById('service-type-info').style.display = 'none';
+            document.getElementById('service-unit-group').style.display = 'none';
+            document.getElementById('service-port-group').style.display = 'none';
+            document.getElementById('service-unit').required = false;
 
             // Populate service types dropdown
             try {
@@ -3267,6 +3330,13 @@
         function updateServiceTypeInfo() {
             const typeKey = document.getElementById('service-type').value;
             const infoEl = document.getElementById('service-type-info');
+            const unitGroup = document.getElementById('service-unit-group');
+            const portGroup = document.getElementById('service-port-group');
+            const isSystemd = typeKey === 'systemd';
+
+            unitGroup.style.display = isSystemd ? 'block' : 'none';
+            document.getElementById('service-unit').required = isSystemd;
+            portGroup.style.display = isSystemd ? 'none' : 'block';
 
             if (!typeKey || !serviceTypes[typeKey]) {
                 infoEl.style.display = 'none';
@@ -3274,6 +3344,8 @@
             }
 
             const info = serviceTypes[typeKey];
+            document.getElementById('service-port').placeholder =
+                info.default_port ? ('Default: ' + info.default_port) : 'Type default';
             infoEl.style.display = 'block';
             infoEl.innerHTML = `
                 <p style="margin: 0 0 0.5rem 0; color: var(--text-primary); font-weight: 500;">${escapeHtml(info.display_name)}</p>
@@ -3291,20 +3363,33 @@
             const displayName = document.getElementById('service-display-name').value.trim();
             const description = document.getElementById('service-description').value.trim();
             const enabled = document.getElementById('service-enabled').checked;
+            const unit = document.getElementById('service-unit').value.trim();
+            const portRaw = document.getElementById('service-port').value.trim();
 
             if (!serviceType || !name) {
                 Portal.toast('Please fill in required fields', 'error');
                 return;
             }
+            if (serviceType === 'systemd' && !unit) {
+                Portal.toast('A systemd unit name is required', 'error');
+                return;
+            }
+
+            const payload = {
+                type: serviceType,
+                name: name,
+                display_name: displayName || name,
+                description: description,
+                enabled: enabled
+            };
+            if (serviceType === 'systemd') {
+                payload.config = { unit: unit };
+            } else if (portRaw) {
+                payload.port = parseInt(portRaw, 10);
+            }
 
             try {
-                const response = await Portal.postJSON('/api/managed-services', {
-                    type: serviceType,
-                    name: name,
-                    display_name: displayName || name,
-                    description: description,
-                    enabled: enabled
-                });
+                const response = await Portal.postJSON('/api/managed-services', payload);
 
                 const result = await response.json();
 
@@ -3318,6 +3403,72 @@
             } catch (error) {
                 Portal.toast('Failed to create service', 'error');
                 console.error('Create service error:', error);
+            }
+        }
+
+        // Edit an existing managed service
+        function showEditServiceModal(id) {
+            const svc = managedServicesCache.find(s => s.id === id);
+            if (!svc) { Portal.toast('Service not found', 'error'); return; }
+
+            document.getElementById('edit-service-id').value = id;
+            document.getElementById('edit-service-display-name').value = svc.display_name || svc.name || '';
+            document.getElementById('edit-service-description').value = svc.description || '';
+            document.getElementById('edit-service-enabled').checked = !!svc.enabled;
+
+            const isSystemd = !!svc.unit;
+            const unitGroup = document.getElementById('edit-service-unit-group');
+            const portGroup = document.getElementById('edit-service-port-group');
+            unitGroup.style.display = isSystemd ? 'block' : 'none';
+            portGroup.style.display = isSystemd ? 'none' : 'block';
+            document.getElementById('edit-service-unit').value = svc.unit || '';
+            document.getElementById('edit-service-port').value = svc.port || '';
+
+            document.getElementById('edit-service-modal').style.display = 'flex';
+        }
+
+        function closeEditServiceModal() {
+            document.getElementById('edit-service-modal').style.display = 'none';
+        }
+
+        async function submitEditService(event) {
+            event.preventDefault();
+            const id = document.getElementById('edit-service-id').value;
+            const svc = managedServicesCache.find(s => String(s.id) === String(id)) || {};
+            const isSystemd = !!svc.unit || document.getElementById('edit-service-unit-group').style.display !== 'none';
+
+            const payload = {
+                display_name: document.getElementById('edit-service-display-name').value.trim(),
+                description: document.getElementById('edit-service-description').value.trim(),
+                enabled: document.getElementById('edit-service-enabled').checked
+            };
+
+            if (isSystemd) {
+                const unit = document.getElementById('edit-service-unit').value.trim();
+                if (!unit) { Portal.toast('A systemd unit name is required', 'error'); return; }
+                if (unit !== (svc.unit || '')) payload.config = { unit: unit };
+            } else {
+                const portRaw = document.getElementById('edit-service-port').value.trim();
+                payload.port = portRaw ? parseInt(portRaw, 10) : null;
+            }
+
+            try {
+                const response = await Portal.fetch(`/api/managed-services/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    Portal.toast('Service updated');
+                    closeEditServiceModal();
+                    loadManagedServices();
+                } else {
+                    Portal.toast(result.error || 'Failed to update service', 'error');
+                }
+            } catch (error) {
+                Portal.toast('Failed to update service', 'error');
+                console.error('Edit service error:', error);
             }
         }
 

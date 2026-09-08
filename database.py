@@ -2212,7 +2212,8 @@ class Database:
         binary_path: str = None,
         working_dir: str = None,
         ports: list = None,
-        systemd_unit: str = None
+        systemd_unit: str = None,
+        enabled: bool = True
     ) -> int:
         """Create a new service and return its ID.
 
@@ -2227,14 +2228,17 @@ class Database:
                 start/stop/restart control via systemctl — lets a proxy-type service
                 (e.g. a game server or file share behind the reverse proxy) be
                 controlled from the Services panel instead of requiring SSH.
+            enabled: Whether the service is enabled (auto-starts on Portal boot for
+                managed services). The column defaults to 1, so this must be passed
+                through explicitly for a service to be created disabled.
         """
         import json
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """INSERT INTO services (name, plugin, path, host, port, config, required_scopes,
                icon, category_id, service_type, display_name, description, binary_path,
-               working_dir, ports, systemd_unit, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               working_dir, ports, systemd_unit, enabled, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 plugin,
@@ -2252,6 +2256,7 @@ class Database:
                 working_dir,
                 json.dumps(ports or []),
                 systemd_unit,
+                1 if enabled else 0,
                 now,
                 now
             )
@@ -2475,6 +2480,7 @@ class Database:
         import json
         allowed_fields = {
             "name", "path", "host", "port", "plugin", "icon", "description",
+            "display_name",
             "config", "ports", "required_scopes", "category_id", "internal_url",
             "service_type", "enabled", "command", "working_dir", "env_vars",
             "auto_start", "health_check_url", "status", "pid", "health_status",

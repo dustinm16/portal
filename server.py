@@ -97,6 +97,7 @@ from services import (
     init_service_manager,
     shutdown_service_manager,
     get_available_service_types,
+    get_service_class,
     load_service_types,
 )
 import cert_manager
@@ -8135,13 +8136,42 @@ async def http_create_managed_service(request: web.Request) -> web.Response:
             "available_types": list(get_available_service_types().keys())
         }, status=400)
 
+    if not re.match(r"^[a-z0-9][a-z0-9-]{0,63}$", str(name)):
+        return web.json_response(
+            {"error": "name must be lowercase letters, numbers and hyphens"},
+            status=400,
+        )
+
+    config = data.get("config") or {}
+    handler_class = get_service_class(service_type)
+
+    # Validate the config against the handler's own rules before we create
+    # a database row for it.
+    try:
+        probe = handler_class({"id": 0, "name": name, "config": config})
+        ok, verr = probe.validate_config(config)
+    except Exception:
+        ok, verr = True, ""
+    if not ok:
+        return web.json_response({"error": verr}, status=400)
+
+    # For a systemd-wrapped service, refuse up front if the unit isn't
+    # installed on this host — a much clearer error than a failed start later.
+    if hasattr(handler_class, "unit_exists"):
+        unit = str(config.get("unit", "")).strip()
+        if not await handler_class.unit_exists(unit):
+            return web.json_response({
+                "error": f"No systemd unit '{unit}.service' found on this host — "
+                         "install it first, then add it here."
+            }, status=400)
+
     try:
         service = await _service_manager.create_service(
             name=name,
             service_type=service_type,
             display_name=data.get("display_name"),
             description=data.get("description"),
-            config=data.get("config", {}),
+            config=config,
             port=data.get("port"),
             enabled=data.get("enabled", False)
         )
@@ -8210,11 +8240,49 @@ async def http_update_managed_service(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    # Plain metadata fields (no process impact) — persisted and mirrored to
+    # the in-memory handler so the response reflects them without a reload.
+    meta_updates = {}
+    if "display_name" in data:
+        dn = str(data["display_name"] or "").strip() or service.name
+        meta_updates["display_name"] = dn
+        service.display_name = dn
+    if "description" in data:
+        desc = str(data["description"] or "").strip()
+        meta_updates["description"] = desc
+        service.description = desc
+    if "port" in data:
+        port = data["port"]
+        if port in (None, ""):
+            port = None
+        else:
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "port must be a number"}, status=400)
+            if not (1 <= port <= 65535):
+                return web.json_response({"error": "port out of range"}, status=400)
+        meta_updates["port"] = port
+        service.port = port
+    if meta_updates:
+        await db.update_service_full(service_id, **meta_updates)
+
     # Update config if provided
     if "config" in data:
-        success, error = await _service_manager.update_service_config(service_id, data["config"])
+        new_config = data["config"] or {}
+        # Refuse a systemd unit that isn't installed rather than silently
+        # persisting a config that can never start.
+        if hasattr(type(service), "unit_exists"):
+            unit = str(new_config.get("unit", "")).strip()
+            if not await type(service).unit_exists(unit):
+                return web.json_response({
+                    "error": f"No systemd unit '{unit}.service' found on this host."
+                }, status=400)
+        success, error = await _service_manager.update_service_config(service_id, new_config)
         if not success:
             return web.json_response({"error": error}, status=400)
+        if hasattr(service, "sync_status"):
+            await service.sync_status()
 
     # Update enabled status if provided
     if "enabled" in data:

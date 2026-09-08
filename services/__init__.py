@@ -90,6 +90,13 @@ class ServiceManager:
                 self._services[svc_data['id']] = service
                 logger.info(f"Loaded service: {svc_data['name']} ({service_type})")
 
+                # Reconcile status against the outside world (systemd units)
+                if hasattr(service, 'sync_status'):
+                    try:
+                        await service.sync_status()
+                    except Exception as e:
+                        logger.warning(f"sync_status failed for {svc_data['name']}: {e}")
+
                 # Start if enabled
                 if svc_data.get('enabled'):
                     logger.info(f"Auto-starting enabled service: {svc_data['name']}")
@@ -117,9 +124,11 @@ class ServiceManager:
             except asyncio.CancelledError:
                 pass
 
-        # Stop all running services
+        # Stop all running services. Services that wrap an externally-owned
+        # process (systemd units) are left running — Portal shutting down
+        # must not take the host's services down with it.
         for service in self._services.values():
-            if service.status == 'running':
+            if service.status == 'running' and getattr(service, 'stop_on_shutdown', True):
                 logger.info(f"Stopping service: {service.name}")
                 await service.stop()
 
@@ -166,7 +175,9 @@ class ServiceManager:
             if path is None:
                 path = f"/managed/{name}"
 
-            # Create in unified services table
+            # Create in unified services table. Pass `enabled` explicitly — the
+            # column defaults to 1, so without this every service would be
+            # enabled regardless of the caller's intent.
             service_id = await self._db.create_service(
                 name=name,
                 path=path,
@@ -178,6 +189,7 @@ class ServiceManager:
                 service_type='managed',
                 display_name=display_name or name,
                 description=description,
+                enabled=enabled,
             )
 
             # Load the service
@@ -186,11 +198,18 @@ class ServiceManager:
             service._db = self._db
             self._services[service_id] = service
 
+            # Reconcile status for services that track an external process
+            # (e.g. systemd units) so the card is accurate immediately.
+            if hasattr(service, 'sync_status'):
+                try:
+                    await service.sync_status()
+                except Exception as e:
+                    logger.warning(f"sync_status failed for new service {name}: {e}")
+
             logger.info(f"Created service: {name} ({service_type})")
 
-            # Enable and start if requested
+            # Start now if requested (enabled was already persisted above)
             if enabled:
-                await self.enable_service(service_id)
                 await self.start_service(service_id)
 
             return service
@@ -210,8 +229,10 @@ class ServiceManager:
         """
         service = self._services.get(service_id)
         if service:
-            # Stop if running
-            if service.status == 'running':
+            # Stop if running — but never take down an externally-owned
+            # process (systemd unit) just because its Portal wrapper is
+            # being removed.
+            if service.status == 'running' and getattr(service, 'stop_on_shutdown', True):
                 await service.stop()
             await service.cleanup()
             del self._services[service_id]
@@ -360,8 +381,10 @@ class ServiceManager:
         # Update in memory
         service.config = config
 
-        # Restart if running to apply new config
-        if service.status == 'running':
+        # Restart if running to apply new config. Services that wrap an
+        # external process (systemd) opt out — their "config" selects which
+        # unit to track, and restarting wouldn't apply anything.
+        if service.status == 'running' and getattr(service, 'restart_on_config_change', True):
             logger.info(f"Restarting {service.name} to apply config changes")
             return await service.restart()
 
@@ -379,6 +402,16 @@ class ServiceManager:
         service = self._services.get(service_id)
         if not service:
             return None
+
+        # Reconcile with the outside world first (systemd units) so callers
+        # that read status on demand (admin panel) see the real state. This
+        # costs one `systemctl show` subprocess per systemd service per call —
+        # fine for a handful; revisit if that grows large.
+        if hasattr(service, 'sync_status'):
+            try:
+                await service.sync_status()
+            except Exception as e:
+                logger.error(f"sync_status failed for {service.name}: {e}")
 
         status = service.get_status()
 
@@ -412,6 +445,15 @@ class ServiceManager:
         Returns:
             List of log entries
         """
+        service = self._services.get(service_id)
+        if service is not None and hasattr(service, 'get_journal_logs'):
+            # systemd-wrapped services have no Portal-captured output; pull
+            # their logs from journalctl instead.
+            try:
+                return await service.get_journal_logs(limit)
+            except Exception as e:
+                logger.error(f"journal log fetch failed for {service.name}: {e}")
+                return []
         return await self._db.get_service_logs(service_id, limit, level)
 
     async def _health_monitor(self):
@@ -420,7 +462,16 @@ class ServiceManager:
 
         while not self._shutdown:
             try:
-                for service in self._services.values():
+                for service in list(self._services.values()):
+                    # Services that wrap an external process (systemd units)
+                    # reconcile their status from the outside world here — they
+                    # can start/stop without Portal's involvement.
+                    if hasattr(service, 'sync_status'):
+                        try:
+                            await service.sync_status()
+                        except Exception as e:
+                            logger.error(f"sync_status failed for {service.name}: {e}")
+
                     if service.status != 'running':
                         continue
 
@@ -514,6 +565,11 @@ def load_service_types():
         from . import searxng
     except ImportError as e:
         logger.warning(f"Failed to load searxng service: {e}")
+
+    try:
+        from . import systemd
+    except ImportError as e:
+        logger.warning(f"Failed to load systemd service: {e}")
 
     # Add more service imports here as they're implemented
     # from . import turn
