@@ -716,7 +716,12 @@ SearXNG (privacy-respecting metasearch, [github.com/searxng/searxng](https://git
 - **`settings.yml`** - `use_default_settings: true` plus overrides: `base_url: https://<host>/search/`, `limiter: false`, `public_instance: false`, `formats: [html, json]`. `server.secret_key` is generated once and persisted in the encrypted service config so it survives restarts.
 - **Sub-path** - SearXNG mounts its whole app under `/search/` natively via `base_url` — no `SCRIPT_NAME`/`mount` tricks.
 - **Exposure** - `http_searxng_proxy` handles `GET|POST /search` and `/search/{path:.*}`, gated by `authenticate_request` (any logged-in user; unauthenticated browsers redirect to `/login`). It reverse-proxies verbatim to the uWSGI socket, buffers the response so `security_headers_middleware` still applies, and forces `Cache-Control: private, no-store`.
-- **Admin toggle** - The route and the dashboard nav link are live only while the `searxng` service row exists, is `enabled`, and is `running`. `GET /api/search/status` reports `{available: bool}`. Disable the service and the portal is unaffected.
+- **Admin toggle** - The route, the dashboard nav link, and the dashboard search bar's "Internet" option are live only while the `searxng` service row exists, is `enabled`, and is `running`. `GET /api/search/status` reports `{available: bool}`. Disable the service and the portal is unaffected.
+- **Portal chrome + theme** - For `text/html` responses, `http_searxng_proxy` injects `theme.js` + `portal.css` + `searxng-portal.css` + `searxng-portal.js` before `</head>`. `searxng-portal.css` remaps SearXNG's ~105 `--color-*` vars onto the portal theme tokens; `searxng-portal.js` strips SearXNG's own `theme-*` `<html>` class, prepends the full portal navbar (identity from `/api/me`, SearXNG's About/Preferences folded in), and mounts the shared `ThemeSwitcher`. No SearXNG templates are forked.
+
+### Theme system
+
+`static/js/theme.js` is the single source: the `THEMES` list, a synchronous pre-paint applier (`localStorage['portal-theme']` -> `html[data-theme]`), the `ThemeSwitcher` (swatch dropdown, mounts next to `.navbar-user` or an explicit `[data-theme-mount]`), and a `storage`-event listener for cross-tab sync. Loaded in `<head>` before `portal.js` on every page — including `login.html`, `unauthorized.html` and `live.html`, which have no `portal.js` and get a standalone `[data-theme-mount]` corner control. The per-theme CSS variables live in `portal.css` (`:root` + `html[data-theme="<id>"]`).
 
 ### Stream Moderation
 

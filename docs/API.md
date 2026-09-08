@@ -879,7 +879,10 @@ In `browser_mode`, the path encodes the full target URL (e.g., `/proxy/{id}/http
 Portal can run [SearXNG](https://github.com/searxng/searxng) (AGPL-3.0) as an optional managed service, reverse-proxied under `/search/` behind Portal authentication. Endpoints exist only while an admin has added and **enabled** a managed service of type `searxng`; otherwise they return `503`.
 
 #### GET /api/search/status
-Returns `{ "available": true|false }` — whether the `searxng` service is enabled and running. Used by the dashboard to show or hide the "Search" nav link. Requires authentication.
+Returns `{ "available": true|false }` — whether the `searxng` service is enabled and running. Used by the dashboard to show or hide the "Search" nav link and the dashboard search bar's "Internet" toggle. Requires authentication.
+
+#### GET /chat?q=&lt;query&gt;
+Deep link from the dashboard search bar's "Portal" mode. `chat.html` opens the message-search panel, runs the query against `/api/chat/search`, and cleans the URL.
 
 #### ALL /search  •  ALL /search/{path}
 Auth-gated reverse proxy to the local SearXNG instance. Any logged-in user may use it. Unauthenticated browser requests redirect to `/login`; unauthenticated API requests (`Accept: application/json` or `?format=json`) get `401`.
