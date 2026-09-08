@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>{{SERVICE_NAME}} - Open Relay Portal</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=46">
-    <script src="/static/js/theme.js?v=1"></script>
+    <link rel="stylesheet" href="/static/css/portal.css?v=48">
+    <script src="/static/js/theme.js?v=3"></script>
     <style>
         html, body {
             height: 100%;
@@ -371,6 +371,10 @@
         const proxyBase = '{{PROXY_PATH}}';
         const targetDisplay = '{{TARGET_DISPLAY}}';
         const browserMode = {{BROWSER_MODE}};
+        // Optional same-origin portal page to use as the home / new-tab page
+        // (e.g. "/search/" for the default Web Browser when SearXNG is enabled).
+        // Empty string => fall back to the proxied connection target.
+        const homeUrl = '{{HOME_URL}}';
         const urlInput = document.getElementById('url-input');
         const statusEl = document.getElementById('connection-status');
         const statusTextEl = document.getElementById('status-text');
@@ -390,7 +394,15 @@
         }
 
         function getHomeSrc() {
-            return proxyBase + '/';
+            return homeUrl || (proxyBase + '/');
+        }
+
+        // True when the iframe is showing the same-origin portal home page
+        // (homeUrl) rather than a proxied target.
+        function isPortalHomePath(path) {
+            if (!homeUrl) return false;
+            const base = homeUrl.replace(/\/$/, '');
+            return path === base || path.startsWith(base + '/');
         }
 
         function proxyPathToDisplay(proxyUrl) {
@@ -398,6 +410,10 @@
                 const url = new URL(proxyUrl, window.location.origin);
                 const path = url.pathname;
                 const prefix = proxyBase + '/';
+                // Same-origin portal home page (e.g. /search/): show the real path.
+                if (isPortalHomePath(path)) {
+                    return path + url.search;
+                }
                 if (browserMode) {
                     if (path.startsWith(prefix)) {
                         const remainder = path.slice(prefix.length);
@@ -781,6 +797,7 @@
 
         // Initialize with first tab
         setStatus('connecting', 'Connecting');
+        if (homeUrl) urlInput.value = homeUrl;
         addTab();
     </script>
 </body>

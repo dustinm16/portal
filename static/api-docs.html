@@ -59,8 +59,8 @@
         }
     }
     </script>
-    <link rel="stylesheet" href="/static/css/portal.css?v=46">
-    <script src="/static/js/theme.js?v=1"></script>
+    <link rel="stylesheet" href="/static/css/portal.css?v=48">
+    <script src="/static/js/theme.js?v=3"></script>
     <style>
         /* Hide auth-only nav items and show sign-in by default; JS adds .authenticated to toggle */
         .navbar-menu:not(.authenticated) .auth-nav {
@@ -3795,7 +3795,7 @@ Headers:
                 <hr style="margin: 3rem 0; border-color: rgba(255,255,255,0.1);">
 
                 <h2 id="embedded-browser">Embedded Browser</h2>
-                <p>Portal's embedded browser provides a tabbed browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar, tabbed browsing (Ctrl+T/W/Tab), and multi-site navigation for browser-mode connections. A default "Web Browser" connection with DuckDuckGo as homepage is created for all users. Connection IDs use opaque string tokens.</p>
+                <p>Portal's embedded browser provides a tabbed browsing experience for HTTP/HTTPS connections (http_proxy plugin type). It includes navigation controls (back, forward, refresh), an address bar, tabbed browsing (Ctrl+T/W/Tab), and multi-site navigation for browser-mode connections. A default "Web Browser" connection is created for all users; its home page is Portal's own private search (SearXNG at <code>/search/</code>) when that managed service is enabled, or DuckDuckGo otherwise. Connection IDs use opaque string tokens.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">

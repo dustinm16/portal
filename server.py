@@ -9357,12 +9357,29 @@ async def http_browser_page(request: web.Request) -> web.Response:
 
     browser_mode = config.get("browser_mode", False)
 
+    # Home / new-tab page. An explicit config["home_url"] wins; otherwise the
+    # default "Web Browser" connection uses the portal's own private search
+    # (SearXNG at /search/, same origin) as its home page when that managed
+    # service is enabled, falling back to its configured target (DuckDuckGo)
+    # when SearXNG is off. Only same-origin absolute portal paths are allowed.
+    home_url = ""
+    cfg_home = config.get("home_url") if isinstance(config, dict) else None
+    if isinstance(cfg_home, str) and cfg_home.startswith("/") and not cfg_home.startswith("//"):
+        home_url = cfg_home
+    elif (conn_type in ("http", "https", "http_proxy")
+          and connection.get("name") == "Web Browser"
+          and host in ("duckduckgo.com", "portal.dddvm.xyz")):
+        sx_available, _ = await _searxng_status()
+        if sx_available:
+            home_url = "/search/"
+
     html = load_static_file("browser.html")
     html = html.replace("{{CONNECTION_ID}}", conn_id)
     html = html.replace("{{SERVICE_NAME}}", _html.escape(connection.get("name", "Browser")))
     html = html.replace("{{PROXY_PATH}}", proxy_path)
     html = html.replace("{{TARGET_DISPLAY}}", _html.escape(target_display))
     html = html.replace("{{BROWSER_MODE}}", "true" if browser_mode else "false")
+    html = html.replace("{{HOME_URL}}", _html.escape(home_url))
 
     return web.Response(text=html, content_type="text/html")
 

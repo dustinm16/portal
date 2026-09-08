@@ -83,8 +83,8 @@
         }
     }
     </script>
-    <link rel="stylesheet" href="/static/css/portal.css?v=46">
-    <script src="/static/js/theme.js?v=1"></script>
+    <link rel="stylesheet" href="/static/css/portal.css?v=48">
+    <script src="/static/js/theme.js?v=3"></script>
     <style>
         /* Hide auth-only nav items and show sign-in by default; JS adds .authenticated to toggle */
         .navbar-menu:not(.authenticated) .auth-nav {
@@ -2446,7 +2446,7 @@
 
             <section id="guide-http_proxy">
                 <h3>HTTP Proxy</h3>
-                <p>Generic HTTP reverse proxy for any web-based service. This connection type opens in Portal's embedded browser with tabbed browsing, multi-site navigation, address bar, and full TLS encryption through the portal. Portal forwards HTTP requests to the target, handling TLS termination. A default "Web Browser" connection with DuckDuckGo as homepage is created automatically for all users.</p>
+                <p>Generic HTTP reverse proxy for any web-based service. This connection type opens in Portal's embedded browser with tabbed browsing, multi-site navigation, address bar, and full TLS encryption through the portal. Portal forwards HTTP requests to the target, handling TLS termination. A default "Web Browser" connection is created automatically for all users; its home page is Portal's own private search (SearXNG) when that service is enabled, or DuckDuckGo otherwise.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Type Key</th><td><code>http_proxy</code></td></tr>
                     <tr><th>Default Port</th><td><code>80</code></td></tr>

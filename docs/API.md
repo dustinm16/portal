@@ -863,7 +863,7 @@ Open the embedded browser for an HTTP proxy connection. `{id}` is the opaque con
 
 The embedded browser provides tabbed browsing, navigation controls (back/forward/refresh), an address bar, and keyboard shortcuts (Ctrl+T new tab, Ctrl+W close tab, Ctrl+Tab switch tabs, Alt+arrows navigate, Ctrl+L focus URL bar). Connections with `browser_mode: true` support multi-site navigation — users can browse any website through the proxy.
 
-A default "Web Browser" connection with DuckDuckGo as homepage is created automatically for new users.
+A default "Web Browser" connection is created automatically for new users. Its home page is the portal's own private search (SearXNG at `/search/`, same origin) when that managed service is enabled, falling back to DuckDuckGo when it is not. An explicit `config.home_url` (any same-origin absolute path) overrides this.
 
 ---
 

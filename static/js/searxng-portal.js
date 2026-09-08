@@ -17,6 +17,13 @@
     var root = document.documentElement;
     root.className = root.className.replace(/\btheme-(auto|dark|light|black)\b/g, ' ').replace(/\s+/g, ' ').trim();
 
+    // Are we running inside the portal's embedded browser (an <iframe>)? If so,
+    // skip the portal navbar (the embedded browser has its own chrome) and make
+    // external result links open in a real top-level tab — the embedded browser
+    // can only proxy its own connection target, not arbitrary sites.
+    var FRAMED = false;
+    try { FRAMED = window.self !== window.top; } catch (e) { FRAMED = true; }
+
     var NAV_LINKS = [
         { href: '/search/', label: 'Search' },
         { href: '/search/preferences', label: 'Preferences' },
@@ -92,9 +99,27 @@
             .catch(function () {});
     }
 
+    function enableFramedLinkEscape() {
+        document.addEventListener('click', function (e) {
+            var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+            if (!a) return;
+            try {
+                var u = new URL(a.href, location.href);
+                if (/^https?:$/.test(u.protocol) && u.origin !== location.origin) {
+                    a.target = '_blank';
+                    a.rel = 'noopener noreferrer';
+                }
+            } catch (err) { /* ignore */ }
+        }, true);
+    }
+
     function start() {
-        buildNavbar();
-        fillIdentity();
+        if (FRAMED) {
+            enableFramedLinkEscape();
+        } else {
+            buildNavbar();
+            fillIdentity();
+        }
         if (window.ThemeSwitcher) window.ThemeSwitcher.init();
     }
 
