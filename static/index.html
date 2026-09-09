@@ -1651,24 +1651,40 @@
     </div>
 
     <!-- Game Server Config Editor Modal -->
+    <style>
+        #gs-config-modal .gsf-row { display:flex; gap:1rem; min-width:0; }
+        #gs-config-modal .gsf-list { width:260px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow:auto; max-height:60vh; font-size:0.8rem; }
+        #gs-config-modal .gsf-editor { flex:1; display:flex; flex-direction:column; min-width:0; }
+        #gs-config-modal .gsf-editor textarea { flex:1; min-height:340px; width:100%; box-sizing:border-box; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; resize:none; }
+        @media (max-width: 760px) {
+            #gs-config-modal .gsf-row { flex-direction:column; }
+            #gs-config-modal .gsf-list { width:auto; border-right:none; border-bottom:1px solid var(--card-border); padding-right:0; padding-bottom:0.6rem; max-height:170px; }
+            #gs-config-modal .gsf-editor textarea { min-height:220px; }
+        }
+    </style>
     <div id="gs-config-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('gs-config-modal')"></div>
-        <div class="modal-content modal-large">
+        <div class="modal-content modal-large" style="width:calc(100vw - 2rem);">
             <div class="modal-header">
-                <h3>Config — <span id="gs-config-title"></span></h3>
+                <h3>Files — <span id="gs-config-title"></span></h3>
                 <button class="modal-close" onclick="closeModal('gs-config-modal')">&times;</button>
             </div>
             <div class="modal-body">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.75rem;">
-                    <span style="font-size:0.75rem; color:var(--text-muted);">Edit a settings file, or download a backup of the config &amp; save files.</span>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.5rem; flex-wrap:wrap;">
+                    <div id="gs-config-roots" style="display:flex; gap:0.35rem; flex-wrap:wrap;"></div>
                     <button class="btn btn-secondary btn-sm" id="gs-config-backup" onclick="downloadGsBackup()">⬇ Download backup</button>
                 </div>
-                <div style="display:flex; gap:1rem;">
-                    <div id="gs-config-files" style="width:220px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow-y:auto; max-height:60vh; font-size:0.8rem;"></div>
-                    <div style="flex:1; display:flex; flex-direction:column;">
-                        <div id="gs-config-current" style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.4rem;"></div>
-                        <textarea id="gs-config-text" spellcheck="false" style="flex:1; min-height:360px; width:100%; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; resize:none;" disabled></textarea>
-                        <div style="margin-top:0.6rem; text-align:right;">
+                <div id="gs-config-crumbs" style="font-size:0.72rem; color:var(--text-muted); font-family:monospace; margin-bottom:0.5rem; word-break:break-all;"></div>
+                <div class="gsf-row">
+                    <div id="gs-config-files" class="gsf-list"></div>
+                    <div class="gsf-editor">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
+                            <span id="gs-config-current" style="font-size:0.75rem; color:var(--text-muted); font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;"></span>
+                            <button class="btn btn-secondary btn-sm" id="gs-config-dl1" onclick="gsFilesDownloadFile()" style="display:none; flex-shrink:0;">⬇ File</button>
+                        </div>
+                        <textarea id="gs-config-text" spellcheck="false" disabled></textarea>
+                        <div style="margin-top:0.6rem; display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                            <span id="gs-config-hint" style="font-size:0.7rem; color:var(--text-muted);"></span>
                             <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
                         </div>
                     </div>
@@ -1799,7 +1815,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=47"></script>
+    <script src="/static/js/dashboard.js?v=48"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

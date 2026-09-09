@@ -989,23 +989,40 @@
             </div>
 
             <!-- Game server config editor modal -->
+            <style>
+                #gs-config-modal .gsf-row { display:flex; gap:1rem; flex:1; min-width:0; }
+                #gs-config-modal .gsf-list { width:260px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow:auto; font-size:0.8rem; max-height:520px; }
+                #gs-config-modal .gsf-editor { flex:1; display:flex; flex-direction:column; min-width:0; }
+                #gs-config-modal .gsf-editor textarea { flex:1; min-height:340px; width:100%; box-sizing:border-box; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; resize:none; }
+                @media (max-width: 760px) {
+                    #gs-config-modal .gsf-row { flex-direction:column; }
+                    #gs-config-modal .gsf-list { width:auto; border-right:none; border-bottom:1px solid var(--card-border); padding-right:0; padding-bottom:0.6rem; max-height:180px; }
+                    #gs-config-modal .gsf-editor textarea { min-height:220px; }
+                }
+            </style>
             <div id="gs-config-modal" class="modal" style="display:none;">
-                <div class="modal-content" style="max-width:900px;">
+                <div class="modal-backdrop" onclick="document.getElementById('gs-config-modal').style.display='none'"></div>
+                <div class="modal-content" style="max-width:960px;width:calc(100vw - 2rem);">
                     <div class="modal-header">
-                        <h3>Config — <span id="gs-config-title"></span></h3>
+                        <h3>Files — <span id="gs-config-title"></span></h3>
                         <button class="modal-close" onclick="document.getElementById('gs-config-modal').style.display='none'">&times;</button>
                     </div>
-                    <div class="modal-body" style="display:flex;flex-direction:column;gap:0.75rem;min-height:420px;">
-                        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
-                            <span style="font-size:0.75rem;color:var(--text-muted);">Edit a settings file, or download a backup of the config &amp; save files.</span>
+                    <div class="modal-body" style="display:flex;flex-direction:column;gap:0.6rem;min-height:440px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                            <div id="gs-config-roots" style="display:flex;gap:0.35rem;flex-wrap:wrap;"></div>
                             <button class="btn btn-secondary btn-sm" id="gs-config-backup" onclick="downloadGsBackup()">⬇ Download backup</button>
                         </div>
-                        <div style="display:flex;gap:1rem;flex:1;">
-                            <div id="gs-config-files" style="width:220px;flex-shrink:0;border-right:1px solid var(--card-border);padding-right:0.75rem;overflow-y:auto;font-size:0.8rem;"></div>
-                            <div style="flex:1;display:flex;flex-direction:column;">
-                                <div id="gs-config-current" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.4rem;"></div>
-                                <textarea id="gs-config-text" spellcheck="false" style="flex:1;min-height:360px;width:100%;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.75rem;font-family:monospace;font-size:0.8rem;resize:none;" disabled></textarea>
-                                <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+                        <div id="gs-config-crumbs" style="font-size:0.72rem;color:var(--text-muted);font-family:monospace;word-break:break-all;"></div>
+                        <div class="gsf-row">
+                            <div id="gs-config-files" class="gsf-list"></div>
+                            <div class="gsf-editor">
+                                <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.4rem;">
+                                    <span id="gs-config-current" style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;"></span>
+                                    <button class="btn btn-secondary btn-sm" id="gs-config-dl1" onclick="gsFilesDownloadFile()" style="display:none;flex-shrink:0;">⬇ File</button>
+                                </div>
+                                <textarea id="gs-config-text" spellcheck="false" disabled></textarea>
+                                <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                                    <span id="gs-config-hint" style="font-size:0.7rem;color:var(--text-muted);"></span>
                                     <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
                                 </div>
                             </div>
@@ -4358,31 +4375,116 @@
         }
 
         async function openGsConfig(gsId, name) {
-            _gsConfig = { gsId, path: null };
+            _gsConfig = { gsId, name, root: 'install', dir: '', path: null, roots: [], writable: false };
             document.getElementById('gs-config-title').textContent = name;
             document.getElementById('gs-config-current').textContent = '';
+            document.getElementById('gs-config-hint').textContent = '';
             document.getElementById('gs-config-text').value = '';
             document.getElementById('gs-config-text').disabled = true;
             document.getElementById('gs-config-save').disabled = true;
+            document.getElementById('gs-config-dl1').style.display = 'none';
+            document.getElementById('gs-config-roots').innerHTML = '';
+            document.getElementById('gs-config-crumbs').textContent = '';
             document.getElementById('gs-config-backup').disabled = true;
             document.getElementById('gs-config-backup').textContent = '⬇ Download backup';
             document.getElementById('gs-config-files').innerHTML = 'Loading…';
             document.getElementById('gs-config-modal').style.display = 'flex';
+            gsFilesNav('install', '');
+        }
+
+        async function gsFilesNav(root, dir) {
+            const box = document.getElementById('gs-config-files');
+            box.innerHTML = 'Loading…';
             try {
-                const d = await Portal.fetchJSON(`/api/game-servers/${gsId}/config`);
-                const files = d.files || [];
-                document.getElementById('gs-config-files').innerHTML = files.length
-                    ? files.map(f => `<div style="padding:0.35rem 0.4rem;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''" onclick="loadGsConfigFile('${escapeHtml(f.path).replace(/'/g,"\\'")}')">${escapeHtml(f.name)}<div style="font-size:0.65rem;color:var(--text-muted);">${escapeHtml(f.path)}</div></div>`).join('')
-                    : '<p style="color:var(--text-muted);font-size:0.8rem;">No config files found yet — start the server once so it generates them.</p>';
-                const bcount = (d.backup_files || []).length;
-                const bbtn = document.getElementById('gs-config-backup');
-                bbtn.disabled = bcount === 0;
-                bbtn.textContent = bcount
-                    ? `⬇ Download backup (${bcount} file${bcount === 1 ? '' : 's'}, ${_fmtBytes(d.backup_total)})`
-                    : 'Nothing to back up yet';
+                const d = await Portal.fetchJSON(
+                    `/api/game-servers/${_gsConfig.gsId}/files?root=${encodeURIComponent(root)}&path=${encodeURIComponent(dir || '')}`);
+                _gsConfig.root = d.root; _gsConfig.dir = d.path || '';
+                _gsConfig.roots = d.roots || [];
+                // root tabs
+                document.getElementById('gs-config-roots').innerHTML = (d.roots || []).map(r =>
+                    `<button class="btn btn-sm ${r.key === d.root ? 'btn-primary' : 'btn-secondary'}" onclick="gsFilesNav('${r.key}','')">${escapeHtml(r.label)}</button>`
+                ).join('');
+                // breadcrumb
+                const parts = (d.path || '').split('/').filter(Boolean);
+                let acc = '';
+                const crumbs = [`<a href="#" onclick="event.preventDefault();gsFilesNav('${d.root}','')">/</a>`];
+                parts.forEach(p => {
+                    acc = acc ? acc + '/' + p : p;
+                    const a = acc.replace(/'/g, "\\'");
+                    crumbs.push(`<a href="#" onclick="event.preventDefault();gsFilesNav('${d.root}','${a}')">${escapeHtml(p)}</a>`);
+                });
+                document.getElementById('gs-config-crumbs').innerHTML = crumbs.join(' / ');
+                // list
+                let html = '';
+                const pinned = (d.pinned || []);
+                if (pinned.length && !d.path) {
+                    html += '<div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin:0.1rem 0 0.3rem;">📌 Settings files</div>';
+                    html += pinned.map(f => gsFileRow(f.name, f.path, 'file', f.size, f.root || d.root, true)).join('');
+                    html += '<div style="border-top:1px solid var(--card-border);margin:0.4rem 0;"></div>';
+                }
+                if (d.path) {
+                    const up = d.path.split('/').slice(0, -1).join('/').replace(/'/g, "\\'");
+                    html += `<div style="padding:0.3rem 0.4rem;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''" onclick="gsFilesNav('${d.root}','${up}')">📁 ..</div>`;
+                }
+                if (!(d.entries || []).length && !pinned.length) {
+                    html += '<p style="color:var(--text-muted);font-size:0.8rem;">Empty — start the server once so it generates its files.</p>';
+                }
+                html += (d.entries || []).map(e => e.type === 'directory'
+                    ? `<div style="padding:0.3rem 0.4rem;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''" onclick="gsFilesNav('${d.root}','${e.path.replace(/'/g, "\\'")}')">📁 ${escapeHtml(e.name)}</div>`
+                    : gsFileRow(e.name, e.path, 'file', e.size, d.root, e.writable)
+                ).join('');
+                box.innerHTML = html;
             } catch (e) {
-                document.getElementById('gs-config-files').innerHTML = '<p style="color:var(--accent-red);">Failed to load.</p>';
+                box.innerHTML = `<p style="color:var(--accent-red);font-size:0.8rem;">${escapeHtml(e.message || 'Failed to load')}</p>`;
             }
+            // backup button (independent of dir)
+            if (document.getElementById('gs-config-backup').textContent === '⬇ Download backup') {
+                try {
+                    const c = await Portal.fetchJSON(`/api/game-servers/${_gsConfig.gsId}/config`);
+                    const bcount = (c.backup_files || []).length;
+                    const bbtn = document.getElementById('gs-config-backup');
+                    bbtn.disabled = bcount === 0;
+                    bbtn.textContent = bcount
+                        ? `⬇ Download backup (${bcount} file${bcount === 1 ? '' : 's'}, ${_fmtBytes(c.backup_total)})`
+                        : 'Nothing to back up yet';
+                } catch (e) { /* leave default */ }
+            }
+        }
+
+        function gsFileRow(name, path, type, size, root, writable) {
+            const p = String(path).replace(/'/g, "\\'");
+            return `<div style="padding:0.3rem 0.4rem;cursor:pointer;border-radius:4px;display:flex;justify-content:space-between;gap:0.5rem;" onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''" onclick="gsFilesOpen('${root}','${p}',${writable ? 'true' : 'false'})"><span>📄 ${escapeHtml(name)}</span><span style="color:var(--text-muted);font-size:0.65rem;flex-shrink:0;">${_fmtBytes(size)}</span></div>`;
+        }
+
+        async function gsFilesOpen(root, path, writable) {
+            try {
+                const d = await Portal.fetchJSON(
+                    `/api/game-servers/${_gsConfig.gsId}/files/read?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
+                _gsConfig.path = path; _gsConfig.readRoot = root;
+                _gsConfig.writable = !!d.writable;
+                document.getElementById('gs-config-current').textContent = path;
+                document.getElementById('gs-config-dl1').style.display = '';
+                const ta = document.getElementById('gs-config-text');
+                ta.value = d.content; ta.disabled = !d.writable;
+                document.getElementById('gs-config-save').disabled = !d.writable;
+                document.getElementById('gs-config-hint').textContent = d.writable
+                    ? '' : 'Read-only file type — download to edit elsewhere.';
+            } catch (e) { Portal.toast(e.message || 'Failed to read file', 'error'); }
+        }
+
+        async function gsFilesDownloadFile() {
+            if (!_gsConfig.path) return;
+            try {
+                const res = await Portal.fetch(
+                    `/api/game-servers/${_gsConfig.gsId}/files/download?root=${encodeURIComponent(_gsConfig.readRoot)}&path=${encodeURIComponent(_gsConfig.path)}`);
+                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Download failed');
+                const blob = await res.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = _gsConfig.path.split('/').pop() || 'file';
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(a.href);
+            } catch (e) { Portal.toast(e.message || 'Download failed', 'error'); }
         }
 
         async function downloadGsBackup() {
@@ -4407,23 +4509,12 @@
             }
         }
 
-        async function loadGsConfigFile(path) {
-            try {
-                const d = await Portal.fetchJSON(`/api/game-servers/${_gsConfig.gsId}/config/read?path=${encodeURIComponent(path)}`);
-                _gsConfig.path = path;
-                document.getElementById('gs-config-current').textContent = path;
-                const ta = document.getElementById('gs-config-text');
-                ta.value = d.content; ta.disabled = false;
-                document.getElementById('gs-config-save').disabled = false;
-            } catch (e) { Portal.toast('Failed to read file', 'error'); }
-        }
-
         async function saveGsConfig() {
-            if (!_gsConfig.path) return;
+            if (!_gsConfig.path || !_gsConfig.writable) return;
             try {
-                const res = await Portal.fetch(`/api/game-servers/${_gsConfig.gsId}/config/write`, {
+                const res = await Portal.fetch(`/api/game-servers/${_gsConfig.gsId}/files/write`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: _gsConfig.path, content: document.getElementById('gs-config-text').value }),
+                    body: JSON.stringify({ root: _gsConfig.readRoot, path: _gsConfig.path, content: document.getElementById('gs-config-text').value }),
                 });
                 if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
                 Portal.toast('Saved');

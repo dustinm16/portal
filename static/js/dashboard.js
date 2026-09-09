@@ -460,8 +460,8 @@ async function showServiceLogs(serviceId, name) {
     }
 }
 
-// ---- Game server config editor (shared modal #gs-config-modal) ----
-let _gsCfg = { gsId: null, path: null };
+// ---- Game server file browser (shared modal #gs-config-modal) ----
+let _gsCfg = { gsId: null, path: null, readRoot: 'install', writable: false };
 
 function _gsFmtBytes(n) {
     if (!n) return '0 B';
@@ -473,9 +473,13 @@ function _gsFmtBytes(n) {
 async function showGameServerFiles(serviceId, name) {
     document.getElementById('gs-config-title').textContent = name;
     document.getElementById('gs-config-current').textContent = '';
+    document.getElementById('gs-config-hint').textContent = '';
     const ta = document.getElementById('gs-config-text');
     ta.value = ''; ta.disabled = true;
     document.getElementById('gs-config-save').disabled = true;
+    document.getElementById('gs-config-dl1').style.display = 'none';
+    document.getElementById('gs-config-roots').innerHTML = '';
+    document.getElementById('gs-config-crumbs').textContent = '';
     const bbtn = document.getElementById('gs-config-backup');
     if (bbtn) { bbtn.disabled = true; bbtn.textContent = '⬇ Download backup'; }
     const listEl = document.getElementById('gs-config-files');
@@ -486,24 +490,102 @@ async function showGameServerFiles(serviceId, name) {
         const servers = (await Portal.fetchJSON('/api/game-servers')).game_servers || [];
         const gs = servers.find(s => s.service_id === serviceId);
         if (!gs) { listEl.innerHTML = '<span style="color:var(--accent-red);">Server not found.</span>'; return; }
-        _gsCfg = { gsId: gs.id, path: null };
-        const d = await Portal.fetchJSON(`/api/game-servers/${gs.id}/config`);
-        const files = d.files || [];
-        listEl.innerHTML = files.length
-            ? files.map(f => `<div class="gs-cfg-file" style="padding:0.35rem 0.4rem; cursor:pointer; border-radius:4px;" data-path="${escapeHtml(f.path)}">${escapeHtml(f.name)}<div style="font-size:0.65rem; color:var(--text-muted);">${escapeHtml(f.path)}</div></div>`).join('')
-            : '<span style="color:var(--text-muted);">No config files yet — start the server once so it generates them.</span>';
-        listEl.querySelectorAll('.gs-cfg-file').forEach(el => {
-            el.addEventListener('click', () => openGsConfigFile(el.dataset.path));
-        });
-        if (bbtn) {
-            const bc = (d.backup_files || []).length;
-            bbtn.disabled = bc === 0;
-            bbtn.textContent = bc
-                ? `⬇ Download backup (${bc} file${bc === 1 ? '' : 's'}, ${_gsFmtBytes(d.backup_total)})`
-                : 'Nothing to back up yet';
-        }
+        _gsCfg = { gsId: gs.id, path: null, readRoot: 'install', writable: false };
+        gsFilesNav('install', '');
     } catch (e) {
         listEl.innerHTML = `<span style="color:var(--accent-red);">Failed: ${escapeHtml(e.message || '')}</span>`;
+    }
+}
+
+async function gsFilesNav(root, dir) {
+    const box = document.getElementById('gs-config-files');
+    box.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+    try {
+        const d = await Portal.fetchJSON(
+            `/api/game-servers/${_gsCfg.gsId}/files?root=${encodeURIComponent(root)}&path=${encodeURIComponent(dir || '')}`);
+        document.getElementById('gs-config-roots').innerHTML = (d.roots || []).map(r =>
+            `<button class="btn btn-sm ${r.key === d.root ? 'btn-primary' : 'btn-secondary'}" onclick="gsFilesNav('${r.key}','')">${escapeHtml(r.label)}</button>`
+        ).join('');
+        const parts = (d.path || '').split('/').filter(Boolean);
+        let acc = '';
+        const crumbs = [`<a href="#" onclick="event.preventDefault();gsFilesNav('${d.root}','')">/</a>`];
+        parts.forEach(p => {
+            acc = acc ? acc + '/' + p : p;
+            const a = acc.replace(/'/g, "\\'");
+            crumbs.push(`<a href="#" onclick="event.preventDefault();gsFilesNav('${d.root}','${a}')">${escapeHtml(p)}</a>`);
+        });
+        document.getElementById('gs-config-crumbs').innerHTML = crumbs.join(' / ');
+        let html = '';
+        const pinned = (d.pinned || []);
+        if (pinned.length && !d.path) {
+            html += '<div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin:0.1rem 0 0.3rem;">📌 Settings files</div>';
+            html += pinned.map(f => _gsFileRow(f.name, f.path, f.size, f.root || d.root, true)).join('');
+            html += '<div style="border-top:1px solid var(--card-border);margin:0.4rem 0;"></div>';
+        }
+        if (d.path) {
+            const up = d.path.split('/').slice(0, -1).join('/').replace(/'/g, "\\'");
+            html += `<div style="padding:0.3rem 0.4rem;cursor:pointer;border-radius:4px;" onclick="gsFilesNav('${d.root}','${up}')">📁 ..</div>`;
+        }
+        if (!(d.entries || []).length && !pinned.length) {
+            html += '<span style="color:var(--text-muted);">Empty — start the server once so it generates its files.</span>';
+        }
+        html += (d.entries || []).map(e => e.type === 'directory'
+            ? `<div style="padding:0.3rem 0.4rem;cursor:pointer;border-radius:4px;" onclick="gsFilesNav('${d.root}','${e.path.replace(/'/g, "\\'")}')">📁 ${escapeHtml(e.name)}</div>`
+            : _gsFileRow(e.name, e.path, e.size, d.root, e.writable)
+        ).join('');
+        box.innerHTML = html;
+    } catch (e) {
+        box.innerHTML = `<span style="color:var(--accent-red);">${escapeHtml(e.message || 'Failed to load')}</span>`;
+    }
+    const bbtn = document.getElementById('gs-config-backup');
+    if (bbtn && bbtn.textContent === '⬇ Download backup') {
+        try {
+            const c = await Portal.fetchJSON(`/api/game-servers/${_gsCfg.gsId}/config`);
+            const bc = (c.backup_files || []).length;
+            bbtn.disabled = bc === 0;
+            bbtn.textContent = bc
+                ? `⬇ Download backup (${bc} file${bc === 1 ? '' : 's'}, ${_gsFmtBytes(c.backup_total)})`
+                : 'Nothing to back up yet';
+        } catch (e) { /* keep default */ }
+    }
+}
+
+function _gsFileRow(name, path, size, root, writable) {
+    const p = String(path).replace(/'/g, "\\'");
+    return `<div style="padding:0.3rem 0.4rem;cursor:pointer;border-radius:4px;display:flex;justify-content:space-between;gap:0.5rem;" onclick="gsFilesOpen('${root}','${p}',${writable ? 'true' : 'false'})"><span>📄 ${escapeHtml(name)}</span><span style="color:var(--text-muted);font-size:0.65rem;flex-shrink:0;">${_gsFmtBytes(size)}</span></div>`;
+}
+
+async function gsFilesOpen(root, path, writable) {
+    try {
+        const d = await Portal.fetchJSON(
+            `/api/game-servers/${_gsCfg.gsId}/files/read?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
+        _gsCfg.path = path; _gsCfg.readRoot = root; _gsCfg.writable = !!d.writable;
+        document.getElementById('gs-config-current').textContent = path;
+        document.getElementById('gs-config-dl1').style.display = '';
+        const ta = document.getElementById('gs-config-text');
+        ta.value = d.content; ta.disabled = !d.writable;
+        document.getElementById('gs-config-save').disabled = !d.writable;
+        document.getElementById('gs-config-hint').textContent = d.writable
+            ? '' : 'Read-only file type — download to edit elsewhere.';
+    } catch (e) {
+        Portal.toast(e.message || 'Failed to read file', 'error');
+    }
+}
+
+async function gsFilesDownloadFile() {
+    if (!_gsCfg.path) return;
+    try {
+        const res = await Portal.fetch(
+            `/api/game-servers/${_gsCfg.gsId}/files/download?root=${encodeURIComponent(_gsCfg.readRoot)}&path=${encodeURIComponent(_gsCfg.path)}`);
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Download failed');
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = _gsCfg.path.split('/').pop() || 'file';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(a.href);
+    } catch (e) {
+        Portal.toast(e.message || 'Download failed', 'error');
     }
 }
 
@@ -529,25 +611,12 @@ async function downloadGsBackup() {
     }
 }
 
-async function openGsConfigFile(path) {
-    try {
-        const d = await Portal.fetchJSON(`/api/game-servers/${_gsCfg.gsId}/config/read?path=${encodeURIComponent(path)}`);
-        _gsCfg.path = path;
-        document.getElementById('gs-config-current').textContent = path;
-        const ta = document.getElementById('gs-config-text');
-        ta.value = d.content; ta.disabled = false;
-        document.getElementById('gs-config-save').disabled = false;
-    } catch (e) {
-        Portal.toast('Failed to read file', 'error');
-    }
-}
-
 async function saveGsConfig() {
-    if (!_gsCfg.path) return;
+    if (!_gsCfg.path || !_gsCfg.writable) return;
     try {
-        const res = await Portal.fetch(`/api/game-servers/${_gsCfg.gsId}/config/write`, {
+        const res = await Portal.fetch(`/api/game-servers/${_gsCfg.gsId}/files/write`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: _gsCfg.path, content: document.getElementById('gs-config-text').value }),
+            body: JSON.stringify({ root: _gsCfg.readRoot, path: _gsCfg.path, content: document.getElementById('gs-config-text').value }),
         });
         if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
         Portal.toast('Saved');

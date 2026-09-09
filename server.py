@@ -9026,6 +9026,109 @@ async def http_game_server_config_write(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+# --- Jailed file browser (admin or `files` grant) --------------------------
+
+async def http_game_server_files_list(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    root = request.query.get("root", "install")
+    rel = request.query.get("path", "")
+    try:
+        roots = await asyncio.to_thread(gameservers.file_roots, gs)
+        listing = await asyncio.to_thread(gameservers.browse_dir, gs, root, rel)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    listing["roots"] = [{"key": r["key"], "label": r["label"]} for r in roots]
+    # Pinned "settings files" resolve against the config root, which is the
+    # "config" browser root when one exists, else "install".
+    pin_root = "config" if any(r["key"] == "config" for r in roots) else "install"
+    pinned = await asyncio.to_thread(gameservers.list_config_files, gs)
+    for p in pinned:
+        p["root"] = pin_root
+    listing["pinned"] = pinned
+    return web.json_response(listing)
+
+
+async def http_game_server_files_read(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    root = request.query.get("root", "install")
+    rel = request.query.get("path", "")
+    try:
+        out = await asyncio.to_thread(gameservers.browse_read, gs, root, rel)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError:
+        return web.json_response({"error": "File not found"}, status=404)
+    return web.json_response(out)
+
+
+async def http_game_server_files_write(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data.get("content"), str):
+        return web.json_response({"error": "content must be a string"}, status=400)
+    root = data.get("root", "install")
+    rel = data.get("path", "")
+    try:
+        await asyncio.to_thread(gameservers.browse_write, gs, root, rel, data["content"])
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.file_edit", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=gs["name"], details={"root": root, "path": rel})
+    return web.json_response({"success": True})
+
+
+async def http_game_server_files_download(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    root = request.query.get("root", "install")
+    rel = request.query.get("path", "")
+    try:
+        payload, filename = await asyncio.to_thread(
+            gameservers.browse_download, gs, root, rel)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError:
+        return web.json_response({"error": "File not found"}, status=404)
+    return web.Response(body=payload, headers={
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    })
+
+
+async def http_game_server_resync_catalog(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return err
+    try:
+        updated = await gameservers.resync_from_catalog(db, gs["id"])
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    updated["config_paths"] = _json_or(updated.get("config_paths"), [])
+    return web.json_response({"success": True, "game_server": updated})
+
+
 # =============================================================================
 # Root Redirect Handler
 # =============================================================================
@@ -16091,6 +16194,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/game-servers/{id}/config/read", http_game_server_config_read)
     app.router.add_post("/api/game-servers/{id}/config/write", http_game_server_config_write)
     app.router.add_get("/api/game-servers/{id}/config/download", http_game_server_config_download)
+    app.router.add_get("/api/game-servers/{id}/files", http_game_server_files_list)
+    app.router.add_get("/api/game-servers/{id}/files/read", http_game_server_files_read)
+    app.router.add_post("/api/game-servers/{id}/files/write", http_game_server_files_write)
+    app.router.add_get("/api/game-servers/{id}/files/download", http_game_server_files_download)
+    app.router.add_post("/api/game-servers/{id}/resync-catalog", http_game_server_resync_catalog)
 
     # User management
     app.router.add_get("/api/users", http_list_users)
@@ -16510,6 +16618,7 @@ class PortalServer:
         # SteamCMD build-check so cards show an up-to-date / update-available badge
         try:
             await gameservers.seed_catalog(db)
+            await gameservers.resync_all_from_catalog(db)
             gameservers.start_build_check_loop(db)
         except Exception as e:
             logger.warning(f"Game catalog seed failed: {e}")

@@ -60,18 +60,21 @@ CATALOG_SEED = [
      "start_args": "-useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS",
      "stop_signal": "SIGINT", "game_port": 8211,
      "config_paths": ["Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
-                      "Pal/Saved/Config/LinuxServer/Game.ini"],
-     "backup_paths": ["Pal/Saved/SaveGames/**"],
+                      "Pal/Saved/Config/LinuxServer/Game.ini",
+                      "Pal/Saved/Config/LinuxServer/Engine.ini",
+                      "Pal/Saved/Config/LinuxServer/GameUserSettings.ini"],
+     "backup_paths": ["Pal/Saved/SaveGames/**",
+                      "Pal/Saved/Config/LinuxServer/*.ini"],
      "notes": "UDP 8211. Settings generated after first start. SIGINT stop so the world saves."},
     {"key": "zomboid", "name": "Project Zomboid", "steam_app_id": 380870,
      "start_cmd": "./start-server.sh", "start_args": "", "stop_signal": "SIGINT",
      "game_port": 16261,
      "config_root": "~/Zomboid",
-     "config_paths": ["Server/*.ini"],
-     "backup_paths": ["Server/*_SandboxVars.lua", "Server/*_spawnpoints.lua",
-                      "Server/*_spawnregions.lua", "Saves/**"],
-     "notes": "SIGINT stop so the world saves. PZ keeps its config and saves under "
-              "~/Zomboid (the run-as account's home), not the install dir."},
+     "config_paths": ["Server/*.ini", "Server/*.lua"],
+     "backup_paths": ["Server/*.ini", "Server/*.lua", "Saves/**", "db/*.db"],
+     "notes": "SIGINT stop so the world saves. PZ keeps its config, player DB "
+              "(bans/whitelist/safehouses) and saves under ~/Zomboid (the "
+              "run-as account's home), not the install dir."},
     {"key": "valheim", "name": "Valheim", "steam_app_id": 896660,
      "start_cmd": "./valheim_server.x86_64",
      "start_args": "-name Portal -port 2456 -world Dedicated -public 1",
@@ -407,7 +410,16 @@ def _config_root(gs: dict) -> str:
         cr = _run_as_home()
     elif cr.startswith("~/"):
         cr = _run_as_home() + cr[1:]
-    return os.path.realpath(cr)
+    cr = os.path.realpath(cr)
+    # Containment: a config_root must sit under the game-data disk or the
+    # run-as account's home — never somewhere an admin misconfiguration plus a
+    # `files` grant could expose /etc, /root, another user's data, etc.
+    for base in (os.path.realpath(GAMEDATA_ROOT), os.path.realpath(_run_as_home())):
+        if cr == base or cr.startswith(base + os.sep):
+            return cr
+    logger.warning("config_root %r outside %s and %s — falling back to install_dir",
+                   cr, GAMEDATA_ROOT, _run_as_home())
+    return gs["install_dir"]
 
 
 # ---------------------------------------------------------------------------
@@ -1003,3 +1015,199 @@ def write_config(gs: dict, rel: str, text: str) -> None:
         shutil.chown(str(rp), RUN_AS, RUN_AS)
     except (LookupError, PermissionError, OSError) as e:
         logger.warning("chown %s failed: %s", rp, e)
+
+
+# ---------------------------------------------------------------------------
+# Jailed file browser
+#
+# The general file-access mechanism for a `files` grant (or an admin): a
+# directory browser confined to the server's own tree(s). The ``config_paths``
+# globs above are now just the "pinned settings files" shortcut list surfaced
+# at the top of the browser — not the access boundary. The boundary is the
+# jail: every path is resolved and required to stay under one of the roots,
+# symlinks are refused outright (``file_manager._validate_path``), and writes
+# are limited to existing files with a config-like extension so a grantee can't
+# drop or edit a script that ``systemctl restart`` would then run as `dustin`.
+# ---------------------------------------------------------------------------
+
+_BROWSE_MAX_EDIT = 2 * 1024 * 1024          # inline-editable ceiling
+_BROWSE_MAX_DOWNLOAD = _BACKUP_MAX_FILE     # single-file download ceiling (128 MB)
+
+# Text config formats only. Executables, shared objects, archives, databases and
+# save blobs are browsable/downloadable but never writable through the browser.
+_BROWSE_WRITE_SUFFIXES = {
+    ".ini", ".cfg", ".conf", ".config", ".json", ".xml", ".yaml", ".yml",
+    ".toml", ".txt", ".lua", ".properties", ".props", ".cnf",
+    ".settings", ".list", ".ecf",
+}
+
+
+def file_roots(gs: dict) -> list[dict]:
+    """The directory roots the browser is allowed to expose for this server.
+
+    Always the install dir; plus ``config_root`` when it resolves somewhere
+    else (Project Zomboid's ``~/Zomboid``). Both are re-validated to sit under
+    the game-data disk or the run-as home before being handed out."""
+    out, seen = [], set()
+    bases = (os.path.realpath(GAMEDATA_ROOT), os.path.realpath(_run_as_home()))
+
+    def _ok(p: str) -> bool:
+        rp = os.path.realpath(p)
+        return any(rp == b or rp.startswith(b + os.sep) for b in bases)
+
+    inst = os.path.realpath(gs["install_dir"])
+    if _ok(inst) and os.path.isdir(inst):
+        out.append({"key": "install", "label": "Server files", "path": inst})
+        seen.add(inst)
+    cr = os.path.realpath(_config_root(gs))
+    if cr not in seen and _ok(cr) and os.path.isdir(cr):
+        out.append({"key": "config", "label": "Config & saves", "path": cr})
+    return out
+
+
+def _browse_root(gs: dict, root_key: str) -> str:
+    for r in file_roots(gs):
+        if r["key"] == root_key:
+            return r["path"]
+    raise ValueError("unknown file root")
+
+
+def _jail(root: str, resolved: Path) -> Path:
+    rp = os.path.realpath(str(resolved))
+    if rp != root and not rp.startswith(root + os.sep):
+        raise ValueError("path is outside the permitted directory")
+    return resolved
+
+
+def _browse_writable(resolved: Path) -> bool:
+    return resolved.suffix.lower() in _BROWSE_WRITE_SUFFIXES
+
+
+def browse_dir(gs: dict, root_key: str, rel: str = "") -> dict:
+    """One directory level. Symlinks are dropped from the listing."""
+    root = _browse_root(gs, root_key)
+    rel = (rel or "").strip().strip("/")
+    _jail(root, file_manager._validate_path(rel or "/", root))
+    entries = file_manager.list_directory(rel or "/", root)
+    items = []
+    for e in entries:
+        if e.get("type") == "symlink":
+            continue
+        items.append({
+            "name": e["name"],
+            "type": e["type"],
+            "size": e.get("size", 0),
+            "mtime": e.get("modified", 0),
+            "path": (rel + "/" + e["name"]).lstrip("/") if rel else e["name"],
+            "writable": e.get("type") == "file"
+            and e["name"].lower().endswith(tuple(_BROWSE_WRITE_SUFFIXES)),
+        })
+    items.sort(key=lambda i: (i["type"] != "directory", i["name"].lower()))
+    return {"root": root_key, "path": rel, "entries": items}
+
+
+def browse_read(gs: dict, root_key: str, rel: str) -> dict:
+    root = _browse_root(gs, root_key)
+    resolved = _jail(root, file_manager._validate_path(rel, root))
+    if not resolved.is_file():
+        raise ValueError("not a file")
+    if resolved.stat().st_size > _BROWSE_MAX_EDIT:
+        raise ValueError("file is too large to edit here — download it instead")
+    data = resolved.read_bytes()
+    return {
+        "path": rel,
+        "content": data.decode("utf-8", "replace"),
+        "writable": _browse_writable(resolved),
+    }
+
+
+def browse_write(gs: dict, root_key: str, rel: str, text: str) -> None:
+    root = _browse_root(gs, root_key)
+    resolved = _jail(root, file_manager._validate_path(rel, root))
+    if not resolved.is_file():
+        raise ValueError("can only edit files that already exist")
+    if not _browse_writable(resolved):
+        raise ValueError("this file type can't be edited from the browser")
+    if len(text.encode("utf-8")) > _BROWSE_MAX_EDIT:
+        raise ValueError("file too large")
+    resolved.write_bytes(text.encode("utf-8"))
+    try:
+        shutil.chown(str(resolved), RUN_AS, RUN_AS)
+    except (LookupError, PermissionError, OSError) as e:
+        logger.warning("chown %s failed: %s", resolved, e)
+
+
+def browse_download(gs: dict, root_key: str, rel: str) -> tuple[bytes, str]:
+    root = _browse_root(gs, root_key)
+    resolved = _jail(root, file_manager._validate_path(rel, root))
+    if not resolved.is_file():
+        raise ValueError("not a file")
+    if resolved.stat().st_size > _BROWSE_MAX_DOWNLOAD:
+        raise ValueError("file too large to download here — use the full backup or SFTP")
+    return resolved.read_bytes(), resolved.name
+
+
+# ---------------------------------------------------------------------------
+# Keep a deployed server's paths in sync with its (builtin) catalog entry
+# ---------------------------------------------------------------------------
+async def resync_from_catalog(db, gs_id: int) -> dict:
+    """Refresh a deployed server's config/backup globs + config_root from its
+    catalog entry. Deploy snapshots these, so a later catalog correction never
+    reaches an already-deployed server without this."""
+    gs = await db.game_server_get(gs_id)
+    if not gs:
+        raise ValueError("no such game server")
+    key = gs.get("catalog_key")
+    if not key:
+        raise ValueError("server was deployed from a custom entry — nothing to sync")
+    cat = await db.game_catalog_get(key)
+    if not cat:
+        raise ValueError(f"catalog entry {key!r} no longer exists")
+    await db.game_server_update(
+        gs_id,
+        config_paths=json.dumps(_as_glob_list(cat.get("config_paths"))),
+        backup_paths=json.dumps(_as_glob_list(cat.get("backup_paths"))),
+        config_root=cat.get("config_root") or None,
+    )
+    return await db.game_server_get(gs_id)
+
+
+async def resync_all_from_catalog(db) -> int:
+    """Boot-time: re-pull paths for every server that came from a builtin
+    catalog entry, so shipped catalog fixes land without a manual script."""
+    changed = 0
+    try:
+        servers = await db.game_server_list()
+    except Exception:
+        return 0
+    for gs in servers:
+        key = gs.get("catalog_key")
+        if not key:
+            continue
+        try:
+            cat = await db.game_catalog_get(key)
+        except Exception:
+            continue
+        if not cat or not cat.get("builtin"):
+            continue
+        want = (
+            json.dumps(_as_glob_list(cat.get("config_paths"))),
+            json.dumps(_as_glob_list(cat.get("backup_paths"))),
+            cat.get("config_root") or None,
+        )
+        have = (
+            json.dumps(_as_glob_list(gs.get("config_paths"))),
+            json.dumps(_as_glob_list(gs.get("backup_paths"))),
+            gs.get("config_root") or None,
+        )
+        if want != have:
+            try:
+                await db.game_server_update(
+                    gs["id"], config_paths=want[0], backup_paths=want[1],
+                    config_root=want[2])
+                changed += 1
+                logger.info("resynced game server %s paths from catalog %s",
+                            gs.get("name"), key)
+            except Exception as e:
+                logger.warning("resync %s failed: %s", gs.get("name"), e)
+    return changed

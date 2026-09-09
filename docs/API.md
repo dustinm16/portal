@@ -2828,7 +2828,7 @@ within one health-monitor cycle (and immediately on any status read).
 An admin can let a non-admin control or read one managed service:
 
 - `GET  /api/managed-services/{id}/grants` — list `[{user_id, username, actions, created_at}]`
-- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs","files"]}`. `control` = start/stop/restart; `logs` = logs + status; `files` = browse/edit config files (game servers only). Audited `service.grant`.
+- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs","files"]}`. `control` = start/stop/restart; `logs` = logs + status; `files` = the jailed file browser — browse/edit the server's files and download backups (game servers only). Audited `service.grant`.
 - `DELETE /api/managed-services/{id}/grants/{grantee_id}` — revoke. Audited `service.ungrant`.
 
 Once granted, `POST /api/services/{id}/start|stop|restart` (and the
@@ -2859,6 +2859,11 @@ account; installs go under a dedicated game-data disk.
 - `GET  /api/game-servers/{id}/config/read?path=<rel>` — read one file (admin or `files` grant).
 - `POST /api/game-servers/{id}/config/write` — body `{path, content}`; written back as the game account. Audited `gameserver.config_edit` (admin or `files` grant).
 - `GET  /api/game-servers/{id}/config/download` — download a `.tar.gz` of the config + save/world files (admin or `files` grant). Capped at 512 MB total / 128 MB per file. Audited `gameserver.backup_download`.
+- `GET  /api/game-servers/{id}/files?root=<key>&path=<rel>` — one directory level of the jailed file browser (admin or `files` grant). `root` is one of the keys in the response `roots[]` (`install` = the install dir; `config` = the config/saves dir when it resolves elsewhere). Returns `{root, path, entries[], roots[], pinned[]}`; `entries` are `{name, type, size, mtime, path, writable}` with symlinks omitted; `pinned` is the catalog's `config_paths` matches (each tagged with its `root`). Every path is resolved and confined to a root; `..`, absolute paths and symlinks are rejected.
+- `GET  /api/game-servers/{id}/files/read?root=&path=` — read one file (admin or `files` grant). Returns `{path, content, writable}`. `writable` is false for non-text/config extensions and files over 2 MB.
+- `POST /api/game-servers/{id}/files/write` — body `{root, path, content}`; only existing files with a config-like extension (`.ini .cfg .conf .json .xml .yaml .lua .txt .toml …`) are writable, written back as the game account. Audited `gameserver.file_edit`.
+- `GET  /api/game-servers/{id}/files/download?root=&path=` — download a single file (admin or `files` grant). Capped at 128 MB.
+- `POST /api/game-servers/{id}/resync-catalog` — re-pull `config_paths` / `backup_paths` / `config_root` for a deployed server from its (builtin) catalog entry (admin). Also runs automatically for every builtin-based server on restart.
 
 Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`. Start/stop/restart/logs reuse `/api/services/{service_id}/...` and are audited there.
 

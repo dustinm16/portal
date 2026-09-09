@@ -2699,7 +2699,7 @@
 
             <section id="guide-gameserver">
                 <h3>Deploy a Game Server (SteamCMD)</h3>
-                <p>Portal can install and run a dedicated game server for you — SteamCMD install, systemd unit, lifecycle control, updates, config editing and backups — from the <strong>Admin panel → Game Servers</strong> tab. This is an admin feature; unlike the connection guides above it does not use a connection plugin.</p>
+                <p>Portal can install and run a dedicated game server for you — SteamCMD install, systemd unit, lifecycle control, updates, a jailed file browser and backups — from the <strong>Admin panel → Game Servers</strong> tab. This is an admin feature; unlike the connection guides above it does not use a connection plugin.</p>
                 <table class="param-table">
                     <tr><th style="width:140px;">Where</th><td>Admin panel → <strong>Game Servers</strong></td></tr>
                     <tr><th>Runs as</th><td>an unprivileged system account, on a dedicated game-data disk</td></tr>
@@ -2716,7 +2716,7 @@
                 <ul>
                     <li><strong>Start / Stop / Restart / Logs</strong> — same controls as any managed service.</li>
                     <li><strong>Update</strong> — checks the installed build against the latest public build and runs a SteamCMD update only if they differ (stops the server, updates, restarts). A background check runs every few hours, so each card shows a live <em>Up to date</em> / <em>Update available</em> badge.</li>
-                    <li><strong>Files</strong> — edit the game's known settings files in the browser; saved files are written back as the game account.</li>
+                    <li><strong>Files</strong> — a file browser jailed to that server's own directory tree. Navigate the install dir (and, for games that store config elsewhere, a second <em>Config &amp; saves</em> root), edit any text config in place, or download a single file. The game's known settings files are pinned at the top. Saved files are written back as the game account; only existing text-config files can be edited (no scripts or binaries).</li>
                     <li><strong>Download backup</strong> — packages the config plus save/world files into a single <code>.tar.gz</code> (capped at 512&nbsp;MB).</li>
                     <li><strong>Grant</strong> — give a non-admin user <em>Control</em>, <em>Logs</em> and/or <em>Files</em>. Each permitted action then shows as a labelled button on that server's card on their own dashboard.</li>
                     <li><strong>Delete</strong> — removes the unit and Portal's records; optionally deletes the install directory too.</li>
@@ -2726,7 +2726,7 @@
                 <h4>Notes</h4>
                 <ul>
                     <li>Some catalog entries are Windows-only servers that run through a Proton/wine layer on Linux — these are marked in the catalog.</li>
-                    <li>Some games write their config and saves outside the install directory (Project Zomboid keeps them under <code>~/Zomboid</code>). The catalog entry's <em>config root</em> points the editor and backup at the right place; the built-in entries for those games already set it.</li>
+                    <li>Some games write their config and saves outside the install directory (Project Zomboid keeps them under <code>~/Zomboid</code>). The catalog entry's <em>config root</em> points the browser and backup at the right place; the built-in entries for those games already set it. If you correct a built-in entry, Portal re-applies it to already-deployed servers of that game on the next restart.</li>
                     <li>Open the game's ports on your firewall/router yourself — Portal manages the process, not the network path.</li>
                 </ul>
             </section>

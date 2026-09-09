@@ -177,18 +177,33 @@ app id, start command/args, stop signal, and `config_paths` globs.
 - **Update** compares the installed build (`steamapps/appmanifest_<id>.acf`)
   against the latest public-branch build (`steamcmd +app_info_print`); no-op
   when equal, else stop → `app_update` → restart.
-- **Config editor** — `list/read/write_config` resolve a requested path through
-  `file_manager._validate_path` **and** assert it matches one of the catalog
-  `config_paths` globs under the install dir; writes are `chown`ed back to the
-  game account. Endpoints require `admin` or a `files` grant and are audited.
+- **File browser** — the `files` grant's actual access mechanism: `browse_dir`
+  / `browse_read` / `browse_write` / `browse_download` operate through
+  `file_manager._validate_path` (which rejects `..`, absolute paths and
+  symlinks) **and** a redundant realpath containment check against the chosen
+  root. Roots come from `file_roots(gs)`: the install dir, plus `config_root`
+  when it resolves elsewhere — each re-validated to sit under the game-data
+  disk or the run-as home. Writes are limited to *existing* files with a
+  config-like extension (so a grantee can't drop/edit a script that
+  `systemctl restart` would run) and are `chown`ed back to the game account.
+  The catalog's `config_paths` matches are surfaced as a pinned shortcut list,
+  not as the boundary. Endpoints require `admin` or a `files` grant and are
+  audited. The legacy `/config/read|write` endpoints (glob-allowlisted) remain
+  for API back-compat.
 - **Backup** — `make_backup_archive` tars (`.tar.gz`, in memory) every file
   matched by `config_paths` **plus** `backup_paths` (save/world globs, `**`
   supported), capped 512 MB total / 128 MB per file. Same `files` grant.
-- **`config_root`** — config/backup globs resolve against `install_dir` by
-  default; a catalog/row `config_root` (`~` expands to the *run-as* account's
-  home, not the process's) overrides it for games that keep config outside the
-  install tree (Project Zomboid → `~/Zomboid`). All globs stay traversal-,
-  absolute- and `~`-safe (`_as_glob_list`).
+- **`config_root`** — config/backup globs (and the browser's second root)
+  resolve against `install_dir` by default; a catalog/row `config_root` (`~`
+  expands to the *run-as* account's home, not the process's) overrides it for
+  games that keep config outside the install tree (Project Zomboid →
+  `~/Zomboid`). `_config_root` clamps the result to the game-data disk or the
+  run-as home; all globs stay traversal-, absolute- and `~`-safe
+  (`_as_glob_list`).
+- **Catalog resync** — deploy snapshots `config_paths` / `backup_paths` /
+  `config_root` onto the `game_servers` row, so a later catalog fix wouldn't
+  reach an already-deployed server. `resync_from_catalog` (admin endpoint) and
+  `resync_all_from_catalog` (every builtin-based server, at boot) re-pull them.
 - **Build-check badge** — `_build_check_loop` (started at boot, 90 s delay,
   then every 6 h) runs `check_latest_build` for every deployed server, so the
   admin card shows a live "✓ Up to date" / "● Update available" pill without
@@ -272,7 +287,7 @@ Permission Hierarchy:
 ├── system_monitor.py      # Process, systemd service, and network monitoring (~367 lines)
 ├── file_manager.py        # Local filesystem operations (admin) (~285 lines)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user) (~183 lines)
-├── gameservers.py         # SteamCMD game-server deploy / adopt / update / config editor / backup (~700 lines)
+├── gameservers.py         # SteamCMD game-server deploy / adopt / update / jailed file browser / backup (~1200 lines)
 ├── jobs.py                # In-memory background job registry + streaming subprocess runner (~125 lines)
 │
 ├── plugins/               # Connection plugins
@@ -837,6 +852,11 @@ GET  /api/game-servers/:id/config          - List config files + backup set (adm
 GET  /api/game-servers/:id/config/read?path= - Read one config file (admin or files grant)
 POST /api/game-servers/:id/config/write    - Write one config file (admin or files grant)
 GET  /api/game-servers/:id/config/download - Download config + saves as .tar.gz (admin or files grant)
+GET  /api/game-servers/:id/files?root=&path= - Jailed file browser: one dir level (admin or files grant)
+GET  /api/game-servers/:id/files/read?root=&path= - Read one file (admin or files grant)
+POST /api/game-servers/:id/files/write    - Write one existing text file (admin or files grant)
+GET  /api/game-servers/:id/files/download?root=&path= - Download one file, <=128 MB (admin or files grant)
+POST /api/game-servers/:id/resync-catalog - Re-pull globs/config_root from the catalog entry (admin)
 ```
 
 Start/stop/restart/logs reuse `/api/services/{service_id}/...`.
