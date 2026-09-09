@@ -5,6 +5,7 @@
 let services = [];
 let currentCategory = 'all';
 var currentUser = null;  // shared with admin.js
+let _gsByServiceId = {};  // service_id -> game_server row (build info for the card badge)
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', async () => {
@@ -186,6 +187,13 @@ async function loadServices() {
 
     try {
         services = await Portal.getServices();
+        // Game-server rows carry the build info (installed vs latest) that
+        // drives the "up to date / update available" badge on the card.
+        try {
+            const gs = (await Portal.fetchJSON('/api/game-servers')).game_servers || [];
+            _gsByServiceId = {};
+            gs.forEach(g => { if (g.service_id) _gsByServiceId[g.service_id] = g; });
+        } catch (e) { _gsByServiceId = {}; }
         renderServices();
     } catch (error) {
         console.error('Failed to load services:', error);
@@ -287,6 +295,9 @@ function createServiceCard(service) {
     const canLogs = isAdmin || grant.includes('logs');
     const canFiles = isAdmin || grant.includes('files');
     const isGameServer = plugin === 'gameserver';
+    const gsInfo = isGameServer ? _gsByServiceId[service.id] : null;
+    const gsUpdateAvail = !!(gsInfo && gsInfo.installed_build && gsInfo.latest_build
+        && String(gsInfo.installed_build) !== String(gsInfo.latest_build));
 
     // Every action the viewer is permitted to take on this service, rendered
     // as a clearly-labelled button row at the foot of the card — admins and
@@ -304,6 +315,9 @@ function createServiceCard(service) {
     }
     if (isManaged && canLogs) {
         acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showServiceLogs(${service.id}, '${nameEsc}')">Logs</button>`);
+    }
+    if (isGameServer && canControl && gsInfo) {
+        acts.push(`<button class="btn btn-sm ${gsUpdateAvail ? 'btn-primary' : 'btn-secondary'}" onclick="event.stopPropagation(); gsCardUpdate(${service.id}, '${nameEsc}')">Update</button>`);
     }
     if (isGameServer && canFiles) {
         acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showGameServerFiles(${service.id}, '${nameEsc}')">Edit config</button>`);
@@ -334,6 +348,20 @@ function createServiceCard(service) {
         ? `<span class="service-type-badge managed">Managed</span>`
         : `<span class="service-type-badge proxy">Proxy</span>`;
 
+    // Game-server build status, shown next to the run status.
+    let updateChip = '';
+    if (gsInfo) {
+        const ib = gsInfo.installed_build, lb = gsInfo.latest_build;
+        const pill = 'font-size:0.7rem;font-weight:600;padding:0.2rem 0.55rem;border-radius:9999px;';
+        if (gsUpdateAvail) {
+            updateChip = `<span title="installed ${escapeHtml(String(ib))} → latest ${escapeHtml(String(lb))}" style="${pill}background:rgba(var(--accent-yellow-rgb,234,179,8),0.18);color:var(--accent-yellow);">● Update available</span>`;
+        } else if (ib && lb) {
+            updateChip = `<span title="build ${escapeHtml(String(ib))}" style="${pill}background:rgba(var(--accent-green-rgb,34,197,94),0.16);color:var(--accent-green);">✓ Up to date</span>`;
+        } else {
+            updateChip = `<span style="${pill}background:var(--code-bg);color:var(--text-muted);">· checking…</span>`;
+        }
+    }
+
     return `
         <div class="service-card" data-service-id="${service.id}">
             <div class="service-card-header">
@@ -345,9 +373,12 @@ function createServiceCard(service) {
                     <div class="service-plugin">${pluginName}</div>
                 </div>
             </div>
-            <div class="service-status ${statusClass}">
-                <span class="service-status-dot"></span>
-                ${statusText}
+            <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                <div class="service-status ${statusClass}">
+                    <span class="service-status-dot"></span>
+                    ${statusText}
+                </div>
+                ${updateChip}
             </div>
             ${actionRow}
         </div>
@@ -374,6 +405,35 @@ async function gsCardBackup(serviceId, name) {
         URL.revokeObjectURL(a.href);
     } catch (e) {
         Portal.toast(e.message || 'Backup failed', 'error');
+    }
+}
+
+/**
+ * Run a SteamCMD update on a game server from its dashboard card. No-ops
+ * server-side if the build is already current; otherwise stops, updates and
+ * restarts the server. Polls the job quietly and refreshes when it finishes.
+ */
+async function gsCardUpdate(serviceId, name) {
+    const gs = _gsByServiceId[serviceId];
+    if (!gs) { Portal.toast('Game server not found', 'error'); return; }
+    if (!confirm(`Update "${name}" now? If a newer build exists the server will be stopped, updated and restarted.`)) return;
+    try {
+        const d = await Portal.fetchJSON(`/api/game-servers/${gs.id}/update`, { method: 'POST' });
+        Portal.toast('Update started — checking the build…');
+        if (!d.job_id) { setTimeout(loadServices, 2000); return; }
+        const poll = setInterval(async () => {
+            try {
+                const j = await Portal.fetchJSON(`/api/game-servers/jobs/${d.job_id}`);
+                if (j.status && j.status !== 'running') {
+                    clearInterval(poll);
+                    Portal.toast(j.status === 'completed' ? `${name}: update finished` : `${name}: update ${j.status}`,
+                        j.status === 'completed' ? 'success' : 'error');
+                    loadServices();
+                }
+            } catch (e) { clearInterval(poll); loadServices(); }
+        }, 3000);
+    } catch (e) {
+        Portal.toast(e.message || 'Update failed to start', 'error');
     }
 }
 

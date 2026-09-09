@@ -8925,10 +8925,13 @@ async def http_game_server_job(request: web.Request) -> web.Response:
     if not job:
         return web.json_response({"error": "Job not found"}, status=404)
     # A non-admin may only poll jobs for a game server they hold a grant on.
+    # `control` counts too — an install/update job is a control action, and the
+    # dashboard card polls it right after hitting Update.
     if not _is_admin(token):
         gid = job.get("game_server_id")
         gs = await db.game_server_get(gid) if gid else None
-        if not gs or not await _gs_access(token, gs, "logs"):
+        if not gs or not (await _gs_access(token, gs, "logs")
+                          or await _gs_access(token, gs, "control")):
             return forbidden_response(request)
     return web.json_response(job)
 
