@@ -765,8 +765,11 @@
                                 </div>
                                 <div class="form-group" id="service-unit-group" style="display: none;">
                                     <label for="service-unit">Systemd Unit</label>
-                                    <input type="text" id="service-unit" placeholder="e.g., palworld or game@zomboid" pattern="[-a-zA-Z0-9_@.]+" title="Unit name without the .service suffix">
-                                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0;">Must already be installed on the host. Portal controls it with <code>systemctl</code> and never stops it on Portal restart.</p>
+                                    <div style="position: relative;">
+                                        <input type="text" id="service-unit" autocomplete="off" placeholder="Search installed units — e.g. game, palworld…" pattern="[-a-zA-Z0-9_@.]+" title="Unit name without the .service suffix">
+                                        <div id="service-unit-results" class="userpick-results" style="display: none;"></div>
+                                    </div>
+                                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0;">Type to search the systemd units on this host, or enter a unit name directly. Portal controls it with <code>systemctl</code> and never stops it on Portal restart.</p>
                                 </div>
                                 <div class="form-group" id="service-port-group" style="display: none;">
                                     <label for="service-port">Port <span style="color: var(--text-muted); font-weight: normal;">(optional)</span></label>
@@ -807,7 +810,10 @@
                                 </div>
                                 <div class="form-group" id="edit-service-unit-group" style="display: none;">
                                     <label for="edit-service-unit">Systemd Unit</label>
-                                    <input type="text" id="edit-service-unit" placeholder="e.g., palworld" pattern="[-a-zA-Z0-9_@.]+" title="Unit name without the .service suffix">
+                                    <div style="position: relative;">
+                                        <input type="text" id="edit-service-unit" autocomplete="off" placeholder="Search installed units…" pattern="[-a-zA-Z0-9_@.]+" title="Unit name without the .service suffix">
+                                        <div id="edit-service-unit-results" class="userpick-results" style="display: none;"></div>
+                                    </div>
                                     <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0;">Stop the service before pointing it at a different unit.</p>
                                 </div>
                                 <div class="form-group" id="edit-service-port-group" style="display: none;">
@@ -3663,6 +3669,7 @@
             document.getElementById('service-unit-group').style.display = 'none';
             document.getElementById('service-port-group').style.display = 'none';
             document.getElementById('service-unit').required = false;
+            setupUnitPickers();
 
             // Populate service types dropdown
             try {
@@ -3768,6 +3775,7 @@
         function showEditServiceModal(id) {
             const svc = managedServicesCache.find(s => s.id === id);
             if (!svc) { Portal.toast('Service not found', 'error'); return; }
+            setupUnitPickers();
 
             document.getElementById('edit-service-id').value = id;
             document.getElementById('edit-service-display-name').value = svc.display_name || svc.name || '';
@@ -3871,6 +3879,48 @@
             return { usernames: () => [...chosen.keys()], reset: () => { chosen.clear(); input.value = ''; results.style.display = 'none'; renderChips(); } };
         }
         let _grantPicker = null;
+
+        // ---- systemd unit search (hot-filter installed units) ----
+        function initUnitPicker(inputId, resultsId) {
+            const input = document.getElementById(inputId);
+            const results = document.getElementById(resultsId);
+            if (!input || !results || input.dataset.unitPicker) return;
+            input.dataset.unitPicker = '1';
+            let timer = null;
+            async function search() {
+                const q = input.value.trim();
+                if (q.length < 1) { results.style.display = 'none'; return; }
+                try {
+                    const list = await Portal.fetchJSON('/api/sysmon/services?filter=' + encodeURIComponent(q));
+                    const units = (Array.isArray(list) ? list : []).slice(0, 25);
+                    if (!units.length) { results.style.display = 'none'; return; }
+                    const stateColor = s => s === 'active' ? 'var(--accent-green)' : s === 'failed' ? 'var(--accent-red)' : 'var(--text-muted)';
+                    results.innerHTML = units.map(u => `
+                        <button type="button" data-name="${escapeHtml(u.name)}" style="display:flex;flex-direction:column;align-items:flex-start;gap:1px;">
+                            <span>${escapeHtml(u.name)}</span>
+                            <span style="font-size:0.72rem;color:var(--text-muted);">
+                                <span style="color:${stateColor(u.active_state)};">${escapeHtml(u.active_state || '')}</span>
+                                ${u.description ? ' · ' + escapeHtml(u.description.slice(0, 64)) : ''}
+                            </span>
+                        </button>`).join('');
+                    results.querySelectorAll('button').forEach(b => b.onclick = () => {
+                        input.value = b.dataset.name;
+                        results.style.display = 'none';
+                    });
+                    results.style.display = 'block';
+                } catch (e) { results.style.display = 'none'; }
+            }
+            input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 200); });
+            input.addEventListener('focus', () => { if (input.value.trim()) search(); });
+            input.addEventListener('keydown', (e) => { if (e.key === 'Escape') results.style.display = 'none'; });
+            document.addEventListener('click', (e) => {
+                if (e.target !== input && !results.contains(e.target)) results.style.display = 'none';
+            });
+        }
+        function setupUnitPickers() {
+            initUnitPicker('service-unit', 'service-unit-results');
+            initUnitPicker('edit-service-unit', 'edit-service-unit-results');
+        }
 
         function showServiceGrantModal(id, name) {
             document.getElementById('grant-service-id').value = id;
