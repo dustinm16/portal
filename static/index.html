@@ -1652,19 +1652,22 @@
 
     <!-- Game Server Config Editor Modal -->
     <style>
-        #gs-config-modal .gsf-row { display:flex; gap:1rem; min-width:0; }
-        #gs-config-modal .gsf-list { width:260px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow:auto; max-height:60vh; font-size:0.8rem; }
+        /* Shared with the admin copy in admin.html — keep in sync. */
+        #gs-config-modal .modal-content { max-width:960px; width:calc(100vw - 2rem); }
+        #gs-config-modal .modal-body { display:flex; flex-direction:column; gap:0.6rem; }
+        #gs-config-modal .gsf-row { display:flex; gap:1rem; min-width:0; align-items:stretch; }
+        #gs-config-modal .gsf-list { width:260px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow:auto; font-size:0.8rem; max-height:58vh; }
         #gs-config-modal .gsf-editor { flex:1; display:flex; flex-direction:column; min-width:0; }
-        #gs-config-modal .gsf-editor textarea { flex:1; min-height:340px; width:100%; box-sizing:border-box; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; resize:none; }
+        #gs-config-modal .gsf-editor textarea { width:100%; box-sizing:border-box; height:58vh; min-height:280px; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; line-height:1.5; resize:vertical; }
         @media (max-width: 760px) {
             #gs-config-modal .gsf-row { flex-direction:column; }
-            #gs-config-modal .gsf-list { width:auto; border-right:none; border-bottom:1px solid var(--card-border); padding-right:0; padding-bottom:0.6rem; max-height:170px; }
-            #gs-config-modal .gsf-editor textarea { min-height:220px; }
+            #gs-config-modal .gsf-list { width:auto; border-right:none; border-bottom:1px solid var(--card-border); padding-right:0; padding-bottom:0.6rem; max-height:28vh; }
+            #gs-config-modal .gsf-editor textarea { height:42vh; min-height:200px; }
         }
     </style>
     <div id="gs-config-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('gs-config-modal')"></div>
-        <div class="modal-content modal-large" style="width:calc(100vw - 2rem);">
+        <div class="modal-content modal-large">
             <div class="modal-header">
                 <h3>Files — <span id="gs-config-title"></span></h3>
                 <button class="modal-close" onclick="closeModal('gs-config-modal')">&times;</button>
