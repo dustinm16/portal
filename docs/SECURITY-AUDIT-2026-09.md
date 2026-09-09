@@ -69,11 +69,15 @@ resolve outside `GAMEDATA_ROOT` / `<home>/Zomboid`, there is nothing
 security-relevant (`~/.ssh`, `~/scripts`, `/etc`) left to write regardless
 of suffix.
 
-Verified end-to-end through the HTTP layer: a `game_servers` row with
-`config_root: "~/.ssh"` set directly in the DB degrades to a single
-`install` root on `GET /api/game-servers/{id}/files?root=config` — no
-listing of the home directory (`_config_root()` logs the rejection and
-returns `install_dir`).
+Verified: `_config_root()` and `file_roots()` — the two functions the
+`/files` and `/config` HTTP handlers call, with no `config_root` logic of
+their own on top — resolve a poisoned `config_root` (`~/.ssh`, `~`,
+`~/scripts/portal`, `/etc`) to `install_dir` and expose only the `install`
+root, logging the rejection. Separately, poisoning `game_servers.config_root`
+for a built-in-keyed row directly in the DB is undone on the next restart
+by the boot `resync_all_from_catalog()` pass (it re-pulls `config_root`
+from the catalog) — a third layer below the allowlist and the write-suffix
+denylist.
 
 Project Zomboid (`config_root: "~/Zomboid"`) is unaffected.
 
