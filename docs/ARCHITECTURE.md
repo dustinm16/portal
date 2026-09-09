@@ -211,9 +211,14 @@ app id, start command/args, stop signal, and `config_paths` globs.
   resolve against `install_dir` by default; a catalog/row `config_root` (`~`
   expands to the *run-as* account's home, not the process's) overrides it for
   games that keep config outside the install tree (Project Zomboid →
-  `~/Zomboid`). `_config_root` clamps the result to the game-data disk or the
-  run-as home; all globs stay traversal-, absolute- and `~`-safe
-  (`_as_glob_list`).
+  `~/Zomboid`). `_config_root` clamps the result to an allowlist —
+  `GAMEDATA_ROOT`, `<run-as home>/Zomboid`, and `PORTAL_GS_EXTRA_CONFIG_ROOTS`
+  — **not** the whole run-as home (which holds `~/.ssh` and Portal's source);
+  a value outside the allowlist falls back to `install_dir`. `write_config`
+  additionally refuses executable/script files. All globs stay traversal-,
+  absolute- and `~`-safe (`_as_glob_list`). `install_dir` is charset-checked
+  and confined to a strict subdirectory of `GAMEDATA_ROOT`
+  (`_validate_install_dir`) so it can't inject unit directives.
 - **Catalog resync** — deploy snapshots `config_paths` / `backup_paths` /
   `config_root` onto the `game_servers` row, so a later catalog fix wouldn't
   reach an already-deployed server. `resync_from_catalog` (admin endpoint) and

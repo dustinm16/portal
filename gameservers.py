@@ -397,13 +397,63 @@ def _run_as_home() -> str:
         return os.path.expanduser("~" + RUN_AS)
 
 
+_INSTALL_DIR_RE = re.compile(r"[A-Za-z0-9._/-]+")
+_STEAM_LOGIN_RE = re.compile(r"[A-Za-z0-9._@+-]{1,64}")
+
+
+def _validate_steam_login(v: str) -> str:
+    """A Steam account name (or ``anonymous``). Confined so it can't be a
+    stray ``+command`` token to steamcmd even though it's already argv-safe."""
+    v = (v or "anonymous").strip()
+    if not _STEAM_LOGIN_RE.fullmatch(v):
+        raise ValueError("steam_login must be a plain account name or 'anonymous'")
+    return v
+
+
+def _validate_install_dir(p: str, *, must_exist: bool = False) -> str:
+    """Normalise + confine an install dir to a subdirectory of GAMEDATA_ROOT.
+
+    Rejects control characters, shell/systemd-meaningful characters and paths
+    that resolve outside (or exactly onto) the game-data root."""
+    raw = (p or "").strip()
+    norm = os.path.normpath(raw)
+    if not raw or not _INSTALL_DIR_RE.fullmatch(norm):
+        raise ValueError("install_dir contains invalid characters")
+    root = os.path.realpath(GAMEDATA_ROOT)
+    rp = os.path.realpath(norm)
+    if rp == root or not rp.startswith(root + os.sep):
+        raise ValueError(f"install_dir must be a subdirectory of {GAMEDATA_ROOT}")
+    if must_exist and not os.path.isdir(rp):
+        raise ValueError(f"{rp} does not exist")
+    return rp
+
+
+def _allowed_config_root_bases() -> list[str]:
+    """The only directories a ``config_root`` may resolve under.
+
+    The game-data disk, plus ``<run-as home>/Zomboid`` (Project Zomboid is the
+    one built-in that keeps config/saves in the account home). NOT the whole
+    home directory — that would put ``~/.ssh``, ``~/.bashrc`` and Portal's own
+    source under a `files` grant. Extra roots can be added out-of-band via
+    ``PORTAL_GS_EXTRA_CONFIG_ROOTS`` (``:``-separated absolute paths)."""
+    bases = [os.path.realpath(GAMEDATA_ROOT),
+             os.path.realpath(os.path.join(_run_as_home(), "Zomboid"))]
+    for p in os.getenv("PORTAL_GS_EXTRA_CONFIG_ROOTS", "").split(":"):
+        p = p.strip()
+        if p:
+            bases.append(os.path.realpath(p))
+    return bases
+
+
 def _config_root(gs: dict) -> str:
     """Directory that a server's config/backup globs resolve against.
 
     ``install_dir`` by default; a catalog/row ``config_root`` overrides it for
     games that keep their config outside the install tree (Project Zomboid
     writes to ``~/Zomboid``, for example). ``~`` expands to the *run-as*
-    account's home, never this process's."""
+    account's home, never this process's. The result is clamped to
+    ``_allowed_config_root_bases()`` — an admin cannot point it at ``~/.ssh``
+    or Portal's source and hand a non-admin `files` grant on it."""
     cr = (gs.get("config_root") or "").strip()
     if not cr:
         return gs["install_dir"]
@@ -412,14 +462,10 @@ def _config_root(gs: dict) -> str:
     elif cr.startswith("~/"):
         cr = _run_as_home() + cr[1:]
     cr = os.path.realpath(cr)
-    # Containment: a config_root must sit under the game-data disk or the
-    # run-as account's home — never somewhere an admin misconfiguration plus a
-    # `files` grant could expose /etc, /root, another user's data, etc.
-    for base in (os.path.realpath(GAMEDATA_ROOT), os.path.realpath(_run_as_home())):
+    for base in _allowed_config_root_bases():
         if cr == base or cr.startswith(base + os.sep):
             return cr
-    logger.warning("config_root %r outside %s and %s — falling back to install_dir",
-                   cr, GAMEDATA_ROOT, _run_as_home())
+    logger.warning("config_root %r not under an allowed base — falling back to install_dir", cr)
     return gs["install_dir"]
 
 
@@ -469,8 +515,10 @@ def _parse_launch_args(start_args: str) -> list:
     s = (start_args or "").strip()
     if not s:
         return []
-    if len(s) > _ARGS_MAX or any(c in s for c in "\n\r\0"):
-        raise ValueError("start arguments too long or contain newlines")
+    if len(s) > _ARGS_MAX:
+        raise ValueError("start arguments too long")
+    if any(ord(c) < 0x20 and c != "\t" for c in s):
+        raise ValueError("start arguments contain a control character")
     try:
         return shlex.split(s)
     except ValueError as e:
@@ -479,6 +527,11 @@ def _parse_launch_args(start_args: str) -> list:
 
 def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
                stop_signal: str) -> str:
+    # Defence in depth: nothing interpolated raw into the unit file may carry a
+    # newline or other control char (would inject arbitrary systemd directives).
+    for field, val in (("name", name), ("install_dir", install_dir)):
+        if any(ord(c) < 0x20 for c in str(val or "")):
+            raise ValueError(f"illegal control character in {field}")
     exe = _resolve_launch_cmd(install_dir, start_cmd)
     argv = _parse_launch_args(start_args)
     exec_line = " ".join(_systemd_quote(t) for t in [exe, *argv])
@@ -562,14 +615,11 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
     cfg_paths = _as_glob_list(cat["config_paths"])
     bak_paths = _as_glob_list(cat.get("backup_paths"))
 
-    install_dir = install_dir or f"{GAMEDATA_ROOT}/{name}"
-    install_dir = os.path.normpath(install_dir)
-    if not install_dir.startswith(GAMEDATA_ROOT + "/"):
-        raise ValueError(f"install_dir must be under {GAMEDATA_ROOT}")
+    install_dir = _validate_install_dir(install_dir or f"{GAMEDATA_ROOT}/{name}")
 
     unit_name = f"portal-gs-{name}"
     args = start_args if start_args is not None else cat["start_args"]
-    slogin = steam_login or cat["steam_login"]
+    slogin = _validate_steam_login(steam_login or cat["steam_login"])
     stop_sig = cat["stop_signal"]
 
     async with _lock():
@@ -687,11 +737,7 @@ async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = Non
     cfg_paths = _as_glob_list(cat["config_paths"])
     bak_paths = _as_glob_list(cat.get("backup_paths"))
 
-    install_dir = os.path.normpath(install_dir)
-    if not install_dir.startswith(GAMEDATA_ROOT + "/"):
-        raise ValueError(f"install_dir must be under {GAMEDATA_ROOT}")
-    if not os.path.isdir(install_dir):
-        raise ValueError(f"{install_dir} does not exist — nothing to adopt")
+    install_dir = _validate_install_dir(install_dir, must_exist=True)
     app_id = cat["steam_app_id"]
     acf = os.path.join(install_dir, "steamapps", f"appmanifest_{app_id}.acf")
     if not os.path.isfile(acf):
@@ -702,7 +748,7 @@ async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = Non
     unit_name = f"portal-gs-{name}"
     s_cmd = start_cmd or cat["start_cmd"]
     args = start_args if start_args is not None else cat["start_args"]
-    slogin = steam_login or cat["steam_login"]
+    slogin = _validate_steam_login(steam_login or cat["steam_login"])
     stop_sig = stop_signal or cat["stop_signal"]
     build = _installed_build(install_dir, app_id)
 
@@ -1135,8 +1181,19 @@ def read_config(gs: dict, rel: str, max_size: int = 2 * 1024 * 1024) -> str:
     return data.decode("utf-8", "replace")
 
 
+# Never writable through the config editor even if an admin points a
+# ``config_paths`` glob at one — editing these and restarting the server
+# (a `control` grant) would run attacker code as the game account.
+_NO_WRITE_SUFFIXES = {
+    ".sh", ".bash", ".zsh", ".py", ".pl", ".rb", ".php", ".lua5", ".js",
+    ".service", ".timer", ".socket", ".path", ".so", ".bin", ".run", ".x86_64",
+}
+
+
 def write_config(gs: dict, rel: str, text: str) -> None:
     rp = _resolve_config(gs, rel)
+    if rp.suffix.lower() in _NO_WRITE_SUFFIXES or os.access(str(rp), os.X_OK):
+        raise ValueError("this file type can't be edited here")
     rp.write_bytes(text.encode("utf-8"))
     try:
         shutil.chown(str(rp), RUN_AS, RUN_AS)
@@ -1173,10 +1230,12 @@ def file_roots(gs: dict) -> list[dict]:
     """The directory roots the browser is allowed to expose for this server.
 
     Always the install dir; plus ``config_root`` when it resolves somewhere
-    else (Project Zomboid's ``~/Zomboid``). Both are re-validated to sit under
-    the game-data disk or the run-as home before being handed out."""
+    else (Project Zomboid's ``~/Zomboid``). Both are re-validated against
+    ``_allowed_config_root_bases()`` — the game-data disk plus an explicit
+    allowlist — before being handed out, so a bad ``config_root`` can't expose
+    the account home or Portal's source through a `files` grant."""
     out, seen = [], set()
-    bases = (os.path.realpath(GAMEDATA_ROOT), os.path.realpath(_run_as_home()))
+    bases = _allowed_config_root_bases()
 
     def _ok(p: str) -> bool:
         rp = os.path.realpath(p)
