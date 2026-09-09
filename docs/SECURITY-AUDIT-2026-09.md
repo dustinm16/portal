@@ -60,6 +60,21 @@ non-admin `files` grantee, so it crosses a real privilege boundary.
   executable/script suffix (`.sh .py .service …`) or the execute bit set,
   independent of the glob allowlist.
 
+The `write_config()` suffix denylist is a speed bump, not the boundary —
+it matches on `Path.suffix` so a double extension (`x.sh.bak`) or an
+extensionless target slips it, and it only catches the execute bit on a
+file that *already exists*. The real containment is the
+`_allowed_config_root_bases()` allowlist: with `config_root` unable to
+resolve outside `GAMEDATA_ROOT` / `<home>/Zomboid`, there is nothing
+security-relevant (`~/.ssh`, `~/scripts`, `/etc`) left to write regardless
+of suffix.
+
+Verified end-to-end through the HTTP layer: a `game_servers` row with
+`config_root: "~/.ssh"` set directly in the DB degrades to a single
+`install` root on `GET /api/game-servers/{id}/files?root=config` — no
+listing of the home directory (`_config_root()` logs the rejection and
+returns `install_dir`).
+
 Project Zomboid (`config_root: "~/Zomboid"`) is unaffected.
 
 #### F1 — `install_dir` reached the systemd unit unescaped → unit-directive injection (Low–Med, admin-only)
