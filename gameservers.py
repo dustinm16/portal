@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -425,9 +426,63 @@ def _config_root(gs: dict) -> str:
 # ---------------------------------------------------------------------------
 # Deploy
 # ---------------------------------------------------------------------------
+_STOP_SIGNALS = {"SIGINT", "SIGTERM", "SIGKILL", "SIGHUP", "SIGQUIT",
+                 "SIGUSR1", "SIGUSR2"}
+_ARGS_MAX = 4000
+
+
+def _systemd_quote(a: str) -> str:
+    """Quote one ExecStart token for a systemd unit file.
+
+    systemd does its own C-style unquoting of ExecStart, so we double-quote
+    every token and escape the characters that are special *to systemd*
+    (`"` `\\` `%` `$`). There is no shell in the picture, so shell
+    metacharacters need no handling — they reach the process as literal argv."""
+    out = (a.replace("\\", "\\\\").replace('"', '\\"')
+           .replace("%", "%%").replace("$", "$$"))
+    return f'"{out}"'
+
+
+def _resolve_launch_cmd(install_dir: str, start_cmd: str) -> str:
+    """Absolute path to the launch executable, confined to ``install_dir``.
+
+    ``start_cmd`` is a plain relative path (``./PalServer.sh``) — never a shell
+    fragment. Existence is *not* checked here (the unit is written before the
+    SteamCMD install runs); the file check belongs to `set_launch_options`."""
+    sc = (start_cmd or "").strip()
+    rel = sc[2:] if sc.startswith("./") else sc
+    if not rel or not re.fullmatch(r"[A-Za-z0-9_./+-]+", rel):
+        raise ValueError("start command must be a plain relative path "
+                         "(letters, digits, . _ / + -) inside the install dir")
+    if rel.startswith(("/", "~")) or ".." in rel.split("/"):
+        raise ValueError("start command must be a path inside the install dir")
+    root = os.path.realpath(install_dir)
+    abs_p = os.path.realpath(os.path.join(root, rel))
+    if abs_p != root and not abs_p.startswith(root + os.sep):
+        raise ValueError("start command resolves outside the install dir")
+    return abs_p
+
+
+def _parse_launch_args(start_args: str) -> list:
+    """Split a launch-argument string into argv tokens (shell-style quoting,
+    for the operator's convenience) — no shell is ever invoked on them."""
+    s = (start_args or "").strip()
+    if not s:
+        return []
+    if len(s) > _ARGS_MAX or any(c in s for c in "\n\r\0"):
+        raise ValueError("start arguments too long or contain newlines")
+    try:
+        return shlex.split(s)
+    except ValueError as e:
+        raise ValueError(f"could not parse start arguments: {e}")
+
+
 def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
                stop_signal: str) -> str:
-    cmd = start_cmd if not start_args else f"{start_cmd} {start_args}"
+    exe = _resolve_launch_cmd(install_dir, start_cmd)
+    argv = _parse_launch_args(start_args)
+    exec_line = " ".join(_systemd_quote(t) for t in [exe, *argv])
+    sig = stop_signal if stop_signal in _STOP_SIGNALS else "SIGTERM"
     return (
         "[Unit]\n"
         f"Description=Game server ({name}) — managed by Open Relay Portal\n"
@@ -436,9 +491,9 @@ def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
         "Type=simple\n"
         f"User={RUN_AS}\n"
         f"WorkingDirectory={install_dir}\n"
-        f"ExecStart=/bin/bash -lc 'exec {cmd}'\n"
+        f"ExecStart={exec_line}\n"
         "Restart=on-failure\nRestartSec=10\n"
-        f"KillSignal={stop_signal}\nTimeoutStopSec=45\n\n"
+        f"KillSignal={sig}\nTimeoutStopSec=45\n\n"
         "[Install]\nWantedBy=multi-user.target\n"
     )
 
@@ -912,6 +967,78 @@ async def destroy(db, gs_id: int, delete_files: bool = False) -> None:
         await _run_cmd(_sudo_user("rm", "-rf", gs["install_dir"]), timeout=600)
 
     await db.game_server_delete(gs_id)
+
+
+# ---------------------------------------------------------------------------
+# Launch options — rewrite the unit's ExecStart / KillSignal
+# ---------------------------------------------------------------------------
+async def set_launch_options(db, gs_id: int, *, start_args=None, stop_signal=None,
+                             start_cmd=None, allow_cmd=False) -> dict:
+    """Update a deployed server's launch arguments / stop signal (and, for an
+    admin, its start command), regenerate the unit file and `daemon-reload`.
+
+    Safe for a `control` grant to drive the args/signal: the unit runs the
+    executable directly (no shell), so arguments are literal argv — there is
+    no command-injection surface. `start_cmd` changes the binary that runs as
+    the game account, so they are gated to admins (`allow_cmd`).
+
+    Does not restart the server; the new ExecStart takes effect on next start.
+    Returns ``{game_server, restart_required}``."""
+    gs = await db.game_server_get(gs_id)
+    if not gs:
+        raise ValueError("no such game server")
+
+    new_args = gs.get("start_args") or ""
+    if start_args is not None:
+        _parse_launch_args(start_args)          # validate (raises ValueError)
+        new_args = start_args.strip()
+
+    new_sig = gs.get("stop_signal") or "SIGTERM"
+    if stop_signal is not None:
+        if stop_signal not in _STOP_SIGNALS:
+            raise ValueError(f"stop signal must be one of {sorted(_STOP_SIGNALS)}")
+        new_sig = stop_signal
+
+    new_cmd = gs.get("start_cmd")
+    if start_cmd is not None and start_cmd != new_cmd:
+        if not allow_cmd:
+            raise PermissionError("changing the start command requires admin")
+        exe = _resolve_launch_cmd(gs["install_dir"], start_cmd)   # confine
+        if not os.path.isfile(exe):
+            raise ValueError(f"no such file in the install dir: {start_cmd}")
+        new_cmd = start_cmd.strip()
+
+    changed = (new_args != (gs.get("start_args") or "")
+               or new_sig != (gs.get("stop_signal") or "SIGTERM")
+               or new_cmd != gs.get("start_cmd"))
+
+    unit_name = gs["unit_name"]
+    unit_file = UNITS_DIR / f"{unit_name}.service"
+    old_text = unit_file.read_text() if unit_file.exists() else None
+    new_text = _unit_text(gs["name"], gs["install_dir"], new_cmd, new_args, new_sig)
+
+    async with _lock():
+        try:
+            UNITS_DIR.mkdir(parents=True, exist_ok=True)
+            unit_file.write_text(new_text)
+            # ensure the /etc symlink still points here (harmless if it does)
+            await _run_cmd(_sudo("ln", "-sf", str(unit_file),
+                                 f"{SYSTEMD_DIR}/{unit_name}.service"))
+            rc, _, err = await _run_cmd(_sudo("systemctl", "daemon-reload"))
+            if rc != 0:
+                raise RuntimeError(f"daemon-reload failed: {err}")
+        except Exception:
+            if old_text is not None:
+                unit_file.write_text(old_text)
+                await _run_cmd(_sudo("systemctl", "daemon-reload"))
+            raise
+        await db.game_server_update(gs_id, start_args=new_args,
+                                    stop_signal=new_sig, start_cmd=new_cmd)
+
+    return {
+        "game_server": await db.game_server_get(gs_id),
+        "restart_required": bool(changed),
+    }
 
 
 # ---------------------------------------------------------------------------

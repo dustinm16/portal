@@ -2864,6 +2864,7 @@ account; installs go under a dedicated game-data disk.
 - `POST /api/game-servers/{id}/files/write` — body `{root, path, content}`; only existing files with a config-like extension (`.ini .cfg .conf .json .xml .yaml .lua .txt .toml …`) are writable, written back as the game account. Audited `gameserver.file_edit`.
 - `GET  /api/game-servers/{id}/files/download?root=&path=` — download a single file (admin or `files` grant). Capped at 128 MB.
 - `POST /api/game-servers/{id}/resync-catalog` — re-pull `config_paths` / `backup_paths` / `config_root` for a deployed server from its (builtin) catalog entry (admin). Also runs automatically for every builtin-based server on restart.
+- `POST /api/game-servers/{id}/launch-options` — edit the launch config and regenerate the unit. Body `{start_args?, stop_signal?, start_cmd?}`. `start_args` (shell-style quoting, no shell is run — split to argv) and `stop_signal` (`SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`/`SIGKILL`) take **admin or a `control` grant**; `start_cmd` (a plain relative path that must exist under the install dir) is **admin only** → `403` otherwise. Returns `{success, game_server, restart_required}`; does not restart the server. Audited `gameserver.launch_options`.
 
 Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`. Start/stop/restart/logs reuse `/api/services/{service_id}/...` and are audited there.
 

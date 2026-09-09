@@ -318,6 +318,7 @@ function createServiceCard(service) {
     }
     if (isGameServer && canControl && gsInfo) {
         acts.push(`<button class="btn btn-sm ${gsUpdateAvail ? 'btn-primary' : 'btn-secondary'}" onclick="event.stopPropagation(); gsCardUpdate(${service.id}, '${nameEsc}')">Update</button>`);
+        acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); openGsLaunch(${service.id}, '${nameEsc}')">Options</button>`);
     }
     if (isGameServer && canFiles) {
         acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showGameServerFiles(${service.id}, '${nameEsc}')">Edit config</button>`);
@@ -442,6 +443,64 @@ async function gsCardUpdate(serviceId, name) {
         }, 3000);
     } catch (e) {
         Portal.toast(e.message || 'Update failed to start', 'error');
+    }
+}
+
+/**
+ * Edit a game server's launch arguments / stop signal from its dashboard card.
+ * `control` grant is enough (no shell is run on the args); the start command
+ * is admin-only and hidden otherwise.
+ */
+let _gsLaunchSid = null;
+function openGsLaunch(serviceId, name) {
+    const gs = _gsByServiceId[serviceId];
+    if (!gs) { Portal.toast('Game server not found', 'error'); return; }
+    _gsLaunchSid = serviceId;
+    document.getElementById('gs-launch-title').textContent = name;
+    document.getElementById('gs-launch-args').value = gs.start_args || '';
+    document.getElementById('gs-launch-signal').value = gs.stop_signal || 'SIGTERM';
+    document.getElementById('gs-launch-cmd').value = gs.start_cmd || '';
+    const isAdmin = Portal.isAdmin(currentUser);
+    document.getElementById('gs-launch-cmd-row').style.display = isAdmin ? '' : 'none';
+    document.getElementById('gs-launch-note').textContent = '';
+    if (typeof showModal === 'function') showModal('gs-launch-modal');
+    else document.getElementById('gs-launch-modal').style.display = 'flex';
+}
+
+async function saveGsLaunch() {
+    if (!_gsLaunchSid) return;
+    const gs = _gsByServiceId[_gsLaunchSid];
+    if (!gs) return;
+    const btn = document.getElementById('gs-launch-save');
+    btn.disabled = true;
+    try {
+        const body = {
+            start_args: document.getElementById('gs-launch-args').value,
+            stop_signal: document.getElementById('gs-launch-signal').value,
+        };
+        if (Portal.isAdmin(currentUser)) {
+            const c = document.getElementById('gs-launch-cmd').value.trim();
+            if (c) body.start_cmd = c;
+        }
+        const res = await Portal.fetch(`/api/game-servers/${gs.id}/launch-options`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || 'Save failed');
+        Portal.toast('Launch options saved');
+        if (d.restart_required) {
+            document.getElementById('gs-launch-note').textContent =
+                'Saved. Restart the server to apply the new options.';
+        } else if (typeof closeModal === 'function') {
+            closeModal('gs-launch-modal');
+        } else {
+            document.getElementById('gs-launch-modal').style.display = 'none';
+        }
+        loadServices();
+    } catch (e) {
+        Portal.toast(e.message || 'Save failed', 'error');
+    } finally {
+        btn.disabled = false;
     }
 }
 

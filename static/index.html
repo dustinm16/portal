@@ -1696,6 +1696,43 @@
         </div>
     </div>
 
+    <!-- Game Server Launch Options Modal -->
+    <div id="gs-launch-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('gs-launch-modal')"></div>
+        <div class="modal-content" style="max-width:520px;">
+            <div class="modal-header">
+                <h3>Launch options — <span id="gs-launch-title"></span></h3>
+                <button class="modal-close" onclick="closeModal('gs-launch-modal')">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:0.9rem;">
+                <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.8rem;">
+                    <span>Start arguments</span>
+                    <input id="gs-launch-args" type="text" spellcheck="false" placeholder="-servername myserver -port 16261"
+                           style="width:100%; box-sizing:border-box; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.55rem; font-family:monospace; font-size:0.8rem;">
+                    <span style="font-size:0.7rem; color:var(--text-muted);">Appended to the launch command as-is. Quote values with spaces. No shell is run.</span>
+                </label>
+                <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.8rem;">
+                    <span>Stop signal</span>
+                    <select id="gs-launch-signal" style="background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.5rem; font-size:0.8rem;">
+                        <option>SIGINT</option><option>SIGTERM</option>
+                        <option>SIGHUP</option><option>SIGQUIT</option>
+                    </select>
+                </label>
+                <label id="gs-launch-cmd-row" style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.8rem;">
+                    <span>Start command <span style="color:var(--text-muted); font-weight:400;">(admin only)</span></span>
+                    <input id="gs-launch-cmd" type="text" spellcheck="false" placeholder="./PalServer.sh"
+                           style="width:100%; box-sizing:border-box; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.55rem; font-family:monospace; font-size:0.8rem;">
+                </label>
+                <div style="font-size:0.7rem; color:var(--text-muted);">Changes apply on the next start. If the server won't come back after a restart, reopen this dialog and revert.</div>
+                <div id="gs-launch-note" style="font-size:0.72rem; color:var(--accent-yellow);"></div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                    <button class="btn btn-secondary btn-sm" onclick="closeModal('gs-launch-modal')">Cancel</button>
+                    <button class="btn btn-primary btn-sm" id="gs-launch-save" onclick="saveGsLaunch()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Create Stream Modal -->
     <div id="create-stream-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('create-stream-modal')"></div>
@@ -1818,7 +1855,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=50"></script>
+    <script src="/static/js/dashboard.js?v=51"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

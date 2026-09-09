@@ -9132,6 +9132,52 @@ async def http_game_server_resync_catalog(request: web.Request) -> web.Response:
     return web.json_response({"success": True, "game_server": updated})
 
 
+async def http_game_server_launch_options(request: web.Request) -> web.Response:
+    """Edit a deployed server's launch args / stop signal (admin or `control`
+    grant); the start command is admin-only. Regenerates the unit file."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return err
+    if not await _gs_access(token, gs, "control"):
+        return forbidden_response(request)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    kw = {}
+    if isinstance(data.get("start_args"), str):
+        kw["start_args"] = data["start_args"]
+    if isinstance(data.get("stop_signal"), str):
+        kw["stop_signal"] = data["stop_signal"]
+    if isinstance(data.get("start_cmd"), str) and data["start_cmd"].strip():
+        kw["start_cmd"] = data["start_cmd"]
+    if not kw:
+        return web.json_response({"error": "nothing to change"}, status=400)
+
+    try:
+        result = await gameservers.set_launch_options(
+            db, gs["id"], allow_cmd=_is_admin(token), **kw)
+    except PermissionError as e:
+        return web.json_response({"error": str(e)}, status=403)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("set_launch_options failed")
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.launch_options", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=gs["name"], details=kw)
+    gsv = result["game_server"]
+    gsv["config_paths"] = _json_or(gsv.get("config_paths"), [])
+    return web.json_response({"success": True, **result})
+
+
 # =============================================================================
 # Root Redirect Handler
 # =============================================================================
@@ -16202,6 +16248,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/game-servers/{id}/files/write", http_game_server_files_write)
     app.router.add_get("/api/game-servers/{id}/files/download", http_game_server_files_download)
     app.router.add_post("/api/game-servers/{id}/resync-catalog", http_game_server_resync_catalog)
+    app.router.add_post("/api/game-servers/{id}/launch-options", http_game_server_launch_options)
 
     # User management
     app.router.add_get("/api/users", http_list_users)

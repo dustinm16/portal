@@ -174,6 +174,20 @@ app id, start command/args, stop signal, and `config_paths` globs.
   failure, then runs `steamcmd +app_update <id> validate` as a streamed
   background job (`jobs.py`). Install/update/build-check subprocesses all run
   as the unprivileged game account via `sudo -n -u <user>`.
+- **Unit generation** (`_unit_text`) uses **no shell**: `_resolve_launch_cmd`
+  turns the start command into an absolute path confined to `install_dir`
+  (plain relative path, charset-checked, no `..`), `_parse_launch_args`
+  `shlex`-splits the argument string for the operator's convenience, and every
+  token is emitted as a systemd-quoted `ExecStart` word (`%`→`%%`, `$`→`$$`).
+  Shell metacharacters in arguments therefore reach the game as literal argv,
+  never execute — which is what makes launch-arg editing safe for a
+  non-admin `control` grant.
+- **Launch options** — `set_launch_options` edits a deployed server's
+  `start_args` / `stop_signal` (admin or `control` grant) and `start_cmd`
+  (admin only; must be a file that exists in the install dir), regenerates the
+  unit with rollback if `daemon-reload` fails, and updates the DB row. It does
+  not restart; the response carries `restart_required`. Servers deployed
+  before this keep their old `bash -lc` unit until options are saved once.
 - **Update** compares the installed build (`steamapps/appmanifest_<id>.acf`)
   against the latest public-branch build (`steamcmd +app_info_print`); no-op
   when equal, else stop → `app_update` → restart.
@@ -857,6 +871,7 @@ GET  /api/game-servers/:id/files/read?root=&path= - Read one file (admin or file
 POST /api/game-servers/:id/files/write    - Write one existing text file (admin or files grant)
 GET  /api/game-servers/:id/files/download?root=&path= - Download one file, <=128 MB (admin or files grant)
 POST /api/game-servers/:id/resync-catalog - Re-pull globs/config_root from the catalog entry (admin)
+POST /api/game-servers/:id/launch-options - Edit start_args/stop_signal (admin or control), start_cmd (admin); regen unit
 ```
 
 Start/stop/restart/logs reuse `/api/services/{service_id}/...`.

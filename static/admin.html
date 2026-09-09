@@ -1034,6 +1034,44 @@
                 </div>
             </div>
 
+            <!-- Game server launch-options modal -->
+            <div id="gs-launch-modal" class="modal" style="display:none;">
+                <div class="modal-backdrop" onclick="document.getElementById('gs-launch-modal').style.display='none'"></div>
+                <div class="modal-content" style="max-width:560px;">
+                    <div class="modal-header">
+                        <h3>Launch options — <span id="gs-launch-title"></span></h3>
+                        <button class="modal-close" onclick="document.getElementById('gs-launch-modal').style.display='none'">&times;</button>
+                    </div>
+                    <div class="modal-body" style="display:flex;flex-direction:column;gap:0.9rem;">
+                        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;">
+                            <span>Start arguments</span>
+                            <input id="gs-launch-args" type="text" spellcheck="false" placeholder="-servername myserver -port 16261"
+                                   style="width:100%;box-sizing:border-box;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.55rem;font-family:monospace;font-size:0.8rem;">
+                            <span style="font-size:0.7rem;color:var(--text-muted);">Appended to the launch command as-is. Quote values with spaces. No shell is run — <code>;</code> <code>|</code> <code>$</code> etc. are passed to the game literally.</span>
+                        </label>
+                        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;">
+                            <span>Stop signal</span>
+                            <select id="gs-launch-signal" style="background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.5rem;font-size:0.8rem;">
+                                <option>SIGINT</option><option>SIGTERM</option>
+                                <option>SIGHUP</option><option>SIGQUIT</option>
+                            </select>
+                            <span style="font-size:0.7rem;color:var(--text-muted);">Signal sent on stop/restart. Many games save the world on <code>SIGINT</code>.</span>
+                        </label>
+                        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;">
+                            <span>Start command <span style="color:var(--text-muted);font-weight:400;">— the executable, relative to the install dir (admin only)</span></span>
+                            <input id="gs-launch-cmd" type="text" spellcheck="false" placeholder="./PalServer.sh"
+                                   style="width:100%;box-sizing:border-box;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.55rem;font-family:monospace;font-size:0.8rem;">
+                        </label>
+                        <div style="font-size:0.7rem;color:var(--text-muted);">Changes apply on the next start. If the server won't come back after a restart, reopen this dialog and revert.</div>
+                        <div id="gs-launch-note" style="font-size:0.72rem;color:var(--accent-yellow);"></div>
+                        <div style="display:flex;justify-content:flex-end;gap:0.5rem;">
+                            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('gs-launch-modal').style.display='none'">Cancel</button>
+                            <button class="btn btn-primary btn-sm" id="gs-launch-save" onclick="saveGsLaunch()">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Metrics Tab -->
             <div id="tab-metrics" class="tab-content">
                 <div class="metrics-sub-tabs">
@@ -4306,6 +4344,7 @@
                             : `<button class="btn btn-primary btn-sm" onclick="gsControl(${sid},'start')">Start</button>`) : ''}
                         ${sid ? `<button class="btn btn-secondary btn-sm" onclick="showServiceLogs(${sid}, '${escapeHtml(gs.name)}')">Logs</button>` : ''}
                         <button class="btn btn-secondary btn-sm" onclick="gsUpdate(${gs.id})">Update</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openGsLaunch(${gs.id})">Options</button>
                         <button class="btn btn-secondary btn-sm" onclick="openGsConfig(${gs.id}, '${escapeHtml(gs.name)}')">Files</button>
                         ${sid ? `<button class="btn btn-secondary btn-sm" onclick="showServiceGrantModal(${sid}, '${escapeHtml(gs.name)}')">Grant</button>` : ''}
                         <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="gsDelete(${gs.id}, '${escapeHtml(gs.name)}')">Delete</button>
@@ -4328,6 +4367,50 @@
                 showGsJob(d.job_id, 'Updating game server');
                 loadGameServers();
             } catch (e) { Portal.toast('Update failed to start', 'error'); }
+        }
+
+        let _gsLaunchId = null;
+        function openGsLaunch(id) {
+            const gs = (_gameServers || []).find(g => g.id === id);
+            if (!gs) return;
+            _gsLaunchId = id;
+            document.getElementById('gs-launch-title').textContent = gs.name;
+            document.getElementById('gs-launch-args').value = gs.start_args || '';
+            document.getElementById('gs-launch-signal').value = gs.stop_signal || 'SIGTERM';
+            document.getElementById('gs-launch-cmd').value = gs.start_cmd || '';
+            document.getElementById('gs-launch-cmd').disabled = false;  // admin.html is admin-only
+            document.getElementById('gs-launch-note').textContent = '';
+            document.getElementById('gs-launch-modal').style.display = 'flex';
+        }
+
+        async function saveGsLaunch() {
+            if (!_gsLaunchId) return;
+            const btn = document.getElementById('gs-launch-save');
+            btn.disabled = true;
+            try {
+                const body = {
+                    start_args: document.getElementById('gs-launch-args').value,
+                    stop_signal: document.getElementById('gs-launch-signal').value,
+                    start_cmd: document.getElementById('gs-launch-cmd').value.trim(),
+                };
+                const res = await Portal.fetch(`/api/game-servers/${_gsLaunchId}/launch-options`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+                });
+                const d = await res.json();
+                if (!res.ok) throw new Error(d.error || 'Save failed');
+                Portal.toast('Launch options saved');
+                if (d.restart_required) {
+                    document.getElementById('gs-launch-note').textContent =
+                        'Saved. Restart the server to apply the new options.';
+                } else {
+                    document.getElementById('gs-launch-modal').style.display = 'none';
+                }
+                loadGameServers();
+            } catch (e) {
+                Portal.toast(e.message || 'Save failed', 'error');
+            } finally {
+                btn.disabled = false;
+            }
         }
 
         async function gsDelete(id, name) {
