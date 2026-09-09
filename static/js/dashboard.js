@@ -116,17 +116,33 @@ async function loadUserInfo() {
             if (terminalBtn) terminalBtn.style.display = 'flex';
         }
 
-        // Show admin section for moderator+ roles
+        // The Administration sidebar shows for moderator+ , but only "Manage
+        // Users" actually works below admin — Invite Code, View Logs and the
+        // Admin Panel link are all admin-only (403 / bounce), so hide those
+        // for a non-admin so they only see what they can use.
         if (canManageUsers) {
             const adminSection = document.getElementById('admin-section');
             if (adminSection) adminSection.style.display = 'block';
+            if (!Portal.isAdmin(currentUser)) {
+                ['nav-invite-code', 'nav-view-logs', 'nav-admin-panel'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.style.display = 'none';
+                });
+            }
         }
 
-        // Hide Services tab for non-admin users and switch to My Connections
-        if (!Portal.isAdmin(currentUser)) {
+        // The Services tab is admin-only — unless the user has been granted
+        // control/logs on a specific service, in which case they need it to
+        // reach that one service.
+        const hasServiceGrants = currentUser.granted_services
+            && Object.keys(currentUser.granted_services).length > 0;
+        if (!Portal.isAdmin(currentUser) && !hasServiceGrants) {
             const servicesTab = document.getElementById('tab-btn-services');
             if (servicesTab) servicesTab.style.display = 'none';
             // Switch to My Connections as default tab for regular users
+            switchTab('my-connections');
+        } else if (!Portal.isAdmin(currentUser)) {
+            // Granted non-admin: keep the tab but default to My Connections.
             switchTab('my-connections');
         }
 
@@ -215,16 +231,23 @@ function renderServices() {
         filteredServices = services.filter(s => s.category_id === currentCategory);
     }
 
+    const isAdmin = Portal.isAdmin(currentUser);
+    const grantOn = (s) => {
+        const g = currentUser && currentUser.granted_services && currentUser.granted_services[s.id];
+        return !!(g && g.length);
+    };
+
+    // A non-admin only reaches this tab because they hold a service grant —
+    // show them just the service(s) they were granted, nothing else.
+    if (!isAdmin) {
+        filteredServices = filteredServices.filter(grantOn);
+    }
+
     // Hide disabled services — but a managed service that's disabled just means
     // "don't auto-start on Portal boot" (common for a systemd-wrapped game
     // server that already runs on its own), so still show it to an admin or to
     // a user who's been granted control/logs on it.
-    filteredServices = filteredServices.filter(s => {
-        if (s.enabled !== false) return true;
-        if (Portal.isAdmin(currentUser)) return true;
-        const g = currentUser && currentUser.granted_services && currentUser.granted_services[s.id];
-        return !!(g && g.length);
-    });
+    filteredServices = filteredServices.filter(s => s.enabled !== false || isAdmin || grantOn(s));
 
     if (filteredServices.length === 0) {
         grid.style.display = 'none';
