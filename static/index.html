@@ -309,12 +309,9 @@
                 <div class="tab-header">
                     <h2 id="content-title">Services</h2>
                     <div class="tab-actions" id="admin-service-actions" style="display: none;">
-                        <button class="btn btn-primary btn-sm" onclick="showAddServiceModal()">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                            </svg>
-                            Add Service
-                        </button>
+                        <!-- Service configuration (add / edit / delete) lives in the
+                             Admin panel > Managed Services tab, not here. -->
+                        <a class="btn btn-secondary btn-sm" href="/admin">Manage services in Admin panel</a>
                     </div>
                 </div>
                 <p class="tab-description" style="margin-bottom: 1rem;">Backend services - both proxy routes to external backends and managed processes run by Portal.</p>
@@ -1775,7 +1772,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=41"></script>
+    <script src="/static/js/dashboard.js?v=42"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>
