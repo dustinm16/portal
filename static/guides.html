@@ -408,6 +408,7 @@
                 <li><a href="#guide-stream">Media Stream</a></li>
                 <li><a href="#guide-stream_relay">Stream Relay</a></li>
                 <li><a href="#guide-minecraft_rcon">Minecraft RCON</a></li>
+                <li><a href="#guide-gameserver">Deploy a Game Server (SteamCMD)</a></li>
             </ul>
 
             </nav>
@@ -2693,6 +2694,40 @@
                     <li>Bind RCON to specific IPs: <code>rcon.ip=portal_ip</code></li>
                     <li>RCON transmits passwords in plaintext — Portal's TLS protects the browser leg</li>
                     <li>Consider using RCON only on trusted networks</li>
+                </ul>
+            </section>
+
+            <section id="guide-gameserver">
+                <h3>Deploy a Game Server (SteamCMD)</h3>
+                <p>Portal can install and run a dedicated game server for you — SteamCMD install, systemd unit, lifecycle control, updates, config editing and backups — from the <strong>Admin panel → Game Servers</strong> tab. This is an admin feature; unlike the connection guides above it does not use a connection plugin.</p>
+                <table class="param-table">
+                    <tr><th style="width:140px;">Where</th><td>Admin panel → <strong>Game Servers</strong></td></tr>
+                    <tr><th>Runs as</th><td>an unprivileged system account, on a dedicated game-data disk</td></tr>
+                    <tr><th>Unit</th><td>a generated <code>portal-gs-&lt;name&gt;.service</code></td></tr>
+                </table>
+                <h4>Deploy</h4>
+                <ol>
+                    <li>Open <strong>Admin panel → Game Servers</strong>.</li>
+                    <li>In <strong>Deploy a server</strong>, search the catalog (~75 games) and pick one. Not listed? Click <strong>＋ Add a game</strong> and enter the Steam app ID, start command and config globs.</li>
+                    <li>Name the instance (lowercase letters, digits, hyphens), optionally override the start arguments, choose whether to enable/start it, and click <strong>Deploy</strong>.</li>
+                    <li>Watch the SteamCMD install log in the job window. When it finishes the server appears under <strong>Deployed servers</strong>.</li>
+                </ol>
+                <h4>Run &amp; maintain</h4>
+                <ul>
+                    <li><strong>Start / Stop / Restart / Logs</strong> — same controls as any managed service.</li>
+                    <li><strong>Update</strong> — checks the installed build against the latest public build and runs a SteamCMD update only if they differ (stops the server, updates, restarts). A background check runs every few hours, so each card shows a live <em>Up to date</em> / <em>Update available</em> badge.</li>
+                    <li><strong>Files</strong> — edit the game's known settings files in the browser; saved files are written back as the game account.</li>
+                    <li><strong>Download backup</strong> — packages the config plus save/world files into a single <code>.tar.gz</code> (capped at 512&nbsp;MB).</li>
+                    <li><strong>Grant</strong> — give a non-admin user <em>Control</em>, <em>Logs</em> and/or <em>Files</em>. Each permitted action then shows as a labelled button on that server's card on their own dashboard.</li>
+                    <li><strong>Delete</strong> — removes the unit and Portal's records; optionally deletes the install directory too.</li>
+                </ul>
+                <h4>Adopting an existing server</h4>
+                <p>A server you already run through your own systemd unit can be brought onto this machinery without a reinstall — its install directory and grants are preserved. Ask an operator to run the adopt step, then cut the old unit over to the generated <code>portal-gs-&lt;name&gt;</code> one.</p>
+                <h4>Notes</h4>
+                <ul>
+                    <li>Some catalog entries are Windows-only servers that run through a Proton/wine layer on Linux — these are marked in the catalog.</li>
+                    <li>Some games write their config and saves outside the install directory (Project Zomboid keeps them under <code>~/Zomboid</code>). The catalog entry's <em>config root</em> points the editor and backup at the right place; the built-in entries for those games already set it.</li>
+                    <li>Open the game's ports on your firewall/router yourself — Portal manages the process, not the network path.</li>
                 </ul>
             </section>
 

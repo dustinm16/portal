@@ -288,57 +288,30 @@ function createServiceCard(service) {
     const canFiles = isAdmin || grant.includes('files');
     const isGameServer = plugin === 'gameserver';
 
-    // start/stop/restart buttons — admins and users with a 'control' grant
-    let processControls = '';
+    // Every action the viewer is permitted to take on this service, rendered
+    // as a clearly-labelled button row at the foot of the card — admins and
+    // users holding a matching grant. Editing / deleting / creating a service
+    // still lives in the Admin panel > Managed Services tab.
+    const nameEsc = escapeHtml(service.display_name || service.name).replace(/'/g, "\\'");
+    const acts = [];
     if (hasProcessControl && canControl) {
         if (service.status === 'running') {
-            processControls = `
-                <button class="service-stop-btn" onclick="event.stopPropagation(); stopService(${service.id})" title="Stop service">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                    </svg>
-                </button>
-                <button class="service-restart-btn" onclick="event.stopPropagation(); restartService(${service.id})" title="Restart service">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                </button>
-            `;
+            acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); stopService(${service.id})">Stop</button>`);
+            acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); restartService(${service.id})">Restart</button>`);
         } else {
-            processControls = `
-                <button class="service-start-btn" onclick="event.stopPropagation(); startService(${service.id})" title="Start service">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                </button>
-            `;
+            acts.push(`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); startService(${service.id})">Start</button>`);
         }
     }
-    const logsBtn = (isManaged && canLogs) ? `
-        <button class="service-edit-btn" onclick="event.stopPropagation(); showServiceLogs(${service.id}, '${escapeHtml(service.display_name || service.name).replace(/'/g, "\\'")}')" title="View logs">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-        </button>` : '';
-
-    // Game servers deployed by Portal expose a scoped config-file editor to
-    // admins and to users with a 'files' grant.
-    const filesBtn = (isGameServer && canFiles) ? `
-        <button class="service-edit-btn" onclick="event.stopPropagation(); showGameServerFiles(${service.id}, '${escapeHtml(service.display_name || service.name).replace(/'/g, "\\'")}')" title="Edit config files">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-        </button>` : '';
-
-    // The dashboard card is operational only — Start/Stop/Restart + Logs for
-    // admins and grant-holders. Editing / deleting / creating a service lives
-    // in the Admin panel > Managed Services tab.
-    let adminBtns = '';
-    if (processControls || logsBtn || filesBtn) {
-        adminBtns = `<div class="service-admin-btns">${processControls}${logsBtn}${filesBtn}</div>`;
+    if (isManaged && canLogs) {
+        acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showServiceLogs(${service.id}, '${nameEsc}')">Logs</button>`);
     }
+    if (isGameServer && canFiles) {
+        acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showGameServerFiles(${service.id}, '${nameEsc}')">Edit config</button>`);
+        acts.push(`<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); gsCardBackup(${service.id}, '${nameEsc}')">Backup</button>`);
+    }
+    const actionRow = acts.length
+        ? `<div class="service-actions" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--card-border);">${acts.join('')}</div>`
+        : '';
 
     // Determine status display
     let statusClass = 'online';
@@ -363,7 +336,6 @@ function createServiceCard(service) {
 
     return `
         <div class="service-card" data-service-id="${service.id}">
-            ${adminBtns}
             <div class="service-card-header">
                 <div class="service-icon">
                     ${icon}
@@ -377,8 +349,32 @@ function createServiceCard(service) {
                 <span class="service-status-dot"></span>
                 ${statusText}
             </div>
+            ${actionRow}
         </div>
     `;
+}
+
+/**
+ * Download a game-server backup straight from its dashboard card.
+ */
+async function gsCardBackup(serviceId, name) {
+    Portal.toast('Preparing backup…');
+    try {
+        const servers = (await Portal.fetchJSON('/api/game-servers')).game_servers || [];
+        const gs = servers.find(s => s.service_id === serviceId);
+        if (!gs) { Portal.toast('Game server not found', 'error'); return; }
+        const res = await Portal.fetch(`/api/game-servers/${gs.id}/config/download`);
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Backup failed');
+        const blob = await res.blob();
+        const m = (res.headers.get('Content-Disposition') || '').match(/filename="(.+?)"/);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = m ? m[1] : `${name}-backup.tar.gz`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(a.href);
+    } catch (e) {
+        Portal.toast(e.message || 'Backup failed', 'error');
+    }
 }
 
 /**
@@ -467,12 +463,21 @@ async function showServiceLogs(serviceId, name) {
 // ---- Game server config editor (shared modal #gs-config-modal) ----
 let _gsCfg = { gsId: null, path: null };
 
+function _gsFmtBytes(n) {
+    if (!n) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
 async function showGameServerFiles(serviceId, name) {
     document.getElementById('gs-config-title').textContent = name;
     document.getElementById('gs-config-current').textContent = '';
     const ta = document.getElementById('gs-config-text');
     ta.value = ''; ta.disabled = true;
     document.getElementById('gs-config-save').disabled = true;
+    const bbtn = document.getElementById('gs-config-backup');
+    if (bbtn) { bbtn.disabled = true; bbtn.textContent = '⬇ Download backup'; }
     const listEl = document.getElementById('gs-config-files');
     listEl.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
     if (typeof showModal === 'function') showModal('gs-config-modal');
@@ -482,15 +487,45 @@ async function showGameServerFiles(serviceId, name) {
         const gs = servers.find(s => s.service_id === serviceId);
         if (!gs) { listEl.innerHTML = '<span style="color:var(--accent-red);">Server not found.</span>'; return; }
         _gsCfg = { gsId: gs.id, path: null };
-        const files = (await Portal.fetchJSON(`/api/game-servers/${gs.id}/config`)).files || [];
+        const d = await Portal.fetchJSON(`/api/game-servers/${gs.id}/config`);
+        const files = d.files || [];
         listEl.innerHTML = files.length
             ? files.map(f => `<div class="gs-cfg-file" style="padding:0.35rem 0.4rem; cursor:pointer; border-radius:4px;" data-path="${escapeHtml(f.path)}">${escapeHtml(f.name)}<div style="font-size:0.65rem; color:var(--text-muted);">${escapeHtml(f.path)}</div></div>`).join('')
             : '<span style="color:var(--text-muted);">No config files yet — start the server once so it generates them.</span>';
         listEl.querySelectorAll('.gs-cfg-file').forEach(el => {
             el.addEventListener('click', () => openGsConfigFile(el.dataset.path));
         });
+        if (bbtn) {
+            const bc = (d.backup_files || []).length;
+            bbtn.disabled = bc === 0;
+            bbtn.textContent = bc
+                ? `⬇ Download backup (${bc} file${bc === 1 ? '' : 's'}, ${_gsFmtBytes(d.backup_total)})`
+                : 'Nothing to back up yet';
+        }
     } catch (e) {
         listEl.innerHTML = `<span style="color:var(--accent-red);">Failed: ${escapeHtml(e.message || '')}</span>`;
+    }
+}
+
+async function downloadGsBackup() {
+    if (!_gsCfg.gsId) return;
+    const btn = document.getElementById('gs-config-backup');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Packaging…';
+    try {
+        const res = await Portal.fetch(`/api/game-servers/${_gsCfg.gsId}/config/download`);
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Backup failed');
+        const blob = await res.blob();
+        const m = (res.headers.get('Content-Disposition') || '').match(/filename="(.+?)"/);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = m ? m[1] : 'backup.tar.gz';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(a.href);
+    } catch (e) {
+        Portal.toast(e.message || 'Backup failed', 'error');
+    } finally {
+        btn.disabled = false; btn.textContent = label;
     }
 }
 

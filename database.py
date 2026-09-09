@@ -1024,6 +1024,8 @@ MIGRATIONS = [
         start_args TEXT DEFAULT '',
         stop_signal TEXT DEFAULT 'SIGTERM',
         config_paths TEXT DEFAULT '[]',
+        backup_paths TEXT DEFAULT '[]',
+        config_root TEXT,
         game_port INTEGER,
         icon TEXT DEFAULT 'game',
         notes TEXT,
@@ -1043,6 +1045,8 @@ MIGRATIONS = [
         start_args TEXT DEFAULT '',
         stop_signal TEXT DEFAULT 'SIGTERM',
         config_paths TEXT DEFAULT '[]',
+        backup_paths TEXT DEFAULT '[]',
+        config_root TEXT,
         service_id INTEGER,
         state TEXT DEFAULT 'installing',
         install_job TEXT,
@@ -1056,6 +1060,12 @@ MIGRATIONS = [
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_game_servers_service ON game_servers(service_id)",
+    # v1.10.1 — save/world backup globs, separate from the editable config globs;
+    # config_root for games that keep config/saves outside the install tree
+    "ALTER TABLE game_catalog ADD COLUMN backup_paths TEXT DEFAULT '[]'",
+    "ALTER TABLE game_servers ADD COLUMN backup_paths TEXT DEFAULT '[]'",
+    "ALTER TABLE game_catalog ADD COLUMN config_root TEXT",
+    "ALTER TABLE game_servers ADD COLUMN config_root TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -3182,6 +3192,7 @@ class Database:
     async def game_catalog_upsert(self, data: dict, builtin: bool = False) -> int:
         import json
         cp = data.get("config_paths", [])
+        bp = data.get("backup_paths", [])
         row = {
             "key": data["key"], "name": data["name"],
             "steam_app_id": int(data["steam_app_id"]),
@@ -3189,6 +3200,8 @@ class Database:
             "start_cmd": data["start_cmd"], "start_args": data.get("start_args", ""),
             "stop_signal": data.get("stop_signal") or "SIGTERM",
             "config_paths": cp if isinstance(cp, str) else json.dumps(cp),
+            "backup_paths": bp if isinstance(bp, str) else json.dumps(bp),
+            "config_root": data.get("config_root") or None,
             "game_port": data.get("game_port"),
             "icon": data.get("icon") or "game", "notes": data.get("notes"),
             "builtin": 1 if builtin else 0,
@@ -3205,11 +3218,17 @@ class Database:
         return cur.lastrowid
 
     async def game_catalog_seed(self, entries: list[dict]) -> None:
-        """Idempotent — insert built-in entries that don't exist yet."""
+        """Keep the curated built-in catalog in sync with the code.
+
+        Upserts every built-in entry (so catalog definition changes ship on
+        restart) but only touches rows that are still marked ``builtin`` —
+        admin-added or admin-overridden entries are left alone.
+        """
         for e in entries:
             cur = await self.conn.execute(
-                "SELECT 1 FROM game_catalog WHERE key = ?", (e["key"],))
-            if not await cur.fetchone():
+                "SELECT builtin FROM game_catalog WHERE key = ?", (e["key"],))
+            existing = await cur.fetchone()
+            if existing is None or existing[0] == 1:
                 await self.game_catalog_upsert(e, builtin=True)
 
     async def game_catalog_delete(self, key: str) -> bool:
@@ -3241,6 +3260,7 @@ class Database:
     async def game_server_create(self, data: dict) -> int:
         import json
         cp = data.get("config_paths", [])
+        bp = data.get("backup_paths", [])
         row = {
             "name": data["name"], "catalog_key": data.get("catalog_key"),
             "steam_app_id": int(data["steam_app_id"]),
@@ -3249,6 +3269,8 @@ class Database:
             "start_cmd": data["start_cmd"], "start_args": data.get("start_args", ""),
             "stop_signal": data.get("stop_signal") or "SIGTERM",
             "config_paths": cp if isinstance(cp, str) else json.dumps(cp),
+            "backup_paths": bp if isinstance(bp, str) else json.dumps(bp),
+            "config_root": data.get("config_root") or None,
             "state": data.get("state", "installing"),
             "created_by": data.get("created_by"),
         }
@@ -3262,7 +3284,7 @@ class Database:
     async def game_server_update(self, gs_id: int, **fields) -> bool:
         allowed = {"service_id", "state", "install_job", "installed_build",
                    "latest_build", "build_checked_at", "start_args", "start_cmd",
-                   "stop_signal", "config_paths"}
+                   "stop_signal", "config_paths", "backup_paths", "config_root"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return False

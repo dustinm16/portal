@@ -1659,6 +1659,10 @@
                 <button class="modal-close" onclick="closeModal('gs-config-modal')">&times;</button>
             </div>
             <div class="modal-body">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.75rem;">
+                    <span style="font-size:0.75rem; color:var(--text-muted);">Edit a settings file, or download a backup of the config &amp; save files.</span>
+                    <button class="btn btn-secondary btn-sm" id="gs-config-backup" onclick="downloadGsBackup()">⬇ Download backup</button>
+                </div>
                 <div style="display:flex; gap:1rem;">
                     <div id="gs-config-files" style="width:220px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow-y:auto; max-height:60vh; font-size:0.8rem;"></div>
                     <div style="flex:1; display:flex; flex-direction:column;">
@@ -1795,7 +1799,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=46"></script>
+    <script src="/static/js/dashboard.js?v=47"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

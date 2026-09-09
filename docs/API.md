@@ -2846,20 +2846,21 @@ and the grant system above apply unchanged. SteamCMD runs under an unprivileged
 account; installs go under a dedicated game-data disk.
 
 - `GET  /api/game-catalog` — list catalog entries (any authenticated user).
-- `POST /api/game-catalog` — add/replace a custom entry (admin). Body `{key, name, steam_app_id, start_cmd, start_args?, stop_signal?, steam_login?, config_paths?[], game_port?}`.
+- `POST /api/game-catalog` — add/replace a custom entry (admin). Body `{key, name, steam_app_id, start_cmd, start_args?, stop_signal?, steam_login?, config_paths?[], backup_paths?[], config_root?, game_port?}`. `config_root` (`~` expands to the run-as account's home) overrides the install dir for the config editor and backup — for games that keep config/saves elsewhere. The ~75 built-in entries are re-synced from code on every restart; admin-added entries (`builtin: 0`) are left alone.
 - `DELETE /api/game-catalog/{key}` — remove a custom entry (admin; built-ins are protected).
-- `GET  /api/game-servers` — admin: all; non-admin: only servers they hold a grant on. Each row is enriched with live `status`.
+- `GET  /api/game-servers` — admin: all; non-admin: only servers they hold a grant on. Each row is enriched with live `status`; `installed_build`/`latest_build` are refreshed by a background check every 6 h (drives the "up to date / update available" badge).
 - `POST /api/game-servers` — deploy (admin). Body `{catalog_key | custom{...}, name, start_args?, steam_login?, enable?, start?}`. Returns `201 {game_server, job_id}` and kicks off the SteamCMD install job.
 - `GET  /api/game-servers/{id}` — one server (admin or any grant).
 - `DELETE /api/game-servers/{id}?delete_files=<bool>` — disable + remove the unit, service row and `game_servers` row; optionally delete the install directory (admin).
 - `POST /api/game-servers/{id}/update` — start a SteamCMD update job; no-op if already on the latest build (admin or `control` grant). Returns `{job_id}`.
 - `POST /api/game-servers/{id}/check-build` — refresh `installed_build` / `latest_build` (admin or `logs` grant).
 - `GET  /api/game-servers/jobs/{job_id}` — poll an install/update job: `{id, name, status, log[], started_at, finished_at}`. `status` ∈ `running | completed | failed`.
-- `GET  /api/game-servers/{id}/config` — list editable config files (admin or `files` grant). Scoped to the catalog entry's `config_paths` globs under the install dir.
+- `GET  /api/game-servers/{id}/config` — list editable config files plus the full backup set (admin or `files` grant). Returns `{files[], backup_files[], backup_total, install_dir}`. `files` is scoped to the catalog entry's `config_paths` globs; `backup_files` also includes its `backup_paths` (save/world) globs.
 - `GET  /api/game-servers/{id}/config/read?path=<rel>` — read one file (admin or `files` grant).
 - `POST /api/game-servers/{id}/config/write` — body `{path, content}`; written back as the game account. Audited `gameserver.config_edit` (admin or `files` grant).
+- `GET  /api/game-servers/{id}/config/download` — download a `.tar.gz` of the config + save/world files (admin or `files` grant). Capped at 512 MB total / 128 MB per file. Audited `gameserver.backup_download`.
 
-Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`.
+Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`. Start/stop/restart/logs reuse `/api/services/{service_id}/...` and are audited there.
 
 ---
 

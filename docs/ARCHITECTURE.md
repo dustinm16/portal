@@ -181,9 +181,29 @@ app id, start command/args, stop signal, and `config_paths` globs.
   `file_manager._validate_path` **and** assert it matches one of the catalog
   `config_paths` globs under the install dir; writes are `chown`ed back to the
   game account. Endpoints require `admin` or a `files` grant and are audited.
+- **Backup** — `make_backup_archive` tars (`.tar.gz`, in memory) every file
+  matched by `config_paths` **plus** `backup_paths` (save/world globs, `**`
+  supported), capped 512 MB total / 128 MB per file. Same `files` grant.
+- **`config_root`** — config/backup globs resolve against `install_dir` by
+  default; a catalog/row `config_root` (`~` expands to the *run-as* account's
+  home, not the process's) overrides it for games that keep config outside the
+  install tree (Project Zomboid → `~/Zomboid`). All globs stay traversal-,
+  absolute- and `~`-safe (`_as_glob_list`).
+- **Build-check badge** — `_build_check_loop` (started at boot, 90 s delay,
+  then every 6 h) runs `check_latest_build` for every deployed server, so the
+  admin card shows a live "✓ Up to date" / "● Update available" pill without
+  anyone clicking Check.
+- **Adopt** — `adopt()` registers an already-installed server (existing dir +
+  its own systemd unit) without running SteamCMD or touching the install dir.
+  `reuse_service_id` converts an existing managed-service row in place so its
+  id, grants and encrypted config survive; the caller does the systemd cut-over.
 - **Destroy** disables + removes the unit, deletes the service and
   `game_servers` rows (FK `ON DELETE SET NULL` for the service link), and
   optionally `rm -rf`s the install dir.
+
+The built-in catalog (~75 games) is re-synced from `CATALOG_SEED` on every boot
+(`game_catalog_seed` upserts rows still marked `builtin`; admin-added or
+overridden rows are left alone).
 
 `jobs.py` is a small in-memory job registry (`start_job`, `get_job`,
 `run_streamed`) independent of `update_manager`'s — game-server jobs live here.
@@ -252,7 +272,7 @@ Permission Hierarchy:
 ├── system_monitor.py      # Process, systemd service, and network monitoring (~367 lines)
 ├── file_manager.py        # Local filesystem operations (admin) (~285 lines)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user) (~183 lines)
-├── gameservers.py         # SteamCMD game-server deploy / update / config editor (~500 lines)
+├── gameservers.py         # SteamCMD game-server deploy / adopt / update / config editor / backup (~700 lines)
 ├── jobs.py                # In-memory background job registry + streaming subprocess runner (~125 lines)
 │
 ├── plugins/               # Connection plugins
@@ -412,7 +432,9 @@ CREATE TABLE game_catalog (
     start_cmd TEXT NOT NULL,
     start_args TEXT DEFAULT '',
     stop_signal TEXT DEFAULT 'SIGTERM',
-    config_paths TEXT DEFAULT '[]',      -- JSON array of globs, relative to install dir
+    config_paths TEXT DEFAULT '[]',      -- JSON array of globs, relative to config_root (editable)
+    backup_paths TEXT DEFAULT '[]',      -- JSON array of globs for save/world dirs (backup only)
+    config_root TEXT,                    -- overrides install_dir for config/backup (e.g. ~/Zomboid)
     game_port INTEGER,
     icon TEXT DEFAULT 'game',
     notes TEXT,
@@ -434,6 +456,8 @@ CREATE TABLE game_servers (
     start_args TEXT DEFAULT '',
     stop_signal TEXT DEFAULT 'SIGTERM',
     config_paths TEXT DEFAULT '[]',
+    backup_paths TEXT DEFAULT '[]',
+    config_root TEXT,
     service_id INTEGER,                  -- -> services.id (ON DELETE SET NULL)
     state TEXT DEFAULT 'installing',     -- installing | installed | updating | error
     install_job TEXT,
@@ -809,9 +833,10 @@ DELETE /api/game-servers/:id?delete_files= - Tear down (admin)
 POST /api/game-servers/:id/update          - SteamCMD update job (admin or control grant)
 POST /api/game-servers/:id/check-build     - Refresh installed/latest build (admin or logs grant)
 GET  /api/game-servers/jobs/:job_id        - Poll an install/update job log
-GET  /api/game-servers/:id/config          - List editable config files (admin or files grant)
+GET  /api/game-servers/:id/config          - List config files + backup set (admin or files grant)
 GET  /api/game-servers/:id/config/read?path= - Read one config file (admin or files grant)
 POST /api/game-servers/:id/config/write    - Write one config file (admin or files grant)
+GET  /api/game-servers/:id/config/download - Download config + saves as .tar.gz (admin or files grant)
 ```
 
 Start/stop/restart/logs reuse `/api/services/{service_id}/...`.

@@ -8952,9 +8952,40 @@ async def http_game_server_config_list(request: web.Request) -> web.Response:
         return err
     try:
         files = await asyncio.to_thread(gameservers.list_config_files, gs)
+        backup = await asyncio.to_thread(gameservers.list_backup_files, gs)
     except Exception as e:
         return web.json_response({"error": safe_error_message(e)}, status=500)
-    return web.json_response({"files": files, "install_dir": gs["install_dir"]})
+    return web.json_response({
+        "files": files,
+        "backup_files": backup,
+        "backup_total": sum(f["size"] for f in backup),
+        "install_dir": gs["install_dir"],
+    })
+
+
+async def http_game_server_config_download(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    try:
+        data, filename = await asyncio.to_thread(gameservers.make_backup_archive, gs)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("game server backup failed")
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.backup_download", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=gs["name"], details={"bytes": len(data)})
+    return web.Response(
+        body=data,
+        headers={
+            "Content-Type": "application/gzip",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 async def http_game_server_config_read(request: web.Request) -> web.Response:
@@ -16059,6 +16090,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/game-servers/{id}/config", http_game_server_config_list)
     app.router.add_get("/api/game-servers/{id}/config/read", http_game_server_config_read)
     app.router.add_post("/api/game-servers/{id}/config/write", http_game_server_config_write)
+    app.router.add_get("/api/game-servers/{id}/config/download", http_game_server_config_download)
 
     # User management
     app.router.add_get("/api/users", http_list_users)
@@ -16474,9 +16506,11 @@ class PortalServer:
         _service_manager = await init_service_manager(db)
         logger.info("Managed services initialized")
 
-        # Seed the game-server catalog (idempotent)
+        # Seed the game-server catalog (idempotent) + start the periodic
+        # SteamCMD build-check so cards show an up-to-date / update-available badge
         try:
             await gameservers.seed_catalog(db)
+            gameservers.start_build_check_loop(db)
         except Exception as e:
             logger.warning(f"Game catalog seed failed: {e}")
 

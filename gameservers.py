@@ -58,15 +58,20 @@ CATALOG_SEED = [
     {"key": "palworld", "name": "Palworld", "steam_app_id": 2394010,
      "start_cmd": "./PalServer.sh",
      "start_args": "-useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS",
-     "game_port": 8211,
+     "stop_signal": "SIGINT", "game_port": 8211,
      "config_paths": ["Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
                       "Pal/Saved/Config/LinuxServer/Game.ini"],
-     "notes": "UDP 8211. Settings generated after first start."},
+     "backup_paths": ["Pal/Saved/SaveGames/**"],
+     "notes": "UDP 8211. Settings generated after first start. SIGINT stop so the world saves."},
     {"key": "zomboid", "name": "Project Zomboid", "steam_app_id": 380870,
      "start_cmd": "./start-server.sh", "start_args": "", "stop_signal": "SIGINT",
      "game_port": 16261,
-     "config_paths": ["*.ini", "Server/*.ini", "Server/*.lua"],
-     "notes": "SIGINT stop so the world saves. Config under ~/Zomboid/Server after first start."},
+     "config_root": "~/Zomboid",
+     "config_paths": ["Server/*.ini"],
+     "backup_paths": ["Server/*_SandboxVars.lua", "Server/*_spawnpoints.lua",
+                      "Server/*_spawnregions.lua", "Saves/**"],
+     "notes": "SIGINT stop so the world saves. PZ keeps its config and saves under "
+              "~/Zomboid (the run-as account's home), not the install dir."},
     {"key": "valheim", "name": "Valheim", "steam_app_id": 896660,
      "start_cmd": "./valheim_server.x86_64",
      "start_args": "-name Portal -port 2456 -world Dedicated -public 1",
@@ -78,20 +83,24 @@ CATALOG_SEED = [
     {"key": "satisfactory", "name": "Satisfactory", "steam_app_id": 1690800,
      "start_cmd": "./FactoryServer.sh", "start_args": "-unattended",
      "game_port": 7777,
-     "config_paths": ["FactoryGame/Saved/Config/LinuxServer/*.ini"]},
+     "config_paths": ["FactoryGame/Saved/Config/LinuxServer/*.ini"],
+     "backup_paths": ["FactoryGame/Saved/SaveGames/**"]},
     {"key": "rust", "name": "Rust", "steam_app_id": 258550,
      "start_cmd": "./RustDedicated", "start_args": "-batchmode +server.port 28015",
      "game_port": 28015, "config_paths": ["server/*/cfg/*.cfg"]},
     {"key": "vrising", "name": "V Rising", "steam_app_id": 1829350,
      "start_cmd": "./VRisingServer.sh", "start_args": "-persistentDataPath ./save-data",
-     "game_port": 9876, "config_paths": ["save-data/Settings/*.json"]},
+     "game_port": 9876, "config_paths": ["save-data/Settings/*.json"],
+     "backup_paths": ["save-data/Saves/**"]},
     {"key": "enshrouded", "name": "Enshrouded", "steam_app_id": 2278520,
      "start_cmd": "./enshrouded_server.sh", "start_args": "", "game_port": 15636,
-     "config_paths": ["enshrouded_server.json"]},
+     "config_paths": ["enshrouded_server.json"],
+     "backup_paths": ["savegame/**"]},
     {"key": "ark-asa", "name": "ARK: Survival Ascended", "steam_app_id": 2430930,
      "start_cmd": "./ShooterGame/Binaries/Linux/ArkAscendedServer",
      "start_args": "TheIsland_WP?listen", "game_port": 7777,
-     "config_paths": ["ShooterGame/Saved/Config/WindowsServer/*.ini"]},
+     "config_paths": ["ShooterGame/Saved/Config/WindowsServer/*.ini"],
+     "backup_paths": ["ShooterGame/Saved/SavedArks/**"]},
     {"key": "cs2", "name": "Counter-Strike 2", "steam_app_id": 730,
      "start_cmd": "./game/bin/linuxsteamrt64/cs2",
      "start_args": "-dedicated +map de_dust2", "game_port": 27015,
@@ -133,12 +142,272 @@ CATALOG_SEED = [
     {"key": "terraria-tshock", "name": "Terraria (TShock)", "steam_app_id": 105600,
      "start_cmd": "./TShock.Server", "start_args": "-autocreate 2 -world world1",
      "game_port": 7777, "config_paths": ["tshock/config.json", "*.json"]},
+
+    # --- Valve Source-engine dedicated servers (srcds) ---
+    {"key": "tf2", "name": "Team Fortress 2", "steam_app_id": 232250,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game tf +map cp_dustbowl +maxplayers 24 -port 27015",
+     "game_port": 27015, "config_paths": ["tf/cfg/*.cfg"]},
+    {"key": "css", "name": "Counter-Strike: Source", "steam_app_id": 232330,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game cstrike +map de_dust2 +maxplayers 16 -port 27015",
+     "game_port": 27015, "config_paths": ["cstrike/cfg/*.cfg"]},
+    {"key": "l4d2", "name": "Left 4 Dead 2", "steam_app_id": 222860,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game left4dead2 +map c1m1_hotel +maxplayers 8 -port 27015",
+     "game_port": 27015, "config_paths": ["left4dead2/cfg/*.cfg"]},
+    {"key": "dods", "name": "Day of Defeat: Source", "steam_app_id": 232290,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game dod +map dod_anzio +maxplayers 24 -port 27015",
+     "game_port": 27015, "config_paths": ["dod/cfg/*.cfg"]},
+    {"key": "hl2dm", "name": "Half-Life 2: Deathmatch", "steam_app_id": 232370,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game hl2mp +map dm_lockdown +maxplayers 16 -port 27015",
+     "game_port": 27015, "config_paths": ["hl2mp/cfg/*.cfg"]},
+    {"key": "svencoop", "name": "Sven Co-op", "steam_app_id": 276060,
+     "start_cmd": "./svends_run",
+     "start_args": "-game svencoop +map svencoop1 +maxplayers 8 -port 27015",
+     "game_port": 27015, "config_paths": ["svencoop/cfg/*.cfg", "svencoop_addon/cfg/*.cfg"]},
+    {"key": "nmrih", "name": "No More Room in Hell", "steam_app_id": 317670,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game nmrih +map nmo_broadway +maxplayers 8 -port 27015",
+     "game_port": 27015, "config_paths": ["nmrih/cfg/*.cfg"]},
+    {"key": "black-mesa", "name": "Black Mesa", "steam_app_id": 346680,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game bms +map bm_c1a0a +maxplayers 12 -port 27015",
+     "game_port": 27015, "config_paths": ["bms/cfg/*.cfg"]},
+    {"key": "insurgency2014", "name": "Insurgency (2014)", "steam_app_id": 237410,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game insurgency +map sinjar +maxplayers 16 -port 27015",
+     "game_port": 27015, "config_paths": ["insurgency/cfg/*.cfg"]},
+
+    # --- Survival / sandbox ---
+    {"key": "ark-se", "name": "ARK: Survival Evolved", "steam_app_id": 376030,
+     "start_cmd": "./ShooterGame/Binaries/Linux/ShooterGameServer",
+     "start_args": "TheIsland?listen?SessionName=Portal", "game_port": 7777,
+     "config_paths": ["ShooterGame/Saved/Config/LinuxServer/*.ini"],
+     "backup_paths": ["ShooterGame/Saved/SavedArks/**"]},
+    {"key": "conan-exiles", "name": "Conan Exiles", "steam_app_id": 443030,
+     "start_cmd": "./ConanSandboxServer.sh", "start_args": "-log", "game_port": 7777,
+     "config_paths": ["ConanSandbox/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "icarus", "name": "Icarus", "steam_app_id": 2089300,
+     "start_cmd": "./IcarusServer.sh", "start_args": "-UserDir=./Saved", "game_port": 17777,
+     "config_paths": ["Saved/Config/LinuxServer/*.ini", "Saved/*.json"]},
+    {"key": "soulmask", "name": "Soulmask", "steam_app_id": 3017300,
+     "start_cmd": "./WS/Binaries/Linux/WSServer-Linux-Shipping",
+     "start_args": "Level01_Main -server -SteamServerName=Portal", "game_port": 8777,
+     "config_paths": ["WS/Saved/Config/LinuxServer/*.ini", "WS/Saved/GameUserSettings.ini"]},
+    {"key": "abiotic-factor", "name": "Abiotic Factor", "steam_app_id": 2857200,
+     "start_cmd": "./AbioticFactor/Binaries/Win64/AbioticFactorServer-Win64-Shipping.exe",
+     "start_args": "-newconsole -useperfthreads", "game_port": 7777,
+     "config_paths": ["AbioticFactor/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "myth-of-empires", "name": "Myth of Empires", "steam_app_id": 1954850,
+     "start_cmd": "./StartServer.sh", "start_args": "", "game_port": 10086,
+     "config_paths": ["EmpiresServer/Saved/Config/*/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "stationeers", "name": "Stationeers", "steam_app_id": 600760,
+     "start_cmd": "./rocketstation_DedicatedServer.x86_64",
+     "start_args": "-settings StartLocalHost true", "game_port": 27500,
+     "config_paths": ["*.xml", "saves/*/*.xml"]},
+    {"key": "empyrion", "name": "Empyrion – Galactic Survival", "steam_app_id": 530870,
+     "start_cmd": "./EmpyrionDedicated.sh", "start_args": "-dedicated dedicated.yaml",
+     "game_port": 30000,
+     "config_paths": ["*.yaml", "Content/Configuration/*.yaml", "Content/Configuration/*.ecf"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "starbound", "name": "Starbound", "steam_app_id": 211820,
+     "start_cmd": "./linux/starbound_server", "start_args": "", "game_port": 21025,
+     "config_paths": ["storage/starbound_server.config"]},
+    {"key": "hurtworld", "name": "Hurtworld", "steam_app_id": 405100,
+     "start_cmd": "./Hurtworld.x86_64",
+     "start_args": "-batchmode -nographics -exec \"host 12871;queryport 12881;servername Portal\"",
+     "game_port": 12871, "config_paths": ["*.cfg"]},
+    {"key": "colony-survival", "name": "Colony Survival", "steam_app_id": 366090,
+     "start_cmd": "./colonyserver.x86_64", "start_args": "+server.world Portal",
+     "game_port": 27004, "config_paths": ["gamedata/savegames/*/*.json"]},
+    {"key": "necesse", "name": "Necesse", "steam_app_id": 1169370,
+     "start_cmd": "./StartServer-nogui.sh", "start_args": "", "game_port": 14159,
+     "config_paths": ["cfg/*.cfg"]},
+
+    # --- Shooters / milsim / vehicle ---
+    {"key": "arma3", "name": "Arma 3", "steam_app_id": 233780,
+     "start_cmd": "./arma3server",
+     "start_args": "-name=server -config=server.cfg -port=2302", "game_port": 2302,
+     "config_paths": ["*.cfg", "*.Arma3Profile"]},
+    {"key": "dayz", "name": "DayZ", "steam_app_id": 223350,
+     "start_cmd": "./DayZServer", "start_args": "-config=serverDZ.cfg -port=2302",
+     "game_port": 2302, "config_paths": ["serverDZ.cfg", "*.cfg"]},
+    {"key": "kf2", "name": "Killing Floor 2", "steam_app_id": 232130,
+     "start_cmd": "./Binaries/Linux/KFGameSteamServer.bin.x86_64",
+     "start_args": "KF-BioticsLab", "game_port": 7777,
+     "config_paths": ["KFGame/Config/*.ini"]},
+    {"key": "mordhau", "name": "MORDHAU", "steam_app_id": 629800,
+     "start_cmd": "./Mordhau/Binaries/Linux/MordhauServer-Linux-Shipping",
+     "start_args": "Mordhau -Port=7777 -QueryPort=27015", "game_port": 7777,
+     "config_paths": ["Mordhau/Saved/Config/LinuxServer/*.ini"]},
+    {"key": "pavlov-vr", "name": "Pavlov VR", "steam_app_id": 622970,
+     "start_cmd": "./PavlovServer.sh", "start_args": "", "game_port": 7777,
+     "config_paths": ["Pavlov/Saved/Config/LinuxServer/*.ini"]},
+    {"key": "assetto-corsa", "name": "Assetto Corsa", "steam_app_id": 302550,
+     "start_cmd": "./acServer", "start_args": "", "game_port": 9600,
+     "config_paths": ["cfg/*.ini"]},
+    {"key": "astroneer", "name": "Astroneer", "steam_app_id": 728470,
+     "start_cmd": "./AstroServer.sh", "start_args": "", "game_port": 8777,
+     "config_paths": ["Astro/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+
+    # --- More popular multiplayer titles ---
+    {"key": "left4dead", "name": "Left 4 Dead", "steam_app_id": 222840,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game left4dead +map l4d_hospital01_apartment +maxplayers 4 -port 27015",
+     "game_port": 27015, "config_paths": ["left4dead/cfg/*.cfg"]},
+    {"key": "day-of-infamy", "name": "Day of Infamy", "steam_app_id": 447440,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game doi +map drepublic_coop +maxplayers 16 -port 27015",
+     "game_port": 27015, "config_paths": ["doi/cfg/*.cfg"]},
+    {"key": "fistful-of-frags", "name": "Fistful of Frags", "steam_app_id": 295230,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game fof +map fof_depot +maxplayers 12 -port 27015",
+     "game_port": 27015, "config_paths": ["fof/cfg/*.cfg"]},
+    {"key": "codename-cure", "name": "Codename CURE", "steam_app_id": 355180,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game cure +map cbe_frostbite +maxplayers 8 -port 27015",
+     "game_port": 27015, "config_paths": ["cure/cfg/*.cfg"]},
+    {"key": "zombie-panic-source", "name": "Zombie Panic! Source", "steam_app_id": 17500,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game zps +map zpo_biotec +maxplayers 24 -port 27015",
+     "game_port": 27015, "config_paths": ["zps/cfg/*.cfg"]},
+    {"key": "double-action", "name": "Double Action: Boogaloo", "steam_app_id": 317360,
+     "start_cmd": "./srcds_run",
+     "start_args": "-game dab +map da_rooftops +maxplayers 12 -port 27015",
+     "game_port": 27015, "config_paths": ["dab/cfg/*.cfg"]},
+    {"key": "hell-let-loose", "name": "Hell Let Loose", "steam_app_id": 686810,
+     "start_cmd": "./HLL/Binaries/Win64/HLL-Win64-Shipping.exe",
+     "start_args": "", "game_port": 7777,
+     "config_paths": ["HLL/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "arma-reforger", "name": "Arma Reforger", "steam_app_id": 1890870,
+     "start_cmd": "./ArmaReforgerServer",
+     "start_args": "-config ./config.json -maxFPS 60", "game_port": 2001,
+     "config_paths": ["*.json"]},
+    {"key": "squad44", "name": "Squad 44", "steam_app_id": 736220,
+     "start_cmd": "./PostScriptumServer.sh", "start_args": "", "game_port": 7787,
+     "config_paths": ["PostScriptum/ServerConfig/*.cfg"]},
+    {"key": "operation-harsh-doorstop", "name": "Operation: Harsh Doorstop",
+     "steam_app_id": 950900, "start_cmd": "./HarshDoorstopServer.sh",
+     "start_args": "", "game_port": 7777,
+     "config_paths": ["HarshDoorstop/Saved/Config/LinuxServer/*.ini"]},
+    {"key": "natural-selection-2", "name": "Natural Selection 2", "steam_app_id": 4940,
+     "start_cmd": "./server_linux64", "start_args": "-name Portal -port 27015",
+     "game_port": 27015, "config_paths": ["config/*.json", "*.json"]},
+    {"key": "the-isle", "name": "The Isle", "steam_app_id": 412680,
+     "start_cmd": "./TheIsleServer.sh", "start_args": "", "game_port": 7777,
+     "config_paths": ["TheIsle/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "scp-secret-laboratory", "name": "SCP: Secret Laboratory",
+     "steam_app_id": 996560, "start_cmd": "./LocalAdmin", "start_args": "7777",
+     "game_port": 7777,
+     "config_paths": ["*.txt", ".config/SCP Secret Laboratory/config/**/*.txt"]},
+    {"key": "quake-live", "name": "Quake Live", "steam_app_id": 349090,
+     "start_cmd": "./qzeroded.x64",
+     "start_args": "+set net_strict 1 +set sv_hostname Portal +exec server.cfg",
+     "game_port": 27960, "config_paths": ["baseq3/*.cfg"]},
+    {"key": "just-cause-2-mp", "name": "Just Cause 2: Multiplayer", "steam_app_id": 259080,
+     "start_cmd": "./Jcmp-Server", "start_args": "", "game_port": 7777,
+     "config_paths": ["config.lua", "*.lua"]},
+    {"key": "teeworlds", "name": "Teeworlds", "steam_app_id": 380840,
+     "start_cmd": "./teeworlds_srv", "start_args": "", "game_port": 8303,
+     "config_paths": ["*.cfg"]},
+
+    # --- Survival / sandbox / sim (part 2) ---
+    {"key": "eco", "name": "Eco", "steam_app_id": 739590,
+     "start_cmd": "./EcoServer", "start_args": "", "game_port": 3000,
+     "config_paths": ["Configs/*.eco", "Configs/*.json"],
+     "backup_paths": ["Storage/**"]},
+    {"key": "avorion", "name": "Avorion", "steam_app_id": 565060,
+     "start_cmd": "./bin/AvorionServer",
+     "start_args": "--galaxy-name Portal --admin Portal", "game_port": 27000,
+     "config_paths": ["galaxies/*/server.ini", "*.ini"],
+     "backup_paths": ["galaxies/**"]},
+    {"key": "factorio", "name": "Factorio", "steam_app_id": 427520,
+     "start_cmd": "./bin/x64/factorio",
+     "start_args": "--start-server-load-latest --server-settings ./data/server-settings.json",
+     "game_port": 34197,
+     "config_paths": ["config/config.ini", "data/server-settings.json",
+                      "data/server-whitelist.json", "data/server-adminlist.json"],
+     "backup_paths": ["saves/**"],
+     "notes": "The Steam build can run headless — no separate server download."},
+    {"key": "wurm-unlimited", "name": "Wurm Unlimited", "steam_app_id": 402370,
+     "start_cmd": "./WurmServerLauncher-linux", "start_args": "", "game_port": 3724,
+     "config_paths": ["*.db", "config/**/*.properties"]},
+    {"key": "craftopia", "name": "Craftopia", "steam_app_id": 1670950,
+     "start_cmd": "./DedicatedServer.x86_64", "start_args": "", "game_port": 25565,
+     "config_paths": ["*.json", "DedicatedServer_Data/**/*.json"]},
+    {"key": "tower-unite", "name": "Tower Unite", "steam_app_id": 439660,
+     "start_cmd": "./TowerServer.sh", "start_args": "", "game_port": 7777,
+     "config_paths": ["Tower/Saved/Config/LinuxServer/*.ini"],
+     "notes": "Windows-focused server — may need a Proton/wine layer on Linux."},
+    {"key": "the-front", "name": "The Front", "steam_app_id": 2699560,
+     "start_cmd": "./StartServer.sh", "start_args": "", "game_port": 8888,
+     "config_paths": ["ProjectWar/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+    {"key": "ets2", "name": "Euro Truck Simulator 2 (Convoy)", "steam_app_id": 1948160,
+     "start_cmd": "./bin/linux_x64/eurotrucks2_server", "start_args": "",
+     "game_port": 27015,
+     "config_paths": ["server_config.sii", "server_packages.sii"]},
+    {"key": "american-truck-sim", "name": "American Truck Simulator (Convoy)",
+     "steam_app_id": 2239530, "start_cmd": "./bin/linux_x64/amtrucks_server",
+     "start_args": "", "game_port": 27015,
+     "config_paths": ["server_config.sii", "server_packages.sii"]},
 ]
 
 
 async def seed_catalog(db) -> None:
     await db.game_catalog_seed(CATALOG_SEED)
     logger.info("Game catalog seeded (%d built-in entries)", len(CATALOG_SEED))
+
+
+def _as_glob_list(v) -> list:
+    """Coerce a catalog/row path field (list or JSON string) to a clean list.
+
+    Rejects traversal (``..``), absolute paths and ``~`` — every glob is
+    resolved *relative to* the server's config root.
+    """
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except json.JSONDecodeError:
+            v = []
+    return [p for p in (v or []) if isinstance(p, str) and p
+            and ".." not in p and not p.startswith(("/", "~"))]
+
+
+def _run_as_home() -> str:
+    """Home directory of the account game servers run as (RUN_AS), not this
+    process's — Portal runs as root, the servers run as ``dustin``."""
+    import pwd
+    try:
+        return pwd.getpwnam(RUN_AS).pw_dir
+    except KeyError:
+        return os.path.expanduser("~" + RUN_AS)
+
+
+def _config_root(gs: dict) -> str:
+    """Directory that a server's config/backup globs resolve against.
+
+    ``install_dir`` by default; a catalog/row ``config_root`` overrides it for
+    games that keep their config outside the install tree (Project Zomboid
+    writes to ``~/Zomboid``, for example). ``~`` expands to the *run-as*
+    account's home, never this process's."""
+    cr = (gs.get("config_root") or "").strip()
+    if not cr:
+        return gs["install_dir"]
+    if cr == "~":
+        cr = _run_as_home()
+    elif cr.startswith("~/"):
+        cr = _run_as_home() + cr[1:]
+    return os.path.realpath(cr)
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +492,8 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
     else:
         raise ValueError("catalog_key or custom game definition required")
 
-    cfg_paths = cat["config_paths"]
-    if isinstance(cfg_paths, str):
-        try:
-            cfg_paths = json.loads(cfg_paths)
-        except json.JSONDecodeError:
-            cfg_paths = []
+    cfg_paths = _as_glob_list(cat["config_paths"])
+    bak_paths = _as_glob_list(cat.get("backup_paths"))
 
     install_dir = install_dir or f"{GAMEDATA_ROOT}/{name}"
     install_dir = os.path.normpath(install_dir)
@@ -266,6 +531,8 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
                 "start_cmd": cat["start_cmd"], "start_args": args,
                 "stop_signal": stop_sig,
                 "config_paths": json.dumps(cfg_paths),
+                "backup_paths": json.dumps(bak_paths),
+                "config_root": cat.get("config_root") or None,
                 "state": "installing", "created_by": created_by,
             })
 
@@ -309,6 +576,164 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
     )
     await db.game_server_update(gs_id, install_job=job_id)
     return {"game_server": await db.game_server_get(gs_id), "job_id": job_id}
+
+
+async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = None,
+                name: str, install_dir: str, display_name: str | None = None,
+                start_cmd: str | None = None, start_args: str | None = None,
+                steam_login: str | None = None, stop_signal: str | None = None,
+                reuse_service_id: int | None = None, enable: bool = False,
+                created_by: int | None = None) -> dict:
+    """Register an ALREADY-INSTALLED game server as a Portal-managed one.
+
+    No SteamCMD install runs and the install directory is never touched — this
+    adopts a hand-rolled server (existing dir + its own systemd unit) onto the
+    Portal game-server machinery. Pass ``reuse_service_id`` to convert an
+    existing managed-service row in place, keeping its id, grants and encrypted
+    config; otherwise a fresh ``gameserver`` service is created.
+
+    The caller is responsible for the actual cut-over (stop the old unit,
+    ``systemctl enable --now portal-gs-<name>``).
+    """
+    name = (name or "").strip().lower()
+    if not _NAME_RE.match(name):
+        raise ValueError("name must be 2–32 chars, lowercase letters/digits/hyphens")
+    if await db.game_server_by_name(name):
+        raise ValueError(f"a game server named '{name}' already exists")
+
+    if catalog_key:
+        cat = await db.game_catalog_get(catalog_key)
+        if not cat:
+            raise ValueError(f"unknown catalog game '{catalog_key}'")
+    elif custom:
+        cat = {
+            "key": None, "name": custom.get("name") or name,
+            "steam_app_id": int(custom["steam_app_id"]),
+            "steam_login": custom.get("steam_login") or "anonymous",
+            "start_cmd": custom["start_cmd"], "start_args": custom.get("start_args", ""),
+            "stop_signal": custom.get("stop_signal") or "SIGTERM",
+            "config_paths": custom.get("config_paths") or [],
+        }
+    else:
+        raise ValueError("catalog_key or custom game definition required")
+
+    cfg_paths = _as_glob_list(cat["config_paths"])
+    bak_paths = _as_glob_list(cat.get("backup_paths"))
+
+    install_dir = os.path.normpath(install_dir)
+    if not install_dir.startswith(GAMEDATA_ROOT + "/"):
+        raise ValueError(f"install_dir must be under {GAMEDATA_ROOT}")
+    if not os.path.isdir(install_dir):
+        raise ValueError(f"{install_dir} does not exist — nothing to adopt")
+    app_id = cat["steam_app_id"]
+    acf = os.path.join(install_dir, "steamapps", f"appmanifest_{app_id}.acf")
+    if not os.path.isfile(acf):
+        raise ValueError(
+            f"{install_dir} has no Steam manifest for app {app_id} "
+            f"({acf}) — wrong directory or catalog game?")
+
+    unit_name = f"portal-gs-{name}"
+    s_cmd = start_cmd or cat["start_cmd"]
+    args = start_args if start_args is not None else cat["start_args"]
+    slogin = steam_login or cat["steam_login"]
+    stop_sig = stop_signal or cat["stop_signal"]
+    build = _installed_build(install_dir, app_id)
+
+    old_service = None
+    if reuse_service_id is not None:
+        old_service = await db.get_service_by_id(reuse_service_id)
+        if not old_service:
+            raise ValueError(f"service {reuse_service_id} not found")
+
+    async with _lock():
+        UNITS_DIR.mkdir(parents=True, exist_ok=True)
+        unit_file = UNITS_DIR / f"{unit_name}.service"
+        gs_id = None
+        try:
+            unit_file.write_text(_unit_text(name, install_dir, s_cmd, args, stop_sig))
+            rc, _, err = await _run_cmd(_sudo("ln", "-sf", str(unit_file),
+                                              f"{SYSTEMD_DIR}/{unit_name}.service"))
+            if rc != 0:
+                raise RuntimeError(f"failed to install unit: {err}")
+            await _run_cmd(_sudo("systemctl", "daemon-reload"))
+
+            gs_id = await db.game_server_create({
+                "name": name, "catalog_key": catalog_key,
+                "steam_app_id": app_id, "steam_login": slogin,
+                "install_dir": install_dir, "unit_name": unit_name,
+                "start_cmd": s_cmd, "start_args": args, "stop_signal": stop_sig,
+                "config_paths": json.dumps(cfg_paths),
+                "backup_paths": json.dumps(bak_paths),
+                "config_root": cat.get("config_root") or None,
+                "state": "installed", "created_by": created_by,
+            })
+            await db.game_server_update(gs_id, installed_build=build)
+
+            if reuse_service_id is not None:
+                await db.update_service_full(
+                    reuse_service_id,
+                    plugin="gameserver", service_type="managed", icon="game",
+                    display_name=(display_name or old_service.get("display_name")
+                                  or f"{cat['name']} ({name})"),
+                    enabled=enable,
+                    config={"unit": unit_name, "game_server_id": gs_id},
+                )
+                svc_id = reuse_service_id
+                # refresh the in-memory handler if the manager is already live
+                mgr = _services.service_manager
+                if mgr is not None:
+                    mgr._services.pop(svc_id, None)
+                    try:
+                        row = await db.get_service_by_id(svc_id)
+                        cls = _services.get_service_class("gameserver")
+                        if cls and row:
+                            h = cls(row)
+                            h._db = db
+                            mgr._services[svc_id] = h
+                    except Exception as e:
+                        logger.warning("handler refresh for service %s failed: %s", svc_id, e)
+            else:
+                svc = await _services.service_manager.create_service(
+                    name=name, service_type="gameserver",
+                    display_name=display_name or f"{cat['name']} ({name})",
+                    description=f"Game server · Steam app {app_id}",
+                    config={"unit": unit_name, "game_server_id": gs_id},
+                    enabled=enable,
+                )
+                if not svc:
+                    raise RuntimeError("could not create the backing managed service")
+                svc_id = svc.id
+
+            await db.game_server_update(gs_id, service_id=svc_id, state="installed")
+        except Exception:
+            await _run_cmd(_sudo("rm", "-f", f"{SYSTEMD_DIR}/{unit_name}.service"))
+            unit_file.unlink(missing_ok=True)
+            await _run_cmd(_sudo("systemctl", "daemon-reload"))
+            if reuse_service_id is not None and old_service is not None:
+                # put the row back the way we found it
+                try:
+                    await db.update_service_full(
+                        reuse_service_id,
+                        plugin=old_service.get("plugin"),
+                        service_type=old_service.get("service_type"),
+                        display_name=old_service.get("display_name"),
+                        enabled=bool(old_service.get("enabled")),
+                        config=old_service.get("config") or {},
+                    )
+                except Exception as e:
+                    logger.error("failed to restore service %s: %s", reuse_service_id, e)
+            elif gs_id is not None:
+                try:
+                    for r in await db.get_services_by_type("managed"):
+                        if r.get("name") == name and r.get("plugin") == "gameserver":
+                            await _services.service_manager.delete_service(r["id"])
+                except Exception as e:
+                    logger.warning("orphan service cleanup failed: %s", e)
+            if gs_id is not None:
+                await db.game_server_delete(gs_id)
+            raise
+
+    return {"game_server": await db.game_server_get(gs_id)}
 
 
 async def _run_cmd(args, timeout=60):
@@ -362,6 +787,42 @@ async def check_latest_build(db, gs_id: int) -> dict:
         installed_build=_installed_build(gs["install_dir"], gs["steam_app_id"]),
     )
     return await db.game_server_get(gs_id)
+
+
+_BUILD_CHECK_INTERVAL = 6 * 3600     # seconds between automatic checks
+_build_check_task = None
+
+
+def is_update_available(gs: dict) -> bool:
+    ib, lb = gs.get("installed_build"), gs.get("latest_build")
+    return bool(ib and lb and str(ib) != str(lb))
+
+
+async def _build_check_loop(db):
+    """Refresh installed/latest build for every deployed server on a timer so
+    the admin cards can show an up-to-date / update-available badge without
+    anyone clicking Check."""
+    await asyncio.sleep(90)   # let the box settle after boot
+    while True:
+        try:
+            for gs in await db.game_server_list():
+                if gs.get("state") in ("installing", "updating"):
+                    continue
+                try:
+                    await check_latest_build(db, gs["id"])
+                except Exception as e:
+                    logger.warning("build check for %s failed: %s", gs.get("name"), e)
+                await asyncio.sleep(5)
+        except Exception:
+            logger.exception("game-server build-check loop iteration failed")
+        await asyncio.sleep(_BUILD_CHECK_INTERVAL)
+
+
+def start_build_check_loop(db):
+    global _build_check_task
+    if _build_check_task is None or _build_check_task.done():
+        _build_check_task = asyncio.create_task(_build_check_loop(db))
+    return _build_check_task
 
 
 def update_server(db, gs_id: int) -> str:
@@ -442,23 +903,21 @@ async def destroy(db, gs_id: int, delete_files: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Config file editor (scoped to the server's install dir + config_paths)
+# Config file editor + backup (scoped to the server's install dir)
 # ---------------------------------------------------------------------------
 def _config_globs(gs: dict) -> list:
-    cp = gs.get("config_paths") or "[]"
-    if isinstance(cp, str):
-        try:
-            cp = json.loads(cp)
-        except json.JSONDecodeError:
-            cp = []
-    return [p for p in cp if isinstance(p, str) and ".." not in p]
+    return _as_glob_list(gs.get("config_paths"))
 
 
-def list_config_files(gs: dict) -> list[dict]:
-    root = gs["install_dir"]
+def _backup_globs(gs: dict) -> list:
+    return _as_glob_list(gs.get("backup_paths"))
+
+
+def _match_files(root: str, globs: list) -> list[dict]:
+    """Existing regular files under `root` matching any glob (``**`` supported)."""
     seen, out = set(), []
-    for pat in _config_globs(gs):
-        for match in glob.glob(os.path.join(root, pat)):
+    for pat in globs:
+        for match in glob.glob(os.path.join(root, pat), recursive=True):
             try:
                 rp = file_manager._validate_path(os.path.relpath(match, root), root)
             except ValueError:
@@ -477,8 +936,49 @@ def list_config_files(gs: dict) -> list[dict]:
     return out
 
 
+def list_config_files(gs: dict) -> list[dict]:
+    return _match_files(_config_root(gs), _config_globs(gs))
+
+
+def list_backup_files(gs: dict) -> list[dict]:
+    """Everything the backup archive would contain: config + save/world globs."""
+    return _match_files(_config_root(gs), _config_globs(gs) + _backup_globs(gs))
+
+
+# Archive guards — a browser download, not a disk image.
+_BACKUP_MAX_TOTAL = 512 * 1024 * 1024
+_BACKUP_MAX_FILE = 128 * 1024 * 1024
+
+
+def make_backup_archive(gs: dict) -> tuple[bytes, str]:
+    """tar.gz of the server's config + backup files. Returns (bytes, filename)."""
+    import io
+    import tarfile
+    from datetime import datetime, timezone
+
+    root = _config_root(gs)
+    files = list_backup_files(gs)
+    if not files:
+        raise ValueError("nothing to back up for this server yet")
+
+    total = 0
+    buf = io.BytesIO()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    prefix = f"{gs['name']}-{stamp}"
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for f in files:
+            if f["size"] > _BACKUP_MAX_FILE:
+                continue
+            total += f["size"]
+            if total > _BACKUP_MAX_TOTAL:
+                raise ValueError("backup set exceeds 512 MB — grab it over SFTP instead")
+            abs_p = os.path.join(root, f["path"])
+            tar.add(abs_p, arcname=os.path.join(prefix, f["path"]))
+    return buf.getvalue(), f"{prefix}.tar.gz"
+
+
 def _resolve_config(gs: dict, rel: str) -> Path:
-    root = gs["install_dir"]
+    root = _config_root(gs)
     rp = file_manager._validate_path(rel, root)
     allowed = {os.path.realpath(f["path"] if os.path.isabs(f["path"])
                                 else os.path.join(root, f["path"]))

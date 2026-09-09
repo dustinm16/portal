@@ -720,21 +720,6 @@
                     <div class="loading"><div class="spinner"></div> Loading services...</div>
                 </div>
 
-                <!-- Service Logs Modal -->
-                <div id="service-logs-modal" class="modal" style="display: none;">
-                    <div class="modal-content" style="max-width: 800px;">
-                        <div class="modal-header">
-                            <h3 id="logs-modal-title">Service Logs</h3>
-                            <button class="modal-close" onclick="closeServiceLogsModal()">&times;</button>
-                        </div>
-                        <div class="modal-body">
-                            <div id="service-logs-content" style="max-height: 400px; overflow-y: auto; background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
-                                <div class="loading"><div class="spinner"></div> Loading logs...</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Create Service Modal -->
                 <div id="create-service-modal" class="modal" style="display: none;">
                     <div class="modal-content" style="max-width: 500px;">
@@ -836,43 +821,61 @@
                     </div>
                 </div>
 
-                <!-- Grant Service Access Modal -->
-                <div id="service-grant-modal" class="modal" style="display: none;">
-                    <div class="modal-content" style="max-width: 460px;">
-                        <div class="modal-header">
-                            <h3>Grant access &mdash; <span id="grant-service-name"></span></h3>
-                            <button class="modal-close" onclick="document.getElementById('service-grant-modal').style.display='none'">&times;</button>
+            </div>
+
+            <!-- Service Logs Modal (shared by Managed Services + Game Servers tabs) -->
+            <div id="service-logs-modal" class="modal" style="display: none;">
+                <div class="modal-backdrop" onclick="closeServiceLogsModal()"></div>
+                <div class="modal-content" style="max-width: 800px;">
+                    <div class="modal-header">
+                        <h3 id="logs-modal-title">Service Logs</h3>
+                        <button class="modal-close" onclick="closeServiceLogsModal()">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="service-logs-content" style="max-height: 60vh; overflow-y: auto; background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
+                            <div class="loading"><div class="spinner"></div> Loading logs...</div>
                         </div>
-                        <div class="modal-body">
-                            <input type="hidden" id="grant-service-id">
-                            <div class="form-group">
-                                <label>Add people</label>
-                                <div id="grant-chip-box" class="userpick-box">
-                                    <input type="text" id="grant-user-input" class="userpick-input" autocomplete="off" placeholder="Type a username…">
-                                    <div id="grant-user-results" class="userpick-results" style="display:none;"></div>
-                                </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Grant Service Access Modal (shared by Managed Services + Game Servers tabs) -->
+            <div id="service-grant-modal" class="modal" style="display: none;">
+                <div class="modal-backdrop" onclick="document.getElementById('service-grant-modal').style.display='none'"></div>
+                <div class="modal-content" style="max-width: 460px;">
+                    <div class="modal-header">
+                        <h3>Grant access &mdash; <span id="grant-service-name"></span></h3>
+                        <button class="modal-close" onclick="document.getElementById('service-grant-modal').style.display='none'">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="grant-service-id">
+                        <div class="form-group">
+                            <label>Add people</label>
+                            <div id="grant-chip-box" class="userpick-box">
+                                <input type="text" id="grant-user-input" class="userpick-input" autocomplete="off" placeholder="Type a username…">
+                                <div id="grant-user-results" class="userpick-results" style="display:none;"></div>
                             </div>
-                            <div class="form-group">
-                                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-                                    <input type="checkbox" id="grant-action-control" style="width:auto;" checked>
-                                    <span>Control &mdash; start / stop / restart</span>
-                                </label>
-                                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-top:0.4rem;">
-                                    <input type="checkbox" id="grant-action-logs" style="width:auto;">
-                                    <span>Logs &mdash; view logs &amp; status</span>
-                                </label>
-                                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-top:0.4rem;">
-                                    <input type="checkbox" id="grant-action-files" style="width:auto;">
-                                    <span>Files &mdash; browse &amp; edit config <span style="color:var(--text-muted);">(game servers)</span></span>
-                                </label>
-                            </div>
-                            <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
-                                <button type="button" class="btn btn-primary" onclick="submitServiceGrant()">Grant</button>
-                            </div>
-                            <div class="form-group">
-                                <label>People with access</label>
-                                <div id="grant-current-list"><small style="color:var(--text-muted);">Loading…</small></div>
-                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                                <input type="checkbox" id="grant-action-control" style="width:auto;" checked>
+                                <span>Control &mdash; start / stop / restart</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-top:0.4rem;">
+                                <input type="checkbox" id="grant-action-logs" style="width:auto;">
+                                <span>Logs &mdash; view logs &amp; status</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-top:0.4rem;">
+                                <input type="checkbox" id="grant-action-files" style="width:auto;">
+                                <span>Files &mdash; edit config &amp; download backups <span style="color:var(--text-muted);">(game servers)</span></span>
+                            </label>
+                        </div>
+                        <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                            <button type="button" class="btn btn-primary" onclick="submitServiceGrant()">Grant</button>
+                        </div>
+                        <div class="form-group">
+                            <label>People with access</label>
+                            <div id="grant-current-list"><small style="color:var(--text-muted);">Loading…</small></div>
                         </div>
                     </div>
                 </div>
@@ -992,13 +995,19 @@
                         <h3>Config — <span id="gs-config-title"></span></h3>
                         <button class="modal-close" onclick="document.getElementById('gs-config-modal').style.display='none'">&times;</button>
                     </div>
-                    <div class="modal-body" style="display:flex;gap:1rem;min-height:420px;">
-                        <div id="gs-config-files" style="width:220px;flex-shrink:0;border-right:1px solid var(--card-border);padding-right:0.75rem;overflow-y:auto;font-size:0.8rem;"></div>
-                        <div style="flex:1;display:flex;flex-direction:column;">
-                            <div id="gs-config-current" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.4rem;"></div>
-                            <textarea id="gs-config-text" spellcheck="false" style="flex:1;min-height:360px;width:100%;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.75rem;font-family:monospace;font-size:0.8rem;resize:none;" disabled></textarea>
-                            <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
-                                <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
+                    <div class="modal-body" style="display:flex;flex-direction:column;gap:0.75rem;min-height:420px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+                            <span style="font-size:0.75rem;color:var(--text-muted);">Edit a settings file, or download a backup of the config &amp; save files.</span>
+                            <button class="btn btn-secondary btn-sm" id="gs-config-backup" onclick="downloadGsBackup()">⬇ Download backup</button>
+                        </div>
+                        <div style="display:flex;gap:1rem;flex:1;">
+                            <div id="gs-config-files" style="width:220px;flex-shrink:0;border-right:1px solid var(--card-border);padding-right:0.75rem;overflow-y:auto;font-size:0.8rem;"></div>
+                            <div style="flex:1;display:flex;flex-direction:column;">
+                                <div id="gs-config-current" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.4rem;"></div>
+                                <textarea id="gs-config-text" spellcheck="false" style="flex:1;min-height:360px;width:100%;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.75rem;font-family:monospace;font-size:0.8rem;resize:none;" disabled></textarea>
+                                <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+                                    <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -4245,20 +4254,30 @@
             }
         }
 
+        function gsUpdateBadge(gs) {
+            const ib = gs.installed_build, lb = gs.latest_build;
+            if (ib && lb && String(ib) !== String(lb)) {
+                return `<span title="installed ${ib} → latest ${lb}" style="position:absolute;top:0.75rem;right:0.75rem;font-size:0.68rem;font-weight:600;padding:0.15rem 0.5rem;border-radius:9999px;background:rgba(var(--accent-yellow-rgb,234,179,8),0.18);color:var(--accent-yellow);">● Update available</span>`;
+            }
+            if (ib && lb) {
+                return `<span title="build ${ib}" style="position:absolute;top:0.75rem;right:0.75rem;font-size:0.68rem;font-weight:600;padding:0.15rem 0.5rem;border-radius:9999px;background:rgba(var(--accent-green-rgb,34,197,94),0.16);color:var(--accent-green);">✓ Up to date</span>`;
+            }
+            return `<span style="position:absolute;top:0.75rem;right:0.75rem;font-size:0.68rem;padding:0.15rem 0.5rem;border-radius:9999px;background:var(--code-bg);color:var(--text-muted);">· checking…</span>`;
+        }
+
         function renderGameServerCard(gs) {
             const running = gs.status === 'running';
-            const buildStale = gs.installed_build && gs.latest_build && gs.installed_build !== gs.latest_build;
             const sid = gs.service_id;
             return `
-                <div class="admin-card">
-                    <h3 style="display:flex;align-items:center;gap:0.5rem;">
-                        <span style="width:9px;height:9px;border-radius:50%;background:${running ? 'var(--accent-green)' : gs.state === 'error' ? 'var(--accent-red)' : 'var(--text-muted)'};"></span>
+                <div class="admin-card" style="position:relative;">
+                    ${gsUpdateBadge(gs)}
+                    <h3 style="display:flex;align-items:center;gap:0.5rem;padding-right:7rem;">
+                        <span style="width:9px;height:9px;border-radius:50%;flex-shrink:0;background:${running ? 'var(--accent-green)' : gs.state === 'error' ? 'var(--accent-red)' : 'var(--text-muted)'};"></span>
                         ${escapeHtml(gs.name)}
                     </h3>
                     <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.75rem;">
                         ${escapeHtml(gs.catalog_key || 'custom')} · app ${gs.steam_app_id} · ${escapeHtml(gs.state)}
                         ${gs.installed_build ? ' · build ' + gs.installed_build : ''}
-                        ${buildStale ? ` <span style="color:var(--accent-yellow);">(update available: ${gs.latest_build})</span>` : ''}
                     </div>
                     <div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
                         ${sid ? (running
@@ -4331,6 +4350,13 @@
             document.getElementById('gs-job-modal').style.display = 'none';
         }
 
+        function _fmtBytes(n) {
+            if (!n) return '0 B';
+            const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
+            while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+            return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
+        }
+
         async function openGsConfig(gsId, name) {
             _gsConfig = { gsId, path: null };
             document.getElementById('gs-config-title').textContent = name;
@@ -4338,6 +4364,8 @@
             document.getElementById('gs-config-text').value = '';
             document.getElementById('gs-config-text').disabled = true;
             document.getElementById('gs-config-save').disabled = true;
+            document.getElementById('gs-config-backup').disabled = true;
+            document.getElementById('gs-config-backup').textContent = '⬇ Download backup';
             document.getElementById('gs-config-files').innerHTML = 'Loading…';
             document.getElementById('gs-config-modal').style.display = 'flex';
             try {
@@ -4346,8 +4374,36 @@
                 document.getElementById('gs-config-files').innerHTML = files.length
                     ? files.map(f => `<div style="padding:0.35rem 0.4rem;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''" onclick="loadGsConfigFile('${escapeHtml(f.path).replace(/'/g,"\\'")}')">${escapeHtml(f.name)}<div style="font-size:0.65rem;color:var(--text-muted);">${escapeHtml(f.path)}</div></div>`).join('')
                     : '<p style="color:var(--text-muted);font-size:0.8rem;">No config files found yet — start the server once so it generates them.</p>';
+                const bcount = (d.backup_files || []).length;
+                const bbtn = document.getElementById('gs-config-backup');
+                bbtn.disabled = bcount === 0;
+                bbtn.textContent = bcount
+                    ? `⬇ Download backup (${bcount} file${bcount === 1 ? '' : 's'}, ${_fmtBytes(d.backup_total)})`
+                    : 'Nothing to back up yet';
             } catch (e) {
                 document.getElementById('gs-config-files').innerHTML = '<p style="color:var(--accent-red);">Failed to load.</p>';
+            }
+        }
+
+        async function downloadGsBackup() {
+            if (!_gsConfig.gsId) return;
+            const btn = document.getElementById('gs-config-backup');
+            const label = btn.textContent;
+            btn.disabled = true; btn.textContent = 'Packaging…';
+            try {
+                const res = await Portal.fetch(`/api/game-servers/${_gsConfig.gsId}/config/download`);
+                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Backup failed');
+                const blob = await res.blob();
+                const m = (res.headers.get('Content-Disposition') || '').match(/filename="(.+?)"/);
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = m ? m[1] : 'backup.tar.gz';
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(a.href);
+            } catch (e) {
+                Portal.toast(e.message || 'Backup failed', 'error');
+            } finally {
+                btn.disabled = false; btn.textContent = label;
             }
         }
 
