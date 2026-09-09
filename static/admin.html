@@ -597,6 +597,7 @@
             <div class="tab-nav">
                 <button class="tab-btn active" onclick="showTab('overview', event)">Overview</button>
                 <button class="tab-btn" onclick="showTab('services', event)">Managed Services</button>
+                <button class="tab-btn" onclick="showTab('gameservers', event)">Game Servers</button>
                 <button class="tab-btn" onclick="showTab('metrics', event)">Metrics</button>
                 <button class="tab-btn" onclick="showTab('vuln', event)">CVE Analysis</button>
                 <button class="tab-btn" onclick="showTab('shodan', event)">Shodan Scanner</button>
@@ -860,6 +861,10 @@
                                     <input type="checkbox" id="grant-action-logs" style="width:auto;">
                                     <span>Logs &mdash; view logs &amp; status</span>
                                 </label>
+                                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-top:0.4rem;">
+                                    <input type="checkbox" id="grant-action-files" style="width:auto;">
+                                    <span>Files &mdash; browse &amp; edit config <span style="color:var(--text-muted);">(game servers)</span></span>
+                                </label>
                             </div>
                             <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
                                 <button type="button" class="btn btn-primary" onclick="submitServiceGrant()">Grant</button>
@@ -867,6 +872,133 @@
                             <div class="form-group">
                                 <label>People with access</label>
                                 <div id="grant-current-list"><small style="color:var(--text-muted);">Loading…</small></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game Servers Tab -->
+            <div id="tab-gameservers" class="tab-content">
+                <div class="section-header">
+                    <h2>Game Servers</h2>
+                    <button class="btn btn-secondary" onclick="loadGameServers()">Refresh</button>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+                    Deploy dedicated game servers via SteamCMD. Each becomes a managed service —
+                    grant a user <em>Control</em>, <em>Logs</em> and/or <em>Files</em> to let them run it
+                    and edit its config without being an admin.
+                </p>
+
+                <div class="admin-card">
+                    <h3>Deploy a server</h3>
+                    <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem;">
+                        Search the catalog and pick a game to deploy an instance.
+                    </p>
+                    <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap;">
+                        <div class="userpick-box" style="flex:1;min-width:260px;max-width:460px;">
+                            <input type="text" id="gs-catalog-search" class="userpick-input" autocomplete="off"
+                                   placeholder="Search games — palworld, valheim, rust…">
+                            <div id="gs-catalog-results" class="userpick-results" style="display:none;"></div>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="showAddCatalogModal()" style="white-space:nowrap;">＋ Add a game</button>
+                    </div>
+                </div>
+
+                <div class="admin-card" style="margin-top:1.5rem;">
+                    <h3>Deployed servers</h3>
+                    <div id="gameservers-list"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+                </div>
+            </div>
+
+            <!-- Deploy game server modal -->
+            <div id="gs-deploy-modal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:480px;">
+                    <div class="modal-header">
+                        <h3>Deploy <span id="gs-deploy-game"></span></h3>
+                        <button class="modal-close" onclick="document.getElementById('gs-deploy-modal').style.display='none'">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="gs-deploy-key">
+                        <div class="form-group">
+                            <label for="gs-deploy-name">Instance name</label>
+                            <input type="text" id="gs-deploy-name" placeholder="e.g. palworld-2" pattern="[a-z0-9][a-z0-9-]{1,31}" title="lowercase letters, digits, hyphens">
+                            <p style="font-size:0.72rem;color:var(--text-muted);margin:0.25rem 0 0;">Installs to <code id="gs-deploy-dir">/mnt/gamedata/&lt;name&gt;</code>, unit <code>portal-gs-&lt;name&gt;</code>.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="gs-deploy-args">Start arguments <span style="color:var(--text-muted);font-weight:normal;">(optional override)</span></label>
+                            <input type="text" id="gs-deploy-args">
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                                <input type="checkbox" id="gs-deploy-enable" style="width:auto;" checked>
+                                <span>Enable — auto-start on Portal boot</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-top:0.4rem;">
+                                <input type="checkbox" id="gs-deploy-start" style="width:auto;">
+                                <span>Start it once the install finishes</span>
+                            </label>
+                        </div>
+                        <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                            <button type="button" class="btn btn-secondary" onclick="document.getElementById('gs-deploy-modal').style.display='none'">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="deployGameServer()">Deploy</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add catalog entry modal -->
+            <div id="gs-catalog-modal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:460px;">
+                    <div class="modal-header">
+                        <h3>Add a game to the catalog</h3>
+                        <button class="modal-close" onclick="document.getElementById('gs-catalog-modal').style.display='none'">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group"><label>Key</label><input type="text" id="gsc-key" placeholder="my-game" pattern="[a-z0-9][a-z0-9-]{1,31}"></div>
+                        <div class="form-group"><label>Name</label><input type="text" id="gsc-name" placeholder="My Game"></div>
+                        <div class="form-group"><label>Steam App ID</label><input type="number" id="gsc-appid" min="1"></div>
+                        <div class="form-group"><label>Start command</label><input type="text" id="gsc-cmd" placeholder="./StartServer.sh"></div>
+                        <div class="form-group"><label>Start args</label><input type="text" id="gsc-args"></div>
+                        <div class="form-group"><label>Stop signal</label><input type="text" id="gsc-signal" value="SIGTERM"></div>
+                        <div class="form-group"><label>Steam login</label><input type="text" id="gsc-login" value="anonymous"></div>
+                        <div class="form-group"><label>Config paths <span style="color:var(--text-muted);font-weight:normal;">(one glob per line, relative to install dir)</span></label><textarea id="gsc-configs" rows="3" placeholder="*.ini&#10;Config/*.cfg"></textarea></div>
+                        <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                            <button type="button" class="btn btn-secondary" onclick="document.getElementById('gs-catalog-modal').style.display='none'">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="submitCatalogEntry()">Add</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game server job (install/update) modal -->
+            <div id="gs-job-modal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:760px;">
+                    <div class="modal-header">
+                        <h3 id="gs-job-title">Job</h3>
+                        <button class="modal-close" onclick="closeGsJob()">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;" id="gs-job-status"></div>
+                        <pre id="gs-job-log" style="max-height:55vh;overflow:auto;background:var(--code-bg);border-radius:6px;padding:0.75rem;font-size:0.75rem;white-space:pre-wrap;"></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game server config editor modal -->
+            <div id="gs-config-modal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:900px;">
+                    <div class="modal-header">
+                        <h3>Config — <span id="gs-config-title"></span></h3>
+                        <button class="modal-close" onclick="document.getElementById('gs-config-modal').style.display='none'">&times;</button>
+                    </div>
+                    <div class="modal-body" style="display:flex;gap:1rem;min-height:420px;">
+                        <div id="gs-config-files" style="width:220px;flex-shrink:0;border-right:1px solid var(--card-border);padding-right:0.75rem;overflow-y:auto;font-size:0.8rem;"></div>
+                        <div style="flex:1;display:flex;flex-direction:column;">
+                            <div id="gs-config-current" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.4rem;"></div>
+                            <textarea id="gs-config-text" spellcheck="false" style="flex:1;min-height:360px;width:100%;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.75rem;font-family:monospace;font-size:0.8rem;resize:none;" disabled></textarea>
+                            <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.5rem;">
+                                <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
                             </div>
                         </div>
                     </div>
@@ -1838,6 +1970,7 @@
             switch(tabName) {
                 case 'overview': loadOverview(); break;
                 case 'services': loadManagedServices(); break;
+                case 'gameservers': loadGameCatalog(); loadGameServers(); break;
                 case 'metrics':
                     loadMetrics();
                     if (document.getElementById('metrics-sub-device').classList.contains('active') && devMetricsLoaded) loadDeviceMetrics();
@@ -3927,6 +4060,7 @@
             document.getElementById('grant-service-name').textContent = name || '';
             document.getElementById('grant-action-control').checked = true;
             document.getElementById('grant-action-logs').checked = false;
+            document.getElementById('grant-action-files').checked = false;
             if (!_grantPicker) _grantPicker = adminInitUserPicker('grant-chip-box', 'grant-user-input', 'grant-user-results');
             _grantPicker.reset();
             document.getElementById('service-grant-modal').style.display = 'flex';
@@ -3953,6 +4087,7 @@
             const actions = [];
             if (document.getElementById('grant-action-control').checked) actions.push('control');
             if (document.getElementById('grant-action-logs').checked) actions.push('logs');
+            if (document.getElementById('grant-action-files').checked) actions.push('files');
             if (!actions.length) { Portal.toast('Pick at least one permission', 'error'); return; }
             try {
                 const res = await Portal.fetch(`/api/managed-services/${id}/grants`, {
@@ -3975,6 +4110,300 @@
                 loadServiceGrants(id);
             } catch (e) { Portal.toast('Failed to revoke', 'error'); }
         }
+
+        // =================================================================
+        // Game Servers (SteamCMD)
+        // =================================================================
+        let _gameCatalog = [];
+        let _gameServers = [];
+        let _gsJobTimer = null;
+        let _gsConfig = { gsId: null, path: null };
+
+        async function loadGameCatalog() {
+            try {
+                const d = await Portal.fetchJSON('/api/game-catalog');
+                _gameCatalog = d.games || [];
+            } catch (e) {
+                _gameCatalog = [];
+            }
+            initGameCatalogPicker();
+            filterGameCatalog();
+        }
+
+        function initGameCatalogPicker() {
+            const input = document.getElementById('gs-catalog-search');
+            if (!input || input.dataset.picker) return;
+            input.dataset.picker = '1';
+            let timer = null;
+            input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(filterGameCatalog, 120); });
+            input.addEventListener('focus', filterGameCatalog);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') document.getElementById('gs-catalog-results').style.display = 'none';
+            });
+            document.addEventListener('click', (e) => {
+                const box = input.closest('.userpick-box');
+                if (box && !box.contains(e.target)) document.getElementById('gs-catalog-results').style.display = 'none';
+            });
+        }
+
+        function filterGameCatalog() {
+            const results = document.getElementById('gs-catalog-results');
+            const input = document.getElementById('gs-catalog-search');
+            if (!results || !input) return;
+            // Only surface the dropdown when the field is actually in use.
+            if (document.activeElement !== input && !input.value.trim()) {
+                results.style.display = 'none';
+                return;
+            }
+            const q = (input.value || '').toLowerCase().trim();
+            const list = _gameCatalog
+                .filter(g => !q || g.name.toLowerCase().includes(q) || (g.key || '').includes(q))
+                .slice(0, 30);
+            if (!list.length) {
+                results.innerHTML = `<div style="padding:0.6rem 0.75rem;color:var(--text-muted);font-size:0.85rem;">${_gameCatalog.length ? 'No matching game' : 'Catalog unavailable'}</div>`;
+                results.style.display = 'block';
+                return;
+            }
+            results.innerHTML = list.map(g => `
+                <div class="gs-cat-row" data-key="${escapeHtml(g.key)}" style="display:flex;align-items:center;gap:0.5rem;padding:0.5rem 0.75rem;cursor:pointer;">
+                    <div style="flex:1;min-width:0;">
+                        <div style="color:var(--text-primary);">${escapeHtml(g.name)}</div>
+                        <div style="font-size:0.72rem;color:var(--text-muted);">app ${g.steam_app_id}${g.game_port ? ' · port ' + g.game_port : ''}${g.builtin ? '' : ' · custom'}</div>
+                    </div>
+                    ${g.builtin ? '' : `<span class="gs-cat-del" data-key="${escapeHtml(g.key)}" title="Remove from catalog" style="color:var(--accent-red);cursor:pointer;padding:0 0.35rem;">✕</span>`}
+                </div>`).join('');
+            results.querySelectorAll('.gs-cat-row').forEach(row => {
+                row.addEventListener('mouseover', () => row.style.background = 'var(--card-hover)');
+                row.addEventListener('mouseout', () => row.style.background = '');
+                row.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('gs-cat-del')) return;
+                    results.style.display = 'none';
+                    document.getElementById('gs-catalog-search').value = '';
+                    showDeployModal(row.dataset.key);
+                });
+            });
+            results.querySelectorAll('.gs-cat-del').forEach(x => {
+                x.addEventListener('click', (e) => { e.stopPropagation(); deleteCatalogEntry(x.dataset.key); });
+            });
+            results.style.display = 'block';
+        }
+
+        function showDeployModal(key) {
+            const g = _gameCatalog.find(x => x.key === key);
+            if (!g) return;
+            document.getElementById('gs-deploy-key').value = key;
+            document.getElementById('gs-deploy-game').textContent = g.name;
+            const nm = document.getElementById('gs-deploy-name');
+            nm.value = key;
+            document.getElementById('gs-deploy-args').value = g.start_args || '';
+            document.getElementById('gs-deploy-enable').checked = true;
+            document.getElementById('gs-deploy-start').checked = false;
+            document.getElementById('gs-deploy-dir').textContent = '/mnt/gamedata/' + (nm.value || '<name>');
+            nm.oninput = () => document.getElementById('gs-deploy-dir').textContent = '/mnt/gamedata/' + (nm.value || '<name>');
+            document.getElementById('gs-deploy-modal').style.display = 'flex';
+        }
+
+        async function deployGameServer() {
+            const name = document.getElementById('gs-deploy-name').value.trim();
+            if (!/^[a-z0-9][a-z0-9-]{1,31}$/.test(name)) {
+                Portal.toast('Name: lowercase letters, digits, hyphens (2–32)', 'error'); return;
+            }
+            const body = {
+                catalog_key: document.getElementById('gs-deploy-key').value,
+                name,
+                start_args: document.getElementById('gs-deploy-args').value,
+                enable: document.getElementById('gs-deploy-enable').checked,
+                start: document.getElementById('gs-deploy-start').checked,
+            };
+            try {
+                const res = await Portal.fetch('/api/game-servers', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Deploy failed');
+                document.getElementById('gs-deploy-modal').style.display = 'none';
+                Portal.toast('Deploying ' + name + '…');
+                loadGameServers();
+                showGsJob(data.job_id, 'Installing ' + name);
+            } catch (e) { Portal.toast(e.message || 'Deploy failed', 'error'); }
+        }
+
+        async function loadGameServers() {
+            const el = document.getElementById('gameservers-list');
+            try {
+                const d = await Portal.fetchJSON('/api/game-servers');
+                _gameServers = d.game_servers || [];
+                if (!_gameServers.length) {
+                    el.innerHTML = '<p style="color:var(--text-muted);">No game servers deployed yet.</p>';
+                    return;
+                }
+                el.innerHTML = `<div class="admin-grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr));">
+                    ${_gameServers.map(renderGameServerCard).join('')}</div>`;
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--accent-red);">Failed to load.</p>';
+            }
+        }
+
+        function renderGameServerCard(gs) {
+            const running = gs.status === 'running';
+            const buildStale = gs.installed_build && gs.latest_build && gs.installed_build !== gs.latest_build;
+            const sid = gs.service_id;
+            return `
+                <div class="admin-card">
+                    <h3 style="display:flex;align-items:center;gap:0.5rem;">
+                        <span style="width:9px;height:9px;border-radius:50%;background:${running ? 'var(--accent-green)' : gs.state === 'error' ? 'var(--accent-red)' : 'var(--text-muted)'};"></span>
+                        ${escapeHtml(gs.name)}
+                    </h3>
+                    <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.75rem;">
+                        ${escapeHtml(gs.catalog_key || 'custom')} · app ${gs.steam_app_id} · ${escapeHtml(gs.state)}
+                        ${gs.installed_build ? ' · build ' + gs.installed_build : ''}
+                        ${buildStale ? ` <span style="color:var(--accent-yellow);">(update available: ${gs.latest_build})</span>` : ''}
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
+                        ${sid ? (running
+                            ? `<button class="btn btn-secondary btn-sm" onclick="gsControl(${sid},'stop')">Stop</button>
+                               <button class="btn btn-secondary btn-sm" onclick="gsControl(${sid},'restart')">Restart</button>`
+                            : `<button class="btn btn-primary btn-sm" onclick="gsControl(${sid},'start')">Start</button>`) : ''}
+                        ${sid ? `<button class="btn btn-secondary btn-sm" onclick="showServiceLogs(${sid}, '${escapeHtml(gs.name)}')">Logs</button>` : ''}
+                        <button class="btn btn-secondary btn-sm" onclick="gsUpdate(${gs.id})">Update</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openGsConfig(${gs.id}, '${escapeHtml(gs.name)}')">Files</button>
+                        ${sid ? `<button class="btn btn-secondary btn-sm" onclick="showServiceGrantModal(${sid}, '${escapeHtml(gs.name)}')">Grant</button>` : ''}
+                        <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="gsDelete(${gs.id}, '${escapeHtml(gs.name)}')">Delete</button>
+                    </div>
+                </div>`;
+        }
+
+        async function gsControl(sid, action) {
+            try {
+                const res = await Portal.fetch(`/api/services/${sid}/${action}`, { method: 'POST' });
+                const d = await res.json();
+                Portal.toast(res.ok ? `Server ${action}` : (d.error || 'Failed'), res.ok ? 'success' : 'error');
+                setTimeout(loadGameServers, 800);
+            } catch (e) { Portal.toast('Failed', 'error'); }
+        }
+
+        async function gsUpdate(id) {
+            try {
+                const d = await Portal.fetchJSON(`/api/game-servers/${id}/update`, { method: 'POST' });
+                showGsJob(d.job_id, 'Updating game server');
+                loadGameServers();
+            } catch (e) { Portal.toast('Update failed to start', 'error'); }
+        }
+
+        async function gsDelete(id, name) {
+            if (!confirm(`Delete "${name}"? Also delete its installed files from disk?\n\nOK = delete files too · Cancel = keep files`)) {
+                if (!confirm(`Delete the "${name}" server entry but keep its files on disk?`)) return;
+                await _gsDelete(id, false);
+            } else {
+                await _gsDelete(id, true);
+            }
+        }
+        async function _gsDelete(id, deleteFiles) {
+            try {
+                const res = await Portal.fetch(`/api/game-servers/${id}?delete_files=${deleteFiles}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+                Portal.toast('Deleted');
+                loadGameServers();
+            } catch (e) { Portal.toast(e.message || 'Delete failed', 'error'); }
+        }
+
+        function showGsJob(jobId, title) {
+            document.getElementById('gs-job-title').textContent = title || 'Job';
+            document.getElementById('gs-job-log').textContent = '';
+            document.getElementById('gs-job-status').textContent = 'running…';
+            document.getElementById('gs-job-modal').style.display = 'flex';
+            clearInterval(_gsJobTimer);
+            const poll = async () => {
+                try {
+                    const j = await Portal.fetchJSON(`/api/game-servers/jobs/${jobId}`);
+                    document.getElementById('gs-job-log').textContent = (j.log || []).join('\n');
+                    const pre = document.getElementById('gs-job-log'); pre.scrollTop = pre.scrollHeight;
+                    document.getElementById('gs-job-status').textContent = j.status;
+                    if (j.status !== 'running') { clearInterval(_gsJobTimer); loadGameServers(); }
+                } catch (e) { clearInterval(_gsJobTimer); }
+            };
+            poll();
+            _gsJobTimer = setInterval(poll, 2000);
+        }
+        function closeGsJob() {
+            clearInterval(_gsJobTimer);
+            document.getElementById('gs-job-modal').style.display = 'none';
+        }
+
+        async function openGsConfig(gsId, name) {
+            _gsConfig = { gsId, path: null };
+            document.getElementById('gs-config-title').textContent = name;
+            document.getElementById('gs-config-current').textContent = '';
+            document.getElementById('gs-config-text').value = '';
+            document.getElementById('gs-config-text').disabled = true;
+            document.getElementById('gs-config-save').disabled = true;
+            document.getElementById('gs-config-files').innerHTML = 'Loading…';
+            document.getElementById('gs-config-modal').style.display = 'flex';
+            try {
+                const d = await Portal.fetchJSON(`/api/game-servers/${gsId}/config`);
+                const files = d.files || [];
+                document.getElementById('gs-config-files').innerHTML = files.length
+                    ? files.map(f => `<div style="padding:0.35rem 0.4rem;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''" onclick="loadGsConfigFile('${escapeHtml(f.path).replace(/'/g,"\\'")}')">${escapeHtml(f.name)}<div style="font-size:0.65rem;color:var(--text-muted);">${escapeHtml(f.path)}</div></div>`).join('')
+                    : '<p style="color:var(--text-muted);font-size:0.8rem;">No config files found yet — start the server once so it generates them.</p>';
+            } catch (e) {
+                document.getElementById('gs-config-files').innerHTML = '<p style="color:var(--accent-red);">Failed to load.</p>';
+            }
+        }
+
+        async function loadGsConfigFile(path) {
+            try {
+                const d = await Portal.fetchJSON(`/api/game-servers/${_gsConfig.gsId}/config/read?path=${encodeURIComponent(path)}`);
+                _gsConfig.path = path;
+                document.getElementById('gs-config-current').textContent = path;
+                const ta = document.getElementById('gs-config-text');
+                ta.value = d.content; ta.disabled = false;
+                document.getElementById('gs-config-save').disabled = false;
+            } catch (e) { Portal.toast('Failed to read file', 'error'); }
+        }
+
+        async function saveGsConfig() {
+            if (!_gsConfig.path) return;
+            try {
+                const res = await Portal.fetch(`/api/game-servers/${_gsConfig.gsId}/config/write`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: _gsConfig.path, content: document.getElementById('gs-config-text').value }),
+                });
+                if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
+                Portal.toast('Saved');
+            } catch (e) { Portal.toast(e.message || 'Save failed', 'error'); }
+        }
+
+        function showAddCatalogModal() { document.getElementById('gs-catalog-modal').style.display = 'flex'; }
+        async function submitCatalogEntry() {
+            const body = {
+                key: document.getElementById('gsc-key').value.trim().toLowerCase(),
+                name: document.getElementById('gsc-name').value.trim(),
+                steam_app_id: parseInt(document.getElementById('gsc-appid').value, 10),
+                start_cmd: document.getElementById('gsc-cmd').value.trim(),
+                start_args: document.getElementById('gsc-args').value.trim(),
+                stop_signal: document.getElementById('gsc-signal').value.trim() || 'SIGTERM',
+                steam_login: document.getElementById('gsc-login').value.trim() || 'anonymous',
+                config_paths: document.getElementById('gsc-configs').value.split('\n').map(s => s.trim()).filter(Boolean),
+            };
+            try {
+                const res = await Portal.fetch('/api/game-catalog', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+                });
+                if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+                document.getElementById('gs-catalog-modal').style.display = 'none';
+                Portal.toast('Added to catalog');
+                loadGameCatalog();
+            } catch (e) { Portal.toast(e.message || 'Failed', 'error'); }
+        }
+        async function deleteCatalogEntry(key) {
+            if (!confirm(`Remove "${key}" from the catalog?`)) return;
+            try {
+                await Portal.fetch(`/api/game-catalog/${key}`, { method: 'DELETE' });
+                loadGameCatalog();
+            } catch (e) { Portal.toast('Failed', 'error'); }
+        }
+
 
         // =================================================================
         // Initialization

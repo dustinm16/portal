@@ -21,9 +21,11 @@ env/
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 *.db.backup
 *.sqlite
 *.sqlite3
+backups/
 
 # Certificates & private keys
 certs/

@@ -112,6 +112,8 @@ from services import (
 import cert_manager
 import system_monitor
 import file_manager
+import gameservers
+import jobs as bg_jobs
 import sftp_browser
 import update_manager
 setup_logging()
@@ -8670,7 +8672,7 @@ async def http_add_service_grant(request: web.Request) -> web.Response:
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    actions = [a for a in (data.get("actions") or ["control"]) if a in ("control", "logs")] or ["control"]
+    actions = [a for a in (data.get("actions") or ["control"]) if a in ("control", "logs", "files")] or ["control"]
     usernames = data.get("usernames") or ([data["username"]] if data.get("username") else [])
     added, skipped = [], []
     for name in usernames[:50]:
@@ -8713,6 +8715,284 @@ async def http_remove_service_grant(request: web.Request) -> web.Response:
             details={"grantee_id": int(grantee)},
         )
     return web.json_response({"success": ok, "grants": await db.list_service_grants(int(sid))})
+
+
+# =============================================================================
+# Game Servers (SteamCMD) — see gameservers.py
+# =============================================================================
+
+def _is_admin(token: TokenPayload) -> bool:
+    return token.has_scope("admin") or token.has_scope("*")
+
+
+async def _gs_access(token: TokenPayload, gs: dict, need: str) -> bool:
+    """admin, or a service_grant on this game server's backing service.
+
+    `need`: 'control' (start/stop/restart/update), 'logs', or 'files'."""
+    if _is_admin(token):
+        return True
+    sid = gs.get("service_id")
+    if not sid:
+        return False
+    grant = await db.user_service_grant(token.user_id, sid)
+    return bool(grant and need in grant)
+
+
+async def _gs_or_404(request):
+    gid = request.match_info.get("id", "")
+    if not gid.isdigit():
+        return None, web.json_response({"error": "Invalid ID"}, status=400)
+    gs = await db.game_server_get(int(gid))
+    if not gs:
+        return None, web.json_response({"error": "Game server not found"}, status=404)
+    return gs, None
+
+
+async def http_game_catalog_list(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    return web.json_response({"games": await db.game_catalog_list()})
+
+
+async def http_game_catalog_add(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    key = str(data.get("key", "")).strip().lower()
+    if not re.match(r"^[a-z0-9][a-z0-9-]{1,31}$", key):
+        return web.json_response({"error": "key must be lowercase letters/digits/hyphens"}, status=400)
+    for f in ("name", "steam_app_id", "start_cmd"):
+        if not data.get(f):
+            return web.json_response({"error": f"{f} is required"}, status=400)
+    try:
+        data["key"] = key
+        await db.game_catalog_upsert(data, builtin=False)
+    except Exception as e:
+        return web.json_response({"error": safe_error_message(e)}, status=400)
+    return web.json_response({"games": await db.game_catalog_list()})
+
+
+async def http_game_catalog_delete(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    ok = await db.game_catalog_delete(request.match_info.get("key", ""))
+    return web.json_response({"success": ok, "games": await db.game_catalog_list()})
+
+
+async def http_game_servers_list(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    servers = await db.game_server_list()
+    if not _is_admin(token):
+        granted = set((await db.get_user_granted_service_ids(token.user_id)).keys())
+        servers = [s for s in servers if s.get("service_id") in granted]
+    # enrich with live service status
+    for s in servers:
+        s["config_paths"] = _json_or(s.get("config_paths"), [])
+        if s.get("service_id") and _service_manager:
+            st = await _service_manager.get_service_status(s["service_id"])
+            if st:
+                s["status"] = st.get("status")
+                s["health_status"] = st.get("health_status")
+    return web.json_response({"game_servers": servers})
+
+
+def _json_or(raw, default):
+    try:
+        return json.loads(raw) if raw else default
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+async def http_game_server_get(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return err
+    if not await _gs_access(token, gs, "logs"):
+        return forbidden_response(request)
+    gs["config_paths"] = _json_or(gs.get("config_paths"), [])
+    return web.json_response({"game_server": gs})
+
+
+async def http_game_server_deploy(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    if not _service_manager:
+        return web.json_response({"error": "Service manager not ready"}, status=503)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    try:
+        result = await gameservers.deploy(
+            db,
+            catalog_key=data.get("catalog_key"),
+            custom=data.get("custom"),
+            name=data.get("name", ""),
+            install_dir=data.get("install_dir"),
+            start_args=data.get("start_args"),
+            steam_login=data.get("steam_login"),
+            enable=bool(data.get("enable", True)),
+            start=bool(data.get("start", False)),
+            created_by=token.user_id,
+        )
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("game server deploy failed")
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.deploy", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=data.get("name"), details={"catalog_key": data.get("catalog_key")})
+    return web.json_response(result, status=201)
+
+
+async def http_game_server_update(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return err
+    if not await _gs_access(token, gs, "control"):
+        return forbidden_response(request)
+    job_id = gameservers.update_server(db, gs["id"])
+    return web.json_response({"job_id": job_id})
+
+
+async def http_game_server_check_build(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return err
+    if not await _gs_access(token, gs, "logs"):
+        return forbidden_response(request)
+    try:
+        updated = await gameservers.check_latest_build(db, gs["id"])
+    except Exception as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    if updated:
+        updated["config_paths"] = _json_or(updated.get("config_paths"), [])
+    return web.json_response({"game_server": updated})
+
+
+async def http_game_server_delete(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return err
+    delete_files = request.query.get("delete_files", "").lower() in ("1", "true", "yes")
+    try:
+        await gameservers.destroy(db, gs["id"], delete_files=delete_files)
+    except Exception as e:
+        logger.exception("game server destroy failed")
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.delete", token.user_id,
+                    (actor or {}).get("username", "unknown"), target_name=gs["name"])
+    return web.json_response({"success": True})
+
+
+async def http_game_server_job(request: web.Request) -> web.Response:
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    job = bg_jobs.get_job(request.match_info.get("job_id", ""))
+    if not job:
+        return web.json_response({"error": "Job not found"}, status=404)
+    # A non-admin may only poll jobs for a game server they hold a grant on.
+    if not _is_admin(token):
+        gid = job.get("game_server_id")
+        gs = await db.game_server_get(gid) if gid else None
+        if not gs or not await _gs_access(token, gs, "logs"):
+            return forbidden_response(request)
+    return web.json_response(job)
+
+
+async def _gs_config_ctx(request, need="files"):
+    token = await authenticate_request(request)
+    if not token:
+        return None, None, unauthorized_response(request)
+    gs, err = await _gs_or_404(request)
+    if err:
+        return None, None, err
+    if not await _gs_access(token, gs, need):
+        return None, None, forbidden_response(request)
+    gs["config_paths"] = _json_or(gs.get("config_paths"), [])
+    return token, gs, None
+
+
+async def http_game_server_config_list(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    try:
+        files = await asyncio.to_thread(gameservers.list_config_files, gs)
+    except Exception as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    return web.json_response({"files": files, "install_dir": gs["install_dir"]})
+
+
+async def http_game_server_config_read(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    rel = request.query.get("path", "")
+    try:
+        content = await asyncio.to_thread(gameservers.read_config, gs, rel)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError:
+        return web.json_response({"error": "File not found"}, status=404)
+    return web.json_response({"path": rel, "content": content})
+
+
+async def http_game_server_config_write(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    rel = data.get("path", "")
+    if not isinstance(data.get("content"), str):
+        return web.json_response({"error": "content must be a string"}, status=400)
+    try:
+        await asyncio.to_thread(gameservers.write_config, gs, rel, data["content"])
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.config_edit", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=gs["name"], details={"path": rel})
+    return web.json_response({"success": True})
 
 
 # =============================================================================
@@ -15765,6 +16045,21 @@ def create_app() -> web.Application:
     app.router.add_post("/api/managed-services/{id}/grants", http_add_service_grant)
     app.router.add_delete("/api/managed-services/{id}/grants/{grantee}", http_remove_service_grant)
 
+    # Game servers (SteamCMD)
+    app.router.add_get("/api/game-catalog", http_game_catalog_list)
+    app.router.add_post("/api/game-catalog", http_game_catalog_add)
+    app.router.add_delete("/api/game-catalog/{key}", http_game_catalog_delete)
+    app.router.add_get("/api/game-servers", http_game_servers_list)
+    app.router.add_post("/api/game-servers", http_game_server_deploy)
+    app.router.add_get("/api/game-servers/jobs/{job_id}", http_game_server_job)
+    app.router.add_get("/api/game-servers/{id}", http_game_server_get)
+    app.router.add_delete("/api/game-servers/{id}", http_game_server_delete)
+    app.router.add_post("/api/game-servers/{id}/update", http_game_server_update)
+    app.router.add_post("/api/game-servers/{id}/check-build", http_game_server_check_build)
+    app.router.add_get("/api/game-servers/{id}/config", http_game_server_config_list)
+    app.router.add_get("/api/game-servers/{id}/config/read", http_game_server_config_read)
+    app.router.add_post("/api/game-servers/{id}/config/write", http_game_server_config_write)
+
     # User management
     app.router.add_get("/api/users", http_list_users)
     app.router.add_post("/api/users", http_create_user)
@@ -16178,6 +16473,12 @@ class PortalServer:
         load_service_types()  # Load service type plugins
         _service_manager = await init_service_manager(db)
         logger.info("Managed services initialized")
+
+        # Seed the game-server catalog (idempotent)
+        try:
+            await gameservers.seed_catalog(db)
+        except Exception as e:
+            logger.warning(f"Game catalog seed failed: {e}")
 
         # Register mediamtx restart callback with update manager
         async def _restart_mediamtx_services():

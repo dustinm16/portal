@@ -127,6 +127,7 @@ Services are stored in a single `services` table with a `service_type` field:
 | `mediamtx` | Portal spawns the binary and owns the process |
 | `searxng` | Portal spawns uWSGI and owns the process |
 | `systemd` | Portal does **not** own the process — `start`/`stop`/`restart` shell out to `systemctl` for a unit already installed on the host; status/health from `systemctl show` + `is-active`; logs from `journalctl` |
+| `gameserver` | A thin `systemd` subclass for a server Portal deployed itself (`gameservers.py`): the `portal-gs-<name>.service` unit is generated at deploy time, everything else is `SystemdService` |
 
 `create_service` writes the `enabled` flag explicitly (the column defaults to
 `1`, so a service must be created disabled deliberately). For `systemd`
@@ -152,11 +153,40 @@ revoke is a row delete:
   owner-only (`get_user_connection_by_uuid`). Shared connections are **not**
   reachable through the raw `/ws` relay used by native clients.
 - **`service_grants`** `(service_id, grantee_user_id, actions)` where `actions`
-  ⊆ `{control, logs}` — an admin grants a non-admin start/stop/restart and/or
-  log access to one managed service. `_can_control_service(token, id, need)`
-  gates the control and logs endpoints (`admin` OR a matching grant).
-  `GET /api/me` returns `granted_services: {id: [...]}` so the dashboard renders
-  the right buttons.
+  ⊆ `{control, logs, files}` — an admin grants a non-admin start/stop/restart,
+  log access, and/or (for game servers) config-file editing on one managed
+  service. `_can_control_service(token, id, need)` gates the control and logs
+  endpoints; `_gs_access(token, gs, need)` gates the game-server endpoints
+  (`admin` OR a matching grant). `GET /api/me` returns
+  `granted_services: {id: [...]}` so the dashboard renders the right buttons.
+
+### Game servers (SteamCMD)
+
+`gameservers.py` deploys dedicated game servers from a catalog. A deployed
+server is: a `game_servers` row + a generated `portal-gs-<name>.service` unit
+(symlinked into `/etc/systemd/system`, `daemon-reload`ed) + a `gameserver`
+managed service bound to that unit. `game_catalog` holds curated built-ins
+(`builtin=1`, protected) plus admin-added entries; each entry carries a Steam
+app id, start command/args, stop signal, and `config_paths` globs.
+
+- **Deploy** validates the name (`^[a-z0-9][a-z0-9-]{1,31}$`), writes the unit,
+  creates the DB + service rows under a module lock with full rollback on
+  failure, then runs `steamcmd +app_update <id> validate` as a streamed
+  background job (`jobs.py`). Install/update/build-check subprocesses all run
+  as the unprivileged game account via `sudo -n -u <user>`.
+- **Update** compares the installed build (`steamapps/appmanifest_<id>.acf`)
+  against the latest public-branch build (`steamcmd +app_info_print`); no-op
+  when equal, else stop → `app_update` → restart.
+- **Config editor** — `list/read/write_config` resolve a requested path through
+  `file_manager._validate_path` **and** assert it matches one of the catalog
+  `config_paths` globs under the install dir; writes are `chown`ed back to the
+  game account. Endpoints require `admin` or a `files` grant and are audited.
+- **Destroy** disables + removes the unit, deletes the service and
+  `game_servers` rows (FK `ON DELETE SET NULL` for the service link), and
+  optionally `rm -rf`s the install dir.
+
+`jobs.py` is a small in-memory job registry (`start_job`, `get_job`,
+`run_streamed`) independent of `update_manager`'s — game-server jobs live here.
 
 `GET /api/users/lookup?q=` is a slim, any-authenticated-user username-prefix
 search (id + username only) powering the pickers in both grant modals. Every
@@ -222,6 +252,8 @@ Permission Hierarchy:
 ├── system_monitor.py      # Process, systemd service, and network monitoring (~367 lines)
 ├── file_manager.py        # Local filesystem operations (admin) (~285 lines)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user) (~183 lines)
+├── gameservers.py         # SteamCMD game-server deploy / update / config editor (~500 lines)
+├── jobs.py                # In-memory background job registry + streaming subprocess runner (~125 lines)
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry
@@ -243,7 +275,8 @@ Permission Hierarchy:
 │   ├── base.py            # ManagedService base class, ServiceInfo
 │   ├── mediamtx.py        # MediaMTX process manager
 │   ├── searxng.py         # SearXNG process manager (uWSGI)
-│   └── systemd.py         # Wraps an existing systemd unit (systemctl control)
+│   ├── systemd.py         # Wraps an existing systemd unit (systemctl control)
+│   └── gameserver.py      # Portal-deployed game server (systemd.py subclass)
 │
 ├── static/                # 20 HTML pages, 9 JS modules, 1 CSS file (~41,655 lines frontend)
 │   ├── index.html         # Dashboard
@@ -367,6 +400,49 @@ CREATE TABLE service_logs (
     level TEXT DEFAULT 'info',       -- debug, info, warn, error
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (service_id) REFERENCES managed_services(id) ON DELETE CASCADE
+);
+
+-- Game-server catalog: curated built-ins (builtin=1, protected) + admin entries
+CREATE TABLE game_catalog (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    steam_app_id INTEGER NOT NULL,
+    steam_login TEXT DEFAULT 'anonymous',
+    start_cmd TEXT NOT NULL,
+    start_args TEXT DEFAULT '',
+    stop_signal TEXT DEFAULT 'SIGTERM',
+    config_paths TEXT DEFAULT '[]',      -- JSON array of globs, relative to install dir
+    game_port INTEGER,
+    icon TEXT DEFAULT 'game',
+    notes TEXT,
+    builtin INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Deployed game-server instances (each backed by a services row, plugin 'gameserver')
+CREATE TABLE game_servers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,           -- instance name, also the unit suffix
+    catalog_key TEXT,
+    steam_app_id INTEGER NOT NULL,
+    steam_login TEXT DEFAULT 'anonymous',
+    install_dir TEXT NOT NULL,
+    unit_name TEXT NOT NULL,             -- portal-gs-<name>
+    start_cmd TEXT NOT NULL,
+    start_args TEXT DEFAULT '',
+    stop_signal TEXT DEFAULT 'SIGTERM',
+    config_paths TEXT DEFAULT '[]',
+    service_id INTEGER,                  -- -> services.id (ON DELETE SET NULL)
+    state TEXT DEFAULT 'installing',     -- installing | installed | updating | error
+    install_job TEXT,
+    installed_build TEXT, latest_build TEXT, build_checked_at TEXT,
+    created_by INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- Temporary RTMP publish tokens (single-use, short-lived)
@@ -719,6 +795,26 @@ POST /api/services/:id/stop     - Stop managed service
 POST /api/services/:id/restart  - Restart managed service
 GET  /api/services/:id/logs     - Get managed service logs
 ```
+
+### Game servers (Admin / granted users)
+
+```
+GET  /api/game-catalog                    - List catalog entries (any authed user)
+POST /api/game-catalog                    - Add a custom entry (admin)
+DELETE /api/game-catalog/:key              - Remove a custom entry (admin)
+GET  /api/game-servers                     - List servers (non-admins: only granted)
+POST /api/game-servers                     - Deploy a server (admin) -> {game_server, job_id}
+GET  /api/game-servers/:id                 - Server details (admin or grant)
+DELETE /api/game-servers/:id?delete_files= - Tear down (admin)
+POST /api/game-servers/:id/update          - SteamCMD update job (admin or control grant)
+POST /api/game-servers/:id/check-build     - Refresh installed/latest build (admin or logs grant)
+GET  /api/game-servers/jobs/:job_id        - Poll an install/update job log
+GET  /api/game-servers/:id/config          - List editable config files (admin or files grant)
+GET  /api/game-servers/:id/config/read?path= - Read one config file (admin or files grant)
+POST /api/game-servers/:id/config/write    - Write one config file (admin or files grant)
+```
+
+Start/stop/restart/logs reuse `/api/services/{service_id}/...`.
 
 ### Streaming
 

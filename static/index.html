@@ -1650,6 +1650,29 @@
         </div>
     </div>
 
+    <!-- Game Server Config Editor Modal -->
+    <div id="gs-config-modal" class="modal" style="display: none;">
+        <div class="modal-backdrop" onclick="closeModal('gs-config-modal')"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>Config — <span id="gs-config-title"></span></h3>
+                <button class="modal-close" onclick="closeModal('gs-config-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; gap:1rem;">
+                    <div id="gs-config-files" style="width:220px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow-y:auto; max-height:60vh; font-size:0.8rem;"></div>
+                    <div style="flex:1; display:flex; flex-direction:column;">
+                        <div id="gs-config-current" style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.4rem;"></div>
+                        <textarea id="gs-config-text" spellcheck="false" style="flex:1; min-height:360px; width:100%; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; resize:none;" disabled></textarea>
+                        <div style="margin-top:0.6rem; text-align:right;">
+                            <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Create Stream Modal -->
     <div id="create-stream-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('create-stream-modal')"></div>
@@ -1772,7 +1795,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=45"></script>
+    <script src="/static/js/dashboard.js?v=46"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

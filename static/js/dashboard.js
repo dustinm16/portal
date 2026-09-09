@@ -285,6 +285,8 @@ function createServiceCard(service) {
     const grant = (currentUser && currentUser.granted_services && currentUser.granted_services[service.id]) || [];
     const canControl = isAdmin || grant.includes('control');
     const canLogs = isAdmin || grant.includes('logs');
+    const canFiles = isAdmin || grant.includes('files');
+    const isGameServer = plugin === 'gameserver';
 
     // start/stop/restart buttons — admins and users with a 'control' grant
     let processControls = '';
@@ -321,12 +323,21 @@ function createServiceCard(service) {
             </svg>
         </button>` : '';
 
+    // Game servers deployed by Portal expose a scoped config-file editor to
+    // admins and to users with a 'files' grant.
+    const filesBtn = (isGameServer && canFiles) ? `
+        <button class="service-edit-btn" onclick="event.stopPropagation(); showGameServerFiles(${service.id}, '${escapeHtml(service.display_name || service.name).replace(/'/g, "\\'")}')" title="Edit config files">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+        </button>` : '';
+
     // The dashboard card is operational only — Start/Stop/Restart + Logs for
     // admins and grant-holders. Editing / deleting / creating a service lives
     // in the Admin panel > Managed Services tab.
     let adminBtns = '';
-    if (processControls || logsBtn) {
-        adminBtns = `<div class="service-admin-btns">${processControls}${logsBtn}</div>`;
+    if (processControls || logsBtn || filesBtn) {
+        adminBtns = `<div class="service-admin-btns">${processControls}${logsBtn}${filesBtn}</div>`;
     }
 
     // Determine status display
@@ -450,6 +461,63 @@ async function showServiceLogs(serviceId, name) {
         }).join('');
     } catch (e) {
         box.innerHTML = `<span style="color:var(--accent-red);">Failed to load logs: ${escapeHtml(e.message || '')}</span>`;
+    }
+}
+
+// ---- Game server config editor (shared modal #gs-config-modal) ----
+let _gsCfg = { gsId: null, path: null };
+
+async function showGameServerFiles(serviceId, name) {
+    document.getElementById('gs-config-title').textContent = name;
+    document.getElementById('gs-config-current').textContent = '';
+    const ta = document.getElementById('gs-config-text');
+    ta.value = ''; ta.disabled = true;
+    document.getElementById('gs-config-save').disabled = true;
+    const listEl = document.getElementById('gs-config-files');
+    listEl.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+    if (typeof showModal === 'function') showModal('gs-config-modal');
+    else document.getElementById('gs-config-modal').style.display = 'flex';
+    try {
+        const servers = (await Portal.fetchJSON('/api/game-servers')).game_servers || [];
+        const gs = servers.find(s => s.service_id === serviceId);
+        if (!gs) { listEl.innerHTML = '<span style="color:var(--accent-red);">Server not found.</span>'; return; }
+        _gsCfg = { gsId: gs.id, path: null };
+        const files = (await Portal.fetchJSON(`/api/game-servers/${gs.id}/config`)).files || [];
+        listEl.innerHTML = files.length
+            ? files.map(f => `<div class="gs-cfg-file" style="padding:0.35rem 0.4rem; cursor:pointer; border-radius:4px;" data-path="${escapeHtml(f.path)}">${escapeHtml(f.name)}<div style="font-size:0.65rem; color:var(--text-muted);">${escapeHtml(f.path)}</div></div>`).join('')
+            : '<span style="color:var(--text-muted);">No config files yet — start the server once so it generates them.</span>';
+        listEl.querySelectorAll('.gs-cfg-file').forEach(el => {
+            el.addEventListener('click', () => openGsConfigFile(el.dataset.path));
+        });
+    } catch (e) {
+        listEl.innerHTML = `<span style="color:var(--accent-red);">Failed: ${escapeHtml(e.message || '')}</span>`;
+    }
+}
+
+async function openGsConfigFile(path) {
+    try {
+        const d = await Portal.fetchJSON(`/api/game-servers/${_gsCfg.gsId}/config/read?path=${encodeURIComponent(path)}`);
+        _gsCfg.path = path;
+        document.getElementById('gs-config-current').textContent = path;
+        const ta = document.getElementById('gs-config-text');
+        ta.value = d.content; ta.disabled = false;
+        document.getElementById('gs-config-save').disabled = false;
+    } catch (e) {
+        Portal.toast('Failed to read file', 'error');
+    }
+}
+
+async function saveGsConfig() {
+    if (!_gsCfg.path) return;
+    try {
+        const res = await Portal.fetch(`/api/game-servers/${_gsCfg.gsId}/config/write`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: _gsCfg.path, content: document.getElementById('gs-config-text').value }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
+        Portal.toast('Saved');
+    } catch (e) {
+        Portal.toast(e.message || 'Save failed', 'error');
     }
 }
 

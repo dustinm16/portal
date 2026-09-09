@@ -2828,12 +2828,38 @@ within one health-monitor cycle (and immediately on any status read).
 An admin can let a non-admin control or read one managed service:
 
 - `GET  /api/managed-services/{id}/grants` — list `[{user_id, username, actions, created_at}]`
-- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs"]}`. `control` = start/stop/restart; `logs` = logs + status. Audited `service.grant`.
+- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs","files"]}`. `control` = start/stop/restart; `logs` = logs + status; `files` = browse/edit config files (game servers only). Audited `service.grant`.
 - `DELETE /api/managed-services/{id}/grants/{grantee_id}` — revoke. Audited `service.ungrant`.
 
 Once granted, `POST /api/services/{id}/start|stop|restart` (and the
 `/api/managed-services/{id}/...` equivalents) and the logs/status endpoints
 accept that user; `GET /api/me` returns `granted_services: {id: ["control","logs"]}`.
+
+---
+
+#### Game servers (SteamCMD)
+
+Deploy and run dedicated game servers. A deployed server is a `game_servers`
+row + a generated `portal-gs-<name>.service` systemd unit + a managed service
+(`plugin: "gameserver"`) — so lifecycle control (`/api/services/{service_id}/...`)
+and the grant system above apply unchanged. SteamCMD runs under an unprivileged
+account; installs go under a dedicated game-data disk.
+
+- `GET  /api/game-catalog` — list catalog entries (any authenticated user).
+- `POST /api/game-catalog` — add/replace a custom entry (admin). Body `{key, name, steam_app_id, start_cmd, start_args?, stop_signal?, steam_login?, config_paths?[], game_port?}`.
+- `DELETE /api/game-catalog/{key}` — remove a custom entry (admin; built-ins are protected).
+- `GET  /api/game-servers` — admin: all; non-admin: only servers they hold a grant on. Each row is enriched with live `status`.
+- `POST /api/game-servers` — deploy (admin). Body `{catalog_key | custom{...}, name, start_args?, steam_login?, enable?, start?}`. Returns `201 {game_server, job_id}` and kicks off the SteamCMD install job.
+- `GET  /api/game-servers/{id}` — one server (admin or any grant).
+- `DELETE /api/game-servers/{id}?delete_files=<bool>` — disable + remove the unit, service row and `game_servers` row; optionally delete the install directory (admin).
+- `POST /api/game-servers/{id}/update` — start a SteamCMD update job; no-op if already on the latest build (admin or `control` grant). Returns `{job_id}`.
+- `POST /api/game-servers/{id}/check-build` — refresh `installed_build` / `latest_build` (admin or `logs` grant).
+- `GET  /api/game-servers/jobs/{job_id}` — poll an install/update job: `{id, name, status, log[], started_at, finished_at}`. `status` ∈ `running | completed | failed`.
+- `GET  /api/game-servers/{id}/config` — list editable config files (admin or `files` grant). Scoped to the catalog entry's `config_paths` globs under the install dir.
+- `GET  /api/game-servers/{id}/config/read?path=<rel>` — read one file (admin or `files` grant).
+- `POST /api/game-servers/{id}/config/write` — body `{path, content}`; written back as the game account. Audited `gameserver.config_edit` (admin or `files` grant).
+
+Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`.
 
 ---
 

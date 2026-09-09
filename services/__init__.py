@@ -571,6 +571,11 @@ def load_service_types():
     except ImportError as e:
         logger.warning(f"Failed to load systemd service: {e}")
 
+    try:
+        from . import gameserver
+    except ImportError as e:
+        logger.warning(f"Failed to load gameserver service: {e}")
+
     # Add more service imports here as they're implemented
     # from . import turn
     # from . import codeserver

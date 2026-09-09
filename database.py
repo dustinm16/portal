@@ -1011,6 +1011,51 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_conn_shares_conn ON connection_shares(connection_id)",
     "CREATE INDEX IF NOT EXISTS idx_service_grants_grantee ON service_grants(grantee_user_id)",
     "CREATE INDEX IF NOT EXISTS idx_service_grants_service ON service_grants(service_id)",
+    # Game servers (SteamCMD). game_catalog = curated + admin-added game
+    # definitions; game_servers = deployed instances, each backed by a
+    # services row (plugin='gameserver') for lifecycle + grants.
+    """CREATE TABLE IF NOT EXISTS game_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        steam_app_id INTEGER NOT NULL,
+        steam_login TEXT DEFAULT 'anonymous',
+        start_cmd TEXT NOT NULL,
+        start_args TEXT DEFAULT '',
+        stop_signal TEXT DEFAULT 'SIGTERM',
+        config_paths TEXT DEFAULT '[]',
+        game_port INTEGER,
+        icon TEXT DEFAULT 'game',
+        notes TEXT,
+        builtin INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS game_servers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        catalog_key TEXT,
+        steam_app_id INTEGER NOT NULL,
+        steam_login TEXT DEFAULT 'anonymous',
+        install_dir TEXT NOT NULL,
+        unit_name TEXT NOT NULL,
+        start_cmd TEXT NOT NULL,
+        start_args TEXT DEFAULT '',
+        stop_signal TEXT DEFAULT 'SIGTERM',
+        config_paths TEXT DEFAULT '[]',
+        service_id INTEGER,
+        state TEXT DEFAULT 'installing',
+        install_job TEXT,
+        installed_build TEXT,
+        latest_build TEXT,
+        build_checked_at TEXT,
+        created_by INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_game_servers_service ON game_servers(service_id)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -3088,7 +3133,7 @@ class Database:
         ]
 
     async def add_service_grant(self, service_id: int, grantee_id: int, actions: list, granted_by: int) -> bool:
-        clean = ",".join(sorted({a for a in actions if a in ("control", "logs")})) or "control"
+        clean = ",".join(sorted({a for a in actions if a in ("control", "logs", "files")})) or "control"
         try:
             await self.conn.execute(
                 """INSERT INTO service_grants (service_id, grantee_user_id, actions, granted_by)
@@ -3120,6 +3165,119 @@ class Database:
             (prefix + "%", min(max(limit, 1), 25)),
         )
         return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Game servers (SteamCMD) — see gameservers.py
+    # ------------------------------------------------------------------
+    async def game_catalog_list(self) -> list[dict]:
+        cur = await self.conn.execute(
+            "SELECT * FROM game_catalog ORDER BY builtin DESC, name")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def game_catalog_get(self, key: str) -> Optional[dict]:
+        cur = await self.conn.execute("SELECT * FROM game_catalog WHERE key = ?", (key,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def game_catalog_upsert(self, data: dict, builtin: bool = False) -> int:
+        import json
+        cp = data.get("config_paths", [])
+        row = {
+            "key": data["key"], "name": data["name"],
+            "steam_app_id": int(data["steam_app_id"]),
+            "steam_login": data.get("steam_login") or "anonymous",
+            "start_cmd": data["start_cmd"], "start_args": data.get("start_args", ""),
+            "stop_signal": data.get("stop_signal") or "SIGTERM",
+            "config_paths": cp if isinstance(cp, str) else json.dumps(cp),
+            "game_port": data.get("game_port"),
+            "icon": data.get("icon") or "game", "notes": data.get("notes"),
+            "builtin": 1 if builtin else 0,
+        }
+        cols = ", ".join(row.keys())
+        ph = ", ".join("?" * len(row))
+        upd = ", ".join(f"{k}=excluded.{k}" for k in row if k not in ("key", "builtin"))
+        cur = await self.conn.execute(
+            f"""INSERT INTO game_catalog ({cols}, updated_at) VALUES ({ph}, CURRENT_TIMESTAMP)
+               ON CONFLICT(key) DO UPDATE SET {upd}, updated_at=CURRENT_TIMESTAMP""",
+            tuple(row.values()),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def game_catalog_seed(self, entries: list[dict]) -> None:
+        """Idempotent — insert built-in entries that don't exist yet."""
+        for e in entries:
+            cur = await self.conn.execute(
+                "SELECT 1 FROM game_catalog WHERE key = ?", (e["key"],))
+            if not await cur.fetchone():
+                await self.game_catalog_upsert(e, builtin=True)
+
+    async def game_catalog_delete(self, key: str) -> bool:
+        cur = await self.conn.execute(
+            "DELETE FROM game_catalog WHERE key = ? AND builtin = 0", (key,))
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def game_server_list(self) -> list[dict]:
+        cur = await self.conn.execute("SELECT * FROM game_servers ORDER BY name")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def game_server_get(self, gs_id: int) -> Optional[dict]:
+        cur = await self.conn.execute("SELECT * FROM game_servers WHERE id = ?", (gs_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def game_server_by_name(self, name: str) -> Optional[dict]:
+        cur = await self.conn.execute("SELECT * FROM game_servers WHERE name = ?", (name,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def game_server_by_service_id(self, service_id: int) -> Optional[dict]:
+        cur = await self.conn.execute(
+            "SELECT * FROM game_servers WHERE service_id = ?", (service_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def game_server_create(self, data: dict) -> int:
+        import json
+        cp = data.get("config_paths", [])
+        row = {
+            "name": data["name"], "catalog_key": data.get("catalog_key"),
+            "steam_app_id": int(data["steam_app_id"]),
+            "steam_login": data.get("steam_login") or "anonymous",
+            "install_dir": data["install_dir"], "unit_name": data["unit_name"],
+            "start_cmd": data["start_cmd"], "start_args": data.get("start_args", ""),
+            "stop_signal": data.get("stop_signal") or "SIGTERM",
+            "config_paths": cp if isinstance(cp, str) else json.dumps(cp),
+            "state": data.get("state", "installing"),
+            "created_by": data.get("created_by"),
+        }
+        cols = ", ".join(row.keys())
+        ph = ", ".join("?" * len(row))
+        cur = await self.conn.execute(
+            f"INSERT INTO game_servers ({cols}) VALUES ({ph})", tuple(row.values()))
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def game_server_update(self, gs_id: int, **fields) -> bool:
+        allowed = {"service_id", "state", "install_job", "installed_build",
+                   "latest_build", "build_checked_at", "start_args", "start_cmd",
+                   "stop_signal", "config_paths"}
+        fields = {k: v for k, v in fields.items() if k in allowed}
+        if not fields:
+            return False
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        cur = await self.conn.execute(
+            f"UPDATE game_servers SET {sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (*fields.values(), gs_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def game_server_delete(self, gs_id: int) -> bool:
+        cur = await self.conn.execute("DELETE FROM game_servers WHERE id = ?", (gs_id,))
+        await self.conn.commit()
+        return cur.rowcount > 0
 
     # User streams operations
     async def create_user_stream(
