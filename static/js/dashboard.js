@@ -358,7 +358,7 @@ function createServiceCard(service) {
         } else if (ib && lb) {
             updateChip = `<span title="build ${escapeHtml(String(ib))}" style="${pill}background:rgba(var(--accent-green-rgb,34,197,94),0.16);color:var(--accent-green);">✓ Up to date</span>`;
         } else {
-            updateChip = `<span style="${pill}background:var(--code-bg);color:var(--text-muted);">· checking…</span>`;
+            updateChip = `<span title="build not checked yet — a background check runs every 6 h" style="${pill}background:var(--code-bg);color:var(--text-muted);">· checking…</span>`;
         }
     }
 
@@ -419,15 +419,23 @@ async function gsCardUpdate(serviceId, name) {
     if (!confirm(`Update "${name}" now? If a newer build exists the server will be stopped, updated and restarted.`)) return;
     try {
         const d = await Portal.fetchJSON(`/api/game-servers/${gs.id}/update`, { method: 'POST' });
-        Portal.toast('Update started — checking the build…');
+        Portal.toast('Checking for a newer build…');
         if (!d.job_id) { setTimeout(loadServices, 2000); return; }
+        let tries = 0;
         const poll = setInterval(async () => {
+            if (++tries > 200) { clearInterval(poll); loadServices(); return; }  // ~10 min ceiling
             try {
                 const j = await Portal.fetchJSON(`/api/game-servers/jobs/${d.job_id}`);
                 if (j.status && j.status !== 'running') {
                     clearInterval(poll);
-                    Portal.toast(j.status === 'completed' ? `${name}: update finished` : `${name}: update ${j.status}`,
-                        j.status === 'completed' ? 'success' : 'error');
+                    const log = (j.log || []).join(' ').toLowerCase();
+                    let msg, kind = 'success';
+                    if (j.status !== 'completed') { msg = `${name}: update ${j.status}`; kind = 'error'; }
+                    // "nothing to do" is our own sentinel from _update_job's no-op
+                    // path; "up to date" alone also appears in SteamCMD depot output.
+                    else if (log.includes('nothing to do')) msg = `${name} is already up to date`;
+                    else msg = `${name}: update finished`;
+                    Portal.toast(msg, kind);
                     loadServices();
                 }
             } catch (e) { clearInterval(poll); loadServices(); }
