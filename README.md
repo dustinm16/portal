@@ -248,7 +248,9 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Rate limiting** — Per-IP request throttling on all endpoints
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model, and
+[SECURITY-AUDIT-2026-09.md](docs/SECURITY-AUDIT-2026-09.md) for the most recent
+audit (releases v1.7.0 → v1.10.3, RCE / host-access focus).
 
 ## Streaming
 
