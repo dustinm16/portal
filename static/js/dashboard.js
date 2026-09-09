@@ -215,8 +215,16 @@ function renderServices() {
         filteredServices = services.filter(s => s.category_id === currentCategory);
     }
 
-    // Filter to only enabled services
-    filteredServices = filteredServices.filter(s => s.enabled !== false);
+    // Hide disabled services — but a managed service that's disabled just means
+    // "don't auto-start on Portal boot" (common for a systemd-wrapped game
+    // server that already runs on its own), so still show it to an admin or to
+    // a user who's been granted control/logs on it.
+    filteredServices = filteredServices.filter(s => {
+        if (s.enabled !== false) return true;
+        if (Portal.isAdmin(currentUser)) return true;
+        const g = currentUser && currentUser.granted_services && currentUser.granted_services[s.id];
+        return !!(g && g.length);
+    });
 
     if (filteredServices.length === 0) {
         grid.style.display = 'none';

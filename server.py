@@ -917,6 +917,22 @@ async def http_list_services(request: web.Request) -> web.Response:
     else:
         services = await db.get_all_services()
 
+    # A disabled managed service just means "don't auto-start on Portal boot"
+    # (normal for a systemd-wrapped game server that runs on its own). It's
+    # still visible to an admin and to any user granted control/logs on it, so
+    # merge those in — get_all_services / get_enabled_services_by_type filter
+    # on enabled=1.
+    if service_type in (None, "", "managed"):
+        is_admin = token.has_scope("admin") or token.has_scope("*")
+        granted_ids = set() if is_admin else set(
+            (await db.get_user_granted_service_ids(token.user_id)).keys()
+        )
+        if is_admin or granted_ids:
+            seen = {s["id"] for s in services}
+            for s in await db.get_services_by_type("managed"):
+                if s["id"] not in seen and (is_admin or s["id"] in granted_ids):
+                    services.append(s)
+
     def serialize_service(s):
         """Serialize service for API response."""
         result = {
