@@ -235,7 +235,7 @@ app id, start command/args, stop signal, and `config_paths` globs.
   `game_servers` rows (FK `ON DELETE SET NULL` for the service link), and
   optionally `rm -rf`s the install dir.
 
-The built-in catalog (~75 games) is re-synced from `CATALOG_SEED` on every boot
+The built-in catalog (~85 games) is re-synced from `CATALOG_SEED` on every boot
 (`game_catalog_seed` upserts rows still marked `builtin`; admin-added or
 overridden rows are left alone).
 

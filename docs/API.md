@@ -2846,7 +2846,7 @@ and the grant system above apply unchanged. SteamCMD runs under an unprivileged
 account; installs go under a dedicated game-data disk.
 
 - `GET  /api/game-catalog` — list catalog entries (any authenticated user).
-- `POST /api/game-catalog` — add/replace a custom entry (admin). Body `{key, name, steam_app_id, start_cmd, start_args?, stop_signal?, steam_login?, config_paths?[], backup_paths?[], config_root?, game_port?}`. `config_root` (`~` expands to the run-as account's home) overrides the install dir for the config editor and backup — for games that keep config/saves elsewhere. The ~75 built-in entries are re-synced from code on every restart; admin-added entries (`builtin: 0`) are left alone.
+- `POST /api/game-catalog` — add/replace a custom entry (admin). Body `{key, name, steam_app_id, start_cmd, start_args?, stop_signal?, steam_login?, config_paths?[], backup_paths?[], config_root?, game_port?}`. `config_root` (`~` expands to the run-as account's home) overrides the install dir for the config editor and backup — for games that keep config/saves elsewhere. The ~85 built-in entries are re-synced from code on every restart; admin-added entries (`builtin: 0`) are left alone.
 - `DELETE /api/game-catalog/{key}` — remove a custom entry (admin; built-ins are protected).
 - `GET  /api/game-servers` — admin: all; non-admin: only servers they hold a grant on. Each row is enriched with live `status`; `installed_build`/`latest_build` are refreshed by a background check every 6 h (drives the "up to date / update available" badge).
 - `POST /api/game-servers` — deploy (admin). Body `{catalog_key | custom{...}, name, start_args?, steam_login?, enable?, start?}`. Returns `201 {game_server, job_id}` and kicks off the SteamCMD install job.
