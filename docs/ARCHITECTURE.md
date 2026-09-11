@@ -203,7 +203,21 @@ app id, start command/args, stop signal, and `config_paths` globs.
   The catalog's `config_paths` matches are surfaced as a pinned shortcut list,
   not as the boundary. Endpoints require `admin` or a `files` grant and are
   audited. The legacy `/config/read|write` endpoints (glob-allowlisted) remain
-  for API back-compat.
+  for API back-compat. `browse_upload` (new files, not just edits of existing
+  ones) shares the same jail as the editor but a notch stricter allowlist —
+  `_BROWSE_UPLOAD_SUFFIXES` drops `.lua` from `_BROWSE_WRITE_SUFFIXES`, so an
+  existing Lua config stays editable but a `files` grantee can't upload a new
+  one (creating a file that never existed is a bigger step than editing one
+  already on disk — see audit finding F6) — with its own per-file (8 MB) and
+  per-request (64 MB) caps; the target directory must already exist (no
+  implicit `mkdir`). The frontend (`admin.html` /
+  `dashboard.js`, shared `#gs-config-modal`) is a single-pane commander-style
+  browser: a sortable Name/Size/Modified list with root tabs, breadcrumb,
+  toolbar Upload + drag-and-drop onto the list, and Download-backup; opening a
+  file swaps the pane to a full-width editor (Back returns to the list) rather
+  than splitting the modal into a cramped list+editor pair. Clicking a game
+  server's card (admin Game Servers tab, or a dashboard service card for a
+  viewer with `files` access) opens this browser directly.
 - **Backup** — `make_backup_archive` tars (`.tar.gz`, in memory) every file
   matched by `config_paths` **plus** `backup_paths` (save/world globs, `**`
   supported), capped 512 MB total / 128 MB per file. Same `files` grant.
@@ -875,6 +889,7 @@ GET  /api/game-servers/:id/files?root=&path= - Jailed file browser: one dir leve
 GET  /api/game-servers/:id/files/read?root=&path= - Read one file (admin or files grant)
 POST /api/game-servers/:id/files/write    - Write one existing text file (admin or files grant)
 GET  /api/game-servers/:id/files/download?root=&path= - Download one file, <=128 MB (admin or files grant)
+POST /api/game-servers/:id/files/upload   - Upload one or more new files into a dir (admin or files grant)
 POST /api/game-servers/:id/resync-catalog - Re-pull globs/config_root from the catalog entry (admin)
 POST /api/game-servers/:id/launch-options - Edit start_args/stop_signal (admin or control), start_cmd (admin); regen unit
 ```

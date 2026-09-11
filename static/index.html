@@ -1650,46 +1650,75 @@
         </div>
     </div>
 
-    <!-- Game Server Config Editor Modal -->
+    <!-- Game Server file browser / editor modal (commander-style) -->
     <style>
-        /* Shared with the admin copy in admin.html — keep in sync. */
-        #gs-config-modal .modal-content { max-width:960px; width:calc(100vw - 2rem); }
-        #gs-config-modal .modal-body { display:flex; flex-direction:column; gap:0.6rem; }
-        #gs-config-modal .gsf-row { display:flex; gap:1rem; min-width:0; align-items:stretch; }
-        #gs-config-modal .gsf-list { width:260px; flex-shrink:0; border-right:1px solid var(--card-border); padding-right:0.75rem; overflow:auto; font-size:0.8rem; max-height:58vh; }
-        #gs-config-modal .gsf-editor { flex:1; display:flex; flex-direction:column; min-width:0; }
-        #gs-config-modal .gsf-editor textarea { width:100%; box-sizing:border-box; height:58vh; min-height:280px; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.75rem; font-family:monospace; font-size:0.8rem; line-height:1.5; resize:vertical; }
+        /* Shared with the admin copy in admin.html — keep in sync.
+           Sizing is flex-based, not independently-computed vh values on nested
+           panels — that combination used to produce a modal that overflowed
+           its own box (and needed two nested scrollbars) at high browser zoom
+           / small effective viewports. Only the outer .modal-content height is
+           vh-based; everything inside allocates from that via flex. The list
+           and the editor are two views of the same pane (toggled, never both
+           visible at once) rather than a cramped side-by-side split. */
+        #gs-config-modal .modal-content { max-width:1200px; width:calc(100vw - 2rem); height:88vh; display:flex; flex-direction:column; }
+        #gs-config-modal .modal-body { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+        #gs-config-listview { flex:1; display:flex; flex-direction:column; gap:0.5rem; min-height:0; }
+        #gs-config-modal .gsf-toolbar { display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap; flex-shrink:0; }
+        #gs-config-modal .gsf-crumbs { font-size:0.75rem; color:var(--text-muted); font-family:monospace; word-break:break-all; flex-shrink:0; }
+        #gs-config-modal .gsf-list { flex:1; min-height:0; overflow-y:auto; border:1px solid var(--card-border); border-radius:8px; position:relative; }
+        #gs-config-modal .gsf-list.gsf-dragover { outline:2px dashed var(--accent-blue); outline-offset:-4px; background:var(--card-hover); }
+        /* Sticky inside the scroll container (not a separate box above it) so it
+           shares the scrollbar gutter with the rows and never drifts out of column
+           alignment with them. */
+        #gs-config-modal .gsf-list-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:0.5rem; padding:0.35rem 0.75rem; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); background:var(--bg-primary); border-bottom:1px solid var(--card-border); border-radius:8px 8px 0 0; }
+        #gs-config-modal .gsf-pin-label { font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); padding:0.5rem 0.75rem 0.25rem; }
+        #gs-config-modal .gsf-pin-divider { height:0; border-bottom:1px solid var(--card-border); margin:0.15rem 0 0.35rem; }
+        #gs-config-modal .gsf-entry { padding:0.4rem 0.75rem; cursor:pointer; display:flex; align-items:center; gap:0.5rem; font-size:0.82rem; border-bottom:1px solid var(--card-border); }
+        #gs-config-modal .gsf-list > .gsf-entry:last-child { border-bottom:none; }
+        #gs-config-modal .gsf-entry:hover { background:var(--card-hover); }
+        #gs-config-modal .gsf-entry-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:0.45rem; }
+        #gs-config-modal .gsf-col-size { color:var(--text-muted); font-size:0.72rem; flex-shrink:0; width:70px; text-align:right; }
+        #gs-config-modal .gsf-col-mtime { color:var(--text-muted); font-size:0.72rem; flex-shrink:0; width:150px; text-align:right; }
+        #gs-config-editview { flex:1; display:none; flex-direction:column; min-height:0; }
+        #gs-config-modal .gsf-editor-head { display:flex; align-items:center; gap:0.6rem; margin-bottom:0.4rem; flex-shrink:0; }
+        #gs-config-modal .gsf-editor-head .gsf-current { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.8rem; color:var(--text-muted); font-family:monospace; }
+        #gs-config-editview textarea { width:100%; box-sizing:border-box; flex:1; min-height:220px; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.85rem; font-family:monospace; font-size:0.82rem; line-height:1.55; resize:vertical; }
+        #gs-config-modal .gsf-editor-foot { display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-top:0.5rem; flex-shrink:0; }
         @media (max-width: 760px) {
-            #gs-config-modal .gsf-row { flex-direction:column; }
-            #gs-config-modal .gsf-list { width:auto; border-right:none; border-bottom:1px solid var(--card-border); padding-right:0; padding-bottom:0.6rem; max-height:28vh; }
-            #gs-config-modal .gsf-editor textarea { height:42vh; min-height:200px; }
+            #gs-config-modal .modal-content { height:92vh; }
+            #gs-config-modal .gsf-col-mtime { display:none; }
         }
     </style>
     <div id="gs-config-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('gs-config-modal')"></div>
-        <div class="modal-content modal-large">
+        <div class="modal-content">
             <div class="modal-header">
                 <h3>Files — <span id="gs-config-title"></span></h3>
                 <button class="modal-close" onclick="closeModal('gs-config-modal')">&times;</button>
             </div>
             <div class="modal-body">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.5rem; flex-wrap:wrap;">
-                    <div id="gs-config-roots" style="display:flex; gap:0.35rem; flex-wrap:wrap;"></div>
-                    <button class="btn btn-secondary btn-sm" id="gs-config-backup" onclick="downloadGsBackup()">⬇ Download backup</button>
-                </div>
-                <div id="gs-config-crumbs" style="font-size:0.72rem; color:var(--text-muted); font-family:monospace; margin-bottom:0.5rem; word-break:break-all;"></div>
-                <div class="gsf-row">
+                <div id="gs-config-listview">
+                    <div class="gsf-toolbar">
+                        <div id="gs-config-roots" style="display:flex;gap:0.35rem;flex-wrap:wrap;"></div>
+                        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                            <input type="file" id="gs-config-upload-input" multiple hidden onchange="gsFilesUpload(this.files); this.value='';">
+                            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('gs-config-upload-input').click()">Upload</button>
+                            <button class="btn btn-secondary btn-sm" id="gs-config-backup" onclick="downloadGsBackup()">Download backup</button>
+                        </div>
+                    </div>
+                    <div id="gs-config-crumbs" class="gsf-crumbs"></div>
                     <div id="gs-config-files" class="gsf-list"></div>
-                    <div class="gsf-editor">
-                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
-                            <span id="gs-config-current" style="font-size:0.75rem; color:var(--text-muted); font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;"></span>
-                            <button class="btn btn-secondary btn-sm" id="gs-config-dl1" onclick="gsFilesDownloadFile()" style="display:none; flex-shrink:0;">⬇ File</button>
-                        </div>
-                        <textarea id="gs-config-text" spellcheck="false" disabled></textarea>
-                        <div style="margin-top:0.6rem; display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-                            <span id="gs-config-hint" style="font-size:0.7rem; color:var(--text-muted);"></span>
-                            <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
-                        </div>
+                </div>
+                <div id="gs-config-editview">
+                    <div class="gsf-editor-head">
+                        <button class="btn btn-secondary btn-sm" onclick="gsFilesCloseEditor()">&larr; Back</button>
+                        <span id="gs-config-current" class="gsf-current"></span>
+                        <button class="btn btn-secondary btn-sm" id="gs-config-dl1" onclick="gsFilesDownloadFile()" style="display:none; flex-shrink:0;">Download</button>
+                    </div>
+                    <textarea id="gs-config-text" spellcheck="false" disabled></textarea>
+                    <div class="gsf-editor-foot">
+                        <span id="gs-config-hint" style="font-size:0.7rem; color:var(--text-muted);"></span>
+                        <button class="btn btn-primary btn-sm" id="gs-config-save" onclick="saveGsConfig()" disabled>Save</button>
                     </div>
                 </div>
             </div>
@@ -1855,7 +1884,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=51"></script>
+    <script src="/static/js/dashboard.js?v=52"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

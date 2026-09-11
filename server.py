@@ -159,6 +159,28 @@ def safe_error_message(e: Exception) -> str:
         return "A record with this name or identifier already exists"
     return error_msg
 
+
+async def read_multipart_part(part, limit: int) -> tuple[bytes, bool]:
+    """Read one multipart ``file`` part up to ``limit`` bytes.
+
+    aiohttp's ``BodyPartReader.read()`` takes no size argument in the
+    version pinned here — it reads the whole part unconditionally, which
+    is exactly what a per-file size cap needs to avoid. Stream it in
+    chunks instead and stop as soon as ``limit`` is exceeded.
+
+    Returns ``(data, oversized)`` — ``data`` is truncated at ``limit`` and
+    ``oversized`` is True if there was more where that came from.
+    """
+    buf = bytearray()
+    oversized = False
+    async for chunk in part:
+        buf.extend(chunk)
+        if len(buf) > limit:
+            oversized = True
+            del buf[limit:]
+            break
+    return bytes(buf), oversized
+
 # Active WebSocket connections for monitoring
 active_connections: weakref.WeakSet = weakref.WeakSet()
 
@@ -7488,10 +7510,8 @@ async def http_upload_file(request: web.Request) -> web.Response:
             target_path = (await part.text()).strip()
         elif part.name == "file":
             file_name = part.filename
-            file_data = await part.read(Config.FILE_MANAGER_MAX_UPLOAD)
-            # Check if there's more data (file too large)
-            extra = await part.read(1)
-            if extra:
+            file_data, oversized = await read_multipart_part(part, Config.FILE_MANAGER_MAX_UPLOAD)
+            if oversized:
                 return web.json_response({"error": f"File too large (max {Config.FILE_MANAGER_MAX_UPLOAD // (1024*1024)}MB)"}, status=400)
 
     if not file_data or not file_name:
@@ -7757,7 +7777,10 @@ async def http_sftp_vod_upload(request: web.Request) -> web.Response:
                 target_path = (await part.text()).strip()
             elif part.name == "file":
                 file_name = part.filename
-                file_data = await part.read(Config.FILE_MANAGER_MAX_UPLOAD)
+                file_data, oversized = await read_multipart_part(part, Config.FILE_MANAGER_MAX_UPLOAD)
+                if oversized:
+                    return web.json_response(
+                        {"error": f"File too large (max {Config.FILE_MANAGER_MAX_UPLOAD // (1024*1024)}MB)"}, status=400)
 
         if not file_data or not file_name:
             return web.json_response({"error": "No file provided"}, status=400)
@@ -7958,7 +7981,10 @@ async def http_sftp_upload(request: web.Request) -> web.Response:
                 target_path = (await part.text()).strip()
             elif part.name == "file":
                 file_name = part.filename
-                file_data = await part.read(Config.FILE_MANAGER_MAX_UPLOAD)
+                file_data, oversized = await read_multipart_part(part, Config.FILE_MANAGER_MAX_UPLOAD)
+                if oversized:
+                    return web.json_response(
+                        {"error": f"File too large (max {Config.FILE_MANAGER_MAX_UPLOAD // (1024*1024)}MB)"}, status=400)
 
         if not file_data or not file_name:
             return web.json_response({"error": "No file provided"}, status=400)
@@ -9113,6 +9139,59 @@ async def http_game_server_files_download(request: web.Request) -> web.Response:
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Cache-Control": "no-store",
     })
+
+
+async def http_game_server_files_upload(request: web.Request) -> web.Response:
+    """POST /api/game-servers/{id}/files/upload — multipart, one or more
+    ``file`` parts plus ``root``/``path`` fields naming the target directory
+    (the directory currently open in the browser). Same jail + config-like
+    extension allowlist as the editor — see gameservers.browse_upload."""
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    try:
+        reader = await request.multipart()
+    except ValueError:
+        return web.json_response({"error": "Invalid upload"}, status=400)
+
+    root = "install"
+    rel_dir = ""
+    results = []
+    total = 0
+    async for part in reader:
+        if part.name == "root":
+            root = (await part.text()).strip() or "install"
+        elif part.name == "path":
+            rel_dir = (await part.text()).strip()
+        elif part.name == "file":
+            name = part.filename or ""
+            data, oversized = await read_multipart_part(part, gameservers._BROWSE_MAX_UPLOAD)
+            if oversized:
+                results.append({"name": name, "ok": False,
+                                 "error": f"file too large (max {gameservers._BROWSE_MAX_UPLOAD // (1024 * 1024)} MB)"})
+                continue
+            total += len(data)
+            if total > gameservers._BROWSE_MAX_UPLOAD_TOTAL:
+                results.append({"name": name, "ok": False, "error": "upload batch too large"})
+                continue
+            try:
+                info = await asyncio.to_thread(gameservers.browse_upload, gs, root, rel_dir, name, data)
+                results.append({"ok": True, **info})
+            except ValueError as e:
+                results.append({"name": name, "ok": False, "error": str(e)})
+            except OSError as e:
+                results.append({"name": name, "ok": False, "error": safe_error_message(e)})
+
+    if not results:
+        return web.json_response({"error": "No files provided"}, status=400)
+    ok_count = sum(1 for r in results if r["ok"])
+    if ok_count:
+        actor = await db.get_user_by_id(token.user_id)
+        await audit_log("gameserver.file_upload", token.user_id,
+                        (actor or {}).get("username", "unknown"),
+                        target_name=gs["name"],
+                        details={"root": root, "path": rel_dir, "count": ok_count})
+    return web.json_response({"results": results})
 
 
 async def http_game_server_resync_catalog(request: web.Request) -> web.Response:
@@ -16158,7 +16237,18 @@ async def http_admin_updates_history(request: web.Request) -> web.Response:
 
 def create_app() -> web.Application:
     """Create the aiohttp application."""
-    app = web.Application(middlewares=[security_headers_middleware])
+    # aiohttp's own default (1 MB) sits under every per-endpoint upload cap in
+    # this app (admin file manager up to FILE_MANAGER_MAX_UPLOAD, SFTP
+    # uploads, game-server file uploads) and rejects with a bare 413 before a
+    # handler ever runs — the per-part size handling in each upload endpoint
+    # never even gets a chance to produce its normal error response. Tie the
+    # ceiling to the largest declared legitimate upload (the admin file
+    # manager's, itself env-configurable) plus a little multipart framing
+    # headroom; individual endpoints still enforce their own tighter caps.
+    app = web.Application(
+        middlewares=[security_headers_middleware],
+        client_max_size=Config.FILE_MANAGER_MAX_UPLOAD + 1024 * 1024,
+    )
 
     # Public emote serving (must be registered before the authenticated upload catch-all)
     app.router.add_get("/static/uploads/emotes/{filename}", http_serve_emote)
@@ -16247,6 +16337,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/game-servers/{id}/files/read", http_game_server_files_read)
     app.router.add_post("/api/game-servers/{id}/files/write", http_game_server_files_write)
     app.router.add_get("/api/game-servers/{id}/files/download", http_game_server_files_download)
+    app.router.add_post("/api/game-servers/{id}/files/upload", http_game_server_files_upload)
     app.router.add_post("/api/game-servers/{id}/resync-catalog", http_game_server_resync_catalog)
     app.router.add_post("/api/game-servers/{id}/launch-options", http_game_server_launch_options)
 

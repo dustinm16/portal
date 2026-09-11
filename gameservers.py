@@ -1382,6 +1382,62 @@ def browse_download(gs: dict, root_key: str, rel: str) -> tuple[bytes, str]:
     return resolved.read_bytes(), resolved.name
 
 
+_BROWSE_MAX_UPLOAD = 8 * 1024 * 1024          # per-file ceiling
+_BROWSE_MAX_UPLOAD_TOTAL = 64 * 1024 * 1024   # per-request ceiling (all files)
+_UPLOAD_NAME_RE = re.compile(r"[^\x00-\x1f/\\]{1,255}")
+
+# Upload is stricter than edit-in-place: editing an *existing* .lua config
+# (Zomboid's SandboxVars.lua) was already accepted (audit finding F6) because
+# there's nothing new on disk. Uploading — creating a brand-new file — is a
+# bigger surface: on a Lua-scripting server (Garry's Mod) a `files` grantee
+# dropping a new .lua into an autorun path is code execution as `dustin`
+# (passwordless sudo). So .lua can be edited but not uploaded.
+_BROWSE_UPLOAD_SUFFIXES = _BROWSE_WRITE_SUFFIXES - {".lua"}
+
+
+def _validate_upload_name(name: str) -> str:
+    """A bare filename for an uploaded file — no path components."""
+    name = (name or "").strip()
+    if not name or name in (".", "..") or not _UPLOAD_NAME_RE.fullmatch(name):
+        raise ValueError(f"'{name or '(empty)'}' is not a valid filename")
+    return name
+
+
+def browse_upload(gs: dict, root_key: str, rel_dir: str, filename: str, data: bytes) -> dict:
+    """Add one new file to an existing directory inside the jail.
+
+    Same boundary as ``browse_write``: the target must resolve under the
+    root (no traversal, no symlinks — ``file_manager._validate_path`` +
+    ``_jail``) and carry a config-like extension — ``_BROWSE_UPLOAD_SUFFIXES``,
+    a notch stricter than ``_BROWSE_WRITE_SUFFIXES`` (no ``.lua``; see its
+    docstring) since this can create a file that never existed before, not
+    just edit one already on disk. Unlike ``browse_write`` the target need
+    not already exist — that's the point of an upload — but its *directory*
+    must, and must already be one the browser would show (no implicit
+    mkdir)."""
+    root = _browse_root(gs, root_key)
+    rel_dir = (rel_dir or "").strip().strip("/")
+    dir_path = _jail(root, file_manager._validate_path(rel_dir or "/", root))
+    if not dir_path.is_dir():
+        raise ValueError("target directory does not exist")
+    name = _validate_upload_name(filename)
+    rel_file = f"{rel_dir}/{name}" if rel_dir else name
+    dest = _jail(root, file_manager._validate_path(rel_file, root))
+    if dest.suffix.lower() not in _BROWSE_UPLOAD_SUFFIXES:
+        raise ValueError(f"'{dest.suffix or name}' files can't be uploaded here")
+    if dest.exists() and not dest.is_file():
+        raise ValueError("a directory already exists with that name")
+    if len(data) > _BROWSE_MAX_UPLOAD:
+        raise ValueError(f"file too large (max {_BROWSE_MAX_UPLOAD // (1024 * 1024)} MB)")
+    existed = dest.is_file()
+    dest.write_bytes(data)
+    try:
+        shutil.chown(str(dest), RUN_AS, RUN_AS)
+    except (LookupError, PermissionError, OSError) as e:
+        logger.warning("chown %s failed: %s", dest, e)
+    return {"name": name, "path": rel_file, "size": len(data), "replaced": existed}
+
+
 # ---------------------------------------------------------------------------
 # Keep a deployed server's paths in sync with its (builtin) catalog entry
 # ---------------------------------------------------------------------------
