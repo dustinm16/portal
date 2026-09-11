@@ -6,6 +6,8 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Dashboard</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=52">
+    <link rel="stylesheet" href="/static/js/vendor/codemirror/lib/codemirror.css?v=1">
+    <link rel="stylesheet" href="/static/css/codemirror-portal.css?v=1">
     <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
@@ -1683,6 +1685,9 @@
         #gs-config-modal .gsf-editor-head { display:flex; align-items:center; gap:0.6rem; margin-bottom:0.4rem; flex-shrink:0; }
         #gs-config-modal .gsf-editor-head .gsf-current { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.8rem; color:var(--text-muted); font-family:monospace; }
         #gs-config-editview textarea { width:100%; box-sizing:border-box; flex:1; min-height:220px; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.85rem; font-family:monospace; font-size:0.82rem; line-height:1.55; resize:vertical; }
+        /* CodeMirror replaces the textarea above with a `.CodeMirror` div in
+           the same flex slot — give it the same floor. */
+        #gs-config-editview .CodeMirror { min-height:220px; }
         #gs-config-modal .gsf-editor-foot { display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-top:0.5rem; flex-shrink:0; }
         @media (max-width: 760px) {
             #gs-config-modal .modal-content { height:92vh; }
@@ -1887,7 +1892,26 @@
 
     <script src="/static/js/portal.js?v=42"></script>
     <script src="/static/js/filebrowser.js?v=2"></script>
-    <script src="/static/js/dashboard.js?v=54"></script>
+    <!-- CodeMirror 5, vendored locally (static/js/vendor/codemirror/, MIT — LICENSE
+         alongside it) — core first, then only the modes actually used by
+         FileEditor.MODE_BY_EXT in fileeditor.js. -->
+    <script src="/static/js/vendor/codemirror/lib/codemirror.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/addon/edit/matchbrackets.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/addon/edit/closebrackets.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/properties/properties.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/javascript/javascript.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/xml/xml.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/yaml/yaml.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/lua/lua.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/toml/toml.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/shell/shell.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/python/python.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/css/css.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/markdown/markdown.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/sql/sql.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
+    <script src="/static/js/fileeditor.js?v=1"></script>
+    <script src="/static/js/dashboard.js?v=55"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

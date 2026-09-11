@@ -808,6 +808,13 @@ async function gsFilesDeleteConfirm(root, path, name) {
     } catch (e) { Portal.toast(e.message || 'Delete failed', 'error'); }
 }
 
+// Attached once — reused for the modal's whole lifetime via
+// FileEditor.setValue/getValue/setMode/setReadOnly rather than re-attaching
+// per file. See fileeditor.js.
+const _gsCM = document.getElementById('gs-config-text')
+    ? FileEditor.attach(document.getElementById('gs-config-text'), { readOnly: true })
+    : null;
+
 async function gsFilesOpen(root, path, writable) {
     try {
         const d = await Portal.fetchJSON(
@@ -818,13 +825,15 @@ async function gsFilesOpen(root, path, writable) {
         const canModify = _gsCanModify(path.split('/').pop() || '');
         document.getElementById('gs-config-rename1').style.display = canModify ? '' : 'none';
         document.getElementById('gs-config-del1').style.display = canModify ? '' : 'none';
-        const ta = document.getElementById('gs-config-text');
-        ta.value = d.content; ta.disabled = !d.writable;
+        FileEditor.setMode(_gsCM, path);
+        FileEditor.setValue(_gsCM, d.content);
+        FileEditor.setReadOnly(_gsCM, !d.writable);
         document.getElementById('gs-config-save').disabled = !d.writable;
         document.getElementById('gs-config-hint').textContent = d.writable
             ? '' : 'Read-only file type — download to edit elsewhere.';
         document.getElementById('gs-config-listview').style.display = 'none';
         document.getElementById('gs-config-editview').style.display = 'flex';
+        FileEditor.refresh(_gsCM);
     } catch (e) {
         Portal.toast(e.message || 'Failed to read file', 'error');
     }
@@ -838,8 +847,8 @@ function gsFilesCloseEditor() {
     document.getElementById('gs-config-dl1').style.display = 'none';
     document.getElementById('gs-config-rename1').style.display = 'none';
     document.getElementById('gs-config-del1').style.display = 'none';
-    const ta = document.getElementById('gs-config-text');
-    ta.value = ''; ta.disabled = true;
+    FileEditor.setValue(_gsCM, '');
+    FileEditor.setReadOnly(_gsCM, true);
     document.getElementById('gs-config-save').disabled = true;
     if (_gsCfg) { _gsCfg.path = null; _gsCfg.writable = false; }
 }
@@ -927,7 +936,7 @@ async function saveGsConfig() {
     try {
         const res = await Portal.fetch(`/api/game-servers/${_gsCfg.gsId}/files/write`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ root: _gsCfg.readRoot, path: _gsCfg.path, content: document.getElementById('gs-config-text').value }),
+            body: JSON.stringify({ root: _gsCfg.readRoot, path: _gsCfg.path, content: FileEditor.getValue(_gsCM) }),
         });
         if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
         Portal.toast('Saved');

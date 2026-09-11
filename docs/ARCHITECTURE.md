@@ -221,7 +221,22 @@ app id, start command/args, stop signal, and `config_paths` globs.
   cramped list+editor pair; the editor head also carries Rename/Delete for
   the open file. Clicking a game server's card (admin Game Servers tab, or a
   dashboard service card for a viewer with `files` access) opens this
-  browser directly.
+  browser directly. Rows carry path/name/type/root as `data-*` attributes
+  (read back via `.dataset` by one delegated click/contextmenu listener) —
+  not inline `onclick`/`oncontextmenu` JS — so a filename with a quote in it
+  can't break the attribute it would otherwise be embedded in. The editor
+  itself is CodeMirror 5, vendored locally under
+  `static/js/vendor/codemirror/` (MIT, `LICENSE` alongside it — not CDN-
+  loaded, unlike Chart.js/qrcode.js) and wired up via the shared
+  `static/js/fileeditor.js` (extension → mode map, attach/setValue/getValue/
+  setMode/setReadOnly); colors come from a custom `cm-s-portal` theme in
+  `static/css/codemirror-portal.css` keyed to the site's own CSS custom
+  properties rather than a bundled CM theme, so it follows whichever of the
+  28 selectable themes is active. Same textarea-replacement wiring is used
+  by the admin file manager's edit modal (`#files-edit-textarea`), with a
+  broader extension→mode map since that editor can open any text file on
+  the host, not just game-server configs; an unrecognized extension falls
+  back to a plain-text editor (still gets line numbers/undo, no coloring).
 - **Backup** — `make_backup_archive` tars (`.tar.gz`, in memory) every file
   matched by `config_paths` **plus** `backup_paths` (save/world globs, `**`
   supported), capped 512 MB total / 128 MB per file. Same `files` grant.

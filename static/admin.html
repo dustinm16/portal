@@ -6,6 +6,8 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=52">
+    <link rel="stylesheet" href="/static/js/vendor/codemirror/lib/codemirror.css?v=1">
+    <link rel="stylesheet" href="/static/css/codemirror-portal.css?v=1">
     <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
     <script>
@@ -1022,6 +1024,10 @@
                 #gs-config-modal .gsf-editor-head { display:flex; align-items:center; gap:0.6rem; margin-bottom:0.4rem; flex-shrink:0; }
                 #gs-config-modal .gsf-editor-head .gsf-current { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.8rem; color:var(--text-muted); font-family:monospace; }
                 #gs-config-editview textarea { width:100%; box-sizing:border-box; flex:1; min-height:220px; background:var(--code-bg); color:var(--text-primary); border:1px solid var(--card-border); border-radius:6px; padding:0.85rem; font-family:monospace; font-size:0.82rem; line-height:1.55; resize:vertical; }
+                /* CodeMirror replaces the textarea above with a `.CodeMirror`
+                   div in the same flex slot — give it the same floor so the
+                   editor doesn't collapse to nothing at high zoom. */
+                #gs-config-editview .CodeMirror { min-height:220px; }
                 #gs-config-modal .gsf-editor-foot { display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-top:0.5rem; flex-shrink:0; }
                 @media (max-width: 760px) {
                     #gs-config-modal .modal-content { height:92vh; }
@@ -2023,6 +2029,9 @@
                    the visible modal box. Let it flex instead. */
                 #files-edit-modal .sys-logs-modal-body { display:flex; flex-direction:column; min-height:0; }
                 #files-edit-textarea { flex:1; min-height:160px; }
+                /* CodeMirror replaces #files-edit-textarea with a `.CodeMirror`
+                   div in the same flex slot — same floor as the textarea had. */
+                #files-edit-modal .CodeMirror { min-height:160px; }
             </style>
             <div id="files-edit-modal" class="sys-logs-modal" style="display:none;" onclick="if(event.target===this)filesCloseEditModal()">
                 <div class="sys-logs-modal-content" style="max-width:900px;">
@@ -2066,6 +2075,25 @@
 
     <script src="/static/js/portal.js?v=42"></script>
     <script src="/static/js/filebrowser.js?v=2"></script>
+    <!-- CodeMirror 5, vendored locally (static/js/vendor/codemirror/, MIT — LICENSE
+         alongside it) — core first, then only the modes actually used by
+         FileEditor.MODE_BY_EXT in fileeditor.js. -->
+    <script src="/static/js/vendor/codemirror/lib/codemirror.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/addon/edit/matchbrackets.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/addon/edit/closebrackets.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/properties/properties.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/javascript/javascript.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/xml/xml.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/yaml/yaml.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/lua/lua.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/toml/toml.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/shell/shell.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/python/python.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/css/css.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/markdown/markdown.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/sql/sql.js?v=1"></script>
+    <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
+    <script src="/static/js/fileeditor.js?v=1"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -4706,6 +4734,11 @@
             } catch (e) { Portal.toast(e.message || 'Delete failed', 'error'); }
         }
 
+        // Attached once — reused for the modal's whole lifetime via
+        // FileEditor.setValue/getValue/setMode/setReadOnly rather than
+        // re-attaching per file. See fileeditor.js.
+        const _gsCM = FileEditor.attach(document.getElementById('gs-config-text'), { readOnly: true });
+
         async function gsFilesOpen(root, path, writable) {
             try {
                 const d = await Portal.fetchJSON(
@@ -4717,13 +4750,15 @@
                 const canModify = _gsCanModify(path.split('/').pop() || '');
                 document.getElementById('gs-config-rename1').style.display = canModify ? '' : 'none';
                 document.getElementById('gs-config-del1').style.display = canModify ? '' : 'none';
-                const ta = document.getElementById('gs-config-text');
-                ta.value = d.content; ta.disabled = !d.writable;
+                FileEditor.setMode(_gsCM, path);
+                FileEditor.setValue(_gsCM, d.content);
+                FileEditor.setReadOnly(_gsCM, !d.writable);
                 document.getElementById('gs-config-save').disabled = !d.writable;
                 document.getElementById('gs-config-hint').textContent = d.writable
                     ? '' : 'Read-only file type — download to edit elsewhere.';
                 document.getElementById('gs-config-listview').style.display = 'none';
                 document.getElementById('gs-config-editview').style.display = 'flex';
+                FileEditor.refresh(_gsCM);
             } catch (e) { Portal.toast(e.message || 'Failed to read file', 'error'); }
         }
 
@@ -4735,8 +4770,8 @@
             document.getElementById('gs-config-dl1').style.display = 'none';
             document.getElementById('gs-config-rename1').style.display = 'none';
             document.getElementById('gs-config-del1').style.display = 'none';
-            const ta = document.getElementById('gs-config-text');
-            ta.value = ''; ta.disabled = true;
+            FileEditor.setValue(_gsCM, '');
+            FileEditor.setReadOnly(_gsCM, true);
             document.getElementById('gs-config-save').disabled = true;
             if (_gsConfig) { _gsConfig.path = null; _gsConfig.writable = false; }
         }
@@ -4797,7 +4832,7 @@
             try {
                 const res = await Portal.fetch(`/api/game-servers/${_gsConfig.gsId}/files/write`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ root: _gsConfig.readRoot, path: _gsConfig.path, content: document.getElementById('gs-config-text').value }),
+                    body: JSON.stringify({ root: _gsConfig.readRoot, path: _gsConfig.path, content: FileEditor.getValue(_gsCM) }),
                 });
                 if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
                 Portal.toast('Saved');
@@ -5814,6 +5849,9 @@
             FileBrowser.showContextMenu(evt.clientX, evt.clientY, items);
         }
 
+        // Attached once — reused via FileEditor.setValue/getValue/setMode.
+        const _filesCM = FileEditor.attach(document.getElementById('files-edit-textarea'));
+
         async function filesEditFile(path) {
             try {
                 const res = await Portal.fetch(`/api/files/read?path=${encodeURIComponent(path)}`);
@@ -5821,8 +5859,10 @@
                 const data = await res.json();
                 filesEditingFile = { path };
                 document.getElementById('files-edit-modal-title').textContent = 'Edit: ' + path.split('/').pop();
-                document.getElementById('files-edit-textarea').value = data.content;
+                FileEditor.setMode(_filesCM, path);
+                FileEditor.setValue(_filesCM, data.content);
                 document.getElementById('files-edit-modal').style.display = 'flex';
+                FileEditor.refresh(_filesCM);
             } catch (e) {
                 Portal.toast('Failed to read file', 'error');
             }
@@ -5889,7 +5929,7 @@
 
         async function filesSaveEdited() {
             if (!filesEditingFile) return;
-            const content = document.getElementById('files-edit-textarea').value;
+            const content = FileEditor.getValue(_filesCM);
             try {
                 const res = await Portal.fetch('/api/files/write', {
                     method: 'POST',
@@ -5912,6 +5952,7 @@
         function filesCloseEditModal() {
             document.getElementById('files-edit-modal').style.display = 'none';
             filesEditingFile = null;
+            FileEditor.setValue(_filesCM, '');
         }
 
         function filesSetupDragDrop() {

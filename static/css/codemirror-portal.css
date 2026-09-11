@@ -1,0 +1,51 @@
+/*
+ * Open Relay Portal - CodeMirror sizing + theme overrides.
+ *
+ * CodeMirror ships its own base stylesheet (vendor/codemirror/lib/codemirror.css)
+ * which sets a fixed `.CodeMirror { height: 300px }` and light colors via the
+ * default theme. This file:
+ *  1. Makes `.CodeMirror` fill its flex parent instead of the fixed height
+ *     (same "single vh-dependency" sizing contract as the rest of the file
+ *     editor modals — the .CodeMirror div must behave exactly like the
+ *     plain <textarea> it replaces, or the zoom-overflow bug fixed earlier
+ *     this session comes right back).
+ *  2. Defines a `cm-s-portal` theme that maps token colors to the site's own
+ *     CSS custom properties instead of a bundled CM theme, so the editor
+ *     matches whichever of the 28 selectable themes is active instead of
+ *     clashing with it.
+ */
+
+.CodeMirror {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+    font-family: monospace;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+}
+.CodeMirror-scroll { min-height: 0; }
+
+/* cm-s-portal: theme-var-driven token colors */
+.cm-s-portal.CodeMirror { background: var(--code-bg); color: var(--text-primary); }
+.cm-s-portal .CodeMirror-gutters { background: var(--code-bg); border-right: 1px solid var(--card-border); }
+.cm-s-portal .CodeMirror-linenumber { color: var(--text-muted); }
+.cm-s-portal .CodeMirror-cursor { border-left: 1px solid var(--text-primary); }
+.cm-s-portal .CodeMirror-selected { background: var(--card-hover); }
+.cm-s-portal .CodeMirror-matchingbracket { color: var(--accent-green) !important; outline: 1px solid var(--accent-green); }
+
+.cm-s-portal .cm-comment { color: var(--text-muted); font-style: italic; }
+.cm-s-portal .cm-string, .cm-s-portal .cm-string-2 { color: var(--accent-green); }
+.cm-s-portal .cm-number { color: var(--accent-yellow); }
+.cm-s-portal .cm-atom { color: var(--accent-yellow); }
+.cm-s-portal .cm-keyword { color: var(--accent-blue); font-weight: 600; }
+.cm-s-portal .cm-property, .cm-s-portal .cm-attribute { color: var(--accent-blue); }
+.cm-s-portal .cm-def { color: var(--accent-purple); }
+.cm-s-portal .cm-variable, .cm-s-portal .cm-variable-2, .cm-s-portal .cm-variable-3 { color: var(--text-primary); }
+.cm-s-portal .cm-tag { color: var(--accent-red); }
+.cm-s-portal .cm-meta { color: var(--accent-blue); }
+.cm-s-portal .cm-qualifier { color: var(--accent-green); }
+.cm-s-portal .cm-builtin { color: var(--accent-purple); }
+.cm-s-portal .cm-bracket { color: var(--text-muted); }
+.cm-s-portal .cm-error { color: var(--accent-red); background: rgba(255, 0, 0, 0.08); }
