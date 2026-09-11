@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - File Manager</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=52">
+    <link rel="stylesheet" href="/static/css/portal.css?v=53">
     <script src="/static/js/theme.js?v=3"></script>
     <style>
         .fm-toolbar {
@@ -224,7 +224,13 @@
     </nav>
 
     <div class="dashboard">
-        <main class="main-content" style="max-width: 1400px; margin: 0 auto;">
+        <main class="main-content">
+        <!-- max-width+centering on this inner wrapper, not .main-content:
+             .main-content is a flex item (`flex:1; min-width:0`, portal.css)
+             of .dashboard; `margin:0 auto` directly on a flex:1 item defeats
+             the shrink (auto margins claim free space before flex-shrink
+             applies), forcing horizontal overflow on narrow viewports. -->
+        <div style="max-width: 1400px; margin: 0 auto;">
             <div class="tab-nav">
                 <button class="tab-btn active" id="tab-btn-sftp" onclick="showTab('sftp')">Remote Files (SFTP)</button>
             </div>
@@ -297,6 +303,7 @@
                     </div>
                 </div>
             </div>
+        </div>
         </main>
     </div>
 

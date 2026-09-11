@@ -569,7 +569,7 @@ body {
 /* Services Grid */
 .services-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
     gap: 1rem;
 }
 
@@ -1861,7 +1861,7 @@ select option {
 /* Traffic metrics styles */
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
@@ -2041,7 +2041,7 @@ select option {
 /* Connections Grid */
 .connections-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
     gap: 1rem;
 }
 
@@ -2169,7 +2169,7 @@ select option {
    ============================================ */
 .dashboard-stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
     gap: 0.5rem;
     margin-bottom: 1rem;
 }
@@ -2337,7 +2337,7 @@ select option {
    ============================================ */
 .quick-access-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
     gap: 1rem;
 }
 
@@ -2396,7 +2396,7 @@ select option {
 /* Inline connections grid (in tab) */
 #inline-connections-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
     gap: 1rem;
 }
 

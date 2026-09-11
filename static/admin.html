@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=52">
+    <link rel="stylesheet" href="/static/css/portal.css?v=53">
     <link rel="stylesheet" href="/static/js/vendor/codemirror/lib/codemirror.css?v=1">
     <link rel="stylesheet" href="/static/css/codemirror-portal.css?v=1">
     <script src="/static/js/theme.js?v=3"></script>
@@ -22,7 +22,16 @@
     <style>
         .admin-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            /* min(300px, 100%) instead of a bare 300px: auto-fit's intrinsic
+               (min-content) size contribution reflects the *un-collapsed*
+               track count's 300px-per-track floor even once collapsed down
+               to fewer visible tracks at render time — on a narrow viewport
+               that mismatch between rendered size and intrinsic contribution
+               leaks into document.documentElement.scrollWidth as a real,
+               reachable page-level horizontal scroll, even though the grid
+               itself renders with no visible overflow. Letting the floor
+               shrink to 100% below 300px removes the mismatch entirely. */
+            grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
             gap: 1.5rem;
             margin-bottom: 2rem;
         }
@@ -37,6 +46,30 @@
            legend forces the whole grid past its container. Let them shrink. */
         .admin-grid { min-width: 0; }
         .admin-grid > * { min-width: 0; }
+        /* A `grid-column: span 2` card (e.g. Data Retention) forces auto-fit
+           to keep 2 tracks alive to hold it even once the container is too
+           narrow for a second track to actually fit — each track still
+           carries the minmax() floor, so 2 * min(300px,100%) can exceed a
+           narrow container even though a single collapsed track wouldn't.
+           Drop the span below the width a second real column needs. */
+        @media (max-width: 900px) {
+            .admin-grid > [style*="grid-column"] { grid-column: auto !important; }
+        }
+        /* A handful of admin-grids opt out of the responsive auto-fit/minmax
+           template above with a hard-coded fixed-fraction one (`1fr 1fr`,
+           `3fr 2fr`, `repeat(3, 1fr)`) for a deliberate side-by-side layout
+           at desktop width. Below 640px that stops being 2-3 usable columns
+           and becomes 2-3 unreadably narrow ones (labels truncate, inputs
+           show one character) — collapse to a single column instead. Grids
+           using auto-fill/minmax(min(Npx,100%),...) aren't matched here;
+           they already collapse themselves based on their own minimum. */
+        @media (max-width: 640px) {
+            .admin-grid[style*="grid-template-columns: 1fr 1fr"],
+            .admin-grid[style*="grid-template-columns: 3fr 2fr"],
+            .admin-grid[style*="grid-template-columns: repeat(3"] {
+                grid-template-columns: 1fr !important;
+            }
+        }
         /* Sub-tabs inside the Metrics tab (kept separate from .sys-sub-* so
            their toggle handlers don't collide). */
         .metrics-sub-tabs {
@@ -119,6 +152,8 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.75rem;
             margin-bottom: 1.5rem;
         }
         .section-header h2 {
@@ -165,11 +200,19 @@
         }
         .shodan-lookup {
             display: flex;
+            flex-wrap: wrap;
             gap: 0.5rem;
             margin-bottom: 1.5rem;
         }
         .shodan-lookup input {
             flex: 1;
+            /* flex items default to min-width:auto (their content's intrinsic
+               size) — an <input> doesn't shrink content-wise, so at narrow
+               widths (a 3-column .admin-grid card can be under 100px) it and
+               the sibling width:auto button together overflow the card.
+               flex-wrap above lets the button drop to its own line as a
+               fallback once even a fully-shrunk input can't fit beside it. */
+            min-width: 0;
             padding: 0.75rem 1rem;
             background: var(--code-bg);
             border: 1px solid var(--card-border);
@@ -595,7 +638,17 @@
     </nav>
 
     <div class="dashboard">
-        <main class="main-content" style="max-width: 1400px; margin: 0 auto;">
+        <main class="main-content">
+        <!-- max-width+centering lives on this inner wrapper, not on
+             .main-content itself: .main-content is a flex item of .dashboard
+             with `flex:1; min-width:0` (portal.css) so it can shrink below
+             its content's intrinsic width on narrow viewports. `margin:0
+             auto` on a flex:1 item defeats that — auto margins claim the
+             free space before flex-shrink applies, so the item sizes to its
+             (capped-at-1400px) preferred width instead of the available
+             (e.g. 390px phone) width, forcing horizontal overflow. Centering
+             on a plain-block child keeps .main-content itself unconstrained. -->
+        <div style="max-width: 1400px; margin: 0 auto;">
             <div class="tab-nav">
                 <button class="tab-btn active" onclick="showTab('overview', event)">Overview</button>
                 <button class="tab-btn" onclick="showTab('services', event)">Managed Services</button>
@@ -2049,6 +2102,7 @@
                 </div>
             </div>
 
+        </div>
         </main>
     </div>
 
@@ -2185,7 +2239,7 @@
                 const topServices = top.top_services || [];
                 if (topServices.length > 0) {
                     document.getElementById('top-services').innerHTML = `
-                        <table class="data-table">
+                        <div class="table-responsive"><table class="data-table">
                             <thead>
                                 <tr>
                                     <th>Service ID</th>
@@ -2206,7 +2260,7 @@
                                     </tr>
                                 `).join('')}
                             </tbody>
-                        </table>
+                        </table></div>
                     `;
                 } else {
                     document.getElementById('top-services').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
@@ -2345,7 +2399,7 @@
                 const serviceList = services.services || [];
                 if (serviceList.length > 0) {
                     document.getElementById('service-metrics').innerHTML = `
-                        <table class="data-table">
+                        <div class="table-responsive"><table class="data-table">
                             <thead>
                                 <tr>
                                     <th>Service</th>
@@ -2370,7 +2424,7 @@
                                     </tr>
                                 `).join('')}
                             </tbody>
-                        </table>
+                        </table></div>
                     `;
                 } else {
                     document.getElementById('service-metrics').innerHTML = '<p style="color: var(--text-muted);">No service metrics yet.</p>';
@@ -2380,7 +2434,7 @@
                 const plugins = summary.plugin_breakdown || [];
                 if (plugins.length > 0) {
                     document.getElementById('plugin-breakdown').innerHTML = `
-                        <table class="data-table">
+                        <div class="table-responsive"><table class="data-table">
                             <thead>
                                 <tr>
                                     <th>Plugin</th>
@@ -2399,7 +2453,7 @@
                                     </tr>
                                 `).join('')}
                             </tbody>
-                        </table>
+                        </table></div>
                     `;
                 } else {
                     document.getElementById('plugin-breakdown').innerHTML = '<p style="color: var(--text-muted);">No plugin data yet.</p>';
@@ -3452,7 +3506,7 @@
                             <span><strong>Duration:</strong> ${result.scan_duration_seconds?.toFixed(1)}s</span>
                             ${osDetection ? `<span><strong>OS:</strong> ${escapeHtml(osDetection.name || 'Unknown')} (${osDetection.accuracy || '?'}%)</span>` : ''}
                         </div>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100px, 100%), 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
                             <div style="text-align: center; padding: 0.75rem; background: rgba(0,0,0,0.2); border-radius: 6px;">
                                 <div style="font-size: 1.5rem; font-weight: bold; color: var(--text-primary);">${summary.total_ports || 0}</div>
                                 <div style="font-size: 0.75rem; color: var(--text-muted);">Open Ports</div>
@@ -3648,7 +3702,7 @@
                 }
 
                 document.getElementById('known-cves').innerHTML = `
-                    <table class="data-table">
+                    <div class="table-responsive"><table class="data-table">
                         <thead>
                             <tr>
                                 <th>CVE ID</th>
@@ -3673,7 +3727,7 @@
                                 </tr>
                             `).join('')}
                         </tbody>
-                    </table>
+                    </table></div>
                 `;
             } catch (error) {
                 console.error('Failed to load known CVEs:', error);
@@ -3714,7 +3768,7 @@
                 }
 
                 document.getElementById('managed-services-list').innerHTML = `
-                    <div class="admin-grid" style="grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));">
+                    <div class="admin-grid" style="grid-template-columns: repeat(auto-fill, minmax(min(350px, 100%), 1fr));">
                         ${services.map(svc => renderServiceCard(svc)).join('')}
                     </div>
                 `;
@@ -4375,7 +4429,7 @@
                     el.innerHTML = '<p style="color:var(--text-muted);">No game servers deployed yet.</p>';
                     return;
                 }
-                el.innerHTML = `<div class="admin-grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr));">
+                el.innerHTML = `<div class="admin-grid" style="grid-template-columns:repeat(auto-fill,minmax(min(340px, 100%),1fr));">
                     ${_gameServers.map(renderGameServerCard).join('')}</div>`;
             } catch (e) {
                 el.innerHTML = '<p style="color:var(--accent-red);">Failed to load.</p>';
@@ -5592,7 +5646,7 @@
             const c = retentionConfig;
             const el = document.getElementById('retention-config');
             el.innerHTML = `
-                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;">
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(280px, 100%), 1fr));gap:1rem;">
                     <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Chat Message Retention (days)</label>
                         <input type="number" id="ret-chat-days" value="${c.retention_chat_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
