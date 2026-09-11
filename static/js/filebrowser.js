@@ -128,10 +128,25 @@ const FileBrowser = (() => {
         return d.innerHTML;
     }
 
+    /** Escape a string for safe embedding as an HTML *attribute* value
+     * (e.g. data-path="..."), not just text-node content — also escapes
+     * '"' and "'", which a plain textContent/innerHTML round-trip leaves
+     * alone since those only matter inside an attribute. Entries render
+     * their path/name into data-* attributes read back via .dataset
+     * rather than into inline onclick/oncontextmenu JS, so a filename
+     * containing a quote or backslash can't break the attribute or need
+     * a hand-written (and easy to get lossy/wrong) unescape step. */
+    function escapeAttr(s) {
+        if (s == null) return '';
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     return {
         ICON_DIR, ICON_FILE, ICON_SYMLINK,
         fmtBytes, fmtMtime,
         sortEntries, initSortableHeader,
         showContextMenu, closeContextMenu,
+        escapeAttr,
     };
 })();

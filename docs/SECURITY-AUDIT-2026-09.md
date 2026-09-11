@@ -177,6 +177,22 @@ None of this widens what a `files` grant can reach outside a server's own
 directory tree — the jail and the grant check are unchanged — only what it
 can do to files already inside it.
 
+**Row rendering (2026-09-11 follow-up):** the three file-browser surfaces
+(jailed game-server browser, admin file manager) originally embedded each
+row's path/name into an inline `onclick`/`oncontextmenu` HTML attribute via
+hand-rolled JS-string escaping (only `'` and sometimes `\`/`\n` were escaped).
+Since these attributes are themselves double-quoted, a filename containing a
+literal `"` was not escaped for that context and could break out of the
+attribute — a `files` grantee (or anyone who can place a file inside the
+jail, e.g. via upload before this branch guarded extensions) naming a file
+`x" onmouseover="...` could inject an arbitrary attribute/handler into an
+admin's or another grantee's DOM on next render. Rows now carry path/name/
+type/root as `data-*` attributes (escaped via `FileBrowser.escapeAttr` /
+`filesEscapeHtml`, which do escape `"`) read back through `.dataset` by a
+single delegated listener per surface, instead of being interpolated into
+inline event-handler JS at all — removes the injection class and the need
+for any hand-written unescape step.
+
 ## Follow-ups (not blocking)
 
 1. Relay `rtmp_url`: add an explicit `{rtmp, rtmps}` scheme allowlist to

@@ -1470,8 +1470,12 @@ def browse_rename(gs: dict, root_key: str, rel: str, new_name: str) -> dict:
     new_path = Path(name)
     if new_path.suffix.lower() != resolved.suffix.lower():
         raise ValueError("the new name must keep the same file extension")
-    parent_rel = str(Path(rel).parent) if "/" in rel.strip("/") else ""
-    parent_rel = "" if parent_rel == "." else parent_rel
+    # Derive the parent directly from the already-validated/jailed `resolved`
+    # path (relative to `root`) rather than re-parsing the raw `rel` string —
+    # the latter mishandled a leading slash / nested subdirectory combination.
+    parent_rel = resolved.parent.relative_to(root).as_posix()
+    if parent_rel == ".":
+        parent_rel = ""
     new_rel = f"{parent_rel}/{name}" if parent_rel else name
     dest = _jail(root, file_manager._validate_path(new_rel, root))
     if dest.exists():

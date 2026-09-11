@@ -715,26 +715,51 @@ function _gsRenderList() {
         html += '<div class="gsf-pin-divider"></div>';
     }
     if (dir) {
-        const up = dir.split('/').slice(0, -1).join('/').replace(/'/g, "\\'");
-        html += `<div class="gsf-entry" oncontextmenu="return false;" onclick="gsFilesNav('${root}','${up}')"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ..</span></div>`;
+        const up = dir.split('/').slice(0, -1).join('/');
+        html += `<div class="gsf-entry gsf-entry-up" data-up="${FileBrowser.escapeAttr(up)}"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ..</span></div>`;
     }
     const sorted = FileBrowser.sortEntries(_gsCfg.entries, _gsSort.key, _gsSort.dir);
     if (!sorted.length && !pinned.length) {
         html += '<span style="color:var(--text-muted); padding:0.6rem 0.75rem; display:block;">Empty — start the server once so it generates its files.</span>';
     }
     html += sorted.map(e => e.type === 'directory'
-        ? `<div class="gsf-entry" onclick="gsFilesNav('${root}','${e.path.replace(/'/g, "\\'")}')" oncontextmenu="gsShowRowMenu(event,'directory','${root}','${e.path.replace(/'/g, "\\'")}','${e.name.replace(/'/g, "\\'")}',false)"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ${escapeHtml(e.name)}</span><span class="gsf-col-size"></span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(e.mtime)}</span></div>`
+        ? `<div class="gsf-entry" data-type="directory" data-root="${FileBrowser.escapeAttr(root)}" data-path="${FileBrowser.escapeAttr(e.path)}" data-name="${FileBrowser.escapeAttr(e.name)}"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ${escapeHtml(e.name)}</span><span class="gsf-col-size"></span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(e.mtime)}</span></div>`
         : _gsFileRow(e.name, e.path, e.size, e.mtime, root, e.writable)
     ).join('');
     box.innerHTML = html;
     FileBrowser.initSortableHeader(box.querySelector('.gsf-list-head'), _gsSort, _gsRenderList);
 }
 
+// Rows carry path/name/root/writable as data-* attributes (FileBrowser.escapeAttr
+// handles '"' too, unlike a plain '.replace(/'/g, ...)') read back via .dataset
+// by the delegated listener below, instead of being baked into inline
+// onclick/oncontextmenu JS — a filename with a quote can't break the attribute.
 function _gsFileRow(name, path, size, mtime, root, writable) {
-    const p = String(path).replace(/'/g, "\\'");
-    const n = String(name).replace(/'/g, "\\'");
-    return `<div class="gsf-entry" onclick="gsFilesOpen('${root}','${p}',${writable ? 'true' : 'false'})" oncontextmenu="gsShowRowMenu(event,'file','${root}','${p}','${n}',${writable ? 'true' : 'false'})"><span class="gsf-entry-name">${FileBrowser.ICON_FILE} ${escapeHtml(name)}</span><span class="gsf-col-size">${FileBrowser.fmtBytes(size)}</span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(mtime)}</span></div>`;
+    return `<div class="gsf-entry" data-type="file" data-root="${FileBrowser.escapeAttr(root)}" data-path="${FileBrowser.escapeAttr(path)}" data-name="${FileBrowser.escapeAttr(name)}" data-writable="${writable ? '1' : '0'}"><span class="gsf-entry-name">${FileBrowser.ICON_FILE} ${escapeHtml(name)}</span><span class="gsf-col-size">${FileBrowser.fmtBytes(size)}</span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(mtime)}</span></div>`;
 }
+
+// Installed once — reads root/path/name/type/writable off the entry's
+// dataset rather than an inline onclick/oncontextmenu.
+(function gsInitRowDelegation() {
+    const box = document.getElementById('gs-config-files');
+    if (!box) return;
+    box.addEventListener('click', (evt) => {
+        const upEl = evt.target.closest('.gsf-entry-up');
+        if (upEl) { gsFilesNav(_gsCfg.root, upEl.dataset.up); return; }
+        const el = evt.target.closest('.gsf-entry[data-type]');
+        if (!el) return;
+        const { root, path, type } = el.dataset;
+        if (type === 'directory') gsFilesNav(root, path);
+        else gsFilesOpen(root, path, el.dataset.writable === '1');
+    });
+    box.addEventListener('contextmenu', (evt) => {
+        if (evt.target.closest('.gsf-entry-up')) { evt.preventDefault(); return; }
+        const el = evt.target.closest('.gsf-entry[data-type]');
+        if (!el) return;
+        const { root, path, name, type } = el.dataset;
+        gsShowRowMenu(evt, type, root, path, name, el.dataset.writable === '1');
+    });
+})();
 
 function gsShowRowMenu(evt, type, root, path, name, writable) {
     evt.preventDefault(); evt.stopPropagation();

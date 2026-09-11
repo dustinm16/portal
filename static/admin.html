@@ -2065,7 +2065,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/filebrowser.js?v=1"></script>
+    <script src="/static/js/filebrowser.js?v=2"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -4612,26 +4612,52 @@
                 html += '<div class="gsf-pin-divider"></div>';
             }
             if (dir) {
-                const up = dir.split('/').slice(0, -1).join('/').replace(/'/g, "\\'");
-                html += `<div class="gsf-entry" oncontextmenu="return false;" onclick="gsFilesNav('${root}','${up}')"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ..</span></div>`;
+                const up = dir.split('/').slice(0, -1).join('/');
+                html += `<div class="gsf-entry gsf-entry-up" data-up="${filesEscapeHtml(up)}"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ..</span></div>`;
             }
             const sorted = FileBrowser.sortEntries(_gsConfig.entries, _gsSort.key, _gsSort.dir);
             if (!sorted.length && !pinned.length) {
                 html += '<p style="color:var(--text-muted);font-size:0.8rem;padding:0.6rem 0.75rem;">Empty — start the server once so it generates its files.</p>';
             }
             html += sorted.map(e => e.type === 'directory'
-                ? `<div class="gsf-entry" onclick="gsFilesNav('${root}','${e.path.replace(/'/g, "\\'")}')" oncontextmenu="gsShowRowMenu(event,'directory','${root}','${e.path.replace(/'/g, "\\'")}','${e.name.replace(/'/g, "\\'")}',false)"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ${escapeHtml(e.name)}</span><span class="gsf-col-size"></span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(e.mtime)}</span></div>`
+                ? `<div class="gsf-entry" data-type="directory" data-root="${filesEscapeHtml(root)}" data-path="${filesEscapeHtml(e.path)}" data-name="${filesEscapeHtml(e.name)}"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ${escapeHtml(e.name)}</span><span class="gsf-col-size"></span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(e.mtime)}</span></div>`
                 : gsFileRow(e.name, e.path, e.size, e.mtime, root, e.writable)
             ).join('');
             box.innerHTML = html;
             FileBrowser.initSortableHeader(box.querySelector('.gsf-list-head'), _gsSort, _gsRenderList);
         }
 
+        // Rows carry path/name/root/writable as data-* attributes (native
+        // HTML-attribute escaping via filesEscapeHtml — handles '"' too,
+        // unlike the plain '.replace(/'/g, ...)' this replaced, which let a
+        // double-quote in a filename break out of the double-quoted
+        // oncontextmenu/onclick attribute it was embedded in) instead of
+        // baking them into inline onclick/oncontextmenu JS.
         function gsFileRow(name, path, size, mtime, root, writable) {
-            const p = String(path).replace(/'/g, "\\'");
-            const n = String(name).replace(/'/g, "\\'");
-            return `<div class="gsf-entry" onclick="gsFilesOpen('${root}','${p}',${writable ? 'true' : 'false'})" oncontextmenu="gsShowRowMenu(event,'file','${root}','${p}','${n}',${writable ? 'true' : 'false'})"><span class="gsf-entry-name">${FileBrowser.ICON_FILE} ${escapeHtml(name)}</span><span class="gsf-col-size">${FileBrowser.fmtBytes(size)}</span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(mtime)}</span></div>`;
+            return `<div class="gsf-entry" data-type="file" data-root="${filesEscapeHtml(root)}" data-path="${filesEscapeHtml(path)}" data-name="${filesEscapeHtml(name)}" data-writable="${writable ? '1' : '0'}"><span class="gsf-entry-name">${FileBrowser.ICON_FILE} ${escapeHtml(name)}</span><span class="gsf-col-size">${FileBrowser.fmtBytes(size)}</span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(mtime)}</span></div>`;
         }
+
+        // Installed once — reads root/path/name/type/writable off the
+        // entry's dataset rather than an inline onclick/oncontextmenu.
+        (function gsInitRowDelegation() {
+            const box = document.getElementById('gs-config-files');
+            box.addEventListener('click', (evt) => {
+                const upEl = evt.target.closest('.gsf-entry-up');
+                if (upEl) { gsFilesNav(_gsConfig.root, upEl.dataset.up); return; }
+                const el = evt.target.closest('.gsf-entry[data-type]');
+                if (!el) return;
+                const { root, path, type } = el.dataset;
+                if (type === 'directory') gsFilesNav(root, path);
+                else gsFilesOpen(root, path, el.dataset.writable === '1');
+            });
+            box.addEventListener('contextmenu', (evt) => {
+                if (evt.target.closest('.gsf-entry-up')) { evt.preventDefault(); return; }
+                const el = evt.target.closest('.gsf-entry[data-type]');
+                if (!el) return;
+                const { root, path, name, type } = el.dataset;
+                gsShowRowMenu(evt, type, root, path, name, el.dataset.writable === '1');
+            });
+        })();
 
         function gsShowRowMenu(evt, type, root, path, name, writable) {
             evt.preventDefault(); evt.stopPropagation();
@@ -5658,6 +5684,11 @@
             if (!str) return '';
             return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
         }
+        // filesEscapeJs above is only used for the breadcrumb, which is built
+        // from an already-navigated, already-trusted path. Rows built from raw
+        // directory entries (filenames can contain anything but NUL/'/') use
+        // data-* attributes instead — native HTML-attribute escaping is
+        // lossless and needs no matching hand-written unescape step.
 
         function filesFormatDate(ts) {
             if (!ts) return '-';
@@ -5705,13 +5736,16 @@
         }
 
         // Re-renders from filesCurrentEntries (already fetched) — used after a
-        // load and after the user clicks a sortable column header.
+        // load and after the user clicks a sortable column header. Rows carry
+        // their path/name/type as data-* attributes (native HTML-attribute
+        // escaping — no hand-rolled JS-string escape/unescape needed) and a
+        // single delegated listener (installed once, below) reads them back.
         function filesRenderFiles() {
             const tbody = document.getElementById('files-file-body');
             let html = '';
             if (filesCurrentPath !== '/') {
                 const parent = filesCurrentPath.replace(/\/[^/]+\/?$/, '') || '/';
-                html += `<tr ondblclick="filesLoadDirectory('${filesEscapeJs(parent)}')" oncontextmenu="return false;">
+                html += `<tr data-parent="${filesEscapeHtml(parent)}" class="files-row-up">
                     <td><strong>${FileBrowser.ICON_DIR} ..</strong></td>
                     <td>-</td><td>-</td><td>-</td><td>-</td><td></td>
                 </tr>`;
@@ -5719,10 +5753,7 @@
             const entries = FileBrowser.sortEntries(filesCurrentEntries, _filesSort.key, _filesSort.dir);
             html += entries.map(e => {
                 const fullPath = filesJoinPath(filesCurrentPath, e.name);
-                const jsPath = filesEscapeJs(fullPath);
-                const jsName = filesEscapeJs(e.name);
-                const dblClick = e.type === 'directory' ? `ondblclick="filesLoadDirectory('${jsPath}')"` : '';
-                return `<tr ${dblClick} oncontextmenu="filesShowRowMenu(event,'${e.type}','${jsPath}','${jsName}')">
+                return `<tr class="files-row" data-path="${filesEscapeHtml(fullPath)}" data-name="${filesEscapeHtml(e.name)}" data-type="${filesEscapeHtml(e.type)}">
                     <td>${filesFileIcon(e.type)} ${filesEscapeHtml(e.name)}</td>
                     <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
                     <td>${filesFormatDate(e.modified)}</td>
@@ -5730,11 +5761,11 @@
                     <td>${filesEscapeHtml(e.owner)}</td>
                     <td style="display:flex;gap:0.25rem;" onclick="event.stopPropagation()">
                         ${e.type === 'file' ? `
-                            <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesEditFile('${jsPath}')">Edit</button>
+                            <button class="range-btn files-edit-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;">Edit</button>
                             <a class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;text-decoration:none;" href="/api/files/download?path=${encodeURIComponent(fullPath)}">DL</a>
                         ` : ''}
-                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick="filesRenameFile('${jsPath}', '${jsName}')">Rename</button>
-                        <button class="range-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;color:var(--accent-red);" onclick="filesDeleteFile('${jsPath}', '${jsName}', '${e.type}')">Del</button>
+                        <button class="range-btn files-rename-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;">Rename</button>
+                        <button class="range-btn files-delete-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;color:var(--accent-red);">Del</button>
                     </td>
                 </tr>`;
             }).join('');
@@ -5742,13 +5773,35 @@
             FileBrowser.initSortableHeader(document.getElementById('files-list-head'), _filesSort, filesRenderFiles);
         }
 
-        function filesShowRowMenu(evt, type, jsPath, jsName) {
+        // Installed once — reads path/name/type off the row's dataset
+        // (browser-decoded, no manual escaping) rather than baking them into
+        // inline onclick attributes.
+        (function filesInitRowDelegation() {
+            const tbody = document.getElementById('files-file-body');
+            tbody.addEventListener('dblclick', (evt) => {
+                const upRow = evt.target.closest('tr.files-row-up');
+                if (upRow) { filesLoadDirectory(upRow.dataset.parent); return; }
+                const row = evt.target.closest('tr.files-row');
+                if (row && row.dataset.type === 'directory') filesLoadDirectory(row.dataset.path);
+            });
+            tbody.addEventListener('contextmenu', (evt) => {
+                if (evt.target.closest('tr.files-row-up')) { evt.preventDefault(); return; }
+                const row = evt.target.closest('tr.files-row');
+                if (!row) return;
+                filesShowRowMenu(evt, row.dataset.type, row.dataset.path, row.dataset.name);
+            });
+            tbody.addEventListener('click', (evt) => {
+                const row = evt.target.closest('tr.files-row');
+                if (!row) return;
+                const { path, name, type } = row.dataset;
+                if (evt.target.closest('.files-edit-btn')) filesEditFile(path);
+                else if (evt.target.closest('.files-rename-btn')) filesRenameFile(path, name);
+                else if (evt.target.closest('.files-delete-btn')) filesDeleteFile(path, name, type);
+            });
+        })();
+
+        function filesShowRowMenu(evt, type, path, name) {
             evt.preventDefault(); evt.stopPropagation();
-            // jsPath/jsName already carry JS-string escaping (for the inline
-            // onclick they're embedded in) — undo it before using them as plain
-            // strings here so a real quote/backslash in a filename round-trips.
-            const unescape = s => s.replace(/\\'/g, "'").replace(/\\\\/g, '\\').replace(/\\n/g, '\n').replace(/\\r/g, '\r');
-            const path = unescape(jsPath), name = unescape(jsName);
             const items = [];
             if (type === 'directory') items.push({ label: 'Open', onClick: () => filesLoadDirectory(path) });
             if (type === 'file') {
