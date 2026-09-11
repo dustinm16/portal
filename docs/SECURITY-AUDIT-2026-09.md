@@ -148,6 +148,35 @@ unit-file corruption.
   `int()`-coerced; nmap `--script=` value is built from a hard-coded
   `scan_type` map, not request input.
 
+## Post-audit capability growth — `files` grant (2026-09-11, not a new audit pass)
+
+Three capabilities were added to the jailed game-server browser after this
+audit: multi-file **upload**, **delete**, and **rename**. Each is confined to
+the same jail (`file_manager._validate_path` + `_jail`) as the original
+read/write/download set and gated the same way (admin or `files` grant), but
+each also *narrows* the file-type allowlist rather than reusing
+`_BROWSE_WRITE_SUFFIXES` as-is:
+
+- `_BROWSE_UPLOAD_SUFFIXES` = `_BROWSE_WRITE_SUFFIXES` minus `.lua`. Editing
+  an existing `.lua` (Zomboid's `SandboxVars.lua`) was already accepted as
+  F6 above because nothing new lands on disk. Upload, delete, and rename all
+  create/remove/relabel a filesystem entry — a bigger step — so all three
+  exclude `.lua`: a `files` grantee still cannot introduce or remove a Lua
+  file on a Lua-scripting server (Garry's Mod) even though they can still
+  edit one that's already there.
+- Delete never touches a directory (no recursive delete) — a `files`
+  grantee can only remove single files matching the upload allowlist, never
+  `Saves/`, `steamapps/`, or the server binary.
+- Rename is same-directory only and requires the new name to keep the exact
+  same extension as the old one — it cannot be used to move a file into an
+  autorun-relevant path or relabel it under a different extension to dodge
+  the write/delete suffix checks (which key off the *current* file's
+  extension, not a claimed one).
+
+None of this widens what a `files` grant can reach outside a server's own
+directory tree — the jail and the grant check are unchanged — only what it
+can do to files already inside it.
+
 ## Follow-ups (not blocking)
 
 1. Relay `rtmp_url`: add an explicit `{rtmp, rtmps}` scheme allowlist to

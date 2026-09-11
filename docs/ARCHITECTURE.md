@@ -212,12 +212,16 @@ app id, start command/args, stop signal, and `config_paths` globs.
   per-request (64 MB) caps; the target directory must already exist (no
   implicit `mkdir`). The frontend (`admin.html` /
   `dashboard.js`, shared `#gs-config-modal`) is a single-pane commander-style
-  browser: a sortable Name/Size/Modified list with root tabs, breadcrumb,
-  toolbar Upload + drag-and-drop onto the list, and Download-backup; opening a
-  file swaps the pane to a full-width editor (Back returns to the list) rather
-  than splitting the modal into a cramped list+editor pair. Clicking a game
-  server's card (admin Game Servers tab, or a dashboard service card for a
-  viewer with `files` access) opens this browser directly.
+  browser: a sortable (click a column header) Name/Size/Modified list with
+  root tabs, breadcrumb, toolbar Upload + drag-and-drop onto the list, and
+  Download-backup; right-click a row for a context menu (Edit/View, Download,
+  and — where the extension allows it — Rename/Delete), or empty list space
+  for "Upload files here". Opening a file swaps the pane to a full-width
+  editor (Back returns to the list) rather than splitting the modal into a
+  cramped list+editor pair; the editor head also carries Rename/Delete for
+  the open file. Clicking a game server's card (admin Game Servers tab, or a
+  dashboard service card for a viewer with `files` access) opens this
+  browser directly.
 - **Backup** — `make_backup_archive` tars (`.tar.gz`, in memory) every file
   matched by `config_paths` **plus** `backup_paths` (save/world globs, `**`
   supported), capped 512 MB total / 128 MB per file. Same `files` grant.
@@ -890,6 +894,8 @@ GET  /api/game-servers/:id/files/read?root=&path= - Read one file (admin or file
 POST /api/game-servers/:id/files/write    - Write one existing text file (admin or files grant)
 GET  /api/game-servers/:id/files/download?root=&path= - Download one file, <=128 MB (admin or files grant)
 POST /api/game-servers/:id/files/upload   - Upload one or more new files into a dir (admin or files grant)
+DELETE /api/game-servers/:id/files/delete?root=&path= - Delete one file, never a dir (admin or files grant)
+POST /api/game-servers/:id/files/rename   - Rename one file in place, same extension (admin or files grant)
 POST /api/game-servers/:id/resync-catalog - Re-pull globs/config_root from the catalog entry (admin)
 POST /api/game-servers/:id/launch-options - Edit start_args/stop_signal (admin or control), start_cmd (admin); regen unit
 ```
@@ -1158,7 +1164,7 @@ POST   /api/files/rename             - Rename/move (JSON)
 DELETE /api/files/delete             - Delete file/directory (?path=)
 ```
 
-Server file management is also integrated into the Admin Panel as a "Files" tab for quick access without leaving the admin interface.
+Server file management is also integrated into the Admin Panel as a "Files" tab for quick access without leaving the admin interface. Its list view (sortable Name/Size/Modified columns, right-click context menu) shares `static/js/filebrowser.js` — icons, byte/date formatting, the sortable-header helper, and the context-menu component — with the game-server jailed browser below; the two keep separate fetch/render logic since their data differs (this one carries owner/permissions and is unrestricted to any path an admin can reach; the jailed one carries `writable` and is confined per server).
 
 ### Data Retention (Admin)
 

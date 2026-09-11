@@ -1438,6 +1438,52 @@ def browse_upload(gs: dict, root_key: str, rel_dir: str, filename: str, data: by
     return {"name": name, "path": rel_file, "size": len(data), "replaced": existed}
 
 
+def browse_delete(gs: dict, root_key: str, rel: str) -> None:
+    """Delete one file inside the jail.
+
+    Deliberately narrower than the editor: never a directory (no recursive
+    delete, no emptying a save/world tree by accident or via a compromised
+    grantee), and only a suffix in ``_BROWSE_UPLOAD_SUFFIXES`` — the same
+    stricter, no-``.lua`` set upload uses, since removing a file a `files`
+    grantee could not have created themselves is outside what the grant is
+    meant to cover."""
+    root = _browse_root(gs, root_key)
+    resolved = _jail(root, file_manager._validate_path(rel, root))
+    if not resolved.is_file():
+        raise ValueError("can only delete files that exist here")
+    if resolved.suffix.lower() not in _BROWSE_UPLOAD_SUFFIXES:
+        raise ValueError(f"'{resolved.suffix or resolved.name}' files can't be deleted here")
+    resolved.unlink()
+
+
+def browse_rename(gs: dict, root_key: str, rel: str, new_name: str) -> dict:
+    """Rename one file in place (same directory, same extension — this is a
+    label change, not a way to move a file into an autorun-relevant path or
+    disguise it under a different extension). Same suffix rule as delete."""
+    root = _browse_root(gs, root_key)
+    resolved = _jail(root, file_manager._validate_path(rel, root))
+    if not resolved.is_file():
+        raise ValueError("can only rename files that exist here")
+    if resolved.suffix.lower() not in _BROWSE_UPLOAD_SUFFIXES:
+        raise ValueError(f"'{resolved.suffix or resolved.name}' files can't be renamed here")
+    name = _validate_upload_name(new_name)
+    new_path = Path(name)
+    if new_path.suffix.lower() != resolved.suffix.lower():
+        raise ValueError("the new name must keep the same file extension")
+    parent_rel = str(Path(rel).parent) if "/" in rel.strip("/") else ""
+    parent_rel = "" if parent_rel == "." else parent_rel
+    new_rel = f"{parent_rel}/{name}" if parent_rel else name
+    dest = _jail(root, file_manager._validate_path(new_rel, root))
+    if dest.exists():
+        raise ValueError("a file with that name already exists")
+    resolved.rename(dest)
+    try:
+        shutil.chown(str(dest), RUN_AS, RUN_AS)
+    except (LookupError, PermissionError, OSError) as e:
+        logger.warning("chown %s failed: %s", dest, e)
+    return {"name": name, "path": new_rel}
+
+
 # ---------------------------------------------------------------------------
 # Keep a deployed server's paths in sync with its (builtin) catalog entry
 # ---------------------------------------------------------------------------

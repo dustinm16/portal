@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Admin Panel</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=51">
+    <link rel="stylesheet" href="/static/css/portal.css?v=52">
     <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
     <script>
@@ -1052,6 +1052,8 @@
                             <div class="gsf-editor-head">
                                 <button class="btn btn-secondary btn-sm" onclick="gsFilesCloseEditor()">&larr; Back</button>
                                 <span id="gs-config-current" class="gsf-current"></span>
+                                <button class="btn btn-secondary btn-sm" id="gs-config-rename1" onclick="gsFilesRenameCurrent()" style="display:none;flex-shrink:0;">Rename</button>
+                                <button class="btn btn-secondary btn-sm" id="gs-config-del1" onclick="gsFilesDeleteCurrent()" style="display:none;flex-shrink:0;color:var(--accent-red);">Delete</button>
                                 <button class="btn btn-secondary btn-sm" id="gs-config-dl1" onclick="gsFilesDownloadFile()" style="display:none;flex-shrink:0;">Download</button>
                             </div>
                             <textarea id="gs-config-text" spellcheck="false" disabled></textarea>
@@ -1819,10 +1821,10 @@
                 <div class="sys-table-scroll">
                     <table class="sysmon-table">
                         <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Size</th>
-                                <th>Modified</th>
+                            <tr id="files-list-head">
+                                <th data-sort-key="name">Name</th>
+                                <th data-sort-key="size">Size</th>
+                                <th data-sort-key="modified">Modified</th>
                                 <th>Permissions</th>
                                 <th>Owner</th>
                                 <th>Actions</th>
@@ -2013,6 +2015,15 @@
             </div>
 
             <!-- Files Edit Modal -->
+            <style>
+                /* .sys-logs-modal-content is already a flex column capped at
+                   max-height:80vh (shared with the System Logs modal); the
+                   textarea used to have a hardcoded height:500px fighting that
+                   cap — at high zoom / a short viewport it overflowed well past
+                   the visible modal box. Let it flex instead. */
+                #files-edit-modal .sys-logs-modal-body { display:flex; flex-direction:column; min-height:0; }
+                #files-edit-textarea { flex:1; min-height:160px; }
+            </style>
             <div id="files-edit-modal" class="sys-logs-modal" style="display:none;" onclick="if(event.target===this)filesCloseEditModal()">
                 <div class="sys-logs-modal-content" style="max-width:900px;">
                     <div class="sys-logs-modal-header">
@@ -2020,8 +2031,8 @@
                         <button onclick="filesCloseEditModal()" style="background:none;border:none;color:var(--text-secondary);font-size:1.2rem;cursor:pointer;">&times;</button>
                     </div>
                     <div class="sys-logs-modal-body" style="padding:1rem;">
-                        <textarea id="files-edit-textarea" style="width:100%;height:500px;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);font-family:monospace;font-size:0.8rem;padding:0.75rem;resize:vertical;box-sizing:border-box;tab-size:4;"></textarea>
-                        <div style="display:flex;gap:0.5rem;margin-top:0.75rem;justify-content:flex-end;">
+                        <textarea id="files-edit-textarea" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);font-family:monospace;font-size:0.8rem;padding:0.75rem;resize:vertical;box-sizing:border-box;tab-size:4;"></textarea>
+                        <div style="display:flex;gap:0.5rem;margin-top:0.75rem;justify-content:flex-end;flex-shrink:0;">
                             <button class="range-btn" onclick="filesCloseEditModal()">Cancel</button>
                             <button class="btn btn-primary" onclick="filesSaveEdited()">Save</button>
                         </div>
@@ -2054,6 +2065,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
+    <script src="/static/js/filebrowser.js?v=1"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {
@@ -4486,23 +4498,20 @@
             document.getElementById('gs-job-modal').style.display = 'none';
         }
 
-        function _fmtBytes(n) {
-            if (!n) return '0 B';
-            const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
-            while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-            return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
+        // Mirrors gameservers._BROWSE_UPLOAD_SUFFIXES — a client-side hint only
+        // (so Rename/Delete don't appear on files the server would refuse
+        // anyway); the server re-checks independently and is authoritative.
+        const _GS_MODIFY_SUFFIXES = ['.ini', '.cfg', '.conf', '.config', '.json', '.xml', '.yaml', '.yml',
+            '.toml', '.txt', '.properties', '.props', '.cnf', '.settings', '.list', '.ecf'];
+        function _gsCanModify(name) {
+            const i = name.lastIndexOf('.');
+            return i > -1 && _GS_MODIFY_SUFFIXES.includes(name.slice(i).toLowerCase());
         }
-        function _fmtMtime(ts) {
-            if (!ts) return '';
-            try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return ''; }
-        }
-        // Small inline icons (no emoji) shared by the folder/file rows.
-        const _GSF_ICON_DIR = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" style="flex-shrink:0;opacity:.7;"><path d="M2.5 5.5a1 1 0 0 1 1-1h4l1.4 1.6h7.6a1 1 0 0 1 1 1v8.4a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1V5.5z"/></svg>';
-        const _GSF_ICON_FILE = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" style="flex-shrink:0;opacity:.55;"><path d="M5 2.5h6l4 4v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z"/><path d="M11 2.5v4h4"/></svg>';
         let _gsNavSeq = 0;   // guards against a slow response landing after a newer navigation
+        let _gsSort = { key: 'name', dir: 1 };
 
         async function openGsConfig(gsId, name) {
-            _gsConfig = { gsId, name, root: 'install', dir: '', path: null, roots: [], writable: false };
+            _gsConfig = { gsId, name, root: 'install', dir: '', path: null, roots: [], writable: false, entries: [], pinned: [] };
             document.getElementById('gs-config-title').textContent = name;
             gsFilesCloseEditor();
             document.getElementById('gs-config-roots').innerHTML = '';
@@ -4526,6 +4535,14 @@
                 box.classList.remove('gsf-dragover');
                 if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) gsFilesUpload(e.dataTransfer.files);
             });
+            // Right-click on empty list space (not a row, which stops propagation) — upload here.
+            box.addEventListener('contextmenu', e => {
+                if (e.target !== box) return;
+                e.preventDefault();
+                FileBrowser.showContextMenu(e.clientX, e.clientY, [
+                    { label: 'Upload files here', onClick: () => document.getElementById('gs-config-upload-input').click() },
+                ]);
+            });
         }
 
         async function gsFilesNav(root, dir) {
@@ -4538,6 +4555,8 @@
                 if (seq !== _gsNavSeq) return;   // a newer navigation started — drop this stale response
                 _gsConfig.root = d.root; _gsConfig.dir = d.path || '';
                 _gsConfig.roots = d.roots || [];
+                _gsConfig.entries = d.entries || [];
+                _gsConfig.pinned = d.pinned || [];
                 // root tabs
                 document.getElementById('gs-config-roots').innerHTML = (d.roots || []).map(r =>
                     `<button class="btn btn-sm ${r.key === d.root ? 'btn-primary' : 'btn-secondary'}" onclick="gsFilesNav('${r.key}','')">${escapeHtml(r.label)}</button>`
@@ -4552,27 +4571,7 @@
                     crumbs.push(`<a href="#" onclick="event.preventDefault();gsFilesNav('${d.root}','${a}')">${escapeHtml(p)}</a>`);
                 });
                 document.getElementById('gs-config-crumbs').innerHTML = crumbs.join(' / ');
-                // list — the header row lives inside the scroll container (sticky) so
-                // it always lines up with the rows' scrollbar gutter, at any zoom.
-                let html = '<div class="gsf-list-head"><span style="flex:1;">Name</span><span class="gsf-col-size">Size</span><span class="gsf-col-mtime">Modified</span></div>';
-                const pinned = (d.pinned || []);
-                if (pinned.length && !d.path) {
-                    html += '<div class="gsf-pin-label">Settings files</div>';
-                    html += pinned.map(f => gsFileRow(f.name, f.path, f.size, f.mtime, f.root || d.root, true)).join('');
-                    html += '<div class="gsf-pin-divider"></div>';
-                }
-                if (d.path) {
-                    const up = d.path.split('/').slice(0, -1).join('/').replace(/'/g, "\\'");
-                    html += `<div class="gsf-entry" onclick="gsFilesNav('${d.root}','${up}')"><span class="gsf-entry-name">${_GSF_ICON_DIR} ..</span></div>`;
-                }
-                if (!(d.entries || []).length && !pinned.length) {
-                    html += '<p style="color:var(--text-muted);font-size:0.8rem;padding:0.6rem 0.75rem;">Empty — start the server once so it generates its files.</p>';
-                }
-                html += (d.entries || []).map(e => e.type === 'directory'
-                    ? `<div class="gsf-entry" onclick="gsFilesNav('${d.root}','${e.path.replace(/'/g, "\\'")}')"><span class="gsf-entry-name">${_GSF_ICON_DIR} ${escapeHtml(e.name)}</span><span class="gsf-col-size"></span><span class="gsf-col-mtime">${_fmtMtime(e.mtime)}</span></div>`
-                    : gsFileRow(e.name, e.path, e.size, e.mtime, d.root, e.writable)
-                ).join('');
-                box.innerHTML = html;
+                _gsRenderList();
             } catch (e) {
                 if (seq !== _gsNavSeq) return;
                 box.innerHTML = `<p style="color:var(--accent-red);font-size:0.8rem;padding:0.6rem 0.75rem;">${escapeHtml(e.message || 'Failed to load')}</p>`;
@@ -4588,15 +4587,97 @@
                     const bcount = (c.backup_files || []).length;
                     bbtn.disabled = bcount === 0;
                     bbtn.textContent = bcount
-                        ? `Download backup (${bcount} file${bcount === 1 ? '' : 's'}, ${_fmtBytes(c.backup_total)})`
+                        ? `Download backup (${bcount} file${bcount === 1 ? '' : 's'}, ${FileBrowser.fmtBytes(c.backup_total)})`
                         : 'Nothing to back up yet';
                 } catch (e) { /* leave default */ }
             }
         }
 
+        // Re-renders #gs-config-files from the already-fetched _gsConfig.entries/
+        // pinned — used both after a fetch and after the user clicks a sortable
+        // column header (no refetch needed for a re-sort).
+        function _gsRenderList() {
+            const box = document.getElementById('gs-config-files');
+            const root = _gsConfig.root, dir = _gsConfig.dir;
+            const pinned = _gsConfig.pinned || [];
+            // the header row lives inside the scroll container (sticky) so it
+            // always lines up with the rows' scrollbar gutter, at any zoom.
+            let html = '<div class="gsf-list-head">'
+                + '<span style="flex:1;" data-sort-key="name">Name</span>'
+                + '<span class="gsf-col-size" data-sort-key="size">Size</span>'
+                + '<span class="gsf-col-mtime" data-sort-key="mtime">Modified</span></div>';
+            if (pinned.length && !dir) {
+                html += '<div class="gsf-pin-label">Settings files</div>';
+                html += pinned.map(f => gsFileRow(f.name, f.path, f.size, f.mtime, f.root || root, true)).join('');
+                html += '<div class="gsf-pin-divider"></div>';
+            }
+            if (dir) {
+                const up = dir.split('/').slice(0, -1).join('/').replace(/'/g, "\\'");
+                html += `<div class="gsf-entry" oncontextmenu="return false;" onclick="gsFilesNav('${root}','${up}')"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ..</span></div>`;
+            }
+            const sorted = FileBrowser.sortEntries(_gsConfig.entries, _gsSort.key, _gsSort.dir);
+            if (!sorted.length && !pinned.length) {
+                html += '<p style="color:var(--text-muted);font-size:0.8rem;padding:0.6rem 0.75rem;">Empty — start the server once so it generates its files.</p>';
+            }
+            html += sorted.map(e => e.type === 'directory'
+                ? `<div class="gsf-entry" onclick="gsFilesNav('${root}','${e.path.replace(/'/g, "\\'")}')" oncontextmenu="gsShowRowMenu(event,'directory','${root}','${e.path.replace(/'/g, "\\'")}','${e.name.replace(/'/g, "\\'")}',false)"><span class="gsf-entry-name">${FileBrowser.ICON_DIR} ${escapeHtml(e.name)}</span><span class="gsf-col-size"></span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(e.mtime)}</span></div>`
+                : gsFileRow(e.name, e.path, e.size, e.mtime, root, e.writable)
+            ).join('');
+            box.innerHTML = html;
+            FileBrowser.initSortableHeader(box.querySelector('.gsf-list-head'), _gsSort, _gsRenderList);
+        }
+
         function gsFileRow(name, path, size, mtime, root, writable) {
             const p = String(path).replace(/'/g, "\\'");
-            return `<div class="gsf-entry" onclick="gsFilesOpen('${root}','${p}',${writable ? 'true' : 'false'})"><span class="gsf-entry-name">${_GSF_ICON_FILE} ${escapeHtml(name)}</span><span class="gsf-col-size">${_fmtBytes(size)}</span><span class="gsf-col-mtime">${_fmtMtime(mtime)}</span></div>`;
+            const n = String(name).replace(/'/g, "\\'");
+            return `<div class="gsf-entry" onclick="gsFilesOpen('${root}','${p}',${writable ? 'true' : 'false'})" oncontextmenu="gsShowRowMenu(event,'file','${root}','${p}','${n}',${writable ? 'true' : 'false'})"><span class="gsf-entry-name">${FileBrowser.ICON_FILE} ${escapeHtml(name)}</span><span class="gsf-col-size">${FileBrowser.fmtBytes(size)}</span><span class="gsf-col-mtime">${FileBrowser.fmtMtime(mtime)}</span></div>`;
+        }
+
+        function gsShowRowMenu(evt, type, root, path, name, writable) {
+            evt.preventDefault(); evt.stopPropagation();
+            const items = [];
+            if (type === 'directory') {
+                items.push({ label: 'Open', onClick: () => gsFilesNav(root, path) });
+            } else {
+                items.push({ label: writable ? 'Edit' : 'View', onClick: () => gsFilesOpen(root, path, writable) });
+                items.push({ label: 'Download', onClick: () => gsDownloadFileAt(root, path, name) });
+                if (_gsCanModify(name)) {
+                    items.push({ separator: true });
+                    items.push({ label: 'Rename…', onClick: () => gsFilesRenamePrompt(root, path, name) });
+                    items.push({ label: 'Delete…', danger: true, onClick: () => gsFilesDeleteConfirm(root, path, name) });
+                }
+            }
+            FileBrowser.showContextMenu(evt.clientX, evt.clientY, items);
+        }
+
+        async function gsFilesRenamePrompt(root, path, oldName) {
+            const newName = prompt('Rename to:', oldName);
+            if (!newName || newName === oldName) return;
+            try {
+                const res = await Portal.fetch(`/api/game-servers/${_gsConfig.gsId}/files/rename`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ root, path, new_name: newName }),
+                });
+                const d = await res.json();
+                if (!res.ok) throw new Error(d.error || 'Rename failed');
+                Portal.toast('Renamed');
+                if (_gsConfig.path === path) gsFilesCloseEditor();
+                gsFilesNav(_gsConfig.root, _gsConfig.dir);
+            } catch (e) { Portal.toast(e.message || 'Rename failed', 'error'); }
+        }
+
+        async function gsFilesDeleteConfirm(root, path, name) {
+            if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
+            try {
+                const res = await Portal.fetch(
+                    `/api/game-servers/${_gsConfig.gsId}/files/delete?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`,
+                    { method: 'DELETE' });
+                const d = await res.json();
+                if (!res.ok) throw new Error(d.error || 'Delete failed');
+                Portal.toast('Deleted');
+                if (_gsConfig.path === path) gsFilesCloseEditor();
+                gsFilesNav(_gsConfig.root, _gsConfig.dir);
+            } catch (e) { Portal.toast(e.message || 'Delete failed', 'error'); }
         }
 
         async function gsFilesOpen(root, path, writable) {
@@ -4607,6 +4688,9 @@
                 _gsConfig.writable = !!d.writable;
                 document.getElementById('gs-config-current').textContent = path;
                 document.getElementById('gs-config-dl1').style.display = '';
+                const canModify = _gsCanModify(path.split('/').pop() || '');
+                document.getElementById('gs-config-rename1').style.display = canModify ? '' : 'none';
+                document.getElementById('gs-config-del1').style.display = canModify ? '' : 'none';
                 const ta = document.getElementById('gs-config-text');
                 ta.value = d.content; ta.disabled = !d.writable;
                 document.getElementById('gs-config-save').disabled = !d.writable;
@@ -4623,25 +4707,41 @@
             document.getElementById('gs-config-current').textContent = '';
             document.getElementById('gs-config-hint').textContent = '';
             document.getElementById('gs-config-dl1').style.display = 'none';
+            document.getElementById('gs-config-rename1').style.display = 'none';
+            document.getElementById('gs-config-del1').style.display = 'none';
             const ta = document.getElementById('gs-config-text');
             ta.value = ''; ta.disabled = true;
             document.getElementById('gs-config-save').disabled = true;
             if (_gsConfig) { _gsConfig.path = null; _gsConfig.writable = false; }
         }
 
-        async function gsFilesDownloadFile() {
-            if (!_gsConfig.path) return;
+        async function gsDownloadFileAt(root, path, name) {
             try {
                 const res = await Portal.fetch(
-                    `/api/game-servers/${_gsConfig.gsId}/files/download?root=${encodeURIComponent(_gsConfig.readRoot)}&path=${encodeURIComponent(_gsConfig.path)}`);
+                    `/api/game-servers/${_gsConfig.gsId}/files/download?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
                 if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Download failed');
                 const blob = await res.blob();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
-                a.download = _gsConfig.path.split('/').pop() || 'file';
+                a.download = name || path.split('/').pop() || 'file';
                 document.body.appendChild(a); a.click(); a.remove();
                 URL.revokeObjectURL(a.href);
             } catch (e) { Portal.toast(e.message || 'Download failed', 'error'); }
+        }
+
+        function gsFilesDownloadFile() {
+            if (!_gsConfig.path) return;
+            gsDownloadFileAt(_gsConfig.readRoot, _gsConfig.path, _gsConfig.path.split('/').pop());
+        }
+
+        function gsFilesRenameCurrent() {
+            if (!_gsConfig.path) return;
+            gsFilesRenamePrompt(_gsConfig.readRoot, _gsConfig.path, _gsConfig.path.split('/').pop());
+        }
+
+        function gsFilesDeleteCurrent() {
+            if (!_gsConfig.path) return;
+            gsFilesDeleteConfirm(_gsConfig.readRoot, _gsConfig.path, _gsConfig.path.split('/').pop());
         }
 
         async function downloadGsBackup() {
@@ -5565,9 +5665,9 @@
         }
 
         function filesFileIcon(type) {
-            if (type === 'directory') return '<span style="color:#f59e0b;">&#128193;</span>';
-            if (type === 'symlink') return '<span style="color:#8b5cf6;">&#128279;</span>';
-            return '<span style="color:#9ca3af;">&#128196;</span>';
+            if (type === 'directory') return FileBrowser.ICON_DIR;
+            if (type === 'symlink') return FileBrowser.ICON_SYMLINK;
+            return FileBrowser.ICON_FILE;
         }
 
         function filesJoinPath(base, name) {
@@ -5588,35 +5688,41 @@
             el.innerHTML = html;
         }
 
+        let filesCurrentEntries = [];
+        let _filesSort = { key: 'name', dir: 1 };
+
         async function filesLoadDirectory(path) {
             filesCurrentPath = path || '/';
             filesBuildBreadcrumb(filesCurrentPath);
             try {
                 const res = await Portal.fetch(`/api/files/list?path=${encodeURIComponent(filesCurrentPath)}`);
                 if (!res.ok) { const d = await res.json(); Portal.toast(d.error || 'Error', 'error'); return; }
-                const entries = await res.json();
-                filesRenderFiles(entries);
+                filesCurrentEntries = await res.json();
+                filesRenderFiles();
             } catch (e) {
                 console.error('Failed to load directory:', e);
             }
         }
 
-        function filesRenderFiles(entries) {
+        // Re-renders from filesCurrentEntries (already fetched) — used after a
+        // load and after the user clicks a sortable column header.
+        function filesRenderFiles() {
             const tbody = document.getElementById('files-file-body');
             let html = '';
             if (filesCurrentPath !== '/') {
                 const parent = filesCurrentPath.replace(/\/[^/]+\/?$/, '') || '/';
-                html += `<tr ondblclick="filesLoadDirectory('${filesEscapeJs(parent)}')">
-                    <td><strong>&#128193; ..</strong></td>
+                html += `<tr ondblclick="filesLoadDirectory('${filesEscapeJs(parent)}')" oncontextmenu="return false;">
+                    <td><strong>${FileBrowser.ICON_DIR} ..</strong></td>
                     <td>-</td><td>-</td><td>-</td><td>-</td><td></td>
                 </tr>`;
             }
+            const entries = FileBrowser.sortEntries(filesCurrentEntries, _filesSort.key, _filesSort.dir);
             html += entries.map(e => {
                 const fullPath = filesJoinPath(filesCurrentPath, e.name);
                 const jsPath = filesEscapeJs(fullPath);
                 const jsName = filesEscapeJs(e.name);
                 const dblClick = e.type === 'directory' ? `ondblclick="filesLoadDirectory('${jsPath}')"` : '';
-                return `<tr ${dblClick}>
+                return `<tr ${dblClick} oncontextmenu="filesShowRowMenu(event,'${e.type}','${jsPath}','${jsName}')">
                     <td>${filesFileIcon(e.type)} ${filesEscapeHtml(e.name)}</td>
                     <td>${e.type === 'file' ? formatBytes(e.size) : '-'}</td>
                     <td>${filesFormatDate(e.modified)}</td>
@@ -5633,6 +5739,26 @@
                 </tr>`;
             }).join('');
             tbody.innerHTML = html;
+            FileBrowser.initSortableHeader(document.getElementById('files-list-head'), _filesSort, filesRenderFiles);
+        }
+
+        function filesShowRowMenu(evt, type, jsPath, jsName) {
+            evt.preventDefault(); evt.stopPropagation();
+            // jsPath/jsName already carry JS-string escaping (for the inline
+            // onclick they're embedded in) — undo it before using them as plain
+            // strings here so a real quote/backslash in a filename round-trips.
+            const unescape = s => s.replace(/\\'/g, "'").replace(/\\\\/g, '\\').replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+            const path = unescape(jsPath), name = unescape(jsName);
+            const items = [];
+            if (type === 'directory') items.push({ label: 'Open', onClick: () => filesLoadDirectory(path) });
+            if (type === 'file') {
+                items.push({ label: 'Edit', onClick: () => filesEditFile(path) });
+                items.push({ label: 'Download', onClick: () => window.location.assign(`/api/files/download?path=${encodeURIComponent(path)}`) });
+            }
+            items.push({ separator: true });
+            items.push({ label: 'Rename…', onClick: () => filesRenameFile(path, name) });
+            items.push({ label: 'Delete…', danger: true, onClick: () => filesDeleteFile(path, name, type) });
+            FileBrowser.showContextMenu(evt.clientX, evt.clientY, items);
         }
 
         async function filesEditFile(path) {

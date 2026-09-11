@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Dashboard</title>
-    <link rel="stylesheet" href="/static/css/portal.css?v=51">
+    <link rel="stylesheet" href="/static/css/portal.css?v=52">
     <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
@@ -1713,6 +1713,8 @@
                     <div class="gsf-editor-head">
                         <button class="btn btn-secondary btn-sm" onclick="gsFilesCloseEditor()">&larr; Back</button>
                         <span id="gs-config-current" class="gsf-current"></span>
+                        <button class="btn btn-secondary btn-sm" id="gs-config-rename1" onclick="gsFilesRenameCurrent()" style="display:none; flex-shrink:0;">Rename</button>
+                        <button class="btn btn-secondary btn-sm" id="gs-config-del1" onclick="gsFilesDeleteCurrent()" style="display:none; flex-shrink:0; color:var(--accent-red);">Delete</button>
                         <button class="btn btn-secondary btn-sm" id="gs-config-dl1" onclick="gsFilesDownloadFile()" style="display:none; flex-shrink:0;">Download</button>
                     </div>
                     <textarea id="gs-config-text" spellcheck="false" disabled></textarea>
@@ -1884,7 +1886,8 @@
     </div>
 
     <script src="/static/js/portal.js?v=42"></script>
-    <script src="/static/js/dashboard.js?v=52"></script>
+    <script src="/static/js/filebrowser.js?v=1"></script>
+    <script src="/static/js/dashboard.js?v=53"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=40"></script>

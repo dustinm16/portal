@@ -9194,6 +9194,49 @@ async def http_game_server_files_upload(request: web.Request) -> web.Response:
     return web.json_response({"results": results})
 
 
+async def http_game_server_files_delete(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    root = request.query.get("root", "install")
+    rel = request.query.get("path", "")
+    try:
+        await asyncio.to_thread(gameservers.browse_delete, gs, root, rel)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.file_delete", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=gs["name"], details={"root": root, "path": rel})
+    return web.json_response({"success": True})
+
+
+async def http_game_server_files_rename(request: web.Request) -> web.Response:
+    token, gs, err = await _gs_config_ctx(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    root = data.get("root", "install")
+    rel = data.get("path", "")
+    new_name = data.get("new_name", "")
+    try:
+        info = await asyncio.to_thread(gameservers.browse_rename, gs, root, rel, new_name)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except OSError as e:
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.file_rename", token.user_id,
+                    (actor or {}).get("username", "unknown"),
+                    target_name=gs["name"], details={"root": root, "path": rel, "new_name": new_name})
+    return web.json_response({"success": True, **info})
+
+
 async def http_game_server_resync_catalog(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
@@ -10920,7 +10963,7 @@ _SEARXNG_DEFAULT_PORT = 8890
 # navbar and follows the active portal theme. See static/{css,js}/searxng-portal.*
 _SEARXNG_HEAD_INJECT = (
     b'<script src="/static/js/theme.js?v=3"></script>'
-    b'<link rel="stylesheet" href="/static/css/portal.css?v=51">'
+    b'<link rel="stylesheet" href="/static/css/portal.css?v=52">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
 )
@@ -16338,6 +16381,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/game-servers/{id}/files/write", http_game_server_files_write)
     app.router.add_get("/api/game-servers/{id}/files/download", http_game_server_files_download)
     app.router.add_post("/api/game-servers/{id}/files/upload", http_game_server_files_upload)
+    app.router.add_delete("/api/game-servers/{id}/files/delete", http_game_server_files_delete)
+    app.router.add_post("/api/game-servers/{id}/files/rename", http_game_server_files_rename)
     app.router.add_post("/api/game-servers/{id}/resync-catalog", http_game_server_resync_catalog)
     app.router.add_post("/api/game-servers/{id}/launch-options", http_game_server_launch_options)
 

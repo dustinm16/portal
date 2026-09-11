@@ -1010,6 +1010,38 @@ body {
     padding: 1.5rem;
 }
 
+/* Shared right-click context menu (static/js/filebrowser.js) — used by the
+   game-server file browser and the admin file manager. */
+.fb-context-menu {
+    position: fixed;
+    z-index: 10050;
+    min-width: 160px;
+    background: var(--bg-primary);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 0.3rem;
+    font-size: 0.82rem;
+}
+.fb-context-menu-item {
+    padding: 0.4rem 0.6rem;
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+.fb-context-menu-item:hover {
+    background: var(--card-hover);
+}
+.fb-context-menu-danger {
+    color: var(--accent-red);
+}
+.fb-context-menu-sep {
+    height: 1px;
+    background: var(--card-border);
+    margin: 0.3rem 0.2rem;
+}
+
 .modal-content form {
     padding: 1.5rem;
 }
