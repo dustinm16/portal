@@ -879,15 +879,26 @@
             </div>
 
             <!-- Service Logs Modal (shared by Managed Services + Game Servers tabs) -->
+            <style>
+                /* Same single-vh-dependency sizing as #gs-config-modal: only
+                   .modal-content has a vh height, everything inside allocates
+                   from it via flex, so it scales as one unit at any zoom. */
+                #service-logs-modal .modal-content { max-width:1200px; width:calc(100vw - 2rem); height:88vh; display:flex; flex-direction:column; }
+                #service-logs-modal .modal-body { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+                #service-logs-content { flex:1; min-height:0; overflow-y:auto; word-break:break-word; }
+                @media (max-width: 760px) {
+                    #service-logs-modal .modal-content { height:92vh; }
+                }
+            </style>
             <div id="service-logs-modal" class="modal" style="display: none;">
                 <div class="modal-backdrop" onclick="closeServiceLogsModal()"></div>
-                <div class="modal-content" style="max-width: 800px;">
+                <div class="modal-content">
                     <div class="modal-header">
                         <h3 id="logs-modal-title">Service Logs</h3>
                         <button class="modal-close" onclick="closeServiceLogsModal()">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <div id="service-logs-content" style="max-height: 60vh; overflow-y: auto; background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
+                        <div id="service-logs-content" style="background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
                             <div class="loading"><div class="spinner"></div> Loading logs...</div>
                         </div>
                     </div>

@@ -1637,15 +1637,26 @@
     </div>
 
     <!-- Managed Service Logs (dashboard — granted users) -->
+    <style>
+        /* Same single-vh-dependency sizing as #gs-config-modal below: only
+           .modal-content has a vh height, everything inside allocates from
+           it via flex, so it scales as one unit at any zoom. */
+        #svc-logs-modal .modal-content { max-width:1200px; width:calc(100vw - 2rem); height:88vh; display:flex; flex-direction:column; }
+        #svc-logs-modal .modal-body { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+        #svc-logs-content { flex:1; min-height:0; overflow-y:auto; word-break:break-word; }
+        @media (max-width: 760px) {
+            #svc-logs-modal .modal-content { height:92vh; }
+        }
+    </style>
     <div id="svc-logs-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('svc-logs-modal')"></div>
-        <div class="modal-content modal-large">
+        <div class="modal-content">
             <div class="modal-header">
                 <h3 id="svc-logs-title">Service Logs</h3>
                 <button class="modal-close" onclick="closeModal('svc-logs-modal')">&times;</button>
             </div>
             <div class="modal-body">
-                <div id="svc-logs-content" style="max-height: 60vh; overflow: auto; background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
+                <div id="svc-logs-content" style="background: var(--code-bg); border-radius: 6px; padding: 1rem; font-family: monospace; font-size: 0.8rem;">
                     <div class="loading"><div class="spinner"></div> Loading…</div>
                 </div>
             </div>
