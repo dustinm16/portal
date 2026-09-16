@@ -429,30 +429,41 @@ async function gsCardUpdate(serviceId, name) {
     if (!confirm(`Update "${name}" now? If a newer build exists the server will be stopped, updated and restarted.`)) return;
     try {
         const d = await Portal.fetchJSON(`/api/game-servers/${gs.id}/update`, { method: 'POST' });
-        Portal.toast('Checking for a newer build…');
-        if (!d.job_id) { setTimeout(loadServices, 2000); return; }
-        let tries = 0;
-        const poll = setInterval(async () => {
-            if (++tries > 200) { clearInterval(poll); loadServices(); return; }  // ~10 min ceiling
-            try {
-                const j = await Portal.fetchJSON(`/api/game-servers/jobs/${d.job_id}`);
-                if (j.status && j.status !== 'running') {
-                    clearInterval(poll);
-                    const log = (j.log || []).join(' ').toLowerCase();
-                    let msg, kind = 'success';
-                    if (j.status !== 'completed') { msg = `${name}: update ${j.status}`; kind = 'error'; }
-                    // "nothing to do" is our own sentinel from _update_job's no-op
-                    // path; "up to date" alone also appears in SteamCMD depot output.
-                    else if (log.includes('nothing to do')) msg = `${name} is already up to date`;
-                    else msg = `${name}: update finished`;
-                    Portal.toast(msg, kind);
-                    loadServices();
-                }
-            } catch (e) { clearInterval(poll); loadServices(); }
-        }, 3000);
+        if (!d.job_id) { Portal.toast('Checking for a newer build…'); setTimeout(loadServices, 2000); return; }
+        // A dedicated, persistent job modal (mirrors admin.html's showGsJob) rather
+        // than only a toast: the update can take minutes on the real SteamCMD path,
+        // and a toast that's long gone by the time it finishes reads as "nothing
+        // happened" even when the job completed fine server-side.
+        showGsJob(d.job_id, `Updating ${name}`);
     } catch (e) {
         Portal.toast(e.message || 'Update failed to start', 'error');
     }
+}
+
+let _gsJobTimer = null;
+function showGsJob(jobId, title) {
+    document.getElementById('gs-job-title').textContent = title || 'Job';
+    document.getElementById('gs-job-log').textContent = '';
+    document.getElementById('gs-job-status').textContent = 'running…';
+    showModal('gs-job-modal');
+    clearInterval(_gsJobTimer);
+    let tries = 0;
+    const poll = async () => {
+        if (++tries > 200) { clearInterval(_gsJobTimer); return; }  // ~10 min ceiling
+        try {
+            const j = await Portal.fetchJSON(`/api/game-servers/jobs/${jobId}`);
+            document.getElementById('gs-job-log').textContent = (j.log || []).join('\n');
+            const pre = document.getElementById('gs-job-log'); pre.scrollTop = pre.scrollHeight;
+            document.getElementById('gs-job-status').textContent = j.status;
+            if (j.status && j.status !== 'running') { clearInterval(_gsJobTimer); loadServices(); }
+        } catch (e) { clearInterval(_gsJobTimer); }
+    };
+    poll();
+    _gsJobTimer = setInterval(poll, 3000);
+}
+function closeGsJob() {
+    clearInterval(_gsJobTimer);
+    closeModal('gs-job-modal');
 }
 
 /**
