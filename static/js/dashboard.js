@@ -409,7 +409,7 @@ function svcResourceChip(resource) {
     if (!resource || typeof resource.cpu_percent !== 'number') return '';
     const pill = 'font-size:0.7rem;font-weight:500;padding:0.2rem 0.55rem;border-radius:9999px;background:var(--code-bg);color:var(--text-muted);font-family:monospace;';
     const mem = resource.mem_mb >= 1024 ? `${(resource.mem_mb / 1024).toFixed(1)} GB` : `${Math.round(resource.mem_mb)} MB`;
-    return `<span style="${pill}" title="${resource.procs} process${resource.procs === 1 ? '' : 'es'}">🖥 ${resource.cpu_percent.toFixed(1)}% · ${mem}</span>`;
+    return `<span style="${pill}" title="${resource.procs} process${resource.procs === 1 ? '' : 'es'}">${resource.cpu_percent.toFixed(1)}% CPU · ${mem}</span>`;
 }
 
 /**
