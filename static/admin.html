@@ -3797,6 +3797,11 @@
             }
         }
 
+        // Shared by renderServiceCard and renderGameServerCard.
+        function adminResourceMem(mb) {
+            return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+        }
+
         // Render a service card
         function renderServiceCard(svc) {
             const statusColors = {
@@ -3826,6 +3831,8 @@
                         <div><span style="color: var(--text-muted);">PID:</span> <span style="font-family: monospace;">${svc.pid || '-'}</span></div>
                         <div><span style="color: var(--text-muted);">Port:</span> <span style="font-family: monospace;">${svc.port || '-'}</span></div>
                         <div><span style="color: var(--text-muted);">Health:</span> <span style="color: ${svc.health_status === 'healthy' ? 'var(--accent-green)' : svc.health_status === 'unhealthy' ? 'var(--accent-red)' : 'var(--text-muted)'};">${svc.health_status || 'unknown'}</span></div>
+                        ${svc.resource ? `<div><span style="color: var(--text-muted);">CPU:</span> <span style="font-family: monospace;">${svc.resource.cpu_percent.toFixed(1)}%</span></div>
+                        <div><span style="color: var(--text-muted);">RAM:</span> <span style="font-family: monospace;">${adminResourceMem(svc.resource.mem_mb)}</span></div>` : ''}
                         ${svc.unit ? `<div style="grid-column: 1 / -1;"><span style="color: var(--text-muted);">Unit:</span> <span style="font-family: monospace;">${escapeHtml(svc.unit)}.service</span> <span style="color: var(--text-muted);">(systemd)</span></div>` : ''}
                     </div>
                     ${svc.error_message ? `<p style="font-size: 0.75rem; color: var(--accent-red); margin-bottom: 1rem; padding: 0.5rem; background: rgba(239,68,68,0.1); border-radius: 4px;">${escapeHtml(svc.error_message)}</p>` : ''}
@@ -4475,6 +4482,7 @@
                     <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.75rem;">
                         ${escapeHtml(gs.catalog_key || 'custom')} · app ${gs.steam_app_id} · ${escapeHtml(gs.state)}
                         ${gs.installed_build ? ' · build ' + gs.installed_build : ''}
+                        ${gs.resource ? ` · <span style="font-family:monospace;">${gs.resource.cpu_percent.toFixed(1)}% CPU · ${adminResourceMem(gs.resource.mem_mb)}</span>` : ''}
                     </div>
                     <div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
                         ${sid ? (running
@@ -6058,6 +6066,13 @@
                         else loadMetrics();
                         break;
                     case 'tab-connections': loadActiveConnections(); break;
+                    case 'tab-services': loadManagedServices(); break;
+                    case 'tab-gameservers':
+                        // Skip while a job (install/update) modal is open — its own
+                        // poll owns the log; a card refresh underneath is pointless
+                        // and loadGameServers() would race it for no benefit.
+                        if (document.getElementById('gs-job-modal').style.display !== 'flex') loadGameServers();
+                        break;
                     case 'tab-system':
                         const activeSub = document.querySelector('.sys-sub-content.active');
                         if (activeSub) {

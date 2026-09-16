@@ -924,6 +924,18 @@ async def http_list_tokens(request: web.Request) -> web.Response:
     })
 
 
+def _attach_resource_usage(status: dict) -> None:
+    """Mutate a service/game-server status dict in place, adding a
+    ``resource`` field ({cpu_percent, mem_mb, procs}) when it's running and
+    has a PID — used by the Services/Managed Services/Game Servers cards.
+    No-op (leaves ``resource`` unset) when stopped or PID-less, so the
+    frontend can hide the readout rather than show a stale/zero one."""
+    if status.get("status") == "running" and status.get("pid"):
+        usage = system_monitor.get_tree_resource_usage(status["pid"])
+        if usage:
+            status["resource"] = usage
+
+
 async def http_list_services(request: web.Request) -> web.Response:
     """List available services.
 
@@ -981,6 +993,7 @@ async def http_list_services(request: web.Request) -> web.Response:
                 "pid": s.get("pid"),
                 "health_status": s.get("health_status", "unknown"),
             })
+            _attach_resource_usage(result)
         elif s.get("systemd_unit"):
             unit_status = system_monitor.get_service_status(s["systemd_unit"])
             result["status"] = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
@@ -8301,7 +8314,9 @@ async def http_list_managed_services(request: web.Request) -> web.Response:
     statuses = []
     for svc in services:
         enriched = await _service_manager.get_service_status(svc.id)
-        statuses.append(enriched or svc.get_status())
+        status = enriched or svc.get_status()
+        _attach_resource_usage(status)
+        statuses.append(status)
     return web.json_response({"managed_services": statuses})
 
 
@@ -8831,6 +8846,8 @@ async def http_game_servers_list(request: web.Request) -> web.Response:
             if st:
                 s["status"] = st.get("status")
                 s["health_status"] = st.get("health_status")
+                s["pid"] = st.get("pid")
+                _attach_resource_usage(s)
     return web.json_response({"game_servers": servers})
 
 

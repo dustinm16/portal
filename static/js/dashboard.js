@@ -372,6 +372,8 @@ function createServiceCard(service) {
         }
     }
 
+    const resourceChip = svcResourceChip(service.resource);
+
     return `
         <div class="service-card" data-service-id="${service.id}">
             <div class="service-card-header">
@@ -389,10 +391,25 @@ function createServiceCard(service) {
                     ${statusText}
                 </div>
                 ${updateChip}
+                ${resourceChip}
             </div>
             ${actionRow}
         </div>
     `;
+}
+
+/**
+ * CPU%/RAM chip for a running service card. `resource` is the
+ * {cpu_percent, mem_mb, procs} the backend attaches when a service is
+ * running and has a resolvable PID (server.py's _attach_resource_usage) —
+ * absent for a stopped service or a pure proxy with nothing running on this
+ * box, in which case this renders nothing rather than a stale/zero reading.
+ */
+function svcResourceChip(resource) {
+    if (!resource || typeof resource.cpu_percent !== 'number') return '';
+    const pill = 'font-size:0.7rem;font-weight:500;padding:0.2rem 0.55rem;border-radius:9999px;background:var(--code-bg);color:var(--text-muted);font-family:monospace;';
+    const mem = resource.mem_mb >= 1024 ? `${(resource.mem_mb / 1024).toFixed(1)} GB` : `${Math.round(resource.mem_mb)} MB`;
+    return `<span style="${pill}" title="${resource.procs} process${resource.procs === 1 ? '' : 'es'}">🖥 ${resource.cpu_percent.toFixed(1)}% · ${mem}</span>`;
 }
 
 /**
@@ -1082,6 +1099,21 @@ setInterval(async () => {
         // Silent failure for periodic updates
     }
 }, 10000);
+
+/**
+ * Refresh the Services tab (for its resource-usage chip — the numbers are a
+ * point-in-time psutil read, not a push) while it's the visible tab. Same
+ * document.hidden guard as the stats poll above; also skips while a
+ * game-server job modal is open so a live install/update log isn't yanked
+ * out from under the user mid-poll.
+ */
+setInterval(() => {
+    if (document.hidden) return;
+    const tab = document.getElementById('tab-services');
+    if (!tab || !tab.classList.contains('active')) return;
+    if (document.getElementById('gs-job-modal')?.style.display === 'flex') return;
+    loadServices();
+}, 30000);
 
 /**
  * Switch between tabs

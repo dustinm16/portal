@@ -1,7 +1,11 @@
 """System monitoring module for Open Relay Portal.
 
 Provides process management, systemd service management, and network info.
-All operations are admin-only (enforced by API handlers in server.py).
+Most operations are admin-only (enforced by API handlers in server.py) —
+the exception is `get_tree_resource_usage()`, which only ever returns
+aggregate CPU/RAM numbers (never a cmdline, path or child PID list) and is
+also called for non-admin users with a service grant, on their own granted
+service's card.
 """
 
 import os
@@ -15,6 +19,62 @@ logger = logging.getLogger("portal")
 # Safety: refuse to kill these
 _PORTAL_PID = os.getpid()
 _MIN_SAFE_PID = 2  # Never kill PID 1 (init) or kernel threads
+
+# Per-PID psutil.Process cache for get_tree_resource_usage(). psutil's
+# non-blocking cpu_percent() reads "% since the *same Process object's* last
+# call" — a fresh Process(pid) each request always reads 0.0 on its first
+# call. Keeping one object per PID across requests (like device_metrics.py's
+# process_iter reuse) means cpu_percent warms up after the first poll instead
+# of forever reading 0. Small and self-bounding in practice: only ever holds
+# entries for the handful of PIDs services actually resolve to.
+_RESOURCE_PROC_CACHE: dict[int, psutil.Process] = {}
+_RESOURCE_CACHE_MAX = 200  # safety valve against unbounded growth over days of restarts
+
+
+def get_tree_resource_usage(pid: int | None) -> dict | None:
+    """CPU%/RSS for `pid` and all its descendants, summed.
+
+    None if `pid` is falsy or the process is already gone. First read after
+    a PID first appears is 0.0% CPU (psutil warm-up, see cache note above);
+    it's accurate from the next poll on.
+    """
+    if not pid:
+        return None
+    if len(_RESOURCE_PROC_CACHE) > _RESOURCE_CACHE_MAX:
+        _RESOURCE_PROC_CACHE.clear()
+    try:
+        root = psutil.Process(pid)
+        procs = [root] + root.children(recursive=True)
+    except psutil.NoSuchProcess:
+        _RESOURCE_PROC_CACHE.pop(pid, None)
+        return None
+
+    cpu = 0.0
+    rss = 0
+    counted = 0
+    for p in procs:
+        cached = _RESOURCE_PROC_CACHE.get(p.pid)
+        if cached is not None:
+            try:
+                if cached.create_time() != p.create_time():
+                    cached = None  # PID reused by a different process
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                cached = None
+        if cached is None:
+            cached = _RESOURCE_PROC_CACHE[p.pid] = p
+        try:
+            cpu += cached.cpu_percent(None)
+            rss += cached.memory_info().rss
+            counted += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if counted == 0:
+        return None
+    return {
+        "cpu_percent": round(cpu, 1),
+        "mem_mb": round(rss / (1024 * 1024), 1),
+        "procs": counted,
+    }
 
 
 def list_processes(sort_by: str = "cpu", limit: int = 100) -> list[dict]:
