@@ -79,8 +79,14 @@ CATALOG_SEED = [
     {"key": "valheim", "name": "Valheim", "steam_app_id": 896660,
      "start_cmd": "./valheim_server.x86_64",
      "start_args": "-name Portal -port 2456 -world Dedicated -public 1",
-     "game_port": 2456, "config_paths": ["*.txt"],
-     "notes": "Set a password with -password on the command line (min 5 chars)."},
+     "game_port": 2456, "config_paths": [],
+     "notes": "No persistent settings file to edit here — Valheim is configured "
+              "entirely via launch args (Options). The admin/banned/permitted "
+              "lists it can generate live outside the install dir, under the "
+              "run-as account's ~/.config/unity3d/IronGate/Valheim, and aren't "
+              "exposed (would need PORTAL_GS_EXTRA_CONFIG_ROOTS + a config_root "
+              "override). Set a password with -password on the command line "
+              "(min 5 chars)."},
     {"key": "7dtd", "name": "7 Days to Die", "steam_app_id": 294420,
      "start_cmd": "./startserver.sh", "start_args": "-configfile=serverconfig.xml",
      "game_port": 26900, "config_paths": ["serverconfig.xml"]},
