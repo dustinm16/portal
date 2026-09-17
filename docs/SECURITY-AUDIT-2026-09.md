@@ -79,6 +79,17 @@ by the boot `resync_all_from_catalog()` pass (it re-pulls `config_root`
 from the catalog) — a third layer below the allowlist and the write-suffix
 denylist.
 
+**Follow-up (v1.10.5):** `GAMEDATA_ROOT` — one of the two hardcoded bases in
+`_allowed_config_root_bases()` above — became an admin-managed, DB-backed
+*list* of storage roots. This finding's fix generalizes with it: the
+containment check now loops every registered root (`_storage_root_paths()`,
+an in-process cache refreshed on every admin add/delete) instead of comparing
+against one constant — same boundary, same two verified call sites, just a
+list instead of a single path. Adding a storage root is itself validated
+against the same disallowed-base set this finding established (Portal's own
+source tree, the run-as account's home) so an admin can't reintroduce F2 by
+registering `~` as a second "storage root".
+
 Project Zomboid (`config_root: "~/Zomboid"`) is unaffected.
 
 #### F1 — `install_dir` reached the systemd unit unescaped → unit-directive injection (Low–Med, admin-only)

@@ -169,6 +169,16 @@ managed service bound to that unit. `game_catalog` holds curated built-ins
 (`builtin=1`, protected) plus admin-added entries; each entry carries a Steam
 app id, start command/args, stop signal, and `config_paths` globs.
 
+- **Storage roots** (v1.10.5): where a deploy's `install_dir` is allowed to
+  land is an admin-managed list (`game_storage_roots`), not a single hardcoded
+  disk — `gameservers._validate_install_dir` checks containment against every
+  registered root instead of one constant, and a deploy can target a specific
+  root (`storage_root_id`) or fall back to the admin-designated default. The
+  list is kept in an in-process cache (`_storage_roots_cache`, mirroring the
+  `_blocked_ips` pattern in `server.py`) so the containment checks — called
+  from the jailed file browser too, via `_allowed_config_root_bases` — stay
+  synchronous. `PORTAL_GAMEDATA_ROOT` seeds the first row on an empty table;
+  further locations come from Admin > Game Servers > Storage Locations.
 - **Deploy** validates the name (`^[a-z0-9][a-z0-9-]{1,31}$`), writes the unit,
   creates the DB + service rows under a module lock with full rollback on
   failure, then runs `steamcmd +app_update <id> validate` as a streamed
@@ -536,6 +546,17 @@ CREATE TABLE game_servers (
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
+-- Admin-managed game-data deploy locations (v1.10.5). Seeded from
+-- PORTAL_GAMEDATA_ROOT if empty; a new deploy's install_dir must resolve
+-- under one of these (gameservers._validate_install_dir).
+CREATE TABLE game_storage_roots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL UNIQUE,
+    label TEXT,
+    is_default INTEGER DEFAULT 0,        -- exactly one row; new deploys default here
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Temporary RTMP publish tokens (single-use, short-lived)
 CREATE TABLE rtmp_tokens (
     id INTEGER PRIMARY KEY,
@@ -893,6 +914,10 @@ GET  /api/services/:id/logs     - Get managed service logs
 GET  /api/game-catalog                    - List catalog entries (any authed user)
 POST /api/game-catalog                    - Add a custom entry (admin)
 DELETE /api/game-catalog/:key              - Remove a custom entry (admin)
+GET  /api/game-storage-roots               - List game-data storage roots + disk usage (admin)
+POST /api/game-storage-roots               - Register a new storage root (admin)
+POST /api/game-storage-roots/:id/set-default - Make a root the default for new deploys (admin)
+DELETE /api/game-storage-roots/:id         - Remove a root (admin; refused if default/in-use/last)
 GET  /api/game-servers                     - List servers (non-admins: only granted)
 POST /api/game-servers                     - Deploy a server (admin) -> {game_server, job_id}
 GET  /api/game-servers/:id                 - Server details (admin or grant)
