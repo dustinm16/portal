@@ -960,6 +960,38 @@
                 </p>
 
                 <div class="admin-card">
+                    <h3>Storage Locations</h3>
+                    <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem;">
+                        Disks/directories a new game server can be deployed onto. The default is
+                        used automatically unless a deploy picks a different one.
+                    </p>
+                    <div class="sysmon-toolbar">
+                        <input type="text" id="gsroot-path" placeholder="/mnt/another-disk" style="max-width:260px;">
+                        <input type="text" id="gsroot-label" placeholder="Label (optional)" style="max-width:200px;">
+                        <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.8rem;color:var(--text-muted);white-space:nowrap;">
+                            <input type="checkbox" id="gsroot-create" style="width:auto;">
+                            Create if missing
+                        </label>
+                        <button class="range-btn" onclick="addStorageRootSubmit()">Add location</button>
+                    </div>
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>Path</th>
+                                    <th>Label</th>
+                                    <th>Free / Total</th>
+                                    <th>Servers</th>
+                                    <th>Default</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="gsroots-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="admin-card" style="margin-top:1.5rem;">
                     <h3>Deploy a server</h3>
                     <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem;">
                         Search the catalog and pick a game to deploy an instance.
@@ -993,6 +1025,10 @@
                             <label for="gs-deploy-name">Instance name</label>
                             <input type="text" id="gs-deploy-name" placeholder="e.g. palworld-2" pattern="[a-z0-9][a-z0-9-]{1,31}" title="lowercase letters, digits, hyphens">
                             <p style="font-size:0.72rem;color:var(--text-muted);margin:0.25rem 0 0;">Installs to <code id="gs-deploy-dir">/mnt/gamedata/&lt;name&gt;</code>, unit <code>portal-gs-&lt;name&gt;</code>.</p>
+                        </div>
+                        <div class="form-group" id="gs-deploy-root-group" style="display:none;">
+                            <label for="gs-deploy-root">Storage location</label>
+                            <select id="gs-deploy-root"></select>
                         </div>
                         <div class="form-group">
                             <label for="gs-deploy-args">Start arguments <span style="color:var(--text-muted);font-weight:normal;">(optional override)</span></label>
@@ -2172,7 +2208,7 @@
             switch(tabName) {
                 case 'overview': loadOverview(); break;
                 case 'services': loadManagedServices(); break;
-                case 'gameservers': loadGameCatalog(); loadGameServers(); break;
+                case 'gameservers': loadStorageRoots(); loadGameCatalog(); loadGameServers(); break;
                 case 'metrics':
                     loadMetrics();
                     if (document.getElementById('metrics-sub-device').classList.contains('active') && devMetricsLoaded) loadDeviceMetrics();
@@ -4407,8 +4443,12 @@
             document.getElementById('gs-deploy-args').value = g.start_args || '';
             document.getElementById('gs-deploy-enable').checked = true;
             document.getElementById('gs-deploy-start').checked = false;
-            document.getElementById('gs-deploy-dir').textContent = '/mnt/gamedata/' + (nm.value || '<name>');
-            nm.oninput = () => document.getElementById('gs-deploy-dir').textContent = '/mnt/gamedata/' + (nm.value || '<name>');
+            _populateDeployRootSelect();
+            const updateDirPreview = () => document.getElementById('gs-deploy-dir').textContent =
+                (_deployRootPath() || '/mnt/gamedata') + '/' + (nm.value || '<name>');
+            updateDirPreview();
+            nm.oninput = updateDirPreview;
+            document.getElementById('gs-deploy-root').onchange = updateDirPreview;
             document.getElementById('gs-deploy-modal').style.display = 'flex';
         }
 
@@ -4424,6 +4464,9 @@
                 enable: document.getElementById('gs-deploy-enable').checked,
                 start: document.getElementById('gs-deploy-start').checked,
             };
+            if (_storageRoots.length > 1) {
+                body.storage_root_id = parseInt(document.getElementById('gs-deploy-root').value, 10);
+            }
             try {
                 const res = await Portal.fetch('/api/game-servers', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4436,6 +4479,105 @@
                 loadGameServers();
                 showGsJob(data.job_id, 'Installing ' + name);
             } catch (e) { Portal.toast(e.message || 'Deploy failed', 'error'); }
+        }
+
+        // ---------------------------------------------------------------
+        // Storage locations (game-data deploy roots)
+        // ---------------------------------------------------------------
+        let _storageRoots = [];
+
+        async function loadStorageRoots() {
+            try {
+                const d = await Portal.fetchJSON('/api/game-storage-roots');
+                _storageRoots = d.storage_roots || [];
+            } catch (e) {
+                document.getElementById('gsroots-body').innerHTML =
+                    `<tr><td colspan="6" style="color:var(--accent-red);">Failed to load: ${escapeHtml(e.message || '')}</td></tr>`;
+                return;
+            }
+            document.getElementById('gsroots-body').innerHTML = _storageRoots.length
+                ? _storageRoots.map(renderStorageRootRow).join('')
+                : '<tr><td colspan="6" style="color:var(--text-muted);">No storage locations registered.</td></tr>';
+            _populateDeployRootSelect();
+        }
+
+        function renderStorageRootRow(r) {
+            const free = r.disk ? `${formatBytes(r.disk.free)} / ${formatBytes(r.disk.total)}` : (r.disk_error ? 'unreadable' : '—');
+            const canDelete = !r.is_default && !r.server_count;
+            const deleteTitle = r.is_default ? 'Set another location as default first'
+                : r.server_count ? `${r.server_count} server(s) installed here — delete/migrate them first` : '';
+            return `
+                <tr>
+                    <td style="font-family:monospace;">${escapeHtml(r.path)}</td>
+                    <td>${escapeHtml(r.label || '—')}</td>
+                    <td>${free}</td>
+                    <td>${r.server_count}</td>
+                    <td>${r.is_default
+                        ? '<span style="color:var(--accent-green);font-weight:600;">Default</span>'
+                        : `<button class="btn btn-secondary btn-sm" onclick="setDefaultStorageRoot(${r.id})">Set default</button>`}</td>
+                    <td>
+                        <button class="btn btn-danger btn-sm" ${canDelete ? '' : 'disabled'} title="${escapeHtml(deleteTitle)}"
+                                onclick="deleteStorageRoot(${r.id}, '${escapeHtml(r.path).replace(/'/g, "\\'")}')">Delete</button>
+                    </td>
+                </tr>`;
+        }
+
+        async function addStorageRootSubmit() {
+            const path = document.getElementById('gsroot-path').value.trim();
+            if (!path) { Portal.toast('Enter a path', 'error'); return; }
+            const body = {
+                path,
+                label: document.getElementById('gsroot-label').value.trim() || null,
+                create_if_missing: document.getElementById('gsroot-create').checked,
+            };
+            try {
+                await Portal.fetchJSON('/api/game-storage-roots', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                document.getElementById('gsroot-path').value = '';
+                document.getElementById('gsroot-label').value = '';
+                document.getElementById('gsroot-create').checked = false;
+                Portal.toast('Storage location added');
+                loadStorageRoots();
+            } catch (e) { Portal.toast(e.message || 'Add failed', 'error'); }
+        }
+
+        async function setDefaultStorageRoot(id) {
+            try {
+                await Portal.fetchJSON(`/api/game-storage-roots/${id}/set-default`, { method: 'POST' });
+                loadStorageRoots();
+            } catch (e) { Portal.toast(e.message || 'Failed', 'error'); }
+        }
+
+        async function deleteStorageRoot(id, path) {
+            if (!confirm(`Remove "${path}" from the storage locations list? (Files on disk are not touched.)`)) return;
+            try {
+                await Portal.fetchJSON(`/api/game-storage-roots/${id}`, { method: 'DELETE' });
+                Portal.toast('Storage location removed');
+                loadStorageRoots();
+            } catch (e) { Portal.toast(e.message || 'Delete failed', 'error'); }
+        }
+
+        // Only shown on the deploy modal when there's an actual choice to make.
+        function _populateDeployRootSelect() {
+            const group = document.getElementById('gs-deploy-root-group');
+            const sel = document.getElementById('gs-deploy-root');
+            if (_storageRoots.length < 2) { group.style.display = 'none'; sel.innerHTML = ''; return; }
+            sel.innerHTML = _storageRoots.map(r =>
+                `<option value="${r.id}" ${r.is_default ? 'selected' : ''}>${escapeHtml(r.label || r.path)}${r.is_default ? ' (default)' : ''}</option>`
+            ).join('');
+            group.style.display = '';
+        }
+
+        function _deployRootPath() {
+            if (_storageRoots.length < 2) {
+                const def = _storageRoots.find(r => r.is_default);
+                return def ? def.path : '/mnt/gamedata';
+            }
+            const sel = document.getElementById('gs-deploy-root');
+            const r = _storageRoots.find(x => String(x.id) === sel.value);
+            return r ? r.path : '';
         }
 
         async function loadGameServers() {
