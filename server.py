@@ -970,7 +970,7 @@ async def http_list_services(request: web.Request) -> web.Response:
                 if s["id"] not in seen and (is_admin or s["id"] in granted_ids):
                     services.append(s)
 
-    def serialize_service(s):
+    async def serialize_service(s):
         """Serialize service for API response."""
         result = {
             "id": s["id"],
@@ -987,12 +987,21 @@ async def http_list_services(request: web.Request) -> web.Response:
         }
         # Include process management fields for managed services
         if s.get("service_type") == "managed":
+            # Prefer the live status (get_service_status reconciles a systemd-
+            # backed service against the outside world on every call, so a
+            # unit that restarted between health-monitor ticks doesn't leave
+            # a stale PID here) over the plain DB row, which only refreshes
+            # on a status-text transition — the resource-usage chip on a
+            # restarted-but-still-"running" game server was going missing
+            # because a dead PID resolves to nothing, not an old one.
+            live = await _service_manager.get_service_status(s["id"]) if _service_manager else None
+            src = live or s
             result.update({
                 "display_name": s.get("display_name") or s["name"],
                 "description": s.get("description", ""),
-                "status": s.get("status", "stopped"),
-                "pid": s.get("pid"),
-                "health_status": s.get("health_status", "unknown"),
+                "status": src.get("status", "stopped"),
+                "pid": src.get("pid"),
+                "health_status": src.get("health_status", "unknown"),
             })
             _attach_resource_usage(result)
         elif s.get("systemd_unit"):
@@ -1001,7 +1010,7 @@ async def http_list_services(request: web.Request) -> web.Response:
         return result
 
     return web.json_response({
-        "services": [serialize_service(s) for s in services]
+        "services": [await serialize_service(s) for s in services]
     })
 
 
