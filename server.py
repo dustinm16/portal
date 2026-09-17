@@ -22,6 +22,7 @@ import logging
 import mimetypes
 import os
 import secrets
+import shutil
 import signal
 import ssl
 import sys
@@ -8871,6 +8872,100 @@ async def http_game_server_get(request: web.Request) -> web.Response:
     return web.json_response({"game_server": gs})
 
 
+async def http_list_storage_roots(request: web.Request) -> web.Response:
+    """GET /api/game-storage-roots - List registered game-data storage roots."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+
+    roots = await db.game_storage_root_list()
+    servers = await db.game_server_list()
+    out = []
+    for r in roots:
+        entry = dict(r)
+        try:
+            usage = shutil.disk_usage(r["path"])
+            entry["disk"] = {"total": usage.total, "used": usage.used, "free": usage.free}
+        except OSError as e:
+            entry["disk"] = None
+            entry["disk_error"] = str(e)
+        install_dir_root = r["path"] + os.sep
+        entry["server_count"] = sum(
+            1 for gs in servers
+            if os.path.realpath(gs.get("install_dir") or "").startswith(install_dir_root)
+        )
+        out.append(entry)
+    return web.json_response({"storage_roots": out})
+
+
+async def http_add_storage_root(request: web.Request) -> web.Response:
+    """POST /api/game-storage-roots - Register a new game-data storage root."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    try:
+        row = await gameservers.add_storage_root(
+            db, path=data.get("path", ""), label=data.get("label"),
+            create_if_missing=bool(data.get("create_if_missing", False)),
+        )
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("add storage root failed")
+        return web.json_response({"error": safe_error_message(e)}, status=500)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.storage_root_add", token.user_id,
+                    (actor or {}).get("username", "unknown"), target_name=row["path"])
+    return web.json_response({"storage_root": row}, status=201)
+
+
+async def http_set_default_storage_root(request: web.Request) -> web.Response:
+    """POST /api/game-storage-roots/{id}/set-default"""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    try:
+        root_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid id"}, status=400)
+    try:
+        await gameservers.set_default_storage_root(db, root_id)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    return web.json_response({"success": True})
+
+
+async def http_delete_storage_root(request: web.Request) -> web.Response:
+    """DELETE /api/game-storage-roots/{id}"""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not _is_admin(token):
+        return forbidden_response(request)
+    try:
+        root_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid id"}, status=400)
+    try:
+        await gameservers.delete_storage_root(db, root_id)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("gameserver.storage_root_delete", token.user_id,
+                    (actor or {}).get("username", "unknown"), target_name=str(root_id))
+    return web.json_response({"success": True})
+
+
 async def http_game_server_deploy(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
@@ -8895,6 +8990,7 @@ async def http_game_server_deploy(request: web.Request) -> web.Response:
             enable=bool(data.get("enable", True)),
             start=bool(data.get("start", False)),
             created_by=token.user_id,
+            storage_root_id=data.get("storage_root_id"),
         )
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
@@ -16382,6 +16478,10 @@ def create_app() -> web.Application:
     app.router.add_get("/api/game-catalog", http_game_catalog_list)
     app.router.add_post("/api/game-catalog", http_game_catalog_add)
     app.router.add_delete("/api/game-catalog/{key}", http_game_catalog_delete)
+    app.router.add_get("/api/game-storage-roots", http_list_storage_roots)
+    app.router.add_post("/api/game-storage-roots", http_add_storage_root)
+    app.router.add_post("/api/game-storage-roots/{id}/set-default", http_set_default_storage_root)
+    app.router.add_delete("/api/game-storage-roots/{id}", http_delete_storage_root)
     app.router.add_get("/api/game-servers", http_game_servers_list)
     app.router.add_post("/api/game-servers", http_game_server_deploy)
     app.router.add_get("/api/game-servers/jobs/{job_id}", http_game_server_job)
@@ -16821,6 +16921,7 @@ class PortalServer:
         # SteamCMD build-check so cards show an up-to-date / update-available badge
         try:
             await gameservers.seed_catalog(db)
+            await gameservers.ensure_default_storage_root(db)
             await gameservers.resync_all_from_catalog(db)
             gameservers.start_build_check_loop(db)
             await gameservers.ensure_steam_runtime_libs()

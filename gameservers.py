@@ -499,19 +499,163 @@ def _validate_steam_login(v: str) -> str:
     return v
 
 
+# ---------------------------------------------------------------------------
+# Storage roots — admin-managed game-data deploy locations.
+#
+# In-process cache mirroring the `_blocked_ips` pattern elsewhere in this
+# codebase (server.py): loaded once at boot, refreshed synchronously by
+# add/delete/set-default so every *sync* reader below (the containment
+# checks in _validate_install_dir/_allowed_config_root_bases, and everything
+# the jailed file browser builds on top of them) never needs to become async
+# just to read a list that only actually changes via a few admin actions.
+# GAMEDATA_ROOT remains the seed value for the first row on an empty table —
+# not removed, just demoted from "the only root" to "row #1's default path".
+# ---------------------------------------------------------------------------
+_storage_roots_cache: list[dict] = []
+
+
+def _storage_root_paths() -> list[str]:
+    """Registered storage root paths, realpath'd. Falls back to GAMEDATA_ROOT
+    if the cache is empty (shouldn't happen after boot — see
+    ensure_default_storage_root — but a bad state should degrade to today's
+    single-root behavior, not to "nothing is allowed anywhere")."""
+    if not _storage_roots_cache:
+        return [os.path.realpath(GAMEDATA_ROOT)]
+    return [r["path"] for r in _storage_roots_cache]
+
+
+def default_storage_root_path() -> str:
+    for r in _storage_roots_cache:
+        if r.get("is_default"):
+            return r["path"]
+    paths = _storage_root_paths()
+    return paths[0]
+
+
+async def _reload_storage_roots_cache(db) -> None:
+    global _storage_roots_cache
+    _storage_roots_cache = await db.game_storage_root_list()
+
+
+async def ensure_default_storage_root(db) -> None:
+    """Boot-time: seed ``game_storage_roots`` from GAMEDATA_ROOT if the table
+    is empty (fresh install, or upgrading from before this feature existed —
+    either way this keeps today's single-root behavior working with zero
+    manual steps), then load the in-process cache. Best-effort: caller
+    already wraps game-server boot steps in a try/except."""
+    roots = await db.game_storage_root_list()
+    if not roots:
+        seed_path = os.path.realpath(GAMEDATA_ROOT)
+        await db.game_storage_root_add(seed_path, label=None, is_default=True)
+        logger.info("seeded game_storage_roots with %s (from GAMEDATA_ROOT)", seed_path)
+    await _reload_storage_roots_cache(db)
+
+
+def _root_disallowed_bases() -> list[str]:
+    """Directories a storage root may never be, or contain/be contained by —
+    Portal's own source tree and the run-as account's whole home. Mirrors the
+    reasoning already documented on `_allowed_config_root_bases` (don't let an
+    admin hand a `files` grant something broader than intended)."""
+    bases = [os.path.realpath(_PORTAL_DIR)]
+    try:
+        bases.append(os.path.realpath(_run_as_home()))
+    except RuntimeError:
+        pass  # RUN_AS not configured yet — nothing to add
+    return bases
+
+
+async def add_storage_root(db, path: str, label: str | None = None,
+                            create_if_missing: bool = False) -> dict:
+    """Validate + register a new game-data storage root. Returns the new row."""
+    raw = (path or "").strip()
+    if not raw or not os.path.isabs(raw):
+        raise ValueError("path must be a non-empty absolute path")
+    if any(ord(c) < 0x20 for c in raw):
+        raise ValueError("path contains a control character")
+    created = False
+    if create_if_missing and not os.path.isdir(raw):
+        os.makedirs(raw, exist_ok=True)
+        created = True
+    if not os.path.isdir(raw):
+        raise ValueError(f"{raw} does not exist (or isn't a directory)")
+    rp = os.path.realpath(raw)
+
+    for bad in _root_disallowed_bases():
+        if rp == bad or rp.startswith(bad + os.sep) or bad.startswith(rp + os.sep):
+            raise ValueError(
+                f"{rp} overlaps Portal's own source or the game-server "
+                "account's home — pick a directory outside both")
+    for existing in ([r["path"] for r in _storage_roots_cache]):
+        if (rp == existing or rp.startswith(existing + os.sep)
+                or existing.startswith(rp + os.sep)):
+            raise ValueError(f"{rp} overlaps an already-registered root ({existing})")
+
+    try:
+        run_as = _require_run_as()
+        if created:
+            # We just made this directory (Portal runs as root) — it's
+            # root-owned until handed to the run-as account, same as every
+            # other directory gameservers.py creates on that account's
+            # behalf (deploy()'s install_dir does the same chown).
+            try:
+                shutil.chown(rp, run_as, run_as)
+            except (LookupError, PermissionError, OSError) as e:
+                logger.warning("chown %s failed: %s", rp, e)
+        rc, _, err = await _run_cmd(["sudo", "-n", "-u", run_as, "test", "-w", rp])
+        if rc != 0:
+            raise ValueError(f"{run_as} cannot write to {rp} (check ownership/permissions)")
+    except RuntimeError:
+        pass  # RUN_AS not configured — the write-access check just can't run yet
+
+    is_default = not _storage_roots_cache  # first-ever root is always default
+    root_id = await db.game_storage_root_add(rp, label=(label or None), is_default=is_default)
+    await _reload_storage_roots_cache(db)
+    return await db.game_storage_root_get(root_id)
+
+
+async def set_default_storage_root(db, root_id: int) -> None:
+    row = await db.game_storage_root_get(root_id)
+    if not row:
+        raise ValueError("no such storage root")
+    await db.game_storage_root_set_default(root_id)
+    await _reload_storage_roots_cache(db)
+
+
+async def delete_storage_root(db, root_id: int) -> None:
+    row = await db.game_storage_root_get(root_id)
+    if not row:
+        raise ValueError("no such storage root")
+    if row["is_default"]:
+        raise ValueError("can't delete the default root — set another root as default first")
+    if len(_storage_roots_cache) <= 1:
+        raise ValueError("can't delete the last remaining storage root")
+    root_path = row["path"]
+    for gs in await db.game_server_list():
+        install_dir = os.path.realpath(gs.get("install_dir") or "")
+        if install_dir == root_path or install_dir.startswith(root_path + os.sep):
+            raise ValueError(
+                f"'{gs['name']}' is installed under this root — "
+                "delete or migrate it first")
+    await db.game_storage_root_delete(root_id)
+    await _reload_storage_roots_cache(db)
+
+
 def _validate_install_dir(p: str, *, must_exist: bool = False) -> str:
-    """Normalise + confine an install dir to a subdirectory of GAMEDATA_ROOT.
+    """Normalise + confine an install dir to one of the registered storage
+    roots (``_storage_root_paths()`` — GAMEDATA_ROOT until an admin adds
+    more).
 
     Rejects control characters, shell/systemd-meaningful characters and paths
-    that resolve outside (or exactly onto) the game-data root."""
+    that resolve outside (or exactly onto) every registered root."""
     raw = (p or "").strip()
     norm = os.path.normpath(raw)
     if not raw or not _INSTALL_DIR_RE.fullmatch(norm):
         raise ValueError("install_dir contains invalid characters")
-    root = os.path.realpath(GAMEDATA_ROOT)
     rp = os.path.realpath(norm)
-    if rp == root or not rp.startswith(root + os.sep):
-        raise ValueError(f"install_dir must be a subdirectory of {GAMEDATA_ROOT}")
+    roots = _storage_root_paths()
+    if not any(rp != root and rp.startswith(root + os.sep) for root in roots):
+        allowed = ", ".join(roots)
+        raise ValueError(f"install_dir must be a subdirectory of one of: {allowed}")
     if must_exist and not os.path.isdir(rp):
         raise ValueError(f"{rp} does not exist")
     return rp
@@ -520,13 +664,15 @@ def _validate_install_dir(p: str, *, must_exist: bool = False) -> str:
 def _allowed_config_root_bases() -> list[str]:
     """The only directories a ``config_root`` may resolve under.
 
-    The game-data disk, plus ``<run-as home>/Zomboid`` (Project Zomboid is the
-    one built-in that keeps config/saves in the account home). NOT the whole
-    home directory — that would put ``~/.ssh``, ``~/.bashrc`` and Portal's own
-    source under a `files` grant. Extra roots can be added out-of-band via
-    ``PORTAL_GS_EXTRA_CONFIG_ROOTS`` (``:``-separated absolute paths)."""
-    bases = [os.path.realpath(GAMEDATA_ROOT),
-             os.path.realpath(os.path.join(_run_as_home(), "Zomboid"))]
+    Every registered storage root, plus ``<run-as home>/Zomboid`` (Project
+    Zomboid is the one built-in that keeps config/saves in the account home).
+    NOT the whole home directory — that would put ``~/.ssh``, ``~/.bashrc``
+    and Portal's own source under a `files` grant. Extra roots can be added
+    out-of-band via ``PORTAL_GS_EXTRA_CONFIG_ROOTS`` (``:``-separated
+    absolute paths) — a narrower, separate escape hatch for config-only
+    locations that aren't themselves deploy targets."""
+    bases = list(_storage_root_paths())
+    bases.append(os.path.realpath(os.path.join(_run_as_home(), "Zomboid")))
     for p in os.getenv("PORTAL_GS_EXTRA_CONFIG_ROOTS", "").split(":"):
         p = p.strip()
         if p:
@@ -674,8 +820,12 @@ async def _latest_build(app_id: int, steam_login: str = "anonymous") -> str | No
 async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
                  install_dir: str | None, start_args: str | None,
                  steam_login: str | None, enable: bool, start: bool,
-                 created_by: int) -> dict:
+                 created_by: int, storage_root_id: int | None = None) -> dict:
     """Validate + register a game server and kick off the SteamCMD install job.
+
+    ``storage_root_id`` picks which registered storage root a new deploy's
+    install dir lands under (ignored if ``install_dir`` is given explicitly);
+    defaults to the admin-designated default root.
 
     Returns {"game_server": <row>, "job_id": <id>}.
     """
@@ -704,7 +854,16 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
     cfg_paths = _as_glob_list(cat["config_paths"])
     bak_paths = _as_glob_list(cat.get("backup_paths"))
 
-    install_dir = _validate_install_dir(install_dir or f"{GAMEDATA_ROOT}/{name}")
+    if not install_dir:
+        if storage_root_id is not None:
+            root_row = await db.game_storage_root_get(storage_root_id)
+            if not root_row:
+                raise ValueError(f"no such storage root: {storage_root_id}")
+            root_path = root_row["path"]
+        else:
+            root_path = default_storage_root_path()
+        install_dir = f"{root_path}/{name}"
+    install_dir = _validate_install_dir(install_dir)
 
     unit_name = f"portal-gs-{name}"
     args = start_args if start_args is not None else cat["start_args"]
@@ -1135,7 +1294,9 @@ async def destroy(db, gs_id: int, delete_files: bool = False) -> None:
         except Exception as e:
             logger.warning("delete_service failed: %s", e)
 
-    if delete_files and gs["install_dir"].startswith(GAMEDATA_ROOT + "/"):
+    install_dir = os.path.realpath(gs["install_dir"] or "")
+    if delete_files and any(
+            install_dir.startswith(root + os.sep) for root in _storage_root_paths()):
         await _run_cmd(_sudo_user("rm", "-rf", gs["install_dir"]), timeout=600)
 
     await db.game_server_delete(gs_id)

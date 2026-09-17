@@ -1066,6 +1066,17 @@ MIGRATIONS = [
     "ALTER TABLE game_servers ADD COLUMN backup_paths TEXT DEFAULT '[]'",
     "ALTER TABLE game_catalog ADD COLUMN config_root TEXT",
     "ALTER TABLE game_servers ADD COLUMN config_root TEXT",
+    # Admin-managed game-data storage locations (disks/mounts a new game
+    # server can be deployed onto). Seeded from PORTAL_GAMEDATA_ROOT at boot
+    # if empty -- see gameservers.ensure_default_storage_root().
+    """CREATE TABLE IF NOT EXISTS game_storage_roots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL UNIQUE,
+        label TEXT,
+        is_default INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_game_storage_roots_default ON game_storage_roots(is_default)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -3298,6 +3309,46 @@ class Database:
 
     async def game_server_delete(self, gs_id: int) -> bool:
         cur = await self.conn.execute("DELETE FROM game_servers WHERE id = ?", (gs_id,))
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    # Game-server storage roots (admin-managed deploy locations)
+    async def game_storage_root_list(self) -> list[dict]:
+        cur = await self.conn.execute(
+            "SELECT * FROM game_storage_roots ORDER BY is_default DESC, path")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def game_storage_root_get(self, root_id: int) -> Optional[dict]:
+        cur = await self.conn.execute(
+            "SELECT * FROM game_storage_roots WHERE id = ?", (root_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def game_storage_root_add(self, path: str, label: str = None,
+                                     is_default: bool = False) -> int:
+        if is_default:
+            await self.conn.execute("UPDATE game_storage_roots SET is_default = 0")
+        cur = await self.conn.execute(
+            "INSERT INTO game_storage_roots (path, label, is_default) VALUES (?, ?, ?)",
+            (path, label, 1 if is_default else 0),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def game_storage_root_set_default(self, root_id: int) -> bool:
+        cur = await self.conn.execute(
+            "SELECT id FROM game_storage_roots WHERE id = ?", (root_id,))
+        if not await cur.fetchone():
+            return False
+        await self.conn.execute("UPDATE game_storage_roots SET is_default = 0")
+        await self.conn.execute(
+            "UPDATE game_storage_roots SET is_default = 1 WHERE id = ?", (root_id,))
+        await self.conn.commit()
+        return True
+
+    async def game_storage_root_delete(self, root_id: int) -> bool:
+        cur = await self.conn.execute(
+            "DELETE FROM game_storage_roots WHERE id = ?", (root_id,))
         await self.conn.commit()
         return cur.rowcount > 0
 
