@@ -915,6 +915,43 @@ async def _run_cmd(args, timeout=60):
     return proc.returncode, o.decode(errors="replace"), e.decode(errors="replace")
 
 
+async def ensure_steam_runtime_libs() -> None:
+    """Boot-time fixup: make ``steamclient.so`` findable at Steamworks' own
+    hardcoded fallback paths, ``~/.steam/sdk64`` and ``sdk32`` (``~`` being
+    RUN_AS's home, not this process's — Portal is root).
+
+    Without this, any catalog game whose binary links Steamworks directly
+    (most of them — Portal's unit generation has no shell, so it can't
+    replicate the ``LD_LIBRARY_PATH=./linux64:...`` that games' own official
+    launch scripts export) fails ``SteamAPI_Init()`` and exits cleanly a few
+    seconds after every start — no crash, no error surfaced anywhere but the
+    unit's own journal, so it just looks like the server "won't stay up".
+    ``~/.steam/sdk64/steamclient.so`` is the second path Steamworks itself
+    tries before giving up, and SteamCMD already ships a copy of the library
+    it needs at ``<steamcmd dir>/linux{64,32}/steamclient.so`` — symlinking
+    that in there, once, fixes every affected game rather than needing a
+    per-game workaround. Idempotent and best-effort: failure (e.g. sudo not
+    set up yet on a fresh install) is logged, never fatal to startup."""
+    src_dir = os.path.dirname(STEAMCMD)
+    for bits in ("64", "32"):
+        src = f"{src_dir}/linux{bits}/steamclient.so"
+        if not os.path.isfile(src):
+            continue  # steamcmd not bootstrapped yet (or a non-standard layout) — nothing to link
+        target_dir = f"{_run_as_home()}/.steam/sdk{bits}"
+        target = f"{target_dir}/steamclient.so"
+        if os.path.realpath(target) == os.path.realpath(src):
+            continue  # already correct
+        rc, _, err = await _run_cmd(_sudo_user("mkdir", "-p", target_dir))
+        if rc != 0:
+            logger.warning("could not create %s: %s", target_dir, err.strip())
+            continue
+        rc, _, err = await _run_cmd(_sudo_user("ln", "-sf", src, target))
+        if rc != 0:
+            logger.warning("could not symlink %s -> %s: %s", target, src, err.strip())
+            continue
+        logger.info("linked %s -> %s (Steamworks fallback path for game servers)", target, src)
+
+
 async def _install_job(db, gs_id, install_dir, app_id, steam_login, enable, start, job):
     jobs.log(job, f"Installing Steam app {app_id} into {install_dir} (as {RUN_AS})")
     rc = await _run(job, _sudo_user(

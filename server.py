@@ -16823,6 +16823,7 @@ class PortalServer:
             await gameservers.seed_catalog(db)
             await gameservers.resync_all_from_catalog(db)
             gameservers.start_build_check_loop(db)
+            await gameservers.ensure_steam_runtime_libs()
         except Exception as e:
             logger.warning(f"Game catalog seed failed: {e}")
 
