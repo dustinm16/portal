@@ -170,52 +170,59 @@ def run_setup_wizard() -> None:
     default_db = existing_config.get("DATABASE_PATH", str(PROJECT_DIR / "portal.db"))
     config["DATABASE_PATH"] = default_db
 
+    # --- Step 5: Game Servers (optional) ---
+    print()
+    print("=" * 50)
+    print("STEP 5: Game Servers (optional)")
+    print("=" * 50)
+    _setup_gameservers(existing_config, config)
+
     # Carry over ALL existing settings not already set by the wizard
     # This preserves any custom env vars the user added manually
     for key, value in existing_config.items():
         if key not in config:
             config[key] = value
 
-    # --- Step 5: Write .env ---
+    # --- Step 6: Write .env ---
     print()
     print("=" * 50)
-    print("STEP 5: Writing Configuration")
+    print("STEP 6: Writing Configuration")
     print("=" * 50)
     _write_env(env_path, config)
     print(f"  Configuration written to: {env_path}")
 
-    # --- Step 6: Virtual Environment & Dependencies ---
+    # --- Step 7: Virtual Environment & Dependencies ---
     print()
     print("=" * 50)
-    print("STEP 6: Dependencies")
+    print("STEP 7: Dependencies")
     print("=" * 50)
     venv_python = _setup_venv_and_deps()
 
-    # --- Step 7: MediaMTX (streaming) ---
+    # --- Step 8: MediaMTX (streaming) ---
     print()
     print("=" * 50)
-    print("STEP 7: MediaMTX (Streaming Server)")
+    print("STEP 8: MediaMTX (Streaming Server)")
     print("=" * 50)
     _setup_mediamtx()
 
-    # --- Step 8: Admin User ---
+    # --- Step 9: Admin User ---
     print()
     print("=" * 50)
-    print("STEP 8: Admin User")
+    print("STEP 9: Admin User")
     print("=" * 50)
     _setup_admin_user(venv_python)
 
-    # --- Step 9: Systemd Service ---
+    # --- Step 10: Systemd Service ---
     print()
     print("=" * 50)
-    print("STEP 9: Systemd Service")
+    print("STEP 10: Systemd Service")
     print("=" * 50)
     _setup_systemd(venv_python)
 
-    # --- Step 10: Verify Configuration ---
+    # --- Step 11: Verify Configuration ---
     print()
     print("=" * 50)
-    print("STEP 10: Verification")
+    print("STEP 11: Verification")
     print("=" * 50)
     _verify_setup(config)
 
@@ -916,6 +923,73 @@ def install_mediamtx(install_dir: str = "/usr/local/bin", version: str = None) -
     except Exception as e:
         print(f"  ERROR: {e}")
         return False
+
+
+def _setup_gameservers(existing_config: dict, config: dict) -> None:
+    """Optional: the Linux account game servers (Palworld, Valheim, etc. via
+    the Game Servers admin tab) run as. Portal itself typically runs as root
+    for port 443 and system control — game servers must NOT run as that
+    account, so this has no default and is skipped unless the operator opts
+    in. Writes into `config` (picked up by the caller's _write_env call)."""
+    print("  Lets the admin panel deploy/manage dedicated game servers")
+    print("  (SteamCMD-based: Palworld, Valheim, Project Zomboid, etc.)")
+    print("  Skip this if you don't plan to use that feature.\n")
+
+    existing_user = existing_config.get("PORTAL_GAMESERVER_USER", "")
+    configure = _prompt_yes_no(
+        "Configure game servers now?", default_yes=bool(existing_user),
+    )
+    if not configure:
+        print("  Skipped. Set PORTAL_GAMESERVER_USER in .env later to enable this.")
+        return
+
+    import pwd
+
+    # A sensible guess when this wizard itself was launched via `sudo` — the
+    # account that ran `sudo` is almost always the one that should run game
+    # servers too, never root (SUDO_USER is unset when already running as
+    # root directly, e.g. inside a container, so this is only ever a guess).
+    suggested = existing_user or os.environ.get("SUDO_USER", "")
+    while True:
+        run_as = _prompt_input(
+            "Linux account for game servers to run as (must already exist, "
+            "must NOT be root)",
+            suggested,
+        )
+        if not run_as:
+            print("  A value is required — press Ctrl+C to abort setup instead if you want to skip.")
+            continue
+        if run_as == "root":
+            print("  Refusing 'root' — pick (or create) a separate, unprivileged account.")
+            continue
+        try:
+            home = pwd.getpwnam(run_as).pw_dir
+        except KeyError:
+            print(f"  No such Linux account: {run_as!r}. Create it first (e.g. `sudo useradd -m {run_as}`), then retry.")
+            continue
+        break
+    config["PORTAL_GAMESERVER_USER"] = run_as
+    print(f"  Game servers will run as: {run_as} (home: {home})")
+
+    default_steamcmd = os.path.join(home, "steamcmd", "steamcmd.sh")
+    steamcmd = _prompt_input(
+        "steamcmd.sh location (leave default unless it's installed elsewhere)",
+        existing_config.get("PORTAL_STEAMCMD", default_steamcmd),
+    )
+    if steamcmd and steamcmd != default_steamcmd:
+        config["PORTAL_STEAMCMD"] = steamcmd
+
+    default_gamedata = existing_config.get("PORTAL_GAMEDATA_ROOT", "/mnt/gamedata")
+    gamedata_root = _prompt_input(
+        "Game data directory (first storage location — more can be added "
+        "later from Admin > Game Servers > Storage Locations)",
+        default_gamedata,
+    )
+    if gamedata_root:
+        config["PORTAL_GAMEDATA_ROOT"] = gamedata_root
+
+    print("\n  Reminder: this account needs passwordless sudo configured for Portal")
+    print("  (running as root) to manage it — see docs/ARCHITECTURE.md.")
 
 
 def _setup_mediamtx() -> None:

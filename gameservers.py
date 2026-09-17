@@ -26,9 +26,16 @@ import services as _services
 
 logger = logging.getLogger("portal.gameservers")
 
-STEAMCMD = os.getenv("PORTAL_STEAMCMD", "/home/dustin/steamcmd/steamcmd.sh")
+# RUN_AS has no built-in default: no account name is safe to assume on someone
+# else's box, and falling back to Portal's own run-as user (root) would be
+# actively dangerous for spawned game processes. See _require_run_as().
+RUN_AS = os.getenv("PORTAL_GAMESERVER_USER", "")
+# Defaults to <run-as home>/steamcmd/steamcmd.sh (Steam's own documented
+# install layout) rather than a hardcoded path — resolved lazily via
+# steamcmd_path() since it depends on RUN_AS, which may not be configured yet
+# at import time.
+_STEAMCMD_OVERRIDE = os.getenv("PORTAL_STEAMCMD", "")
 GAMEDATA_ROOT = os.getenv("PORTAL_GAMEDATA_ROOT", "/mnt/gamedata")
-RUN_AS = os.getenv("PORTAL_GAMESERVER_USER", "dustin")
 _PORTAL_DIR = Path(__file__).resolve().parent
 UNITS_DIR = _PORTAL_DIR / "data" / "gameservers" / "units"
 SYSTEMD_DIR = "/etc/systemd/system"
@@ -45,7 +52,7 @@ def _lock() -> asyncio.Lock:
 
 
 def _sudo_user(*args: str) -> list:
-    return ["sudo", "-n", "-u", RUN_AS, "-H", *args]
+    return ["sudo", "-n", "-u", _require_run_as(), "-H", *args]
 
 
 def _sudo(*args: str) -> list:
@@ -442,14 +449,41 @@ def _as_glob_list(v) -> list:
             and ".." not in p and not p.startswith(("/", "~"))]
 
 
+def _require_run_as() -> str:
+    """RUN_AS, or a clear error instead of silently misbehaving.
+
+    Called from every path that needs an actual account (a subprocess call,
+    or resolving that account's home) — never from purely-cosmetic reads."""
+    if not RUN_AS:
+        raise RuntimeError(
+            "PORTAL_GAMESERVER_USER is not configured — set it to the Linux "
+            "account game servers should run as (never the account Portal "
+            "itself runs as) before using any game-server feature."
+        )
+    return RUN_AS
+
+
 def _run_as_home() -> str:
     """Home directory of the account game servers run as (RUN_AS), not this
-    process's — Portal runs as root, the servers run as ``dustin``."""
+    process's — Portal runs as root, game servers run as a separate,
+    unprivileged account."""
     import pwd
+    run_as = _require_run_as()
     try:
-        return pwd.getpwnam(RUN_AS).pw_dir
+        return pwd.getpwnam(run_as).pw_dir
     except KeyError:
-        return os.path.expanduser("~" + RUN_AS)
+        return os.path.expanduser("~" + run_as)
+
+
+def steamcmd_path() -> str:
+    """Path to the steamcmd.sh bootstrapper.
+
+    ``PORTAL_STEAMCMD`` overrides it explicitly; otherwise it's derived from
+    the run-as account's own home (``<home>/steamcmd/steamcmd.sh`` — Valve's
+    own documented install layout), so changing ``PORTAL_GAMESERVER_USER``
+    alone relocates both consistently rather than needing two env vars kept
+    in sync by hand."""
+    return _STEAMCMD_OVERRIDE or os.path.join(_run_as_home(), "steamcmd", "steamcmd.sh")
 
 
 _INSTALL_DIR_RE = re.compile(r"[A-Za-z0-9._/-]+")
@@ -597,7 +631,7 @@ def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
         "After=network-online.target\nWants=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
-        f"User={RUN_AS}\n"
+        f"User={_require_run_as()}\n"
         f"WorkingDirectory={install_dir}\n"
         f"ExecStart={exec_line}\n"
         "Restart=on-failure\nRestartSec=10\n"
@@ -621,7 +655,7 @@ def _installed_build(install_dir: str, app_id: int) -> str | None:
 
 async def _latest_build(app_id: int, steam_login: str = "anonymous") -> str | None:
     proc = await asyncio.create_subprocess_exec(
-        *_sudo_user(STEAMCMD, "+login", steam_login, "+app_info_update", "1",
+        *_sudo_user(steamcmd_path(), "+login", steam_login, "+app_info_update", "1",
                     "+app_info_print", str(app_id), "+quit"),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
@@ -932,7 +966,7 @@ async def ensure_steam_runtime_libs() -> None:
     that in there, once, fixes every affected game rather than needing a
     per-game workaround. Idempotent and best-effort: failure (e.g. sudo not
     set up yet on a fresh install) is logged, never fatal to startup."""
-    src_dir = os.path.dirname(STEAMCMD)
+    src_dir = os.path.dirname(steamcmd_path())
     for bits in ("64", "32"):
         src = f"{src_dir}/linux{bits}/steamclient.so"
         if not os.path.isfile(src):
@@ -955,7 +989,7 @@ async def ensure_steam_runtime_libs() -> None:
 async def _install_job(db, gs_id, install_dir, app_id, steam_login, enable, start, job):
     jobs.log(job, f"Installing Steam app {app_id} into {install_dir} (as {RUN_AS})")
     rc = await _run(job, _sudo_user(
-        STEAMCMD, "+force_install_dir", install_dir, "+login", steam_login,
+        steamcmd_path(), "+force_install_dir", install_dir, "+login", steam_login,
         "+app_update", str(app_id), "validate", "+quit"), timeout=7200)
     if rc != 0:
         await db.game_server_update(gs_id, state="error")
@@ -1061,7 +1095,7 @@ async def _update_job(db, gs_id, job):
         await _run_cmd(_sudo("systemctl", "stop", f"{unit}.service"), timeout=120)
 
     rc = await _run(job, _sudo_user(
-        STEAMCMD, "+force_install_dir", install_dir, "+login", gs["steam_login"],
+        steamcmd_path(), "+force_install_dir", install_dir, "+login", gs["steam_login"],
         "+app_update", str(app_id), "+quit"), timeout=7200)
 
     new_build = _installed_build(install_dir, app_id)
