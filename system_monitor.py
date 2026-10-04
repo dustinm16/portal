@@ -287,10 +287,13 @@ def get_service_status(name: str) -> dict | None:
     }
 
 
-def get_service_logs(name: str, lines: int = 50) -> str:
-    """Get journal logs for a systemd service."""
+def read_service_journal(name: str, lines: int = 50, timeout: float = 30) -> str:
+    """Raw journal lines for a systemd service; raises instead of returning
+    a placeholder, so callers that parse the output can't mistake a failure
+    for a log line. A cold-cache read of a multi-GB journal can take well
+    over a minute on this disk, so TimeoutError is an expected outcome."""
     if not _validate_service_name(name):
-        return "Invalid service name"
+        raise ValueError("Invalid service name")
 
     lines = min(max(lines, 10), 500)  # Clamp 10-500
 
@@ -298,11 +301,21 @@ def get_service_logs(name: str, lines: int = 50) -> str:
         result = subprocess.run(
             ["journalctl", "-u", f"{name}.service", "-n", str(lines),
              "--no-pager", "--output=short-iso"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=timeout
         )
-        return result.stdout or "No logs available"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return "Failed to retrieve logs"
+    except subprocess.TimeoutExpired:
+        raise TimeoutError(f"journal read for {name} timed out after {timeout:g}s")
+    return result.stdout
+
+
+def get_service_logs(name: str, lines: int = 50) -> str:
+    """Get journal logs for a systemd service (display text, never raises)."""
+    try:
+        return read_service_journal(name, lines) or "No logs available"
+    except ValueError as e:
+        return str(e)
+    except (TimeoutError, FileNotFoundError):
+        return "Failed to retrieve logs (journal read timed out; try again)"
 
 
 def control_service(name: str, action: str) -> tuple[bool, str]:

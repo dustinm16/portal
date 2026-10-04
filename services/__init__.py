@@ -448,12 +448,9 @@ class ServiceManager:
         service = self._services.get(service_id)
         if service is not None and hasattr(service, 'get_journal_logs'):
             # systemd-wrapped services have no Portal-captured output; pull
-            # their logs from journalctl instead.
-            try:
-                return await service.get_journal_logs(limit)
-            except Exception as e:
-                logger.error(f"journal log fetch failed for {service.name}: {e}")
-                return []
+            # their logs from journalctl instead. Errors propagate: an empty
+            # list would read as "No logs." rather than a failed fetch.
+            return await service.get_journal_logs(limit)
         return await self._db.get_service_logs(service_id, limit, level)
 
     async def _health_monitor(self):

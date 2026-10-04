@@ -7275,7 +7275,7 @@ async def http_sysmon_service_logs(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         lines = 50
 
-    logs = system_monitor.get_service_logs(name, lines)
+    logs = await asyncio.to_thread(system_monitor.get_service_logs, name, lines)
     return web.json_response({"logs": logs, "service": name, "lines": lines})
 
 
@@ -8687,7 +8687,16 @@ async def http_managed_service_logs(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid limit parameter"}, status=400)
     level = request.query.get("level")
 
-    logs = await _service_manager.get_service_logs(int(service_id), limit, level)
+    try:
+        logs = await _service_manager.get_service_logs(int(service_id), limit, level)
+    except TimeoutError as e:
+        logger.warning(f"Service logs {service_id}: {e}")
+        return web.json_response(
+            {"error": "Reading the system journal timed out (it is large and was not cached). Try again in a moment."},
+            status=504)
+    except Exception as e:
+        logger.error(f"Service logs {service_id}: {e}")
+        return web.json_response({"error": "Failed to read service logs"}, status=500)
     return web.json_response({"logs": logs})
 
 

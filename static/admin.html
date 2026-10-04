@@ -4026,7 +4026,10 @@
 
                 document.getElementById('service-logs-content').innerHTML = logs.map(log => {
                     const color = levelColors[log.level] || 'var(--text-secondary)';
-                    const time = new Date(log.created_at + 'Z').toLocaleTimeString();
+                    // Date too unless it's today (a stopped server's newest lines can be old)
+                    const d = log.created_at ? new Date(log.created_at + 'Z') : null;
+                    const time = !d || isNaN(d) ? ''
+                        : d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString() : d.toLocaleString();
                     return `<div style="margin-bottom: 0.25rem;"><span style="color: var(--text-muted);">${time}</span> <span style="color: ${color}; font-weight: 500;">[${log.level.toUpperCase()}]</span> ${escapeHtml(log.message)}</div>`;
                 }).join('');
 

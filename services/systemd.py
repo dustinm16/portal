@@ -218,8 +218,10 @@ class SystemdService(ManagedService):
     async def get_journal_logs(self, limit: int = 100) -> list[dict]:
         if not self.unit:
             return []
+        # Raises TimeoutError on a slow (cold-cache) journal read; the HTTP
+        # handler turns that into an error the logs modal can show.
         raw = await asyncio.to_thread(
-            system_monitor.get_service_logs, self.unit, limit
+            system_monitor.read_service_journal, self.unit, limit
         )
         entries = []
         for line in raw.splitlines():
@@ -246,6 +248,8 @@ class SystemdService(ManagedService):
                 'message': message,
                 'created_at': created_at,
             })
+        # Newest first, matching the DB-backed path the same modals render.
+        entries.reverse()
         return entries
 
     def get_status(self) -> dict:

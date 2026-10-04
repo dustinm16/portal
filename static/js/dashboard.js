@@ -601,6 +601,16 @@ async function restartService(serviceId) {
     }
 }
 
+// Time only for today's entries, date + time otherwise -- a stopped server's
+// newest lines can be weeks old and must not look like they're from today.
+function _logStamp(createdAt) {
+    if (!createdAt) return '';
+    const d = new Date(createdAt + 'Z');
+    if (isNaN(d)) return '';
+    return d.toDateString() === new Date().toDateString()
+        ? d.toLocaleTimeString() : d.toLocaleString();
+}
+
 /**
  * View managed-service logs (admins + users with a 'logs' grant)
  */
@@ -616,7 +626,7 @@ async function showServiceLogs(serviceId, name) {
         if (!logs.length) { box.innerHTML = '<span style="color:var(--text-muted);">No logs.</span>'; return; }
         const colors = { error: 'var(--accent-red)', warn: 'var(--accent-yellow)', info: 'var(--accent-blue)' };
         box.innerHTML = logs.map(l => {
-            const t = l.created_at ? new Date(l.created_at + 'Z').toLocaleTimeString() : '';
+            const t = _logStamp(l.created_at);
             return `<div><span style="color:var(--text-muted);">${t}</span> <span style="color:${colors[l.level] || 'var(--text-secondary)'};">[${(l.level || '').toUpperCase()}]</span> ${escapeHtml(l.message)}</div>`;
         }).join('');
     } catch (e) {
