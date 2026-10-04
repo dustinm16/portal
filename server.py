@@ -1005,7 +1005,7 @@ async def http_list_services(request: web.Request) -> web.Response:
             })
             _attach_resource_usage(result)
         elif s.get("systemd_unit"):
-            unit_status = system_monitor.get_service_status(s["systemd_unit"])
+            unit_status = await asyncio.to_thread(system_monitor.get_service_status, s["systemd_unit"])
             result["status"] = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
         return result
 
@@ -1264,7 +1264,7 @@ async def http_get_service(request: web.Request) -> web.Response:
     }
 
     if service.get("systemd_unit"):
-        unit_status = system_monitor.get_service_status(service["systemd_unit"])
+        unit_status = await asyncio.to_thread(system_monitor.get_service_status, service["systemd_unit"])
         response["systemd_status"] = unit_status["sub_state"] if unit_status else "unknown"
         response["status"] = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
 
@@ -1311,7 +1311,7 @@ async def _control_systemd_bound_service(
     proxy) doesn't need SSH access to be restarted.
     """
     unit = service["systemd_unit"]
-    success, message = system_monitor.control_service(unit, action)
+    success, message = await asyncio.to_thread(system_monitor.control_service, unit, action)
     if not success:
         return web.json_response({"error": message}, status=400)
 
@@ -1321,7 +1321,7 @@ async def _control_systemd_bound_service(
         token.user_id, get_display_name(admin_user) if admin_user else "admin",
         f"service_{action}", f"{action.capitalize()}ed service '{service.get('name', service['id'])}' ({unit})"
     )
-    unit_status = system_monitor.get_service_status(unit)
+    unit_status = await asyncio.to_thread(system_monitor.get_service_status, unit)
     status = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
     return web.json_response({
         "success": True,
@@ -6950,7 +6950,8 @@ async def http_generate_selfsigned(request: web.Request) -> web.Response:
         extra_hostnames.append(Config.STREAM_HOSTNAME)
 
     try:
-        cert_path, key_path = cert_manager.generate_self_signed_cert(
+        cert_path, key_path = await asyncio.to_thread(
+            cert_manager.generate_self_signed_cert,
             hostname, Config.CERTS_DIR, validity_days, extra_hostnames=extra_hostnames
         )
     except Exception as e:
@@ -6995,7 +6996,7 @@ async def http_trigger_letsencrypt(request: web.Request) -> web.Response:
 
     logger.info(f"Let's Encrypt certificate requested for {hostname} by user {token.user_id}")
 
-    success, message = cert_manager.request_letsencrypt_cert(hostname, email)
+    success, message = await asyncio.to_thread(cert_manager.request_letsencrypt_cert, hostname, email)
     if not success:
         return web.json_response({"error": message}, status=500)
 
@@ -7182,7 +7183,7 @@ async def http_sysmon_processes(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         limit = 100
 
-    procs = system_monitor.list_processes(sort_by=sort_by, limit=limit)
+    procs = await asyncio.to_thread(system_monitor.list_processes, sort_by=sort_by, limit=limit)
     return web.json_response(procs)
 
 
@@ -7199,7 +7200,7 @@ async def http_sysmon_process_detail(request: web.Request) -> web.Response:
     except (ValueError, KeyError):
         return web.json_response({"error": "Invalid PID"}, status=400)
 
-    info = system_monitor.get_process_info(pid)
+    info = await asyncio.to_thread(system_monitor.get_process_info, pid)
     if not info:
         return web.json_response({"error": "Process not found"}, status=404)
     return web.json_response(info)
@@ -7224,7 +7225,7 @@ async def http_sysmon_kill_process(request: web.Request) -> web.Response:
         data = {}
 
     signal_name = data.get("signal", "SIGTERM")
-    success, message = system_monitor.kill_process(pid, signal_name)
+    success, message = await asyncio.to_thread(system_monitor.kill_process, pid, signal_name)
     status = 200 if success else 400
     return web.json_response({"success": success, "message": message}, status=status)
 
@@ -7238,7 +7239,7 @@ async def http_sysmon_services(request: web.Request) -> web.Response:
         return forbidden_response(request)
 
     filter_str = request.query.get("filter")
-    services = system_monitor.list_services(filter_str)
+    services = await asyncio.to_thread(system_monitor.list_services, filter_str)
     return web.json_response(services)
 
 
@@ -7253,7 +7254,7 @@ async def http_sysmon_service_status(request: web.Request) -> web.Response:
     name = request.match_info.get("name", "")
     if not name:
         return web.json_response({"error": "Service name required"}, status=400)
-    status = system_monitor.get_service_status(name)
+    status = await asyncio.to_thread(system_monitor.get_service_status, name)
     if not status:
         return web.json_response({"error": "Service not found"}, status=404)
     return web.json_response(status)
@@ -7296,7 +7297,7 @@ async def http_sysmon_service_control(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     action = data.get("action", "")
-    success, message = system_monitor.control_service(name, action)
+    success, message = await asyncio.to_thread(system_monitor.control_service, name, action)
     status = 200 if success else 400
     return web.json_response({"success": success, "message": message}, status=status)
 
@@ -7309,7 +7310,7 @@ async def http_sysmon_network(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    interfaces = system_monitor.get_network_interfaces()
+    interfaces = await asyncio.to_thread(system_monitor.get_network_interfaces)
     return web.json_response(interfaces)
 
 
@@ -7321,7 +7322,7 @@ async def http_sysmon_ports(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    ports = system_monitor.get_listening_ports()
+    ports = await asyncio.to_thread(system_monitor.get_listening_ports)
     return web.json_response(ports)
 
 
