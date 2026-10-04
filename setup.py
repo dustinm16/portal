@@ -205,24 +205,31 @@ def run_setup_wizard() -> None:
     print("=" * 50)
     _setup_mediamtx()
 
-    # --- Step 9: Admin User ---
+    # --- Step 9: SSH Hardening (optional) ---
     print()
     print("=" * 50)
-    print("STEP 9: Admin User")
+    print("STEP 9: SSH Hardening (optional)")
+    print("=" * 50)
+    _setup_fail2ban()
+
+    # --- Step 10: Admin User ---
+    print()
+    print("=" * 50)
+    print("STEP 10: Admin User")
     print("=" * 50)
     _setup_admin_user(venv_python)
 
-    # --- Step 10: Systemd Service ---
+    # --- Step 11: Systemd Service ---
     print()
     print("=" * 50)
-    print("STEP 10: Systemd Service")
+    print("STEP 11: Systemd Service")
     print("=" * 50)
     _setup_systemd(venv_python)
 
-    # --- Step 11: Verify Configuration ---
+    # --- Step 12: Verify Configuration ---
     print()
     print("=" * 50)
-    print("STEP 11: Verification")
+    print("STEP 12: Verification")
     print("=" * 50)
     _verify_setup(config)
 
@@ -1035,6 +1042,135 @@ def _setup_mediamtx() -> None:
         print("  MediaMTX installation failed.")
         print("  Install manually: https://github.com/bluenviron/mediamtx/releases")
         print("  Or retry: sudo python server.py install-mediamtx")
+
+
+FAIL2BAN_JAIL_PATH = "/etc/fail2ban/jail.d/portal-sshd.local"
+
+
+def _current_ssh_client_ip() -> str:
+    """Best guess at the operator's own address, to keep them out of bans.
+    SSH_CLIENT is dropped by sudo's env_reset, so fall back to `who -m`."""
+    ip = os.environ.get("SSH_CLIENT", "").split(" ")[0]
+    if ip:
+        return ip
+    try:
+        out = subprocess.run(["who", "-m"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if "(" in out and ")" in out:
+        host = out[out.index("(") + 1:out.index(")")]
+        try:
+            import ipaddress
+            ipaddress.ip_address(host)
+            return host
+        except ValueError:
+            pass
+    return ""
+
+
+def _fail2ban_jail_text(ignore_ips: list[str]) -> str:
+    ignore = " ".join(["127.0.0.1/8", "::1", *ignore_ips])
+    return (
+        "# Managed by Open Relay Portal setup (server.py install-fail2ban).\n"
+        "# Bans IPs that repeatedly fail SSH auth. Re-run the installer to change.\n"
+        "[DEFAULT]\n"
+        f"ignoreip = {ignore}\n"
+        "\n"
+        "[sshd]\n"
+        "enabled  = true\n"
+        "# Debian 12+ has no /var/log/auth.log by default; read the journal.\n"
+        "backend  = systemd\n"
+        "maxretry = 5\n"
+        "findtime = 10m\n"
+        "bantime  = 1h\n"
+    )
+
+
+def install_fail2ban(ignore_ips: list[str] | None = None) -> bool:
+    """Install fail2ban with an SSH jail (Debian/Ubuntu). Idempotent: re-running
+    rewrites the jail file and restarts fail2ban. Returns True on success."""
+    import ipaddress
+
+    ignore_ips = list(ignore_ips or [])
+    for ip in ignore_ips:
+        try:
+            ipaddress.ip_network(ip, strict=False)
+        except ValueError:
+            print(f"  ERROR: not an IP address or CIDR range: {ip!r}")
+            return False
+
+    if not shutil.which("apt-get"):
+        print("  fail2ban auto-install supports Debian/Ubuntu (apt) only.")
+        print(f"  Install it with your package manager, then write this to {FAIL2BAN_JAIL_PATH}:\n")
+        print(_fail2ban_jail_text(ignore_ips))
+        return False
+
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+
+    def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+        return subprocess.run(sudo + cmd, capture_output=True, text=True, **kw)
+
+    print("  Installing fail2ban (apt)...")
+    result = run(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
+                  "fail2ban", "python3-systemd"], timeout=600)
+    if result.returncode != 0:
+        print(f"  ERROR: apt-get failed: {result.stderr.strip()[-500:]}")
+        return False
+
+    jail = _fail2ban_jail_text(ignore_ips)
+    result = run(["tee", FAIL2BAN_JAIL_PATH], input=jail)
+    if result.returncode != 0:
+        print(f"  ERROR: could not write {FAIL2BAN_JAIL_PATH}: {result.stderr.strip()}")
+        return False
+    print(f"  Jail written: {FAIL2BAN_JAIL_PATH}")
+
+    result = run(["fail2ban-client", "-t"])
+    if result.returncode != 0:
+        print(f"  ERROR: fail2ban config test failed:\n{(result.stdout + result.stderr).strip()[-800:]}")
+        return False
+
+    run(["systemctl", "enable", "fail2ban"])
+    result = run(["systemctl", "restart", "fail2ban"])
+    if result.returncode != 0:
+        print(f"  ERROR: fail2ban failed to start: {result.stderr.strip()}")
+        print("  Check: sudo journalctl -u fail2ban -n 50")
+        return False
+
+    import time
+    for _ in range(10):
+        status = run(["fail2ban-client", "status", "sshd"])
+        if status.returncode == 0:
+            print("  fail2ban is running; sshd jail active (5 failures in 10m -> 1h ban).")
+            return True
+        time.sleep(1)
+    print("  WARNING: fail2ban started but the sshd jail did not report status.")
+    print("  Check: sudo fail2ban-client status sshd")
+    return False
+
+
+def _setup_fail2ban() -> None:
+    """Optional: fail2ban SSH jail. Off by default -- it is host-level
+    hardening, not something Portal needs to run."""
+    print("  fail2ban bans IPs that repeatedly fail SSH logins (brute-force bots).")
+    print("  Optional host hardening -- Portal itself does not depend on it.\n")
+
+    if shutil.which("fail2ban-client"):
+        print("  fail2ban is already installed.")
+        if not _prompt_yes_no("(Re)write Portal's SSH jail config and restart fail2ban?", default_yes=False):
+            print("  Skipped.")
+            return
+    elif not _prompt_yes_no("Install fail2ban with an SSH jail?", default_yes=False):
+        print("  Skipped. Install later with: sudo python3 server.py install-fail2ban")
+        return
+
+    print("  Addresses listed here are never banned. Include your own, or a")
+    print("  mistyped key could lock you out of SSH for the ban duration.")
+    raw = _prompt_input(
+        "Never-ban IPs/CIDRs (space-separated, blank for none)",
+        _current_ssh_client_ip(),
+    )
+    if not install_fail2ban(raw.split()):
+        print("  fail2ban setup did not complete; Portal setup continues.")
 
 
 def _setup_venv_and_deps() -> str:

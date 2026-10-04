@@ -17589,6 +17589,11 @@ def main():
     # Install MediaMTX
     subparsers.add_parser("install-mediamtx", help="Download and install MediaMTX streaming server")
 
+    # Install fail2ban (optional host hardening)
+    f2b = subparsers.add_parser("install-fail2ban", help="Install fail2ban with an SSH jail (optional, Debian/Ubuntu)")
+    f2b.add_argument("--ignore-ip", action="append", default=[], metavar="IP",
+                     help="IP or CIDR that is never banned (repeatable; include your own)")
+
     # Check updates
     subparsers.add_parser("check-updates", help="Check for available updates")
 
@@ -17632,6 +17637,9 @@ def main():
         from setup import install_mediamtx
         success = install_mediamtx()
         sys.exit(0 if success else 1)
+    elif args.command == "install-fail2ban":
+        from setup import install_fail2ban
+        sys.exit(0 if install_fail2ban(args.ignore_ip) else 1)
     elif args.command == "check-updates":
         asyncio.run(update_manager._cli_check_updates())
     elif args.command == "list-snapshots":

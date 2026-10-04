@@ -1611,6 +1611,10 @@ sudo venv/bin/python server.py serve
 # Install/update MediaMTX streaming server
 sudo python server.py install-mediamtx
 
+# Optional: fail2ban SSH jail (also offered as setup wizard step 9).
+# Writes /etc/fail2ban/jail.d/portal-sshd.local (systemd backend, 5 fails/10m -> 1h ban)
+sudo venv/bin/python server.py install-fail2ban --ignore-ip <your-ip>
+
 # Systemd service management (after setup installs the service)
 sudo systemctl start portal
 sudo systemctl stop portal

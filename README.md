@@ -196,6 +196,9 @@ python -c "import cert_manager; cert_manager.generate_self_signed_cert('localhos
 # Install MediaMTX for streaming (optional, Linux amd64)
 sudo python server.py install-mediamtx
 
+# Install fail2ban with an SSH jail (optional host hardening, Debian/Ubuntu)
+sudo venv/bin/python server.py install-fail2ban --ignore-ip <your-ip>
+
 # Install SearXNG for private web search (optional, Debian/Ubuntu)
 sudo ./install-searxng.sh
 # then, in the admin Services panel: add a managed service of type "searxng" and enable it
