@@ -522,7 +522,7 @@
 
                 <!-- API Keys Section -->
                 <h2 id="api-keys">API Keys</h2>
-                <p>API keys provide long-lived authentication for scripts and integrations. Keys can be scoped to limit access.</p>
+                <p>API keys provide long-lived authentication for scripts and integrations. Keys can be scoped to limit access. Send a key as <code>Authorization: Api-Key portal_...</code> or <code>X-API-Key: portal_...</code>; <code>Bearer</code> accepts JWTs only. Keys are stored as an Argon2id hash plus a 10-character prefix, so a lost key cannot be recovered. Each successful use updates <code>last_used_at</code>.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
@@ -542,12 +542,12 @@
                             <tr>
                                 <td><span class="param-name">scopes</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>Comma-separated scopes (default: "*" for full access)</td>
+                                <td>Comma-separated scopes (default: "*" for full access). Admin only; non-admin keys always get <code>services:read,access:*</code></td>
                             </tr>
                             <tr>
-                                <td><span class="param-name">expires_in_days</span></td>
+                                <td><span class="param-name">expires_days</span></td>
                                 <td><span class="param-type">integer</span></td>
-                                <td>Days until expiration (null for never)</td>
+                                <td>Days until expiration (omit for never)</td>
                             </tr>
                         </table>
                         <div class="alert alert-warning">
@@ -558,8 +558,8 @@
 <pre>{
   <span class="string">"id"</span>: <span class="number">1</span>,
   <span class="string">"name"</span>: <span class="string">"My Integration"</span>,
-  <span class="string">"api_key"</span>: <span class="string">"portal_abc123..."</span>,
-  <span class="string">"key_prefix"</span>: <span class="string">"portal_abc"</span>,
+  <span class="string">"key"</span>: <span class="string">"portal_abc123..."</span>,
+  <span class="string">"prefix"</span>: <span class="string">"portal_abc"</span>,
   <span class="string">"scopes"</span>: <span class="string">"*"</span>,
   <span class="string">"expires_at"</span>: <span class="keyword">null</span>
 }</pre>
@@ -1127,11 +1127,12 @@
                         <span class="endpoint-desc">Auth-gated reverse proxy to SearXNG</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Any logged-in user may use it. Unauthenticated browser requests redirect to <code>/login</code>; unauthenticated API requests (<code>Accept: application/json</code> or <code>?format=json</code>) get <code>401</code>.</p>
+                        <p>Any authenticated user may use it: session cookie, JWT, API key, or stream key. No scope is checked, so every valid API key can search. Unauthenticated browser requests redirect to <code>/login</code>; unauthenticated API requests (<code>Accept: application/json</code> or <code>?format=json</code>) get <code>401</code>.</p>
                         <p>Requests are forwarded verbatim — SearXNG mounts its whole app under <code>/search/</code> via its <code>base_url</code>. The Portal session cookie and <code>Authorization</code> header are stripped from the upstream request. Responses get <code>Cache-Control: private, no-store</code>.</p>
+                        <p>Prefer <code>Authorization: Api-Key</code> over <code>X-API-Key</code> here: the <code>Authorization</code> header is stripped before the request reaches SearXNG, while <code>X-API-Key</code> is currently forwarded. <code>401</code> means missing or invalid credentials (including a key sent as <code>Bearer</code>); <code>503</code> means credentials were accepted but the service is off.</p>
                         <h4>Example — JSON results for automation</h4>
                         <div class="code-block">
-<pre>curl -H <span class="string">"Authorization: Bearer $TOKEN"</span> \
+<pre>curl -H <span class="string">"Authorization: Api-Key $PORTAL_KEY"</span> \
   <span class="string">"https://your-domain/search/search?q=debian&amp;format=json"</span></pre>
                         </div>
                     </div>

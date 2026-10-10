@@ -18,6 +18,8 @@ All API endpoints require authentication via one of:
 3. **API Key** - `Authorization: Api-Key portal_xxx` or `X-API-Key: portal_xxx`
 4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx`
 
+An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Authorization: Bearer` accepts JWTs only, so a `portal_...` key sent as a Bearer token is rejected with `401`.
+
 ### Stream Keys as API Keys
 
 **Stream keys and API keys are interchangeable for stream-related operations.** This allows streaming software (OBS, etc.) to use a single key for both:
@@ -315,18 +317,31 @@ Create a new API key.
 }
 ```
 
-**Response:**
+- `name` - required, unique per user.
+- `scopes` - comma-separated, default `*`. Only admins can choose scopes; for non-admin users the value is ignored and the key always gets `services:read,access:*`.
+- `expires_days` - optional; omit (or `0`) for a key that never expires.
+
+**Response (201):**
 ```json
 {
   "id": 1,
   "name": "My Script",
   "key": "portal_a1b2c3d4...",  // Only shown once!
-  "prefix": "portal_a1b2",
+  "prefix": "portal_a1b",
   "scopes": "*",
   "expires_at": "2026-05-06T00:00:00Z",
   "warning": "Save this key now - it cannot be retrieved later!"
 }
 ```
+
+Keys are `portal_` followed by 64 hex characters. Only an Argon2id hash and the 10-character prefix (`portal_` + 3 hex) are stored; the full key cannot be recovered, so a lost key must be replaced. A key authenticates while it is not revoked and not past `expires_at`; each successful use updates `last_used_at`, which is the quickest way to confirm a key is actually being used.
+
+**Verifying a key** - any authenticated endpoint works; private search is a convenient one:
+```bash
+curl -H "Authorization: Api-Key $PORTAL_KEY" \
+  "https://your-domain/search/search?q=test&format=json"
+```
+`200` with a `results` array means the key is valid. `401` means the key is wrong, revoked, expired, or was sent as `Bearer`. `503` means the key is fine but SearXNG is disabled or stopped.
 
 ---
 
@@ -340,7 +355,7 @@ List user's API keys.
     {
       "id": 1,
       "name": "My Script",
-      "prefix": "portal_a1b2",
+      "prefix": "portal_a1b",
       "scopes": "*",
       "created_at": "2026-02-05T00:00:00Z",
       "last_used_at": "2026-02-05T12:00:00Z",
@@ -905,7 +920,7 @@ Returns `{ "available": true|false }` — whether the `searxng` service is enabl
 Deep link from the dashboard search bar's "Portal" mode. `chat.html` opens the message-search panel, runs the query against `/api/chat/search`, and cleans the URL.
 
 #### ALL /search  •  ALL /search/{path}
-Auth-gated reverse proxy to the local SearXNG instance. Any logged-in user may use it. Unauthenticated browser requests redirect to `/login`; unauthenticated API requests (`Accept: application/json` or `?format=json`) get `401`.
+Auth-gated reverse proxy to the local SearXNG instance. Any authenticated user may use it: session cookie, JWT (`Bearer`), API key, or stream key. No scope is checked, so every valid API key can search regardless of its `scopes`. Unauthenticated browser requests redirect to `/login`; unauthenticated API requests (`Accept: application/json` or `?format=json`) get `401`.
 
 Requests are forwarded verbatim — SearXNG mounts its whole app under `/search/` via its `base_url`, so no path rewriting is done. The Portal session cookie and `Authorization` header are stripped from the upstream request. Responses get `Cache-Control: private, no-store`.
 
@@ -913,10 +928,22 @@ Requests are forwarded verbatim — SearXNG mounts its whole app under `/search/
 # HTML search UI
 GET /search/
 
-# JSON results for automation
+# JSON results for automation - API key (recommended for scripts)
+curl -H "Authorization: Api-Key $PORTAL_KEY" \
+  "https://your-domain/search/search?q=debian&format=json"
+
+# JSON results - JWT access token
 curl -H "Authorization: Bearer $TOKEN" \
   "https://your-domain/search/search?q=debian&format=json"
 ```
+
+Prefer `Authorization: Api-Key` over `X-API-Key` here: the `Authorization` header is stripped before the request reaches SearXNG, while `X-API-Key` is currently forwarded to the local SearXNG process.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Results returned |
+| `401` | Missing or invalid credentials (wrong, revoked or expired key, or a key sent as `Bearer`) |
+| `503` | Credentials accepted, but the `searxng` service is disabled or not running |
 
 JSON output requires `formats: [html, json]` in the generated `settings.yml` (the default for Portal-managed SearXNG).
 
