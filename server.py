@@ -3776,9 +3776,14 @@ async def _handle_disconnect_grace(stream: dict) -> None:
     try:
         await asyncio.sleep(7)
 
-        # Re-check stream state — did it reconnect during grace period?
-        current = await db.get_user_stream(stream_id)
-        if current and current.get("is_live") == 1:
+        # Did it reconnect during the grace period? A reconnect's publish auth
+        # pops this task from _disconnect_grace_tasks (and cancels it), so if we
+        # are no longer the registered task we were superseded. Don't re-check
+        # is_live here: it is still 1 until this task clears it, so that check
+        # always aborted and left streams stuck "live" after every disconnect.
+        async with _stream_state_lock:
+            superseded = _disconnect_grace_tasks.get(stream_id) is not asyncio.current_task()
+        if superseded:
             logger.info(f"Stream {stream_name} reconnected during grace period, aborting disconnect")
             return
 
@@ -3835,7 +3840,9 @@ async def _handle_disconnect_grace(stream: dict) -> None:
     except Exception as e:
         logger.error(f"Error in disconnect grace for stream {stream_name}: {e}")
     finally:
-        _disconnect_grace_tasks.pop(stream_id, None)
+        # Only deregister ourselves — a newer grace task may own this slot now.
+        if _disconnect_grace_tasks.get(stream_id) is asyncio.current_task():
+            _disconnect_grace_tasks.pop(stream_id, None)
 
 
 async def _finalize_stream_offline(stream: dict) -> None:
@@ -5059,6 +5066,10 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     # MediaMTX path includes the RTMP app name "live"
     mtx_path = f"live/{private_key}"
     url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
+    # Forward the query string: MediaMTX (v1.1x+) tags every variant playlist and
+    # segment URL with ?session=<secret> and answers 401 without it.
+    if request.query_string:
+        url += f"?{request.query_string}"
 
     try:
         # Create SSL context that allows self-signed certs (internal communication)
