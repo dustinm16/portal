@@ -179,6 +179,13 @@ app id, start command/args, stop signal, and `config_paths` globs.
   from the jailed file browser too, via `_allowed_config_root_bases` — stay
   synchronous. `PORTAL_GAMEDATA_ROOT` seeds the first row on an empty table;
   further locations come from Admin > Game Servers > Storage Locations.
+- **Runtime**: each catalog entry and server is `native` or `wine`. A `wine`
+  server runs its `.exe` under `PORTAL_WINE_BIN` with
+  `WINEPREFIX=<install>/.wineprefix`, still with no shell in `ExecStart`. Install
+  and update fail if the launch file isn't on disk afterwards, and a native
+  install with no launch file switches to Wine when Steam's launch entries show
+  a Windows-only app. See [WINDOWS-GAME-SERVERS.md](WINDOWS-GAME-SERVERS.md),
+  including why this is Wine and not Proton, before changing any of it.
 - **Deploy** validates the name (`^[a-z0-9][a-z0-9-]{1,31}$`), writes the unit,
   creates the DB + service rows under a module lock with full rollback on
   failure, then runs `steamcmd +app_update <id> validate` as a streamed

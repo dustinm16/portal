@@ -73,6 +73,8 @@ Deploy dedicated game servers straight from the admin panel. The **Game Servers*
 
 Each server is a managed service, so you can **grant** a non-admin user `Control`, `Logs`, and/or `Files` — every action they're allowed shows up as a clearly-labelled button on that server's card on their own dashboard (start/stop/restart, view logs, edit config, download a backup), and nothing else. Already running servers via hand-rolled systemd units can be adopted onto this machinery without a reinstall.
 
+Servers with no Linux build, such as Enshrouded, run under Wine in their own prefix. A deploy detects a Windows-only game and sets this up itself, including installing Wine on Debian-based hosts. Only some of these games have been tested; see [Windows-only game servers](docs/WINDOWS-GAME-SERVERS.md) for the limits.
+
 ### Device-Wide Metrics
 The Metrics tab keeps a persisted, whole-host history — not just Portal's own traffic. Every 60 seconds Portal samples CPU and memory per service/process, every listening port and the connections sitting on it, and which remote IPs are talking to the box (with the ports they're hitting and the process serving them). Charts cover anywhere from 6 hours to 14 days; history survives restarts. Retention is configurable under Settings → Data Retention (default 14 days). Counts are point-in-time samples, so a connection that opens and closes between ticks won't appear.
 
@@ -317,6 +319,9 @@ bound to localhost, and Portal is the only thing that talks to them.
 | [MediaMTX](https://github.com/bluenviron/mediamtx) | RTSP/RTMP/HLS/WebRTC media server behind the live-streaming feature | MIT | github.com/bluenviron/mediamtx |
 | [SearXNG](https://github.com/searxng/searxng) | Privacy-respecting metasearch engine behind `/search/` (optional) | AGPL-3.0 | github.com/searxng/searxng |
 | [uWSGI](https://github.com/unbit/uwsgi) | WSGI application server that hosts SearXNG | GPL-2.0-with-linking-exception | github.com/unbit/uwsgi |
+
+Windows-only game servers use [Wine](https://www.winehq.org/) (LGPL-2.1-or-later),
+installed from your distribution's packages the first time one is deployed.
 
 SearXNG is installed with `install-searxng.sh` (creates a dedicated `searxng`
 system user, clones the upstream source, builds a virtualenv). Portal generates its

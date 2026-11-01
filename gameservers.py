@@ -36,6 +36,13 @@ RUN_AS = os.getenv("PORTAL_GAMESERVER_USER", "")
 # at import time.
 _STEAMCMD_OVERRIDE = os.getenv("PORTAL_STEAMCMD", "")
 GAMEDATA_ROOT = os.getenv("PORTAL_GAMEDATA_ROOT", "/mnt/gamedata")
+# Windows-only servers run under Wine, each with its own prefix inside its
+# install dir so `destroy` removes it with the server. mscoree/mshtml are
+# disabled so a new prefix doesn't try to fetch Mono/Gecko on first start.
+_DEFAULT_WINE_BIN = "/usr/lib/wine/wine64"
+WINE_BIN = os.getenv("PORTAL_WINE_BIN", _DEFAULT_WINE_BIN)
+WINE_PREFIX_DIR = ".wineprefix"
+RUNTIMES = ("native", "wine")
 _PORTAL_DIR = Path(__file__).resolve().parent
 UNITS_DIR = _PORTAL_DIR / "data" / "gameservers" / "units"
 SYSTEMD_DIR = "/etc/systemd/system"
@@ -110,9 +117,11 @@ CATALOG_SEED = [
      "game_port": 9876, "config_paths": ["save-data/Settings/*.json"],
      "backup_paths": ["save-data/Saves/**"]},
     {"key": "enshrouded", "name": "Enshrouded", "steam_app_id": 2278520,
-     "start_cmd": "./enshrouded_server.sh", "start_args": "", "game_port": 15636,
-     "config_paths": ["enshrouded_server.json"],
-     "backup_paths": ["savegame/**"]},
+     "start_cmd": "./enshrouded_server.exe", "start_args": "", "game_port": 15637,
+     "stop_signal": "SIGINT",  # saves on exit; hangs on SIGTERM until killed
+     "runtime": "wine", "config_paths": ["enshrouded_server.json"],
+     "backup_paths": ["savegame/**"],
+     "notes": "Windows-only server — runs under Wine."},
     {"key": "ark-asa", "name": "ARK: Survival Ascended", "steam_app_id": 2430930,
      "start_cmd": "./ShooterGame/Binaries/Linux/ArkAscendedServer",
      "start_args": "TheIsland_WP?listen", "game_port": 7777,
@@ -137,12 +146,14 @@ CATALOG_SEED = [
      "start_cmd": "./_launch.sh", "start_args": "", "game_port": 7777,
      "config_paths": ["*.json"]},
     {"key": "sons-of-the-forest", "name": "Sons of the Forest",
-     "steam_app_id": 2465200, "start_cmd": "./SonsOfTheForestDS.exe",
+     "steam_app_id": 2465200, "start_cmd": "./SonsOfTheForestDS.exe", "runtime": "wine",
      "start_args": "-batchmode -nographics -dedicated", "game_port": 8766,
-     "config_paths": ["userdata/*.cfg"], "notes": "Runs via Proton/wine layer for some hosts."},
+     "config_paths": ["userdata/*.cfg"], "notes": "Windows-only server — runs under Wine (not yet tested here)."},
     {"key": "the-forest", "name": "The Forest", "steam_app_id": 556450,
-     "start_cmd": "./server.x86_64", "start_args": "-batchmode -nographics",
-     "game_port": 27015, "config_paths": ["*.cfg"]},
+     "start_cmd": "./TheForestDedicatedServer.exe", "runtime": "wine",
+     "start_args": "-batchmode -nographics", "game_port": 27015,
+     "config_paths": ["*.cfg"],
+     "notes": "Windows-only server — runs under Wine (not yet tested here)."},
     {"key": "space-engineers", "name": "Space Engineers", "steam_app_id": 298740,
      "start_cmd": "./SpaceEngineersDedicated", "start_args": "-console",
      "game_port": 27016, "config_paths": ["Saves/*/*.sbc", "*.cfg"]},
@@ -207,7 +218,7 @@ CATALOG_SEED = [
     {"key": "conan-exiles", "name": "Conan Exiles", "steam_app_id": 443030,
      "start_cmd": "./ConanSandboxServer.sh", "start_args": "-log", "game_port": 7777,
      "config_paths": ["ConanSandbox/Saved/Config/WindowsServer/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Reported as Windows-only — deploy switches to Wine if Steam confirms it (not yet tested here)."},
     {"key": "icarus", "name": "Icarus", "steam_app_id": 2089300,
      "start_cmd": "./IcarusServer.sh", "start_args": "-UserDir=./Saved", "game_port": 17777,
      "config_paths": ["Saved/Config/LinuxServer/*.ini", "Saved/*.json"]},
@@ -217,13 +228,14 @@ CATALOG_SEED = [
      "config_paths": ["WS/Saved/Config/LinuxServer/*.ini", "WS/Saved/GameUserSettings.ini"]},
     {"key": "abiotic-factor", "name": "Abiotic Factor", "steam_app_id": 2857200,
      "start_cmd": "./AbioticFactor/Binaries/Win64/AbioticFactorServer-Win64-Shipping.exe",
+     "runtime": "wine",
      "start_args": "-newconsole -useperfthreads", "game_port": 7777,
      "config_paths": ["AbioticFactor/Saved/Config/WindowsServer/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Windows-only server — runs under Wine (not yet tested here)."},
     {"key": "myth-of-empires", "name": "Myth of Empires", "steam_app_id": 1954850,
      "start_cmd": "./StartServer.sh", "start_args": "", "game_port": 10086,
      "config_paths": ["EmpiresServer/Saved/Config/*/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Reported as Windows-only — deploy switches to Wine if Steam confirms it (not yet tested here)."},
     {"key": "stationeers", "name": "Stationeers", "steam_app_id": 600760,
      "start_cmd": "./rocketstation_DedicatedServer.x86_64",
      "start_args": "-settings StartLocalHost true", "game_port": 27500,
@@ -232,7 +244,7 @@ CATALOG_SEED = [
      "start_cmd": "./EmpyrionDedicated.sh", "start_args": "-dedicated dedicated.yaml",
      "game_port": 30000,
      "config_paths": ["*.yaml", "Content/Configuration/*.yaml", "Content/Configuration/*.ecf"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Reported as Windows-only — deploy switches to Wine if Steam confirms it (not yet tested here)."},
     {"key": "starbound", "name": "Starbound", "steam_app_id": 211820,
      "start_cmd": "./linux/starbound_server", "start_args": "", "game_port": 21025,
      "config_paths": ["storage/starbound_server.config"]},
@@ -270,9 +282,10 @@ CATALOG_SEED = [
      "start_cmd": "./acServer", "start_args": "", "game_port": 9600,
      "config_paths": ["cfg/*.ini"]},
     {"key": "astroneer", "name": "Astroneer", "steam_app_id": 728470,
-     "start_cmd": "./AstroServer.sh", "start_args": "", "game_port": 8777,
-     "config_paths": ["Astro/Saved/Config/WindowsServer/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "start_cmd": "./AstroServer.exe", "runtime": "wine", "start_args": "",
+     "game_port": 8777, "config_paths": ["Astro/Saved/Config/WindowsServer/*.ini"],
+     "notes": "Windows-only server — installs under Wine, but exited on its own when "
+              "tested; not working yet."},
 
     # --- More popular multiplayer titles ---
     {"key": "left4dead", "name": "Left 4 Dead", "steam_app_id": 222840,
@@ -303,7 +316,7 @@ CATALOG_SEED = [
      "start_cmd": "./HLL/Binaries/Win64/HLL-Win64-Shipping.exe",
      "start_args": "", "game_port": 7777,
      "config_paths": ["HLL/Saved/Config/WindowsServer/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Reported as Windows-only — deploy switches to Wine if Steam confirms it (not yet tested here)."},
     {"key": "arma-reforger", "name": "Arma Reforger", "steam_app_id": 1890870,
      "start_cmd": "./ArmaReforgerServer",
      "start_args": "-config ./config.json -maxFPS 60", "game_port": 2001,
@@ -321,7 +334,7 @@ CATALOG_SEED = [
     {"key": "the-isle", "name": "The Isle", "steam_app_id": 412680,
      "start_cmd": "./TheIsleServer.sh", "start_args": "", "game_port": 7777,
      "config_paths": ["TheIsle/Saved/Config/WindowsServer/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Reported as Windows-only — deploy switches to Wine if Steam confirms it (not yet tested here)."},
     {"key": "scp-secret-laboratory", "name": "SCP: Secret Laboratory",
      "steam_app_id": 996560, "start_cmd": "./LocalAdmin", "start_args": "7777",
      "game_port": 7777,
@@ -364,11 +377,11 @@ CATALOG_SEED = [
     {"key": "tower-unite", "name": "Tower Unite", "steam_app_id": 439660,
      "start_cmd": "./TowerServer.sh", "start_args": "", "game_port": 7777,
      "config_paths": ["Tower/Saved/Config/LinuxServer/*.ini"],
-     "notes": "Windows-focused server — may need a Proton/wine layer on Linux."},
+     "notes": "Deploy switches to Wine if Steam confirms it's Windows-only (not yet tested here)."},
     {"key": "the-front", "name": "The Front", "steam_app_id": 2699560,
      "start_cmd": "./StartServer.sh", "start_args": "", "game_port": 8888,
      "config_paths": ["ProjectWar/Saved/Config/WindowsServer/*.ini"],
-     "notes": "Windows-only server — runs via a Proton/wine layer on Linux."},
+     "notes": "Reported as Windows-only — deploy switches to Wine if Steam confirms it (not yet tested here)."},
     {"key": "ets2", "name": "Euro Truck Simulator 2 (Convoy)", "steam_app_id": 1948160,
      "start_cmd": "./bin/linux_x64/eurotrucks2_server", "start_args": "",
      "game_port": 27015,
@@ -760,8 +773,45 @@ def _parse_launch_args(start_args: str) -> list:
         raise ValueError(f"could not parse start arguments: {e}")
 
 
+def normalize_runtime(value) -> str:
+    runtime = str(value or "native").strip().lower()
+    if runtime not in RUNTIMES:
+        raise ValueError(f"runtime must be one of {list(RUNTIMES)}")
+    return runtime
+
+
+def _require_runtime(runtime: str) -> None:
+    """Refuse a Wine server up front on a host that can't run one."""
+    if runtime == "wine" and not os.access(WINE_BIN, os.X_OK):
+        raise ValueError(
+            f"this server needs Wine, but {WINE_BIN} is not installed — run "
+            "'apt-get install --no-install-recommends wine64' or set PORTAL_WINE_BIN")
+
+
+def _stop_signal_for(signal: str | None, runtime: str) -> str:
+    """Wine has no SIGTERM path into a game's shutdown handler: Enshrouded ignores
+    it until the unit times out and is killed unsaved, while SIGINT saves and
+    exits. An explicit non-default signal is kept."""
+    if runtime == "wine" and signal in (None, "", "SIGTERM"):
+        return "SIGINT"
+    return signal or "SIGTERM"
+
+
+def _steam_update_cmd(install_dir: str, login: str, app_id, runtime: str,
+                      validate: bool = False) -> list:
+    """SteamCMD `app_update` for this server's platform. A Wine server must pass
+    this on every call: an update without it would swap in the Linux depots and
+    delete the Windows executable."""
+    platform = (("+@sSteamCmdForcePlatformType", "windows")
+                if runtime == "wine" else ())
+    return _sudo_user(
+        steamcmd_path(), *platform, "+force_install_dir", install_dir,
+        "+login", login, "+app_update", str(app_id),
+        *(("validate",) if validate else ()), "+quit")
+
+
 def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
-               stop_signal: str) -> str:
+               stop_signal: str, runtime: str = "native") -> str:
     # Defence in depth: nothing interpolated raw into the unit file may carry a
     # newline or other control char (would inject arbitrary systemd directives).
     for field, val in (("name", name), ("install_dir", install_dir)):
@@ -769,7 +819,16 @@ def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
             raise ValueError(f"illegal control character in {field}")
     exe = _resolve_launch_cmd(install_dir, start_cmd)
     argv = _parse_launch_args(start_args)
-    exec_line = " ".join(_systemd_quote(t) for t in [exe, *argv])
+    command = [exe, *argv]
+    env_lines = ""
+    if runtime == "wine":
+        command.insert(0, WINE_BIN)
+        env = {"WINEPREFIX": os.path.join(install_dir, WINE_PREFIX_DIR),
+               "WINEARCH": "win64", "WINEDEBUG": "-all",
+               "WINEDLLOVERRIDES": "mscoree,mshtml="}
+        env_lines = "".join(f"Environment={_systemd_quote(f'{k}={v}')}\n"
+                            for k, v in env.items())
+    exec_line = " ".join(_systemd_quote(t) for t in command)
     sig = stop_signal if stop_signal in _STOP_SIGNALS else "SIGTERM"
     return (
         "[Unit]\n"
@@ -779,6 +838,7 @@ def _unit_text(name: str, install_dir: str, start_cmd: str, start_args: str,
         "Type=simple\n"
         f"User={_require_run_as()}\n"
         f"WorkingDirectory={install_dir}\n"
+        f"{env_lines}"
         f"ExecStart={exec_line}\n"
         "Restart=on-failure\nRestartSec=10\n"
         f"KillSignal={sig}\nTimeoutStopSec=45\n\n"
@@ -799,7 +859,7 @@ def _installed_build(install_dir: str, app_id: int) -> str | None:
         return None
 
 
-async def _latest_build(app_id: int, steam_login: str = "anonymous") -> str | None:
+async def _app_info(app_id: int, steam_login: str = "anonymous") -> str | None:
     proc = await asyncio.create_subprocess_exec(
         *_sudo_user(steamcmd_path(), "+login", steam_login, "+app_info_update", "1",
                     "+app_info_print", str(app_id), "+quit"),
@@ -810,7 +870,33 @@ async def _latest_build(app_id: int, steam_login: str = "anonymous") -> str | No
     except asyncio.TimeoutError:
         proc.kill()
         return None
-    out = out_b.decode("utf-8", "replace")
+    return out_b.decode("utf-8", "replace")
+
+
+def _windows_launch_exe(app_info: str | None) -> str | None:
+    """The .exe from a Steam app's launch entries, or None if the app isn't
+    Windows-only. Any Linux launch entry means None, so a Linux game whose start
+    command is merely wrong is never swapped for its Windows build."""
+    launch = re.search(r'"launch"\s*\{(.*?)\n\t\t\}', app_info or "", re.S)
+    if not launch:
+        return None
+    entries = re.split(r'"executable"\s+', launch.group(1))[1:]
+    found = None
+    for entry in entries:
+        exe = re.match(r'"([^"]+)"', entry)
+        oslist = re.search(r'"oslist"\s+"([^"]*)"', entry)
+        if oslist and "linux" in oslist.group(1):
+            return None
+        if exe and not found and exe.group(1).lower().endswith(".exe"):
+            if not oslist or "windows" in oslist.group(1):
+                found = re.sub(r"\\+", "/", exe.group(1)).lstrip("/")
+    return found
+
+
+async def _latest_build(app_id: int, steam_login: str = "anonymous") -> str | None:
+    out = await _app_info(app_id, steam_login)
+    if out is None:
+        return None
     # locate the "branches" -> "public" -> "buildid" value
     m = re.search(r'"branches"\s*{.*?"public"\s*{.*?"buildid"\s*"(\d+)"',
                   out, re.S)
@@ -847,10 +933,12 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
             "start_cmd": custom["start_cmd"], "start_args": custom.get("start_args", ""),
             "stop_signal": custom.get("stop_signal") or "SIGTERM",
             "config_paths": custom.get("config_paths") or [],
+            "runtime": custom.get("runtime"),
         }
     else:
         raise ValueError("catalog_key or custom game definition required")
 
+    runtime = normalize_runtime(cat.get("runtime"))
     cfg_paths = _as_glob_list(cat["config_paths"])
     bak_paths = _as_glob_list(cat.get("backup_paths"))
 
@@ -868,7 +956,7 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
     unit_name = f"portal-gs-{name}"
     args = start_args if start_args is not None else cat["start_args"]
     slogin = _validate_steam_login(steam_login or cat["steam_login"])
-    stop_sig = cat["stop_signal"]
+    stop_sig = _stop_signal_for(cat["stop_signal"], runtime)
 
     async with _lock():
         # create dirs
@@ -882,7 +970,7 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
             except (LookupError, PermissionError, OSError) as e:
                 logger.warning("chown %s failed: %s", install_dir, e)
 
-            unit_file.write_text(_unit_text(name, install_dir, cat["start_cmd"], args, stop_sig))
+            unit_file.write_text(_unit_text(name, install_dir, cat["start_cmd"], args, stop_sig, runtime))
             rc, _, err = await _run_cmd(_sudo("ln", "-sf", str(unit_file),
                                               f"{SYSTEMD_DIR}/{unit_name}.service"))
             if rc != 0:
@@ -898,6 +986,7 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
                 "config_paths": json.dumps(cfg_paths),
                 "backup_paths": json.dumps(bak_paths),
                 "config_root": cat.get("config_root") or None,
+                "runtime": runtime,
                 "state": "installing", "created_by": created_by,
             })
 
@@ -936,7 +1025,8 @@ async def deploy(db, *, catalog_key: str | None, custom: dict | None, name: str,
     job_id = jobs.start_job(
         f"Install {name}",
         lambda job: _install_job(db, gs_id, install_dir, cat["steam_app_id"],
-                                 slogin, enable, start, job),
+                                 slogin, enable, start, job,
+                                 start_cmd=cat["start_cmd"], runtime=runtime),
         meta={"game_server_id": gs_id, "kind": "install"},
     )
     await db.game_server_update(gs_id, install_job=job_id)
@@ -978,10 +1068,13 @@ async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = Non
             "start_cmd": custom["start_cmd"], "start_args": custom.get("start_args", ""),
             "stop_signal": custom.get("stop_signal") or "SIGTERM",
             "config_paths": custom.get("config_paths") or [],
+            "runtime": custom.get("runtime"),
         }
     else:
         raise ValueError("catalog_key or custom game definition required")
 
+    runtime = normalize_runtime(cat.get("runtime"))
+    _require_runtime(runtime)
     cfg_paths = _as_glob_list(cat["config_paths"])
     bak_paths = _as_glob_list(cat.get("backup_paths"))
 
@@ -1011,7 +1104,7 @@ async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = Non
         unit_file = UNITS_DIR / f"{unit_name}.service"
         gs_id = None
         try:
-            unit_file.write_text(_unit_text(name, install_dir, s_cmd, args, stop_sig))
+            unit_file.write_text(_unit_text(name, install_dir, s_cmd, args, stop_sig, runtime))
             rc, _, err = await _run_cmd(_sudo("ln", "-sf", str(unit_file),
                                               f"{SYSTEMD_DIR}/{unit_name}.service"))
             if rc != 0:
@@ -1026,6 +1119,7 @@ async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = Non
                 "config_paths": json.dumps(cfg_paths),
                 "backup_paths": json.dumps(bak_paths),
                 "config_root": cat.get("config_root") or None,
+                "runtime": runtime,
                 "state": "installed", "created_by": created_by,
             })
             await db.game_server_update(gs_id, installed_build=build)
@@ -1145,14 +1239,116 @@ async def ensure_steam_runtime_libs() -> None:
         logger.info("linked %s -> %s (Steamworks fallback path for game servers)", target, src)
 
 
-async def _install_job(db, gs_id, install_dir, app_id, steam_login, enable, start, job):
+def _launch_problem(install_dir: str, start_cmd: str, runtime: str) -> str | None:
+    """Why this install can't launch, or None. SteamCMD reports success even when
+    nothing runnable arrived (a Windows-only app on Linux yields just the Steam
+    redistributables), so its exit code proves nothing."""
+    exe = _resolve_launch_cmd(install_dir, start_cmd)
+    if not os.path.isfile(exe):
+        hint = ("the depot may not contain that path" if runtime == "wine" else
+                "Steam lists no Windows-only launch target to fall back to, so "
+                "check the start command")
+        return f"SteamCMD finished but {start_cmd} is not in the install — {hint}"
+    if runtime == "wine" and _pe_machine(exe) == 0x14c:
+        return (f"{start_cmd} is a 32-bit Windows program, which the 64-bit Wine "
+                "runtime can't run — set PORTAL_WINE_BIN to a Wine with 32-bit support")
+    return None
+
+
+def _pe_machine(path: str) -> int | None:
+    """COFF machine type of a Windows executable (0x8664 x64, 0x14c x86)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    if head[:2] != b"MZ" or len(head) < 64:
+        return None
+    pe = int.from_bytes(head[60:64], "little")
+    if head[pe:pe + 4] != b"PE\0\0":
+        return None
+    return int.from_bytes(head[pe + 4:pe + 6], "little")
+
+
+async def _ensure_wine(job) -> bool:
+    """Install Debian's wine64 the first time a Wine server needs it. A custom
+    PORTAL_WINE_BIN is the admin's own to provide."""
+    if os.access(WINE_BIN, os.X_OK):
+        return True
+    if WINE_BIN == _DEFAULT_WINE_BIN and shutil.which("apt-get"):
+        jobs.log(job, "Wine is not installed — installing wine64")
+        await _run(job, _sudo(
+            "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
+            "--no-install-recommends", "wine64"), timeout=900)
+    if os.access(WINE_BIN, os.X_OK):
+        return True
+    jobs.log(job, f"{WINE_BIN} is not available — install Wine or set PORTAL_WINE_BIN")
+    return False
+
+
+async def _write_unit(gs: dict, *, start_cmd: str, stop_signal: str, runtime: str) -> None:
+    unit_name = gs["unit_name"]
+    text = _unit_text(gs["name"], gs["install_dir"], start_cmd,
+                      gs.get("start_args") or "", stop_signal, runtime)
+    async with _lock():
+        (UNITS_DIR / f"{unit_name}.service").write_text(text)
+        await _run_cmd(_sudo("systemctl", "daemon-reload"))
+
+
+async def _switch_to_windows(db, gs_id, job) -> tuple | None:
+    """A native install came up empty: if Steam says the app is Windows-only,
+    fetch the Windows depots and move the server to Wine.
+    Returns (start_cmd, runtime), or None if it stays as it was."""
+    gs = await db.game_server_get(gs_id)
+    exe = _windows_launch_exe(await _app_info(gs["steam_app_id"], gs["steam_login"]))
+    if not exe:
+        return None
+    start_cmd = f"./{exe}"
+    try:
+        _resolve_launch_cmd(gs["install_dir"], start_cmd)
+    except ValueError as e:
+        jobs.log(job, f"can't use Steam's launch target {exe}: {e}")
+        return None
+    jobs.log(job, f"Windows-only app ({exe}) — reinstalling for the Wine runtime")
+    if not await _ensure_wine(job):
+        return None
+    rc = await _run(job, _steam_update_cmd(gs["install_dir"], gs["steam_login"],
+                                           gs["steam_app_id"], "wine", validate=True),
+                    timeout=7200)
+    if rc != 0:
+        jobs.log(job, f"SteamCMD exited {rc}")
+        return None
+    stop_sig = _stop_signal_for(gs.get("stop_signal"), "wine")
+    await _write_unit(gs, start_cmd=start_cmd, stop_signal=stop_sig, runtime="wine")
+    await db.game_server_update(gs_id, runtime="wine", start_cmd=start_cmd,
+                                stop_signal=stop_sig)
+    return start_cmd, "wine"
+
+
+async def _install_job(db, gs_id, install_dir, app_id, steam_login, enable, start, job,
+                       *, start_cmd, runtime="native"):
     jobs.log(job, f"Installing Steam app {app_id} into {install_dir} (as {RUN_AS})")
-    rc = await _run(job, _sudo_user(
-        steamcmd_path(), "+force_install_dir", install_dir, "+login", steam_login,
-        "+app_update", str(app_id), "validate", "+quit"), timeout=7200)
+    if runtime == "wine" and not await _ensure_wine(job):
+        await db.game_server_update(gs_id, state="error")
+        job["status"] = "failed"
+        return
+    rc = await _run(job, _steam_update_cmd(install_dir, steam_login, app_id, runtime,
+                                           validate=True), timeout=7200)
     if rc != 0:
         await db.game_server_update(gs_id, state="error")
         jobs.log(job, f"SteamCMD exited {rc}")
+        job["status"] = "failed"
+        return
+
+    problem = _launch_problem(install_dir, start_cmd, runtime)
+    if problem and runtime == "native":
+        switched = await _switch_to_windows(db, gs_id, job)
+        if switched:
+            start_cmd, runtime = switched
+            problem = _launch_problem(install_dir, start_cmd, runtime)
+    if problem:
+        await db.game_server_update(gs_id, state="error")
+        jobs.log(job, problem)
         job["status"] = "failed"
         return
 
@@ -1240,9 +1436,20 @@ async def _update_job(db, gs_id, job):
     cur = _installed_build(install_dir, app_id)
     latest = await _latest_build(app_id, gs["steam_login"])
     jobs.log(job, f"installed={cur or '?'} latest={latest or '?'}")
-    if latest and cur and latest == cur:
+    runtime = gs.get("runtime") or "native"
+    # A missing launch file means a broken install, so repair it even if the
+    # build id already matches.
+    launch_file = _resolve_launch_cmd(install_dir, gs["start_cmd"])
+    repair = not os.path.isfile(launch_file)
+    if repair:
+        jobs.log(job, f"{gs['start_cmd']} is missing — repairing the install")
+    elif latest and cur and latest == cur:
         jobs.log(job, "already up to date — nothing to do")
         await db.game_server_update(gs_id, latest_build=latest)
+        return
+
+    if runtime == "wine" and not await _ensure_wine(job):
+        job["status"] = "failed"
         return
 
     await db.game_server_update(gs_id, state="updating")
@@ -1253,13 +1460,19 @@ async def _update_job(db, gs_id, job):
         jobs.log(job, "stopping service for update")
         await _run_cmd(_sudo("systemctl", "stop", f"{unit}.service"), timeout=120)
 
-    rc = await _run(job, _sudo_user(
-        steamcmd_path(), "+force_install_dir", install_dir, "+login", gs["steam_login"],
-        "+app_update", str(app_id), "+quit"), timeout=7200)
+    rc = await _run(job, _steam_update_cmd(install_dir, gs["steam_login"], app_id, runtime,
+                                           validate=repair), timeout=7200)
 
+    start_cmd = gs["start_cmd"]
+    problem = _launch_problem(install_dir, start_cmd, runtime)
+    if rc == 0 and problem and runtime == "native":
+        switched = await _switch_to_windows(db, gs_id, job)
+        if switched:
+            start_cmd, runtime = switched
+            problem = _launch_problem(install_dir, start_cmd, runtime)
     new_build = _installed_build(install_dir, app_id)
     await db.game_server_update(
-        gs_id, state="installed" if rc == 0 else "error",
+        gs_id, state="installed" if rc == 0 and not problem else "error",
         installed_build=new_build, latest_build=latest)
 
     if was_running:
@@ -1267,6 +1480,9 @@ async def _update_job(db, gs_id, job):
         await _run_cmd(_sudo("systemctl", "start", f"{unit}.service"), timeout=120)
     if rc != 0:
         jobs.log(job, f"SteamCMD exited {rc}")
+        job["status"] = "failed"
+    elif problem:
+        jobs.log(job, problem)
         job["status"] = "failed"
     else:
         jobs.log(job, f"done — build {new_build or 'unknown'}")
@@ -1306,14 +1522,14 @@ async def destroy(db, gs_id: int, delete_files: bool = False) -> None:
 # Launch options — rewrite the unit's ExecStart / KillSignal
 # ---------------------------------------------------------------------------
 async def set_launch_options(db, gs_id: int, *, start_args=None, stop_signal=None,
-                             start_cmd=None, allow_cmd=False) -> dict:
+                             start_cmd=None, runtime=None, allow_cmd=False) -> dict:
     """Update a deployed server's launch arguments / stop signal (and, for an
     admin, its start command), regenerate the unit file and `daemon-reload`.
 
     Safe for a `control` grant to drive the args/signal: the unit runs the
     executable directly (no shell), so arguments are literal argv — there is
     no command-injection surface. `start_cmd` changes the binary that runs as
-    the game account, so they are gated to admins (`allow_cmd`).
+    the game account, so they and `runtime` are gated to admins (`allow_cmd`).
 
     Does not restart the server; the new ExecStart takes effect on next start.
     Returns ``{game_server, restart_required}``."""
@@ -1341,14 +1557,24 @@ async def set_launch_options(db, gs_id: int, *, start_args=None, stop_signal=Non
             raise ValueError(f"no such file in the install dir: {start_cmd}")
         new_cmd = start_cmd.strip()
 
+    new_rt = normalize_runtime(gs.get("runtime"))
+    if runtime is not None and normalize_runtime(runtime) != new_rt:
+        if not allow_cmd:
+            raise PermissionError("changing the runtime requires admin")
+        new_rt = normalize_runtime(runtime)
+        _require_runtime(new_rt)
+        if stop_signal is None:
+            new_sig = _stop_signal_for(new_sig, new_rt)
+
     changed = (new_args != (gs.get("start_args") or "")
                or new_sig != (gs.get("stop_signal") or "SIGTERM")
-               or new_cmd != gs.get("start_cmd"))
+               or new_cmd != gs.get("start_cmd")
+               or new_rt != (gs.get("runtime") or "native"))
 
     unit_name = gs["unit_name"]
     unit_file = UNITS_DIR / f"{unit_name}.service"
     old_text = unit_file.read_text() if unit_file.exists() else None
-    new_text = _unit_text(gs["name"], gs["install_dir"], new_cmd, new_args, new_sig)
+    new_text = _unit_text(gs["name"], gs["install_dir"], new_cmd, new_args, new_sig, new_rt)
 
     async with _lock():
         try:
@@ -1365,8 +1591,8 @@ async def set_launch_options(db, gs_id: int, *, start_args=None, stop_signal=Non
                 unit_file.write_text(old_text)
                 await _run_cmd(_sudo("systemctl", "daemon-reload"))
             raise
-        await db.game_server_update(gs_id, start_args=new_args,
-                                    stop_signal=new_sig, start_cmd=new_cmd)
+        await db.game_server_update(gs_id, start_args=new_args, stop_signal=new_sig,
+                                    start_cmd=new_cmd, runtime=new_rt)
 
     return {
         "game_server": await db.game_server_get(gs_id),
@@ -1748,7 +1974,36 @@ async def resync_from_catalog(db, gs_id: int) -> dict:
         backup_paths=json.dumps(_as_glob_list(cat.get("backup_paths"))),
         config_root=cat.get("config_root") or None,
     )
+    await _migrate_runtime(db, await db.game_server_get(gs_id), cat)
     return await db.game_server_get(gs_id)
+
+
+async def _migrate_runtime(db, gs: dict, cat: dict) -> bool:
+    """Move a server whose launch file is missing onto the runtime and start
+    command its catalog entry now declares, so one deployed from a wrong entry
+    is fixed by the Update button. A server that can launch is never touched."""
+    want = normalize_runtime(cat.get("runtime"))
+    if want == (gs.get("runtime") or "native"):
+        return False
+    if os.path.isfile(_resolve_launch_cmd(gs["install_dir"], gs["start_cmd"])):
+        return False
+    stop_sig = _stop_signal_for(gs.get("stop_signal"), want)
+    await _write_unit(gs, start_cmd=cat["start_cmd"], stop_signal=stop_sig, runtime=want)
+    await db.game_server_update(gs["id"], runtime=want, start_cmd=cat["start_cmd"],
+                                stop_signal=stop_sig)
+    logger.info("moved game server %s to the %s runtime", gs["name"], want)
+    return True
+
+
+async def migrate_broken_runtimes(db) -> int:
+    """Boot-time `_migrate_runtime` for every built-in-catalog server."""
+    migrated = 0
+    for gs in await db.game_server_list():
+        key = gs.get("catalog_key")
+        cat = await db.game_catalog_get(key) if key else None
+        if cat and cat.get("builtin") and await _migrate_runtime(db, gs, cat):
+            migrated += 1
+    return migrated
 
 
 async def resync_all_from_catalog(db) -> int:

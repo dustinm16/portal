@@ -8845,6 +8845,7 @@ async def http_game_catalog_add(request: web.Request) -> web.Response:
             return web.json_response({"error": f"{f} is required"}, status=400)
     try:
         data["key"] = key
+        data["runtime"] = gameservers.normalize_runtime(data.get("runtime"))
         await db.game_catalog_upsert(data, builtin=False)
     except Exception as e:
         return web.json_response({"error": safe_error_message(e)}, status=400)
@@ -9420,6 +9421,8 @@ async def http_game_server_launch_options(request: web.Request) -> web.Response:
         kw["stop_signal"] = data["stop_signal"]
     if isinstance(data.get("start_cmd"), str) and data["start_cmd"].strip():
         kw["start_cmd"] = data["start_cmd"]
+    if isinstance(data.get("runtime"), str):
+        kw["runtime"] = data["runtime"]
     if not kw:
         return web.json_response({"error": "nothing to change"}, status=400)
 
@@ -16953,6 +16956,7 @@ class PortalServer:
             await gameservers.seed_catalog(db)
             await gameservers.ensure_default_storage_root(db)
             await gameservers.resync_all_from_catalog(db)
+            await gameservers.migrate_broken_runtimes(db)
             gameservers.start_build_check_loop(db)
             await gameservers.ensure_steam_runtime_libs()
         except Exception as e:

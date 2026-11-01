@@ -1064,6 +1064,7 @@
                         <div class="form-group"><label>Name</label><input type="text" id="gsc-name" placeholder="My Game"></div>
                         <div class="form-group"><label>Steam App ID</label><input type="number" id="gsc-appid" min="1"></div>
                         <div class="form-group"><label>Start command</label><input type="text" id="gsc-cmd" placeholder="./StartServer.sh"></div>
+                        <div class="form-group"><label>Runtime</label><select id="gsc-runtime"><option value="native">Native Linux</option><option value="wine">Wine (Windows-only server)</option></select></div>
                         <div class="form-group"><label>Start args</label><input type="text" id="gsc-args"></div>
                         <div class="form-group"><label>Stop signal</label><input type="text" id="gsc-signal" value="SIGTERM"></div>
                         <div class="form-group"><label>Steam login</label><input type="text" id="gsc-login" value="anonymous"></div>
@@ -1199,6 +1200,12 @@
                             <span>Start command <span style="color:var(--text-muted);font-weight:400;">— the executable, relative to the install dir (admin only)</span></span>
                             <input id="gs-launch-cmd" type="text" spellcheck="false" placeholder="./PalServer.sh"
                                    style="width:100%;box-sizing:border-box;background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.55rem;font-family:monospace;font-size:0.8rem;">
+                        </label>
+                        <label style="display:flex;flex-direction:column;gap:0.3rem;font-size:0.8rem;">
+                            <span>Runtime <span style="color:var(--text-muted);font-weight:400;">— Wine runs a Windows-only server; run Update afterwards if its files are missing (admin only)</span></span>
+                            <select id="gs-launch-runtime" style="background:var(--code-bg);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;padding:0.5rem;font-size:0.8rem;">
+                                <option value="native">Native Linux</option><option value="wine">Wine</option>
+                            </select>
                         </label>
                         <div style="font-size:0.7rem;color:var(--text-muted);">Changes apply on the next start. If the server won't come back after a restart, reopen this dialog and revert.</div>
                         <div id="gs-launch-note" style="font-size:0.72rem;color:var(--accent-yellow);"></div>
@@ -4625,7 +4632,7 @@
                         ${escapeHtml(gs.name)}
                     </h3>
                     <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.75rem;">
-                        ${escapeHtml(gs.catalog_key || 'custom')} · app ${gs.steam_app_id} · ${escapeHtml(gs.state)}
+                        ${escapeHtml(gs.catalog_key || 'custom')} · app ${gs.steam_app_id} · ${gs.runtime === 'wine' ? 'Wine · ' : ''}${escapeHtml(gs.state)}
                         ${gs.installed_build ? ' · build ' + gs.installed_build : ''}
                         ${gs.resource ? ` · <span style="font-family:monospace;">${gs.resource.cpu_percent.toFixed(1)}% CPU · ${adminResourceMem(gs.resource.mem_mb)}</span>` : ''}
                     </div>
@@ -4670,6 +4677,7 @@
             document.getElementById('gs-launch-signal').value = gs.stop_signal || 'SIGTERM';
             document.getElementById('gs-launch-cmd').value = gs.start_cmd || '';
             document.getElementById('gs-launch-cmd').disabled = false;  // admin.html is admin-only
+            document.getElementById('gs-launch-runtime').value = gs.runtime || 'native';
             document.getElementById('gs-launch-note').textContent = '';
             document.getElementById('gs-launch-modal').style.display = 'flex';
         }
@@ -4683,6 +4691,7 @@
                     start_args: document.getElementById('gs-launch-args').value,
                     stop_signal: document.getElementById('gs-launch-signal').value,
                     start_cmd: document.getElementById('gs-launch-cmd').value.trim(),
+                    runtime: document.getElementById('gs-launch-runtime').value,
                 };
                 const res = await Portal.fetch(`/api/game-servers/${_gsLaunchId}/launch-options`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -5089,6 +5098,7 @@
                 name: document.getElementById('gsc-name').value.trim(),
                 steam_app_id: parseInt(document.getElementById('gsc-appid').value, 10),
                 start_cmd: document.getElementById('gsc-cmd').value.trim(),
+                runtime: document.getElementById('gsc-runtime').value,
                 start_args: document.getElementById('gsc-args').value.trim(),
                 stop_signal: document.getElementById('gsc-signal').value.trim() || 'SIGTERM',
                 steam_login: document.getElementById('gsc-login').value.trim() || 'anonymous',

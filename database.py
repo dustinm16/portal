@@ -1066,6 +1066,9 @@ MIGRATIONS = [
     "ALTER TABLE game_servers ADD COLUMN backup_paths TEXT DEFAULT '[]'",
     "ALTER TABLE game_catalog ADD COLUMN config_root TEXT",
     "ALTER TABLE game_servers ADD COLUMN config_root TEXT",
+    # How the server binary is run: 'native', or 'wine' for Windows-only servers
+    "ALTER TABLE game_catalog ADD COLUMN runtime TEXT DEFAULT 'native'",
+    "ALTER TABLE game_servers ADD COLUMN runtime TEXT DEFAULT 'native'",
     # Admin-managed game-data storage locations (disks/mounts a new game
     # server can be deployed onto). Seeded from PORTAL_GAMEDATA_ROOT at boot
     # if empty -- see gameservers.ensure_default_storage_root().
@@ -3214,6 +3217,7 @@ class Database:
             "backup_paths": bp if isinstance(bp, str) else json.dumps(bp),
             "config_root": data.get("config_root") or None,
             "game_port": data.get("game_port"),
+            "runtime": data.get("runtime") or "native",
             "icon": data.get("icon") or "game", "notes": data.get("notes"),
             "builtin": 1 if builtin else 0,
         }
@@ -3282,6 +3286,7 @@ class Database:
             "config_paths": cp if isinstance(cp, str) else json.dumps(cp),
             "backup_paths": bp if isinstance(bp, str) else json.dumps(bp),
             "config_root": data.get("config_root") or None,
+            "runtime": data.get("runtime") or "native",
             "state": data.get("state", "installing"),
             "created_by": data.get("created_by"),
         }
@@ -3295,7 +3300,8 @@ class Database:
     async def game_server_update(self, gs_id: int, **fields) -> bool:
         allowed = {"service_id", "state", "install_job", "installed_build",
                    "latest_build", "build_checked_at", "start_args", "start_cmd",
-                   "stop_signal", "config_paths", "backup_paths", "config_root"}
+                   "stop_signal", "config_paths", "backup_paths", "config_root",
+                   "runtime"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return False
