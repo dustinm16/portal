@@ -17,6 +17,7 @@ import pwd
 from config import ALLOWED_SHELLS as _ALLOWED_SHELLS
 import re
 import select
+import shutil
 import signal
 import struct
 import termios
@@ -51,6 +52,67 @@ _TERM_QUERIES = [
     # DSR - Device Status Report: ESC [ 5 n
     (re.compile(r'\x1b\[5n'), '\x1b[0n'),
 ]
+
+
+async def _move_to_own_scope(pid: int, user_id: int) -> Optional[str]:
+    """Move a freshly forked shell into its own transient systemd scope.
+
+    Without this the shell, and anything it daemonizes (tmux, screen, nohup
+    jobs), lives in the portal's service cgroup and is killed whenever the
+    portal restarts. Returns the scope name, or None when the host has no
+    systemd, the call is refused, or it times out; the terminal then simply
+    runs inside the portal's cgroup as before.
+    """
+    if not Config.TERMINAL_OWN_SCOPE or not os.path.isdir("/run/systemd/system"):
+        return None
+    busctl = shutil.which("busctl")
+    if not busctl:
+        return None
+    scope = f"portal-terminal-{pid}-{int(time.time())}.scope"
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            busctl, "call", "--system",
+            "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager", "StartTransientUnit",
+            "ssa(sv)a(sa(sv))", scope, "fail",
+            "3",
+            "PIDs", "au", "1", str(pid),
+            "Description", "s", f"Open Relay Portal web terminal (user {user_id})",
+            "CollectMode", "s", "inactive-or-failed",
+            "0",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            logger.warning(
+                f"Could not create terminal scope for user {user_id}: "
+                f"{err.decode(errors='replace').strip()[:200]}"
+            )
+            return None
+        # StartTransientUnit only queues a job; wait until the pid has moved.
+        for _ in range(100):
+            try:
+                with open(f"/proc/{pid}/cgroup") as f:
+                    if scope in f.read():
+                        return scope
+            except OSError:
+                return None
+            await asyncio.sleep(0.02)
+        logger.warning(f"Terminal scope {scope} was created but pid {pid} did not move into it")
+    except asyncio.TimeoutError:
+        logger.warning(f"Timed out creating terminal scope for user {user_id}")
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except (ProcessLookupError, OSError):
+                pass
+    except Exception as e:
+        logger.warning(f"Could not create terminal scope for user {user_id}: {e}")
+    return None
 
 
 def _intercept_terminal_queries(data: str, write_fd: int) -> str:
@@ -264,6 +326,7 @@ class TerminalPlugin(PluginBase):
 
         master_fd = None
         pid = None
+        gate_w = None
 
         try:
             # Create PTY
@@ -274,13 +337,23 @@ class TerminalPlugin(PluginBase):
             winsize = struct.pack("HHHH", rows, cols, 0, 0)
             fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
 
+            # The child waits on this pipe before exec'ing the shell, so the
+            # parent can move it into its own systemd scope first and nothing
+            # the shell starts is left behind in the portal's cgroup.
+            gate_r, gate_w = os.pipe()
+
             # Fork process
-            pid = os.fork()
+            try:
+                pid = os.fork()
+            except OSError:
+                os.close(gate_r)
+                raise
 
             if pid == 0:
                 # Child process
                 try:
                     os.close(master_fd)
+                    os.close(gate_w)
 
                     # Create new session and set controlling terminal
                     os.setsid()
@@ -299,6 +372,13 @@ class TerminalPlugin(PluginBase):
                     # Change to working directory
                     os.chdir(working_dir)
 
+                    # Wait for the parent (returns on its write or on EOF)
+                    try:
+                        os.read(gate_r, 1)
+                    except OSError:
+                        pass
+                    os.close(gate_r)
+
                     # Execute shell
                     os.execvpe(shell, [shell, "-l"], env)
                 except Exception as e:
@@ -306,7 +386,13 @@ class TerminalPlugin(PluginBase):
             else:
                 # Parent process
                 os.close(slave_fd)
-                logger.debug(f"Shell process started: pid={pid}")
+                os.close(gate_r)
+                try:
+                    scope = await _move_to_own_scope(pid, user_id)
+                finally:
+                    os.close(gate_w)
+                    gate_w = None
+                logger.debug(f"Shell process started: pid={pid}, scope={scope}")
 
                 # Set non-blocking
                 flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
@@ -329,6 +415,11 @@ class TerminalPlugin(PluginBase):
             await ws.send_json({"type": "error", "message": "Failed to create terminal"})
         finally:
             # Cleanup
+            if gate_w is not None:
+                try:
+                    os.close(gate_w)
+                except OSError:
+                    pass
             if master_fd is not None:
                 try:
                     os.close(master_fd)

@@ -78,6 +78,10 @@ class Config:
     )
     RECORDING_ENABLED: bool = os.getenv("RECORDING_ENABLED", "true").lower() == "true"
 
+    # Run each local web-terminal shell in its own systemd scope, so tmux /
+    # screen sessions started from it survive a portal restart.
+    TERMINAL_OWN_SCOPE: bool = os.getenv("TERMINAL_OWN_SCOPE", "true").lower() == "true"
+
     # Vulnerability Scanner Settings
     NVD_API_KEY: str = os.getenv("NVD_API_KEY", "")
     NMAP_PATH: str = os.getenv("NMAP_PATH", "/usr/bin/nmap")

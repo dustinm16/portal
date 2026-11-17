@@ -253,6 +253,7 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Rate limiting** — Per-IP request throttling on all endpoints
 - **Trusted proxies** — `CF-Connecting-IP` / `X-Forwarded-For` are honoured only from Cloudflare, loopback and `TRUSTED_PROXIES`; direct-to-origin clients cannot spoof their address
 - **Scanner blocking** — Clients probing for `.env`, `.git/config`, `*.php` and similar are blocked for an hour after three hits (`PROBE_BLOCK_STRIKES`, `PROBE_BLOCK_SECONDS`)
+- **Restart-safe terminal sessions** — Each local web-terminal shell runs in its own systemd scope, so `tmux`/`screen` sessions started from it survive a portal restart (`TERMINAL_OWN_SCOPE`)
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model, and
