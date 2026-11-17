@@ -324,7 +324,7 @@ class VPNTunnelPlugin(PluginBase):
             cipher = self._create_cipher(target.config.get("pre_shared_key"))
 
             # Tunnel loop
-            await self._tun_loop(ws, tun, cipher)
+            await self._tun_loop(ws, tun, cipher, user_id)
 
         except Exception as e:
             logger.error(f"TUN setup failed for user {user_id}: {e}")
@@ -345,7 +345,8 @@ class VPNTunnelPlugin(PluginBase):
         self,
         ws: web.WebSocketResponse,
         tun_fd: int,
-        cipher: Optional[object]
+        cipher: Optional[object],
+        user_id: Optional[int] = None
     ) -> None:
         """TUN device I/O loop."""
         loop = asyncio.get_event_loop()
