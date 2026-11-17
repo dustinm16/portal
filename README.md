@@ -251,6 +251,8 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Opaque connection IDs** — URL-safe tokens replace sequential integers, preventing enumeration
 - **Proxy isolation** — Embedded browser strips session cookies and auth headers from upstream requests; sandboxed iframe
 - **Rate limiting** — Per-IP request throttling on all endpoints
+- **Trusted proxies** — `CF-Connecting-IP` / `X-Forwarded-For` are honoured only from Cloudflare, loopback and `TRUSTED_PROXIES`; direct-to-origin clients cannot spoof their address
+- **Scanner blocking** — Clients probing for `.env`, `.git/config`, `*.php` and similar are blocked for an hour after three hits (`PROBE_BLOCK_STRIKES`, `PROBE_BLOCK_SECONDS`)
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model, and

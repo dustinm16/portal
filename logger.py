@@ -51,6 +51,26 @@ LOG_SETTINGS = {
 }
 
 
+class BadRequestNoiseFilter(logging.Filter):
+    """Collapse aiohttp's "Error handling request" tracebacks for unparseable
+    HTTP into a single INFO line."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is not None and type(exc).__name__ in (
+            "BadHttpMessage", "BadHttpMethod", "BadStatusLine", "InvalidHeader",
+            "LineTooLong", "InvalidURLError", "ContentLengthError", "TransferEncodingError",
+        ):
+            reason = " ".join(str(getattr(exc, "message", exc)).split())[:120]
+            record.msg = f"{record.getMessage()}: malformed request ({reason})"
+            record.args = None
+            record.exc_info = None
+            record.exc_text = None
+            record.levelno = logging.INFO
+            record.levelname = "INFO"
+        return True
+
+
 class SensitiveDataFilter(logging.Filter):
     """Filter to redact sensitive data from log messages."""
 
@@ -170,6 +190,12 @@ def setup_logging(
         file_handler.setLevel(getattr(logging, LOG_SETTINGS["level"]))
         file_handler.addFilter(sensitive_filter)
         root_logger.addHandler(file_handler)
+
+    # Malformed requests (port scanners, TLS/HTTP2 probes) are routine on a
+    # public host: keep one line, drop the traceback.
+    server_logger = logging.getLogger("aiohttp.server")
+    if not any(isinstance(f, BadRequestNoiseFilter) for f in server_logger.filters):
+        server_logger.addFilter(BadRequestNoiseFilter())
 
     # Set levels for noisy loggers
     logging.getLogger("aiohttp.access").setLevel(logging.INFO)

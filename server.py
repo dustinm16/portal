@@ -146,6 +146,55 @@ def _is_ip_blocked(ip: str) -> bool:
     return False
 
 
+# Paths only vulnerability scanners ask for — the portal serves none of them.
+_PROBE_PATH_RE = re.compile(
+    r"(^|/)\.(env|git|aws|ssh|svn|hg|htpasswd|htaccess|DS_Store)(\b|/|$)"
+    r"|\.git-credentials"
+    r"|\.(php\d?|aspx?|jsp|cgi)$"
+    r"|(^|/)(wp-admin|wp-login|wp-content|wp-includes|phpmyadmin|cgi-bin|vendor/phpunit)(/|$)",
+    re.IGNORECASE,
+)
+# Prefixes that relay to other applications, where such paths can be legitimate.
+_PROBE_EXEMPT_PREFIXES = ("/proxy/", "/search/", "/api/")
+_probe_strikes: dict[str, tuple[int, float]] = {}   # ip -> (count, first_seen)
+_probe_blocks: dict[str, float] = {}                # ip -> monotonic expiry
+
+
+def _is_probe_blocked(ip: str) -> bool:
+    expires = _probe_blocks.get(ip)
+    if expires is None:
+        return False
+    if monotonic() < expires:
+        return True
+    del _probe_blocks[ip]
+    return False
+
+
+def _record_probe(ip: str, path: str) -> None:
+    """Count a scanner-style request; block the client once it repeats."""
+    if Config.PROBE_BLOCK_STRIKES <= 0 or ip == "unknown" or _is_trusted_proxy(ip):
+        return
+    now = monotonic()
+    if len(_probe_strikes) > 5000:
+        for k in [k for k, (_, first) in _probe_strikes.items() if now - first > 600]:
+            del _probe_strikes[k]
+    if len(_probe_blocks) > 5000:
+        for k in [k for k, exp in _probe_blocks.items() if exp <= now]:
+            del _probe_blocks[k]
+    count, first = _probe_strikes.get(ip, (0, now))
+    if now - first > 600:
+        count, first = 0, now
+    count += 1
+    if count >= Config.PROBE_BLOCK_STRIKES:
+        _probe_strikes.pop(ip, None)
+        _probe_blocks[ip] = now + Config.PROBE_BLOCK_SECONDS
+        logger.info(
+            f"Blocking {ip} for {Config.PROBE_BLOCK_SECONDS}s after repeated scanner probes (last: {path[:80]})"
+        )
+    else:
+        _probe_strikes[ip] = (count, first)
+
+
 def safe_error_message(e: Exception) -> str:
     """Return a safe error message without exposing internal details."""
     error_msg = str(e)
@@ -381,23 +430,88 @@ def forbidden_response(request: web.Request) -> web.Response:
     )
 
 
-def get_client_ip(request: web.Request) -> str:
-    """Extract client IP from request, considering proxies."""
-    # Check for Cloudflare header first
-    cf_ip = request.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip
+# Cloudflare's published edge ranges (https://www.cloudflare.com/ips/).
+_CLOUDFLARE_NETWORKS = (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+)
 
-    # Check X-Forwarded-For
+
+def _build_trusted_proxies() -> list:
+    nets = [ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS]
+    nets += [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")]
+    for item in Config.TRUSTED_PROXIES.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            logger.warning(f"Ignoring invalid TRUSTED_PROXIES entry: {item!r}")
+    return nets
+
+
+_trusted_proxy_networks: list = _build_trusted_proxies()
+_trusted_peer_cache: dict[str, bool] = {}
+
+
+def _is_trusted_proxy(peer_ip: str) -> bool:
+    """True when `peer_ip` is a proxy whose forwarding headers we believe."""
+    cached = _trusted_peer_cache.get(peer_ip)
+    if cached is not None:
+        return cached
+    try:
+        addr = ipaddress.ip_address(peer_ip)
+        if addr.version == 6 and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped
+        trusted = any(addr.version == n.version and addr in n for n in _trusted_proxy_networks)
+    except ValueError:
+        trusted = False
+    if len(_trusted_peer_cache) > 4096:
+        _trusted_peer_cache.clear()
+    _trusted_peer_cache[peer_ip] = trusted
+    return trusted
+
+
+def _valid_ip(value: str) -> Optional[str]:
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
+def get_client_ip(request: web.Request) -> str:
+    """Extract the client IP, honouring proxy headers only from trusted proxies.
+
+    Rate limiting and IP blocking key on this value, so forwarding headers
+    sent by an arbitrary client (one that reaches the origin without going
+    through the proxy) must not be believed.
+    """
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    peer_ip = peername[0] if peername else "unknown"
+    if not _is_trusted_proxy(peer_ip):
+        return peer_ip
+
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip and _valid_ip(cf_ip):
+        return _valid_ip(cf_ip)
+
     xff = request.headers.get("X-Forwarded-For")
     if xff:
-        return xff.split(",")[0].strip()
+        # Walk right-to-left: the first hop that is not itself a trusted proxy
+        # is the real client; anything further left is client-supplied.
+        for hop in reversed(xff.split(",")):
+            ip = _valid_ip(hop)
+            if ip is None:
+                break
+            if not _is_trusted_proxy(ip):
+                return ip
 
-    # Fall back to direct connection
-    peername = request.transport.get_extra_info("peername")
-    if peername:
-        return peername[0]
-    return "unknown"
+    return peer_ip
 
 
 def get_display_name(user: dict) -> str:
@@ -409,6 +523,11 @@ def check_rate_limit(client_ip: str) -> bool:
     """Check if client has exceeded rate limit. Returns True if allowed."""
     now = time()
     window_start = now - Config.RATE_LIMIT_WINDOW
+
+    # Periodically drop idle clients so the table does not grow without bound
+    if len(rate_limits) > 5000:
+        for ip in [ip for ip, times in rate_limits.items() if not times or times[-1] <= window_start]:
+            del rate_limits[ip]
 
     # Clean old entries
     rate_limits[client_ip] = [t for t in rate_limits[client_ip] if t > window_start]
@@ -15281,8 +15400,7 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
         errors.append(f"webhook_logs: {e}")
     try:
         if config.get("auto_vacuum", "true") == "true":
-            await db.vacuum_database()
-            results["vacuumed"] = True
+            results["vacuumed"] = await db.vacuum_database(force=True)
     except Exception as e:
         errors.append(f"vacuum: {e}")
     # Clean stale webhook rate limit entries
@@ -16170,7 +16288,8 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
 @web.middleware
 async def security_headers_middleware(request: web.Request, handler):
     """Block banned IPs app-wide, then add security headers to all responses."""
-    if _is_ip_blocked(get_client_ip(request)):
+    client_ip = get_client_ip(request)
+    if _is_ip_blocked(client_ip) or _is_probe_blocked(client_ip):
         response = web.json_response({"error": "Access denied"}, status=403)
     else:
         try:
@@ -16179,6 +16298,12 @@ async def security_headers_middleware(request: web.Request, handler):
             # HTTPException (redirects, 404s, etc.) are also Response objects.
             # Catch them so we can add security headers before returning.
             response = exc
+        if (
+            response.status in (401, 404, 405)
+            and not request.path.startswith(_PROBE_EXEMPT_PREFIXES)
+            and _PROBE_PATH_RE.search(request.path)
+        ):
+            _record_probe(client_ip, request.path)
 
     # HSTS - Enforce HTTPS for 1 year, include subdomains
     response.headers.setdefault('Strict-Transport-Security',

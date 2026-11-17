@@ -40,6 +40,18 @@ class Config:
     RATE_LIMIT_REQUESTS: int = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))
     RATE_LIMIT_WINDOW: int = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 
+    # Reverse proxies whose CF-Connecting-IP / X-Forwarded-For headers are
+    # believed. Loopback and Cloudflare's published ranges are always trusted;
+    # list extra proxies here as comma-separated IPs/CIDRs. Requests arriving
+    # from any other peer are attributed to the peer address itself, so a
+    # client connecting straight to the origin cannot spoof its IP.
+    TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")
+
+    # Temporarily block clients that probe for files the portal never serves
+    # (.env, .git/config, *.php, ...). 0 strikes disables the feature.
+    PROBE_BLOCK_STRIKES: int = int(os.getenv("PROBE_BLOCK_STRIKES", "3"))
+    PROBE_BLOCK_SECONDS: int = int(os.getenv("PROBE_BLOCK_SECONDS", "3600"))
+
     # Session Cookie Settings
     SESSION_COOKIE_NAME: str = os.getenv("SESSION_COOKIE_NAME", "portal_session")
     SESSION_COOKIE_MAX_AGE: int = int(os.getenv("SESSION_COOKIE_MAX_AGE", "86400"))  # 24 hours

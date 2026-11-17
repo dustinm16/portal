@@ -1148,6 +1148,9 @@ class Database:
         os.chmod(self.db_path, 0o600)
         await self._connection.execute("PRAGMA journal_mode = WAL")
         await self._connection.execute("PRAGMA busy_timeout = 5000")
+        # Cap the WAL file: without a limit it stays at its high-water mark
+        # (a VACUUM writes the whole database through it) forever.
+        await self._connection.execute("PRAGMA journal_size_limit = 67108864")
         await self._connection.execute("PRAGMA foreign_keys = ON")
         await self._connection.executescript(SCHEMA)
         await self._connection.commit()
@@ -6460,9 +6463,33 @@ class Database:
         await self.conn.commit()
         return code
 
-    async def vacuum_database(self) -> None:
-        """Run VACUUM to reclaim disk space."""
-        await self.conn.execute("VACUUM")
+    async def vacuum_database(self, force: bool = False) -> bool:
+        """Reclaim disk space. Returns True if a VACUUM actually ran.
+
+        VACUUM rewrites the entire database (through the WAL), so it is only
+        worth doing when a meaningful share of the file is free pages: at
+        least 10% of the database or 64 MB. `force` skips that check. The WAL
+        is checkpointed and truncated either way.
+        """
+        async def _pragma(name: str) -> int:
+            cursor = await self.conn.execute(f"PRAGMA {name}")
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+        free_pages = await _pragma("freelist_count")
+        page_count = await _pragma("page_count")
+        page_size = await _pragma("page_size")
+        worthwhile = free_pages > 0 and (
+            free_pages * 10 >= page_count or free_pages * page_size >= 64 * 1024 * 1024
+        )
+        vacuumed = False
+        if force or worthwhile:
+            await self.conn.commit()
+            await self.conn.execute("VACUUM")
+            vacuumed = True
+        cursor = await self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        await cursor.fetchall()
+        return vacuumed
 
     async def get_all_service_ids(self) -> list[int]:
         """Get all service IDs for bulk cleanup."""
