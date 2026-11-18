@@ -1120,6 +1120,10 @@ def create_ssl_context() -> ssl.SSLContext:
     return ssl_context
 
 
+# Request key set by authenticate_request when the ?token= query parameter is what authenticated it.
+_AUTH_VIA_QUERY_TOKEN = "auth_via_query_token"
+
+
 async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     """Authenticate a request via header, query param, session cookie, or API key."""
     # Check Authorization header for Bearer token
@@ -1160,7 +1164,10 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     token_str = request.query.get("token")
     if token_str:
         try:
-            return await validate_token(token_str)
+            payload = await validate_token(token_str)
+            # Noted for the proxy, which must not pass the member's token on to the upstream.
+            request[_AUTH_VIA_QUERY_TOKEN] = True
+            return payload
         except AuthError:
             pass
 
@@ -12520,6 +12527,21 @@ def _proxy_forwarded_host(request: web.Request) -> str:
     return configured if _PROXY_HOST_RE.match(configured) else ""
 
 
+def _proxy_query_string(request: web.Request) -> str:
+    """Query string forwarded to the upstream.
+
+    When the request was authenticated by a ?token= parameter, that parameter is
+    the member's portal session and is removed (every occurrence of it); the
+    other parameters are passed on exactly as sent.
+    """
+    if not request.get(_AUTH_VIA_QUERY_TOKEN):
+        return request.query_string
+    from urllib.parse import unquote_plus
+    kept = [part for part in request.rel_url.raw_query_string.split("&")
+            if part and unquote_plus(part.split("=", 1)[0]) != "token"]
+    return "&".join(kept)
+
+
 def _proxy_request_headers(request: web.Request, config: dict, upstream_host: str,
                            proxy_prefix: str, browser_mode: bool) -> CIMultiDict:
     """Headers sent to the upstream for one proxied request.
@@ -12909,7 +12931,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
 
         ws_scheme = "wss" if parsed_target.scheme == "https" else "ws"
         ws_raw_path = request.match_info.get("path", "")
-        ws_query = request.query_string
+        ws_query = _proxy_query_string(request)
         if browser_mode and (ws_raw_path.startswith("http://") or ws_raw_path.startswith("https://")):
             ws_parsed = urlparse(f"{ws_raw_path}?{ws_query}" if ws_query else ws_raw_path)
             ws_url = f"{ws_scheme}://{ws_parsed.netloc}{ws_parsed.path}"
@@ -12971,7 +12993,7 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
 
     # Build upstream URL
     path = request.match_info.get("path", "")
-    query = request.query_string
+    query = _proxy_query_string(request)
     if browser_mode and (path.startswith("http://") or path.startswith("https://")):
         # Browser mode: full URL already parsed above, extract just the path portion
         parsed_browse = urlparse(f"{path}?{query}" if query else path)

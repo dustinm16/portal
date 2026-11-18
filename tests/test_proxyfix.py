@@ -427,6 +427,19 @@ async def slow_chain(request):
     return web.Response(status=302, headers={"Location": f"/slowchain/{n - 1}"})
 
 
+ws_queries = []
+
+
+async def ws_query_echo(request):
+    """A WebSocket upstream that records the query string it was dialled with."""
+    ws_queries.append(request.rel_url.raw_query_string)
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    await ws.send_str("hi")
+    await ws.close()
+    return ws
+
+
 async def ws_count(request):
     """A WebSocket upstream that counts the connections made to it."""
     upstream_hits["ws"] += 1
@@ -486,11 +499,14 @@ NOW_CONNECTION = {}
 
 
 REVOKED = False
+QUERY_AUTH = False      # the fake login says the ?token= parameter authenticated the request
 
 
 async def fake_auth(request):
     if REVOKED:
         return None
+    if QUERY_AUTH:
+        request[server._AUTH_VIA_QUERY_TOKEN] = True
 
     class T:
         user_id = 1
@@ -536,6 +552,7 @@ async def main():
     up_app.router.add_get("/r-elsewhere", redirect_elsewhere)
     up_app.router.add_get("/count", count_hit)
     up_app.router.add_get("/wscount", ws_count)
+    up_app.router.add_get("/wsquery", ws_query_echo)
     up_app.router.add_get("/slowchain/{n}", slow_chain)
     up_app.router.add_get("/created", created)
     up_app.router.add_get("/trickle", trickle)
@@ -636,6 +653,43 @@ async def main():
                     hdrs.setdefault(k.lower(), []).append(v)
                 check("Host: attacker.example -> upstream sees the configured host, not the attacker's",
                       hdrs.get("x-forwarded-host") == ["127.0.0.1"], str(hdrs))
+
+            # --- the member's ?token= parameter is not passed on to the upstream
+            global QUERY_AUTH
+            CONFIG.clear()
+
+            async def upstream_path(qs, query_auth):
+                global QUERY_AUTH
+                QUERY_AUTH = query_auth
+                try:
+                    async with c.get(f"{base}/echo?{qs}") as r:
+                        return json.loads(await r.text())["path"]
+                finally:
+                    QUERY_AUTH = False
+            path = await upstream_path("token=SECRETJWT&a=1&b=x%26y", True)
+            check("token: authenticated by ?token=, the parameter is removed and the others kept as sent",
+                  path == "/echo?a=1&b=x%26y", path)
+            path = await upstream_path("a=1&token=SECRETJWT&token=SECOND&TOKEN=keep&mytoken=keep2", True)
+            check("token: every token parameter is removed, similar names are kept",
+                  path == "/echo?a=1&TOKEN=keep&mytoken=keep2", path)
+            path = await upstream_path("tok%65n=SECRETJWT&a=1", True)
+            check("token: an escaped parameter name is removed too", path == "/echo?a=1", path)
+            path = await upstream_path("token=SECRETJWT", True)
+            check("token: when it was the only parameter no '?' is left", path == "/echo", path)
+            path = await upstream_path("token=app-own-value&a=1", False)
+            check("token: when something else authenticated the request, the app's own token parameter is kept",
+                  path == "/echo?token=app-own-value&a=1", path)
+            del ws_queries[:]
+            QUERY_AUTH = True
+            try:
+                async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as wc:
+                    async with wc.ws_connect(f"{base}/wsquery?token=SECRETJWT&a=1") as cws:
+                        await asyncio.wait_for(cws.receive(), 5)
+            finally:
+                QUERY_AUTH = False
+            check("token: the WebSocket upstream is not dialled with the ?token= parameter",
+                  ws_queries == ["a=1"], str(ws_queries))
+            CONFIG.clear()
 
             # --- redirects: followed by the portal (single-site mode), as before
             CONFIG.clear()
