@@ -476,6 +476,73 @@ def test_member_who_lost_access_is_removed_from_the_call_at_once():
     asyncio.run(run())
 
 
+def test_making_a_channel_private_ejects_the_members_who_may_not_stay():
+    class Req:
+        match_info = {"id": "9"}
+
+        def __init__(self, data):
+            self._data = data
+
+        async def json(self):
+            return self._data
+
+    async def run(data, ejected_expected):
+        fresh(5)
+        a, b, c = FakeWs(), FakeWs(), FakeWs()
+        server.voice_state["secret-room"] = {ALICE: entry(a), BOB: entry(b, "tok-b"), EVE: entry(c, "tok-e")}
+        server.voice_state["other-room"] = {13: entry(FakeWs(), "tok-x")}
+
+        async def auth(request):
+            return type("T", (), {"user_id": 1, "has_scope": lambda self, s: True})()
+
+        async def get_user(uid):
+            return {"id": uid, "username": "mod", "role": "moderator"}
+
+        async def get_channel(cid):
+            return {"id": cid, "name": "secret-room", "is_default": 0, "visibility": "public"}
+
+        async def no_stream(cid):
+            return None
+
+        async def update(cid, **kw):
+            return True
+
+        async def audit(*args, **kw):
+            return None
+
+        async def role(user_id):
+            return "user"
+
+        async def allowed(room, user_id, r):
+            return user_id == BOB       # only Bob is a member of the private channel
+        saved = (server.authenticate_request, server.db.get_user_by_id, server.db.get_chat_channel,
+                 server.db.get_stream_by_chat_channel, server.db.update_chat_channel, server.audit_log,
+                 server._chat_role_of_user, server._voice_room_allowed)
+        (server.authenticate_request, server.db.get_user_by_id, server.db.get_chat_channel,
+         server.db.get_stream_by_chat_channel, server.db.update_chat_channel, server.audit_log,
+         server._chat_role_of_user, server._voice_room_allowed) = (
+            auth, get_user, get_channel, no_stream, update, audit, role, allowed)
+        try:
+            resp = await server.http_update_chat_channel(Req(data))
+            assert resp.status == 200, resp.status
+        finally:
+            (server.authenticate_request, server.db.get_user_by_id, server.db.get_chat_channel,
+             server.db.get_stream_by_chat_channel, server.db.update_chat_channel, server.audit_log,
+             server._chat_role_of_user, server._voice_room_allowed) = saved
+        left = set(server.voice_state.get("secret-room", {}))
+        assert left == ejected_expected, left
+        return a, b, c
+
+    # to private: Alice and Eve are not members, so they are taken out, with a notice; Bob stays
+    a, b, c = asyncio.run(run({"visibility": "private"}, {BOB}))
+    assert a.types() == ["voice_denied"] and "voice_denied" in c.types(), (a.sent, c.sent)
+    assert "voice_user_left" in b.types() and "voice_denied" not in b.types(), b.sent
+    assert 13 in server.voice_state["other-room"]
+    # any other change leaves the call alone
+    asyncio.run(run({"description": "x"}, {ALICE, BOB, EVE}))
+    asyncio.run(run({"visibility": "public"}, {ALICE, BOB, EVE}))
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

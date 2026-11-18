@@ -14271,6 +14271,13 @@ async def http_update_chat_channel(request: web.Request) -> web.Response:
             })
             chat_rooms[new_name] = chat_rooms.pop(old_name)
 
+    # A channel that was just made private: members of its voice call who are
+    # not allowed in a private channel leave the call now, not at their next
+    # reconnect.
+    if data.get("visibility") == "private":
+        for voice_user_id in list((voice_state.get(new_name or old_name) or {}).keys()):
+            await _voice_eject_if_not_allowed(voice_user_id)
+
     return web.json_response({"success": True})
 
 
