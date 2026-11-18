@@ -761,6 +761,18 @@ async def run(ctx):
             ctx.ok("backups: only the configured number of archives is kept",
                    len([n for n in os.listdir(adir) if n.startswith("portal-backup-")]) == 2, str(sorted(os.listdir(adir))))
 
+            # The audit entry of a run names the archives it pruned (read back through the API; details are encrypted at rest).
+            st, body, _ = await _status(admin, "GET", base + "/api/admin/audit-log", params={"action": "backup.run", "limit": "50"})
+            entries = json.loads(body).get("entries", []) if st == 200 else []
+            pruned_seen = []
+            for e in entries:
+                try:
+                    pruned_seen += json.loads(e.get("details") or "{}").get("pruned", [])
+                except ValueError:
+                    pass
+            ctx.ok("backups: the run audit entries list the archives that were pruned",
+                   st == 200 and any(n.startswith("portal-backup-") for n in pruned_seen), f"status={st} {str(entries)[:300]}")
+
             # ---- delete
             st, body, _ = await _status(admin, "GET", base + "/api/admin/backups")
             victim = json.loads(body)["archives"][-1]["name"]

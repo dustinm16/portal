@@ -894,7 +894,7 @@
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Pin the SSH host key of an admin-defined <code>ssh</code> service. Admin only. Until a key is pinned, and whenever the server presents a different key, the WebSocket relay sends a <code>host_key</code> message (see User Connections) and closes before any credential is sent. An admin may also pre-fill <code>config.host_key_fingerprint</code> when creating or editing the service. An edit that changes the host or port the plugin dials (the <code>config.host</code> / <code>config.port</code> when set, else the service's own) clears the pin.</p>
+                        <p>Pin the SSH host key of an admin-defined <code>ssh</code> service. Admin only. The credential must carry its user's full scope: a browser session or an all-scope (<code>*</code>) token or API key. Stream keys, scoped API keys and scoped tokens get <code>403</code>, and the prompt they receive has <code>can_accept: false</code> and no <code>accept_url</code> or <code>accept_token</code>. Until a key is pinned, and whenever the server presents a different key, the WebSocket relay sends a <code>host_key</code> message (see User Connections) and closes before any credential is sent. An admin may also pre-fill <code>config.host_key_fingerprint</code> when creating or editing the service. An edit that changes the host or port the plugin dials (the <code>config.host</code> / <code>config.port</code> when set, else the service's own) clears the pin.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Field</th><th>Type</th><th>Description</th></tr>
@@ -1142,7 +1142,7 @@
                         <span class="endpoint-desc">Trust an SSH host key</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Pin the SSH host key of an <code>ssh</code> or <code>sftp</code> connection. Owner only. Changing the connection's host or port clears the pin. The pin cannot be set through <code>PUT /api/connections/{id}</code>.</p>
+                        <p>Pin the SSH host key of an <code>ssh</code> or <code>sftp</code> connection. Owner only. The credential must carry its user's full scope: a browser session or an all-scope (<code>*</code>) token or API key. Stream keys, scoped API keys and scoped tokens get <code>403</code>, and the prompt they receive has <code>can_accept: false</code> and no <code>accept_url</code> or <code>accept_token</code>. Changing the connection's host or port clears the pin. The pin cannot be set through <code>PUT /api/connections/{id}</code>.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Field</th><th>Type</th><th>Description</th></tr>
@@ -1170,7 +1170,7 @@
                         <span class="endpoint-desc">Host key not trusted or changed</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>When the server's SSH host key is not pinned yet (<code>unpinned</code>) or differs from the pinned one (<code>changed</code>), the connection is refused during the key exchange, before any password or key is sent. The WebSocket <code>/ws/user-connection/{id}</code> (and the service relay) sends this text message and closes normally; the SFTP routes <code>/api/sftp/{conn_id}/...</code> answer HTTP <strong>409</strong> with the same body plus an <code>error</code> field. <code>can_accept</code>, <code>accept_url</code>, <code>host</code>, <code>port</code> and <code>accept_token</code> are present only for someone who may accept (the owner of a connection, an admin for a service).</p>
+                        <p>When the server's SSH host key is not pinned yet (<code>unpinned</code>) or differs from the pinned one (<code>changed</code>), the connection is refused during the key exchange, before any password or key is sent. The WebSocket <code>/ws/user-connection/{id}</code> (and the service relay) sends this text message and closes normally; the SFTP routes <code>/api/sftp/{conn_id}/...</code> answer HTTP <strong>409</strong> with the same body plus an <code>error</code> field. <code>can_accept</code>, <code>accept_url</code>, <code>host</code>, <code>port</code> and <code>accept_token</code> are present only for someone who may accept with a full-scope credential (the owner of a connection, an admin for a service); stream keys and scoped keys never get them.</p>
                         <pre>{
   "type": "host_key",
   "state": "unpinned",
@@ -1946,7 +1946,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Trust an SSH host key</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Pin (or replace) the VOD storage host key. The storage pins the key it sees on its first connect automatically; a different key later is refused and <code>GET /api/vods/storage</code> shows it as <code>host_key_refused</code>. Only <code>fingerprint</code> is used here; <code>host</code>, <code>port</code> and <code>token</code> are not required. The fingerprint must be the <code>host_key_refused.fingerprint</code> that <code>GET /api/vods/storage</code> shows; any other fingerprint, or no refused key being stored, is answered with 409.</p>
+                        <p>Pin (or replace) the VOD storage host key. The credential must carry its user's full scope: a browser session or an all-scope (<code>*</code>) token or API key. Stream keys, scoped API keys and scoped tokens get <code>403</code>, and the prompt they receive has <code>can_accept: false</code> and no <code>accept_url</code> or <code>accept_token</code>. The storage pins the key it sees on its first connect automatically; a different key later is refused and <code>GET /api/vods/storage</code> shows it as <code>host_key_refused</code>. Only <code>fingerprint</code> is used here; <code>host</code>, <code>port</code> and <code>token</code> are not required. The fingerprint must be the <code>host_key_refused.fingerprint</code> that <code>GET /api/vods/storage</code> shows; any other fingerprint, or no refused key being stored, is answered with 409.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Field</th><th>Type</th><th>Description</th></tr>
