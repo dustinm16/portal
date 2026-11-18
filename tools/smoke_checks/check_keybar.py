@@ -163,10 +163,10 @@ async def run(ctx):
                'id="keybar"' in body and 'id="keybar-toggle"' in body and 'id="paste-dialog"' in body
                and all(f'data-key="{k}"' in body for k in ("esc", "tab", "left", "right", "up", "down"))
                and 'data-mod="ctrl"' in body and 'data-mod="alt"' in body, "")
-        ctx.ok(f"keybar: {label} page loads terminal.js v4 after the key helper, host-key script kept",
-               "terminal.js?v=4" in body and "terminal-keybar.js?v=2" in body and "hostkey.js?v=1" in body
-               and body.index("terminal-keybar.js") < body.index("terminal.js?v=4")
-               and body.index("hostkey.js") < body.index("terminal.js?v=4"), "")
+        ctx.ok(f"keybar: {label} page loads terminal.js v5 after the key helper, host-key script kept",
+               "terminal.js?v=5" in body and "terminal-keybar.js?v=2" in body and "hostkey.js?v=1" in body
+               and body.index("terminal-keybar.js") < body.index("terminal.js?v=5")
+               and body.index("hostkey.js") < body.index("terminal.js?v=5"), "")
         ctx.ok(f"keybar: {label} page has no unreplaced template fields", "{{" not in body, "")
         ctx.ok(f"keybar: {label} page keeps the bar hidden until the script turns it on",
                re.search(r"\.keybar\s*\{[^}]*display:\s*none", body) is not None, "")

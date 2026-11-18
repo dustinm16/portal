@@ -58,7 +58,7 @@ for direction in ("left", "right", "up", "down"):
 for page in STATIC.glob("*.html"):
     text = page.read_text()
     if "js/terminal.js" in text:
-        assert "js/terminal.js?v=4" in text, page.name
+        assert "js/terminal.js?v=5" in text, page.name
         assert "js/terminal-keybar.js?v=2" in text, page.name
 
 # storage access is guarded, no external code, host-key flow untouched
@@ -135,6 +135,7 @@ function build(opts) {
   const win = {
     matchMedia: q => ({ matches: !!opts.coarse && q === '(pointer: coarse)' }),
     addEventListener() {},
+    location: { replaced: [], replace(u) { this.replaced.push(u); } },
     visualViewport: opts.noViewport ? undefined : { height: 500, offsetTop: 0, scale: 1, addEventListener() {} },
     localStorage: opts.brokenStorage ? { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } }
       : { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } },
@@ -383,6 +384,17 @@ async function main() {
   const before = p.sockets.length;
   p.click('Esc');
   check('a bar key triggers the press-any-key reconnect', p.sockets.length === before + 1, p.sockets.length);
+
+  // --- a revoked session (close code 4001) goes to the login page, no reconnect offer ---
+  p = build({ coarse: true });
+  const socketsBefore = p.sockets.length;
+  p.ws.onclose({ code: 4001 });
+  p.click('Esc');
+  check('close code 4001 sends the page to /login', JSON.stringify(p.ctx.window.location.replaced) === '["/login"]', JSON.stringify(p.ctx.window.location.replaced));
+  check('close code 4001 does not offer to reconnect', p.sockets.length === socketsBefore, p.sockets.length);
+  p = build({ coarse: true });
+  p.ws.onclose({ code: 1006 });
+  check('another close code does not leave the page', p.ctx.window.location.replaced.length === 0);
 
   console.log('RESULTS=' + JSON.stringify(results));
 }

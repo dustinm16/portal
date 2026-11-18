@@ -350,6 +350,12 @@ function connect() {
     ws.onclose = (event) => {
         updateStatus('disconnected', 'Disconnected');
 
+        if (event.code === 4001) {
+            // The session was revoked (logout, sign-out everywhere, password reset):
+            // reconnecting would only be refused, so go to the login page.
+            window.location.replace('/login');
+            return;
+        }
         if (event.code === 4003) {
             term.writeln('\x1b[31mAccess denied - insufficient permissions\x1b[0m');
         } else if (event.code === 4004) {
