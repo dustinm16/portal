@@ -299,6 +299,16 @@ Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus
 - Tokens, stream keys and session values are redacted in the logs, so searching the logs for a key no longer finds it.
 - WebRTC publish and playback sessions that were open across a restart are closed and have to reconnect.
 
+### Upgrade notes for 1.11.0
+
+- Existing SSH and SFTP connections, and admin SSH services, are refused until the owner (or an admin, for a service) accepts the host key once: connect, compare the fingerprint shown, and choose **Accept this key**. The `known_hosts` service setting is ignored. VOD storage is the exception: it is pinned automatically on its first connect and only prompts when the key changes.
+- SSH agent authentication is removed, and user connections that name a key file path on the portal's disk are refused. Use a password or paste a private key into the connection.
+- The portal no longer offers its own account's SSH keys or agent to remote hosts. Only credentials stored on the connection are sent.
+- Terminal recordings are private (owner-only files in `RECORDINGS_DIR`), capped in size, and recordings older than 30 days are deleted at the first cleanup after the upgrade. The age is the `retention_recordings_days` data retention setting; set it to 0 to keep all recordings. Recordings are no longer copied into update snapshots or replaced by a rollback. A `RECORDINGS_DIR` that is a dangerous location or holds files other than `*.cast` is refused at start, left untouched, and recording stays off.
+- Daily backup archives are on by default, keeping the newest 7 (Admin > Settings > Backups). Every update takes a backup archive first and does not start if that fails; it waits up to ten minutes for a backup that is already running.
+- Desktop connections use the VNC protocol and default to port 5900. A Windows host needs a VNC server installed; RDP is not supported.
+- Chunks of a VOD recording that are waiting to upload are staged in `data/vod_tmp` (private, kept across restarts and rollbacks) instead of `/tmp/portal_vods`. Chunks left in the old folder are moved there at the first start.
+
 ## Streaming
 
 Publish from OBS or any RTMP client:

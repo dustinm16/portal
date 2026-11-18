@@ -3506,6 +3506,80 @@ Trigger immediate data cleanup cycle.
 
 ---
 
+### Backups (Superadmin)
+
+Backup archives hold the database, `.env`, the encryption salt and the invite code, so they are as sensitive as root access to the portal. All five routes need a superadmin whose credential carries admin power: stream keys and narrowly scoped API keys or tokens get `403`. Download, delete, changing the extra destination and lowering the number of archives to keep also need the superadmin's own browser login session: an API key, bearer token or `?token=` value gets `403` with `A browser login session is required`.
+
+#### GET /api/admin/backups
+List the archives (newest first) with the settings and the last result.
+
+**Auth**: Superadmin (any full-power credential)
+
+**Response (200)**:
+```json
+{
+  "archives": [{"name": "portal-backup-20261118-030000.tar.gz", "size": 1048576,
+                "created_at": "2026-11-18T03:00:00+00:00", "portal_version": "v1.11.0",
+                "members": [".encryption_salt", ".env", ".invite_code", "portal.db"], "readable": true}],
+  "config": {"enabled": true, "interval_hours": 24, "keep": 7, "extra_dir": ""},
+  "status": {"backup_last_run_at": "...", "backup_last_ok_at": "...", "backup_last_status": "ok",
+             "backup_last_error": "", "backup_last_name": "portal-backup-20261118-030000.tar.gz"},
+  "free_bytes": 52428800000,
+  "stage_mode": false
+}
+```
+
+---
+
+#### POST /api/admin/backups/run
+Take a backup archive now. Returns at once with `409` when a backup is already running (updates, by contrast, wait up to ten minutes for a running backup). Each run first removes leftover `.work-*` directories and `.partial-*.tar.gz` files older than one hour from `backups/archives/`. Audited `backup.run` (size, names pruned, stale files removed).
+
+**Auth**: Superadmin (any full-power credential)
+
+**Response (201)**: `{"name", "path", "size", "created_at", "portal_version", "pruned": [names], "stale_removed": [names], "missing": [], "extra_path", "extra_error"}`. A failed copy to the extra destination does not fail the backup; it is reported in `extra_error`.
+
+**Errors**: `409` a backup is already running; `500` the backup failed (for example less than twice the database size is free).
+
+---
+
+#### PUT /api/admin/backups/settings
+Change the schedule. All fields are optional.
+
+**Auth**: Superadmin; browser login session only when `extra_dir` is changed or `keep` is lowered below the saved value
+
+**Request:**
+```json
+{"enabled": true, "interval_hours": 24, "keep": 7, "extra_dir": "/mnt/other-disk/portal-backups"}
+```
+- `enabled` (bool), `interval_hours` (whole number 1-720), `keep` (whole number 1-100)
+- `extra_dir`: absolute path of an existing directory, or `""` to turn the extra copy off. It may not be under `/tmp`, `/var/tmp` or `/dev/shm`, inside the installation directory, or inside a directory the portal serves. An unchanged value is not checked again.
+
+**Response (200)**: `{"updated": true, "config": {...}}`. Audited `backup.settings`.
+
+**Errors**: `400` invalid value; `403` a browser login session is required.
+
+---
+
+#### GET /api/admin/backups/{name}/download
+Download one archive as `application/gzip`.
+
+**Auth**: Superadmin, browser login session only. Audited `backup.download` (with the client address).
+
+**Errors**: `400` invalid archive name; `403` not a browser session; `404` no such archive.
+
+---
+
+#### DELETE /api/admin/backups/{name}
+Delete one archive.
+
+**Auth**: Superadmin, browser login session only. Audited `backup.delete`.
+
+**Response (200)**: `{"deleted": true}`
+
+**Errors**: `400` invalid archive name; `403` not a browser session; `404` no such archive.
+
+---
+
 ### Audit Log (Moderator+)
 
 View log of all moderation actions. Entries are automatically created for: message_delete, pin/unpin_message, timeout/mute/unmute/ban/unban, channel CRUD, role changes, automod triggers, channel member management.

@@ -425,6 +425,7 @@
                         <li><a href="#sysmon">System Monitor</a></li>
                         <li><a href="#file-manager">File Manager</a></li>
                         <li><a href="#data-retention">Data Retention</a></li>
+                        <li><a href="#backups">Backups</a></li>
                         <li><a href="#audit-log">Audit Log</a></li>
                         <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
@@ -5537,6 +5538,99 @@ Headers:
                 </div>
 
                 <!-- Audit Log -->
+                <h2 id="backups">Backups <span class="badge-admin">SUPERADMIN</span></h2>
+                <p>Backup archives hold the database, <code>.env</code>, the encryption salt and the invite code, so they are as sensitive as root access to the portal. All five routes need a superadmin whose credential carries admin power: stream keys and narrowly scoped API keys or tokens get <code>403</code>. Download, delete, changing the extra destination and lowering the number of archives to keep also need the superadmin's own browser login session: an API key, bearer token or <code>?token=</code> value gets <code>403</code> with <code>A browser login session is required</code>.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/backups</span>
+                        <span class="endpoint-desc">List archives, settings and the last result</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Lists the archives (newest first) with the settings and the last result. Auth: superadmin, any full-power credential.</p>
+                        <h4>Response Example</h4>
+                        <div class="code-block">
+<pre>{
+  "archives": [{"name": "portal-backup-20261118-030000.tar.gz", "size": 1048576,
+                "created_at": "2026-11-18T03:00:00+00:00", "portal_version": "v1.11.0",
+                "members": [".encryption_salt", ".env", ".invite_code", "portal.db"], "readable": true}],
+  "config": {"enabled": true, "interval_hours": 24, "keep": 7, "extra_dir": ""},
+  "status": {"backup_last_run_at": "...", "backup_last_ok_at": "...", "backup_last_status": "ok",
+             "backup_last_error": "", "backup_last_name": "portal-backup-20261118-030000.tar.gz"},
+  "free_bytes": 52428800000,
+  "stage_mode": false
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/backups/run</span>
+                        <span class="endpoint-desc">Take a backup now</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Takes a backup archive now. Auth: superadmin, any full-power credential. Returns at once with <code>409</code> when a backup is already running (updates, by contrast, wait up to ten minutes for a running backup). Each run first removes leftover <code>.work-*</code> directories and <code>.partial-*.tar.gz</code> files older than one hour from <code>backups/archives/</code>. Audited as <code>backup.run</code> (size, names pruned, stale files removed).</p>
+                        <h4>Response (201)</h4>
+                        <div class="code-block">
+<pre>{"name": "portal-backup-20261118-030000.tar.gz", "path": "...", "size": 1048576,
+ "created_at": "...", "portal_version": "v1.11.0",
+ "pruned": [], "stale_removed": [], "missing": [],
+ "extra_path": null, "extra_error": null}</pre>
+                        </div>
+                        <p>A failed copy to the extra destination does not fail the backup; it is reported in <code>extra_error</code>. Errors: <code>409</code> a backup is already running; <code>500</code> the backup failed (for example less than twice the database size is free).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/backups/settings</span>
+                        <span class="endpoint-desc">Change the backup schedule</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Auth: superadmin. A browser login session is required only when <code>extra_dir</code> is changed or <code>keep</code> is lowered below the saved value. All fields are optional.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><code>enabled</code></td><td>bool</td><td>Scheduled backups on or off</td></tr>
+                            <tr><td><code>interval_hours</code></td><td>int</td><td>1 to 720</td></tr>
+                            <tr><td><code>keep</code></td><td>int</td><td>Archives to keep, 1 to 100 (lowering it needs the browser session)</td></tr>
+                            <tr><td><code>extra_dir</code></td><td>string</td><td>Absolute path of an existing directory for a second copy, or <code>""</code> for none (changing it needs the browser session). Not under <code>/tmp</code>, <code>/var/tmp</code> or <code>/dev/shm</code>, inside the installation directory, or inside a directory the portal serves.</td></tr>
+                        </table>
+                        <p>Response (200): <code>{"updated": true, "config": {...}}</code>. Audited as <code>backup.settings</code>. Errors: <code>400</code> invalid value; <code>403</code> a browser login session is required.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/backups/{name}/download</span>
+                        <span class="endpoint-desc">Download one archive</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Downloads the archive as <code>application/gzip</code>. Auth: superadmin, browser login session only. Audited as <code>backup.download</code> (with the client address). Errors: <code>400</code> invalid archive name; <code>403</code> not a browser session; <code>404</code> no such archive.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/admin/backups/{name}</span>
+                        <span class="endpoint-desc">Delete one archive</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Deletes the archive. Auth: superadmin, browser login session only. Audited as <code>backup.delete</code>. Response (200): <code>{"deleted": true}</code>. Errors: <code>400</code> invalid archive name; <code>403</code> not a browser session; <code>404</code> no such archive.</p>
+                    </div>
+                </div>
+
                 <h2 id="audit-log">Audit Log <span class="badge-admin">MODERATOR+</span></h2>
                 <p>View a chronological record of all moderation actions performed on the server. Includes message deletions, user timeouts/mutes/bans, channel operations, role changes, and automod triggers. Available to moderators and above.</p>
 
