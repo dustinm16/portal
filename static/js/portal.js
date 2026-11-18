@@ -749,7 +749,7 @@ const Portal = {
                                     </svg>
                                 </div>
                                 <h4>Connections</h4>
-                                <p>SSH, VNC, RDP, databases &mdash; access remote services securely</p>
+                                <p>SSH, VNC, databases &mdash; access remote services securely</p>
                             </div>
                             <div class="welcome-feature-card">
                                 <div class="welcome-feature-icon">

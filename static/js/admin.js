@@ -136,7 +136,7 @@ const SERVICE_PRESETS = {
         port: 5900
     },
     'rdp-server': {
-        name: 'RDP Desktop',
+        name: 'Desktop (VNC protocol)',
         path: '/rdp',
         plugin: 'vnc',
         host: '',

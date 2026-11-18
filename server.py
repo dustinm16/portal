@@ -2942,7 +2942,7 @@ CONNECTION_TYPES = {
     "ssh": {"name": "SSH Terminal", "icon": "terminal", "default_port": 22, "plugin": "ssh"},
     "sftp": {"name": "SFTP File Transfer", "icon": "server", "default_port": 22, "plugin": "ssh"},
     "vnc": {"name": "VNC Desktop", "icon": "desktop", "default_port": 5900, "plugin": "vnc"},
-    "rdp": {"name": "RDP Desktop", "icon": "desktop", "default_port": 3389, "plugin": "vnc"},
+    "rdp": {"name": "Desktop (VNC protocol)", "icon": "desktop", "default_port": 5900, "plugin": "vnc"},
     "spice": {"name": "SPICE Console", "icon": "desktop", "default_port": 5930, "plugin": "spice"},
 
     # Media & Streaming
@@ -6320,6 +6320,9 @@ async def http_stream_info(request: web.Request) -> web.Response:
     if public_key and public_key.startswith("pub_"):
         public_key = public_key[4:]
 
+    # webrtc_whep is signaling only: WebRTC media does not pass through this
+    # proxy, so it works only where the client can reach MediaMTX's WebRTC
+    # port directly. HLS is the playback URL that works everywhere.
     return web.json_response({
         "public_key": public_key,
         "name": stream.get("name", ""),

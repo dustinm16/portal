@@ -28,6 +28,24 @@
             text-align: center;
             color: var(--text-secondary);
         }
+        .vnc-refusal {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 32rem;
+            padding: 1rem 1.25rem;
+            text-align: center;
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+        .vnc-refusal strong {
+            display: block;
+            margin-bottom: 0.5rem;
+        }
         .vnc-loading .spinner {
             width: 40px;
             height: 40px;
@@ -71,27 +89,62 @@
             <div class="spinner"></div>
             <p>Connecting to VNC server...</p>
         </div>
+        <div class="vnc-refusal" id="vnc-refusal" role="alert">
+            <strong id="vnc-refusal-title"></strong>
+            <span id="vnc-refusal-text"></span>
+        </div>
         <div id="vnc-screen"></div>
     </div>
 
-    <script src="/static/js/portal.js?v=43"></script>
+    <script src="/static/js/portal.js?v=44"></script>
     <script type="module">
         import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';
 
         const serviceId = '{{SERVICE_ID}}';
         const wsPath = '{{WS_PATH}}';
         let rfb = null;
+        let refused = false;
+
+        // Close codes the portal sends when the target is not a VNC server
+        // (plugins/vnc.py). noVNC's disconnect event does not carry them, so
+        // the page owns the WebSocket and listens for the close itself.
+        const REFUSALS = {
+            4010: {
+                title: 'This host speaks RDP, not VNC',
+                text: 'The address and port answer as a Windows Remote Desktop (RDP) server. Portal can only open VNC desktops here. Use an RDP client, or run a VNC server on the host and point this connection at its VNC port.'
+            },
+            4011: {
+                title: 'This host does not speak VNC',
+                text: 'The address and port answered with something other than a VNC (RFB) handshake. Check the host and port of this connection.'
+            }
+        };
+
+        function showRefusal(info) {
+            refused = true;
+            document.getElementById('vnc-loading').style.display = 'none';
+            document.getElementById('vnc-refusal-title').textContent = info.title;
+            document.getElementById('vnc-refusal-text').textContent = info.text;
+            document.getElementById('vnc-refusal').style.display = 'block';
+            updateStatus('disconnected', 'Not a VNC host');
+        }
 
         function connect() {
+            refused = false;
+            document.getElementById('vnc-refusal').style.display = 'none';
             updateStatus('connecting', 'Connecting...');
             document.getElementById('vnc-loading').style.display = 'block';
 
             const wsUrl = Portal.getWebSocketUrl(wsPath);
 
             try {
+                const channel = new WebSocket(wsUrl);
+                channel.addEventListener('close', (ev) => {
+                    const info = REFUSALS[ev.code];
+                    if (info) showRefusal(info);
+                });
                 rfb = new RFB(
                     document.getElementById('vnc-screen'),
-                    wsUrl,
+                    channel,
                     {
                         credentials: { password: '' }
                     }
@@ -106,7 +159,7 @@
                 });
 
                 rfb.addEventListener('disconnect', (e) => {
-                    updateStatus('disconnected', 'Disconnected');
+                    if (!refused) updateStatus('disconnected', 'Disconnected');
                     if (e.detail.clean) {
                         console.log('VNC disconnected cleanly');
                     } else {

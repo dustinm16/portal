@@ -1164,13 +1164,13 @@
                         <td><code>https://portal.example.com/api/stream/{stream_key}/hls/index.m3u8</code></td>
                     </tr>
                     <tr>
-                        <td><span class="param-name">WebRTC Playback</span></td>
-                        <td>portal.example.com:443</td>
+                        <td><span class="param-name">WebRTC Playback (same network only)</span></td>
+                        <td>portal.example.com:443 (signaling only)</td>
                         <td><code>https://portal.example.com/api/stream/{stream_key}/webrtc/whep</code></td>
                     </tr>
                     <tr>
-                        <td><span class="param-name">WebRTC Publishing</span></td>
-                        <td>portal.example.com:443</td>
+                        <td><span class="param-name">WebRTC Publishing (same network only)</span></td>
+                        <td>portal.example.com:443 (signaling only)</td>
                         <td><code>https://portal.example.com/api/stream/{stream_key}/webrtc/whip</code></td>
                     </tr>
                     <tr>
@@ -1412,7 +1412,7 @@
   <span class="string">"chat_channel_id"</span>: <span class="number">5</span>,
   <span class="string">"playback_urls"</span>: {
     <span class="string">"hls"</span>: <span class="string">"https://portal.example.com/api/stream/sk_abc123/hls/index.m3u8"</span>,
-    <span class="string">"webrtc"</span>: <span class="string">"https://portal.example.com/api/stream/sk_abc123/webrtc/whep"</span>
+    <span class="string">"webrtc"</span>: <span class="string">"https://portal.example.com/api/stream/sk_abc123/webrtc/whep"</span>  <span class="comment">// same-network only</span>
   }
 }</pre>
                         </div>
@@ -1671,8 +1671,11 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 });</pre>
                 </div>
 
-                <h3>Publishing via WHIP</h3>
-                <p>Publish streams through port 443 using WebRTC WHIP (OBS 30.0+):</p>
+                <h3>Publishing via WHIP (same network only)</h3>
+                <div class="alert alert-warning">
+                    <strong>Not available through the public proxy.</strong> The offer and answer travel through Portal on port 443, but the media does not. It flows directly between the client and MediaMTX's WebRTC media port (UDP/TCP 8189 by default), which the configuration Portal generates binds to loopback and which never passes through the public proxy. WHIP and WHEP therefore work only where the client can reach that port directly, for example on the same network after changing the WebRTC bind addresses in the MediaMTX configuration. From the internet, publish with RTMPS and play back with HLS.
+                </div>
+                <p>Where the WebRTC media port is reachable, OBS 30.0+ can publish with WHIP:</p>
                 <div class="code-block">
 <pre><span class="comment">// OBS Settings:</span>
 <span class="comment">// Service: WHIP</span>
@@ -5642,7 +5645,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=43"></script>
+    <script src="/static/js/portal.js?v=44"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

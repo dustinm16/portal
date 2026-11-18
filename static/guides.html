@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Setup guides for 75+ connection types on Open Relay Portal — a self-hosted alternative to Apache Guacamole and TeamViewer. SSH, VNC, RDP, databases, home automation, media servers, and more with step-by-step tutorials.">
-    <meta name="keywords" content="SSH connection guide, VNC setup guide, RDP remote desktop, self-hosted remote access, database connection tutorial, Proxmox connection, Home Assistant setup, Plex remote access, Jellyfin setup, self-hosted infrastructure, open relay portal guides, remote connection types, Apache Guacamole alternative, Rustdesk alternative, TeamViewer alternative, Parsec alternative, MeshCentral alternative, remote desktop browser, SSH web client, VNC web client, browser SSH terminal, Proxmox web console, self-hosted remote access">
+    <meta name="description" content="Setup guides for 75+ connection types on Open Relay Portal — a self-hosted alternative to Apache Guacamole and TeamViewer. SSH, VNC, databases, home automation, media servers, and more with step-by-step tutorials.">
+    <meta name="keywords" content="SSH connection guide, VNC setup guide, self-hosted remote access, database connection tutorial, Proxmox connection, Home Assistant setup, Plex remote access, Jellyfin setup, self-hosted infrastructure, open relay portal guides, remote connection types, Apache Guacamole alternative, Rustdesk alternative, TeamViewer alternative, Parsec alternative, MeshCentral alternative, remote desktop browser, SSH web client, VNC web client, browser SSH terminal, Proxmox web console, self-hosted remote access">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://{{HOSTNAME}}/guides">
 
@@ -12,7 +12,7 @@
     <meta property="og:type" content="article">
     <meta property="og:url" content="https://{{HOSTNAME}}/guides">
     <meta property="og:title" content="Connection Setup Guides — Open Relay Portal | 75+ Remote Connection Types">
-    <meta property="og:description" content="Step-by-step guides for connecting SSH, VNC, RDP, databases, Proxmox, Home Assistant, media servers, and 65+ more service types. A self-hosted alternative to Apache Guacamole and TeamViewer.">
+    <meta property="og:description" content="Step-by-step guides for connecting SSH, VNC, databases, Proxmox, Home Assistant, media servers, and 65+ more service types. A self-hosted alternative to Apache Guacamole and TeamViewer.">
     <meta property="og:image" content="https://{{HOSTNAME}}/static/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,11 +22,11 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="75+ Connection Guides — Open Relay Portal">
-    <meta name="twitter:description" content="Setup guides for SSH, VNC, RDP, databases, home automation, media servers, and more. Self-hosted alternative to Apache Guacamole and TeamViewer.">
+    <meta name="twitter:description" content="Setup guides for SSH, VNC, databases, home automation, media servers, and more. Self-hosted alternative to Apache Guacamole and TeamViewer.">
     <meta name="twitter:image" content="https://{{HOSTNAME}}/static/og-image.png">
 
     <meta name="theme-color" content="#1a1a2e">
-    <title>Connection Setup Guides — Open Relay Portal | SSH, VNC, RDP & 72+ More Types</title>
+    <title>Connection Setup Guides — Open Relay Portal | SSH, VNC & 72+ More Types</title>
 
     <!-- JSON-LD Structured Data: BreadcrumbList -->
     <script type="application/ld+json">
@@ -56,7 +56,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "headline": "Connection Setup Guides for 75+ Remote Service Types",
-        "description": "Step-by-step setup guides for SSH, VNC, RDP, databases, home automation, media servers, and more on Open Relay Portal.",
+        "description": "Step-by-step setup guides for SSH, VNC, databases, home automation, media servers, and more on Open Relay Portal.",
         "url": "https://{{HOSTNAME}}/guides",
         "author": {
             "@type": "Organization",
@@ -70,11 +70,10 @@
         "about": [
             {"@type": "Thing", "name": "SSH"},
             {"@type": "Thing", "name": "VNC"},
-            {"@type": "Thing", "name": "RDP"},
             {"@type": "Thing", "name": "Remote Access"},
             {"@type": "Thing", "name": "Self-Hosted Infrastructure"}
         ],
-        "keywords": "SSH guide, VNC setup, RDP connection, database connection, Proxmox, Home Assistant, remote access, self-hosted, Apache Guacamole alternative, TeamViewer alternative, Rustdesk alternative, MeshCentral alternative, SSH web client, VNC web client",
+        "keywords": "SSH guide, VNC setup, database connection, Proxmox, Home Assistant, remote access, self-hosted, Apache Guacamole alternative, TeamViewer alternative, Rustdesk alternative, MeshCentral alternative, SSH web client, VNC web client",
         "isPartOf": {
             "@type": "WebSite",
             "name": "Open Relay Portal",
@@ -293,7 +292,7 @@
                 <li><a href="#guide-ssh">SSH Terminal</a></li>
                 <li><a href="#guide-sftp">SFTP File Transfer</a></li>
                 <li><a href="#guide-vnc">VNC Desktop</a></li>
-                <li><a href="#guide-rdp">RDP Desktop</a></li>
+                <li><a href="#guide-rdp">Desktop (VNC protocol)</a></li>
                 <li><a href="#guide-spice">SPICE Console</a></li>
                 <li><a href="#guide-telnet">Telnet</a></li>
             </ul>
@@ -527,34 +526,33 @@
             </section>
 
             <section id="guide-rdp">
-                <h3>RDP Desktop</h3>
-                <p>Remote Desktop Protocol provides graphical access to Windows desktops and servers. Portal proxies the RDP connection through your browser.</p>
+                <h3>Desktop (VNC protocol)</h3>
+                <p>This connection type opens a graphical desktop through the browser using the <strong>VNC protocol</strong>. It is the same viewer as the VNC Desktop type. It does <strong>not</strong> speak Windows Remote Desktop (RDP): the type key <code>rdp</code> is a historical name that is kept so existing connections keep working.</p>
                 <table class="param-table">
-                    <tr><th style="width:140px;">Type Key</th><td><code>rdp</code></td></tr>
-                    <tr><th>Default Port</th><td><code>3389</code></td></tr>
-                    <tr><th>Protocol</th><td>RDP</td></tr>
+                    <tr><th style="width:140px;">Type Key</th><td><code>rdp</code> (label: Desktop (VNC protocol))</td></tr>
+                    <tr><th>Default Port</th><td><code>5900</code> for new connections (display :1 is port 5901). Connections saved earlier keep the port they were saved with.</td></tr>
+                    <tr><th>Protocol</th><td>VNC (RFB)</td></tr>
                     <tr><th>Plugin</th><td><code>vnc</code></td></tr>
                 </table>
                 <h4>Requirements</h4>
                 <ul>
-                    <li>Remote Desktop enabled on the Windows machine</li>
-                    <li>Port 3389 accessible from the Portal server</li>
-                    <li>User account with Remote Desktop Users group membership</li>
+                    <li>A VNC server on the target machine (for example TigerVNC, TightVNC, UltraVNC, x11vnc, or the built-in server of macOS or many hypervisors)</li>
+                    <li>The VNC port reachable from the Portal server</li>
                 </ul>
+                <h4>If the host is a Windows machine with Remote Desktop</h4>
+                <p>Pointing this type at an RDP server (port 3389 of a Windows host) does not work. The viewer shows <em>This host speaks RDP, not VNC</em> instead of a desktop. Either install a VNC server on that machine and use its VNC port, or use a native RDP client. Native RDP through Portal is not available.</p>
                 <h4>Setup in Portal</h4>
                 <ol>
-                    <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
-                    <li>Select <strong>RDP Desktop</strong> type (or Quick Add → RDP)</li>
-                    <li>Enter the Windows host IP and port (default: 3389)</li>
-                    <li>Enter Windows username and password when connecting</li>
+                    <li>Go to <strong>Dashboard &rarr; My Connections &rarr; Add Connection</strong></li>
+                    <li>Select <strong>Desktop (VNC protocol)</strong> (or the <strong>VNC Desktop</strong> type, which is identical)</li>
+                    <li>Enter the host and the VNC port</li>
+                    <li>Enter the VNC password when the viewer asks for it</li>
                 </ol>
                 <h4>Security Considerations</h4>
                 <ul>
-                    <li>Enable Network Level Authentication (NLA) on the Windows host</li>
-                    <li>Use strong passwords and consider enabling 2FA for Windows login</li>
-                    <li>Keep Windows updated to patch RDP vulnerabilities</li>
-                    <li>Restrict RDP access via Windows Firewall to Portal's IP only</li>
-                    <li>All traffic is encrypted via Portal's TLS connection</li>
+                    <li>Set a strong VNC password and restrict the VNC port to the Portal server with a firewall</li>
+                    <li>Many VNC servers send a weak challenge; keep them off the open internet and reach them only through Portal</li>
+                    <li>Traffic between your browser and Portal is encrypted by Portal's TLS connection; the hop from Portal to the VNC server is as protected as your network makes it</li>
                 </ul>
             </section>
 
@@ -2742,7 +2740,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=43"></script>
+    <script src="/static/js/portal.js?v=44"></script>
     <script>
         document.addEventListener('DOMContentLoaded', async () => {
             try {

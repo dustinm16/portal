@@ -23,7 +23,7 @@ An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Au
 ### Stream Keys as API Keys
 
 **Stream keys and API keys are interchangeable for stream-related operations.** This allows streaming software (OBS, etc.) to use a single key for both:
-- Publishing the stream (WHIP/RTMP authentication)
+- Publishing the stream (RTMP authentication; WHIP only where the WebRTC media port is reachable, see Streaming Configuration)
 - Making API calls (checking stream status, updating settings)
 
 When authenticated with a stream key:
@@ -798,7 +798,7 @@ Create a new connection.
 
 | Category | Types |
 |----------|-------|
-| Remote Access | `ssh`, `vnc`, `rdp`, `spice`, `telnet` |
+| Remote Access | `ssh`, `vnc`, `rdp` (Desktop over the VNC protocol; not Windows Remote Desktop), `spice`, `telnet` |
 | File Transfer | `sftp` |
 | Virtualization | `proxmox` |
 | Web Panels | `home_assistant`, `portainer`, `truenas`, `pfsense`, `http`, `https`, `http_proxy` |
@@ -970,7 +970,7 @@ Portal uses two types of keys for stream access control:
 | Key Type | Format | Purpose | Visibility |
 |----------|--------|---------|------------|
 | **Private Key** | `live_xxx...` | Publishing (OBS/RTMP) and full management | Owner only |
-| **Public Key** | `pub_xxx...` | Read-only viewing access (HLS/WebRTC playback) | Viewers of public streams |
+| **Public Key** | `pub_xxx...` | Read-only viewing access (HLS playback; WebRTC only on a reachable network) | Viewers of public streams |
 
 - **Private key (`stream_key`)**: Used for OBS publishing and stream management. Never share this key.
 - **Public key (`public_key`)**: Safe to share with viewers for read-only playback access.
@@ -1282,6 +1282,8 @@ Get stream information and playback URLs.
 }
 ```
 
+The `webrtc_whep` and `webrtc_whip` URLs work only on a network that can reach MediaMTX's WebRTC media port directly; they do not work through the public proxy. See Streaming Configuration. `hls` is the playback URL that works everywhere.
+
 ---
 
 #### GET /api/stream/{key}/hls/{path}
@@ -1294,7 +1296,7 @@ Returns HLS playlist and segments for the specified stream.
 ---
 
 #### POST /api/stream/{key}/webrtc/whep
-WebRTC WHEP endpoint for playback.
+WebRTC WHEP endpoint for playback. **Same-network only:** only the signaling goes through Portal; the media needs a direct path to MediaMTX's WebRTC port (see Streaming Configuration). Use HLS from the internet.
 
 **Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key for playback.
 
@@ -1309,7 +1311,7 @@ WebRTC WHEP endpoint for playback.
 ---
 
 #### POST /api/stream/{key}/webrtc/whip
-WebRTC WHIP endpoint for publishing.
+WebRTC WHIP endpoint for publishing. **Same-network only:** only the signaling goes through Portal; the media needs a direct path to MediaMTX's WebRTC port (see Streaming Configuration). Use RTMPS from the internet.
 
 **Key Types:** Requires private key (`live_xxx`) - public keys cannot publish.
 
@@ -1342,9 +1344,10 @@ Open Relay Portal provides a complete streaming solution with MediaMTX. Publishi
    - Stream Key: Your private stream key from My Streams tab
    - Works with all versions of OBS Studio
 
-2. **WebRTC WHIP** - Works through port 443 (OBS 30.0+)
+2. **WebRTC WHIP** - Same network only (OBS 30.0+). Not available through the public proxy.
    - URL: `https://portal.example.com/api/stream/{stream_key}/webrtc/whip`
    - Service: WHIP in OBS settings
+   - WebRTC (WHIP and WHEP) is **not available through the public proxy**. The offer and answer travel through Portal on port 443, but the media does not: it flows directly between the client and MediaMTX's WebRTC media port (UDP/TCP 8189 by default). The configuration Portal generates binds that port to loopback, and it never passes through the public proxy or Cloudflare. WHIP and WHEP therefore work only where the client can reach MediaMTX's media port directly (for example the same network, after you change the WebRTC bind addresses in the MediaMTX configuration). From the internet, publish with RTMPS and play back with HLS.
 
 **OBS Studio Settings (RTMPS - Recommended):**
 1. Go to Settings > Stream
@@ -1354,7 +1357,7 @@ Open Relay Portal provides a complete streaming solution with MediaMTX. Publishi
 
 **Playback URLs (accepts either key type):**
 - HLS: `https://portal.example.com/api/stream/{key}/hls/index.m3u8`
-- WebRTC WHEP: `https://portal.example.com/api/stream/{key}/webrtc/whep`
+- WebRTC WHEP (same network only, see the WHIP note above): `https://portal.example.com/api/stream/{key}/webrtc/whep`
 
 For public streams, share the `public_key` (`pub_xxx`) for playback URLs instead of the private key.
 
@@ -1368,7 +1371,8 @@ curl -H "X-Stream-Key: live_abc123..." https://portal.example.com/api/streams
 | Service | Host | Port | Description |
 |---------|------|------|-------------|
 | RTMPS Publishing | stream.example.com | 1936 | Direct connection (Let's Encrypt TLS) |
-| HLS/WebRTC Playback | portal.example.com | 443 | Proxied through Cloudflare |
+| HLS Playback | portal.example.com | 443 | Proxied through Cloudflare |
+| WebRTC (WHIP/WHEP) media | MediaMTX host | 8189 (UDP/TCP) | Direct only; not proxied, bound to loopback by the generated configuration |
 | Portal API | portal.example.com | 443 | Proxied through Cloudflare |
 
 **TLS Certificates:**
@@ -3857,7 +3861,7 @@ Dashboard | Chat | Streams | API Docs | About | Guides | [username] | Logout
 | Tab | Visibility | Description |
 |-----|------------|-------------|
 | Services | Admin only | Backend services (proxy routes and managed processes) |
-| My Connections | All users | Personal SSH, VNC, RDP, database connections. Includes Quick Add bar with connection presets. |
+| My Connections | All users | Personal SSH, VNC, database connections. Includes Quick Add bar with connection presets. |
 | My Streams | All users | Personal streaming configurations |
 | My VODs | All users | Remote VOD file management (SFTP) |
 | Quick Access | All users | Shortcuts to SSH Keys, API Keys, Profile |

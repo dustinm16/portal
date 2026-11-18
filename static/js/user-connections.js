@@ -19,7 +19,7 @@ const CONNECTION_PRESETS = {
     // Remote Access
     'ssh-server': { name: 'SSH Server', type: 'ssh', port: 22, icon: 'terminal', config: { auth_method: 'password' }, docs: 'https://www.openssh.com/', guide: 'ssh' },
     'vnc-server': { name: 'VNC Desktop', type: 'vnc', port: 5900, icon: 'desktop', config: {}, docs: 'https://tigervnc.org/', guide: 'vnc' },
-    'rdp-server': { name: 'RDP Desktop', type: 'rdp', port: 3389, icon: 'desktop', config: {}, docs: 'https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/welcome-to-rds', guide: 'rdp' },
+    'rdp-server': { name: 'Desktop (VNC protocol)', type: 'rdp', port: 5900, icon: 'desktop', config: {}, docs: 'https://tigervnc.org/', guide: 'rdp' },
     'spice-console': { name: 'SPICE Console', type: 'spice', port: 5930, icon: 'desktop', config: {}, docs: 'https://www.spice-space.org/', guide: 'spice' },
     'telnet': { name: 'Telnet', type: 'telnet', port: 23, icon: 'terminal', config: {}, docs: 'https://en.wikipedia.org/wiki/Telnet', guide: 'telnet' },
 
@@ -816,10 +816,6 @@ function onConnectionTypeChange() {
             if (!portInput.value) portInput.value = '22';
             onSSHAuthChange();
             break;
-        case 'rdp':
-            document.getElementById('connection-rdp-fields').style.display = 'block';
-            if (!portInput.value) portInput.value = '3389';
-            break;
         case 'database':
             document.getElementById('connection-db-fields').style.display = 'block';
             if (!portInput.value) portInput.value = '3306';
@@ -1164,10 +1160,6 @@ async function submitConnection(event) {
             const sshShell = document.getElementById('connection-ssh-shell').value;
             if (sshShell) config.shell = sshShell;
             break;
-        case 'rdp':
-            config.username = document.getElementById('connection-rdp-user').value.trim();
-            config.domain = document.getElementById('connection-rdp-domain').value.trim();
-            break;
         case 'database':
             config.db_type = document.getElementById('connection-db-type').value;
             config.database = document.getElementById('connection-db-name').value.trim();
@@ -1280,10 +1272,6 @@ async function editConnection(connectionId) {
                     // (SSH passwords are entered at connect time, not stored in form)
                 }
                 document.getElementById('connection-ssh-shell').value = config.shell || '';
-                break;
-            case 'rdp':
-                document.getElementById('connection-rdp-user').value = config.username || '';
-                document.getElementById('connection-rdp-domain').value = config.domain || '';
                 break;
             case 'database':
                 document.getElementById('connection-db-type').value = config.db_type || 'mysql';

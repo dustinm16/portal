@@ -393,8 +393,12 @@ paths:
     def get_stream_urls(self, stream_path: str, portal_host: str = None) -> dict:
         """Get URLs for accessing a stream via Open Relay Portal (port 443).
 
-        All external access goes through Portal on port 443.
-        Direct MediaMTX ports are localhost-only.
+        HLS goes through Portal on port 443; direct MediaMTX ports are
+        localhost-only. The webrtc entries (WHEP/WHIP) carry only the
+        signaling through Portal: the media flows straight to MediaMTX's WebRTC
+        port, which the generated configuration binds to loopback, so they
+        work only where a client can reach that port (same network), not
+        through the public proxy.
 
         Args:
             stream_path: The stream path name (stream key)

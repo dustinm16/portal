@@ -62,7 +62,7 @@ Open Relay Portal is a secure, authenticated gateway for home infrastructure tha
 │  │  │  (RTSP/WebRTC/HLS)   │     │ │     │  (asyncssh)          │        │  │
 │  │  └──────────────────────┘     │ │     └──────────────────────┘        │  │
 │  │  ┌──────────────────────┐     │ │     ┌──────────────────────┐        │  │
-│  │  │  TURN/STUN Server    │     │ │     │  VNC/RDP Proxy       │        │  │
+│  │  │  TURN/STUN Server    │     │ │     │  VNC Proxy           │        │  │
 │  │  │  (WebRTC relay)      │     │ │     │  (noVNC)             │        │  │
 │  │  └──────────────────────┘     │ │     └──────────────────────┘        │  │
 │  │  ┌──────────────────────┐     │ │     ┌──────────────────────┐        │  │
@@ -457,7 +457,7 @@ CREATE TABLE user_connections (
     user_id INTEGER NOT NULL,
     uuid TEXT,                       -- Opaque public ID (secrets.token_urlsafe)
     name TEXT NOT NULL,
-    type TEXT NOT NULL,              -- ssh, vnc, rdp, proxmox, etc.
+    type TEXT NOT NULL,              -- ssh, vnc, rdp (VNC protocol), proxmox, etc.
     host TEXT NOT NULL,
     port INTEGER,
     config TEXT,                     -- JSON plugin config

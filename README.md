@@ -30,7 +30,7 @@ Open Relay Portal puts all of it on a server you own. One installation gives you
 ### For infrastructure operators
 - **Homelab enthusiasts** who want a single portal to manage their entire setup from anywhere
 - **Small businesses** that need remote access to internal services without maintaining a VPN
-- **IT teams** who want browser-based SSH, VNC, RDP, and database access with centralized authentication
+- **IT teams** who want browser-based SSH, VNC, and database access with centralized authentication
 
 ## What You Get
 
@@ -53,7 +53,7 @@ Talk to people in real time with encrypted audio. Choose between push-to-talk or
 Search the web without the trackers. Portal can run [SearXNG](https://github.com/searxng/searxng) — a privacy-respecting metasearch engine that aggregates results from 70+ engines while stripping the profiling — as an optional managed service, reachable at `/search/` by logged-in users. No search history, no cookies handed to upstream engines, no ads. The SearXNG UI is re-skinned to your portal theme and carries the portal navbar, so it feels like a native page. The dashboard has a unified search bar with a **Portal** / **Internet** toggle — Portal searches your indexed chat history, Internet runs a private web search. It's a normal managed service: enable it from the Services panel to turn it on, disable it and the portal carries on exactly as before (the search bar quietly drops the Internet option). A JSON API (`/search/search?q=...&format=json`) is available for automation; scripts authenticate with a personal API key (`Authorization: Api-Key portal_...`), and any valid key can search.
 
 ### Remote Access
-Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, RDP sessions, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, RDP, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
+Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
 
 For web-based services, Portal includes a built-in embedded browser with tabbed browsing and keyboard shortcuts (Ctrl+T for new tab, Ctrl+W to close, Alt+arrows for back/forward). Browse web dashboards, admin panels, or any website through Portal's secure proxy. Every user gets a default **Web Browser** connection; its home page is Portal's own private search (SearXNG) when that service is enabled, otherwise DuckDuckGo. From the private-search home, clicking a result opens it in a new tab *inside* the embedded browser (multi-site connections) or in a real browser tab (single-site connections). The embedded browser is session-aware — log out anywhere and any open browser window returns to the login page. Add it from the connection form's **Web Browser (private search)** preset. No VPN required — if you can reach your portal, you can reach everything behind it.
 
@@ -222,7 +222,7 @@ sudo venv/bin/python server.py serve
 ```
 Python/aiohttp backend ──── SQLite database (FTS5 search)
        │                         │
-       ├── WebSocket relay ──── Plugins (SSH, VNC, RDP, SPICE, ...)
+       ├── WebSocket relay ──── Plugins (SSH, VNC, SPICE, ...)
        ├── HLS streaming ────── MediaMTX (managed process)
        ├── Private search ───── SearXNG (optional managed process)
        ├── Chat engine ──────── Fernet encryption at rest
@@ -307,7 +307,7 @@ Web interface connections (`http_proxy` plugin) support the following per-connec
 
 ## Connection Types
 
-75 types across 17 categories: Remote Access (SSH, VNC, RDP, SPICE, SFTP, Telnet), Media Servers, *arr Stack, Download Clients, Files & Photos, Virtualization, Home Automation, Security, Monitoring, Dashboards, Dev Tools, Databases, Networking, and more. Each type has a dedicated [setup guide](/guides) with requirements, configuration steps, and security best practices. When creating a connection from a preset, inline links to both the software's official documentation and the Portal setup guide are shown directly in the modal.
+75 types across 17 categories: Remote Access (SSH, VNC, SPICE, SFTP, Telnet), Media Servers, *arr Stack, Download Clients, Files & Photos, Virtualization, Home Automation, Security, Monitoring, Dashboards, Dev Tools, Databases, Networking, and more. Each type has a dedicated [setup guide](/guides) with requirements, configuration steps, and security best practices. When creating a connection from a preset, inline links to both the software's official documentation and the Portal setup guide are shown directly in the modal.
 
 ## API
 
