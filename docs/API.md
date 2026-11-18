@@ -3670,7 +3670,7 @@ The config is validated on create and on update (400 on failure). Regex mode (`w
 - each pattern at most 500 characters, at most 100 patterns per rule, and it must compile
 - a pattern that repeats a group already containing an unbounded repeat (`(a+)+$`, `(\w+\s?)+`, `(?:a+){2,}`) is refused; this heuristic cannot catch every slow pattern (for example `a*a*a*b` or `(a|aa)+$`)
 - text is truncated to 2000 characters before a regex rule sees it, so text after that is not checked by regex rules; this bounds simple patterns only
-- patterns run in a separate worker process with a 0.25 s limit; a pattern that overruns it is stopped, counts as no match, and is skipped for 60 s, during which that pattern blocks nothing for anyone
+- patterns run in a separate worker process with a 0.25 s limit; a pattern that overruns it is stopped and the message (or edit) being checked is rejected for its author with error code `automod_unchecked` ("could not be checked; shorten or rephrase it"); no penalty is booked, nobody else is told, and the pattern is tried again for the next message. Each rule in `GET /api/admin/automod` carries `slow_pattern_timeouts`, the number of such overruns of its patterns in the last hour
 - messages over the chat length limit (4000 characters, for new messages and edits) are rejected by chat and never reach automod
 - rules saved before these limits existed are re-checked at run time; a pattern that fails is skipped and the rule is marked in `not_enforced_reason`
 

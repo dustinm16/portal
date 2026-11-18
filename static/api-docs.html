@@ -5762,7 +5762,7 @@ Headers:
                             <li>Each pattern is at most 500 characters, a rule has at most 100 patterns, and a pattern must compile.</li>
                             <li>A pattern that repeats a group which already contains an unbounded repeat, such as <code>(a+)+$</code>, is refused. This check is a heuristic and cannot catch every slow pattern.</li>
                             <li>Text is truncated to 2000 characters before a regex rule sees it, so text after that is not checked by regex rules. This bounds simple patterns only.</li>
-                            <li>Patterns run in a separate worker process with a 0.25 second limit. A pattern that overruns it stops the worker, counts as no match, and is skipped for 60 seconds, during which that pattern blocks nothing for anyone.</li>
+                            <li>Patterns run in a separate worker process with a 0.25 second limit. A pattern that overruns it stops the worker and the message (or edit) being checked is rejected for its author with error code <code>automod_unchecked</code> (could not be checked; shorten or rephrase it); no penalty is booked, nobody else is told, and the pattern is tried again for the next message. Each rule in <code>GET /api/admin/automod</code> carries <code>slow_pattern_timeouts</code>, the number of such overruns of its patterns in the last hour.</li>
                             <li>Messages over the chat length limit (4000 characters, for new messages and edits) are rejected by chat and never reach automod.</li>
                             <li>Rules saved before these limits existed are checked again at run time; a pattern that fails is skipped and the rule list reports it in <code>not_enforced_reason</code>.</li>
                         </ul>

@@ -13962,7 +13962,25 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
     mute penalties. The author is told through ws; nobody else is. edit_of is
     the stored message when the text is an edit of it.
     """
-    automod_result = await check_automod(text, user_id, channel["id"], channel_name)
+    try:
+        automod_result = await check_automod(text, user_id, channel["id"], channel_name)
+    except automod.RegexCheckError:
+        # A regex rule could not be evaluated in time: fail closed. The author is told
+        # in neutral words; no penalty is booked and nobody else hears of it.
+        await ws.send_json({
+            "type": "error",
+            "error_code": "automod_unchecked",
+            "message": ("Your edit could not be checked; shorten or rephrase it. Your message was not changed"
+                        if edit_of is not None else
+                        "Your message could not be checked; shorten or rephrase it")
+        })
+        if edit_of is not None:
+            await ws.send_json({
+                "type": "edit_rejected",
+                "message_id": edit_of["id"],
+                "message": edit_of["message"]
+            })
+        return True
     if not automod_result:
         return False
     am_action = automod_result["action"]
@@ -15453,6 +15471,8 @@ async def http_get_automod_rules(request: web.Request) -> web.Response:
         # off on purpose and is not reported as "not enforced".
         rule["not_enforced_reason"] = (
             automod.unenforced_reason(rule["type"], cfg) if rule.get("enabled") else None)
+        # Budget overruns of the rule's regex patterns in the last hour: each one rejected a message.
+        rule["slow_pattern_timeouts"] = automod.slow_pattern_timeouts(_automod_regex, rule["type"], cfg)
     return web.json_response({"rules": rules})
 
 

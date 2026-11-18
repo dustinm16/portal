@@ -353,22 +353,44 @@ async def run(ctx):
             mid = await post(name, text)
             return (time.monotonic() - t0) if mid else None
 
+        async def refused_unchecked(name, text):
+            """Seconds until the author got the 'could not be checked' error, or None."""
+            mark = len(ev[name])
+            t0 = time.monotonic()
+            await ws[name].send_json({"type": "message", "message": text})
+            err = await _wait_for(ev[name], lambda e: e.get("type") == "error" and e.get("error_code") == "automod_unchecked",
+                                  timeout=5.0, start=mark)
+            return (time.monotonic() - t0, err) if err else (None, None)
+
         base = await round_trip("amobs", "baseline " + rnd)
+        marks = {n: len(ev[n]) for n in NAMES}
         t0 = time.monotonic()
-        attack = asyncio.create_task(round_trip("amalice", "a" * 1999))
+        attack = asyncio.create_task(refused_unchecked("amalice", "a" * 1999))
         await asyncio.sleep(0.03)
         victim = await round_trip("amobs", "while the slow rule runs " + rnd)
-        attacked = await attack
+        attacked, err = await attack
         total = time.monotonic() - t0
         ctx.ok("automod: another user's message is delivered while a slow pattern is being tested",
                base is not None and victim is not None and victim < 1.5,
                f"baseline {base}, during attack {victim}, attacker message {attacked}")
-        ctx.ok("automod: the slow pattern is stopped (the attacking message returns, bounded)",
-               attacked is not None and total < 3.0, f"attacker round trip {attacked}, total {total:.2f}s")
-        # the same pattern is now skipped for a while: a second attack costs nothing
-        again = await round_trip("amalice", "a" * 1998)
-        ctx.ok("automod: a pattern that overran its limit is skipped afterwards",
-               again is not None and again < 0.5, f"{again}")
+        ctx.ok("automod: the slow pattern is stopped and the message that overran it is refused to its author (bounded)",
+               attacked is not None and total < 3.0 and "shorten or rephrase" in err.get("message", ""),
+               f"attacker round trip {attacked}, total {total:.2f}s, {err}")
+        ctx.ok("automod: nobody else is told about the refused message",
+               not any(e.get("type") in ("message", "user_timed_out", "user_muted") and "a" * 100 in json.dumps(e)
+                       for e in ev["amobs"][marks["amobs"]:]), json.dumps(ev["amobs"][marks["amobs"]:])[:300])
+        # not skipped afterwards: the same pattern is checked again and the next message is refused again
+        again, err2 = await refused_unchecked("amalice", "a" * 1998)
+        ctx.ok("automod: a pattern that overran its limit is checked again and fails closed again",
+               again is not None and again < 3.0, f"{again}")
+        status, body = await api("GET", "/api/admin/automod")
+        mine = next((r for r in body.get("rules", []) if r["id"] == slow_rule), {})
+        ctx.ok("automod: the admin list counts the timeouts of the slow pattern",
+               mine.get("slow_pattern_timeouts", 0) >= 2, json.dumps(mine)[:300])
+        rc, out = await ctx.run_py(STATE % {"mid": ids["amalice"], "uid": data["amalice"], "ch": ch, "words": []})
+        st_slow = _result(out) or {}
+        ctx.ok("automod: no penalty is booked for a message that could not be checked",
+               data["amalice"] not in [t["user_id"] for t in st_slow.get("timeouts", [])], json.dumps(st_slow.get("timeouts")))
 
         # a 50 KB message: dropped by the length limit before any rule runs, nobody else is held up
         mark = len(ev["amobs"])

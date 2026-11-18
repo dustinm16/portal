@@ -15,9 +15,14 @@ The limits are therefore:
      exponential one.
   3. RegexRunner evaluates patterns in a separate worker process with a
      hard time budget. When the budget runs out the worker is killed and
-     restarted, so the portal process never runs the pattern itself. A pattern
-     that times out is skipped (treated as no match) for a cool-down period so
-     one bad pattern cannot keep the worker busy.
+     restarted, so the portal process never runs the pattern itself. The check
+     then fails closed: RegexCheckError is raised, the message that was being
+     checked is rejected for its author (see apply_automod in server.py), and
+     the pattern is tried again for the next message, so a slow pattern can
+     never be used to let content through. Timeouts are counted per pattern
+     (RegexRunner.timeouts_in_last_hour) for the admin rule list. The callers
+     rate limit a member's messages before they reach the rules, which bounds
+     the worker time one member can use.
 """
 
 import asyncio
@@ -25,6 +30,7 @@ import json
 import logging
 import re
 import sys
+from collections import deque
 from functools import lru_cache
 from time import monotonic
 
@@ -34,7 +40,7 @@ REGEX_MAX_PATTERN = 500        # characters per pattern
 REGEX_MAX_PATTERNS = 100       # patterns per word_filter rule in regex mode
 REGEX_TEXT_LIMIT = 2000        # characters of a message handed to a regex
 REGEX_BUDGET_SECONDS = 0.25    # hard limit for one pattern against one text
-REGEX_COOLDOWN_SECONDS = 60.0  # a pattern that timed out is skipped this long
+SLOW_PATTERN_WINDOW_SECONDS = 3600.0   # timeouts are counted over this long for the admin list
 
 MATCH_MODES = ("contains", "exact", "regex")
 
@@ -158,6 +164,18 @@ def unenforced_reason(rule_type: str, config) -> str | None:
     return f"{skipped} skipped, first: '{shown}': {problem}"
 
 
+def slow_pattern_timeouts(runner, rule_type: str, config) -> int:
+    """Budget overruns in the last hour of the patterns of a regex word_filter rule (0 for any other rule)."""
+    if rule_type != "word_filter" or not isinstance(config, dict):
+        return 0
+    if config.get("match_mode", "contains") != "regex":
+        return 0
+    words = config.get("words", [])
+    if not isinstance(words, list):
+        return 0
+    return sum(runner.timeouts_in_last_hour(w) for w in words if isinstance(w, str))
+
+
 def validate_automod_config(rule_type: str, config) -> str | None:
     """Return an error message for an unacceptable rule config, or None."""
     if not isinstance(config, dict):
@@ -206,15 +224,33 @@ for line in sys.stdin:
 '''
 
 
+class RegexCheckError(Exception):
+    """A regex rule could not be evaluated for a message (budget overrun or worker failure).
+
+    The message must be treated as not checked, which means rejected.
+    timed_out is True when the pattern overran its time budget.
+    """
+
+    def __init__(self, pattern: str, timed_out: bool):
+        super().__init__("regex check timed out" if timed_out else "regex worker failed")
+        self.pattern = pattern
+        self.timed_out = timed_out
+
+
+_MAX_TRACKED_PATTERNS = 512
+_MAX_TIMEOUTS_PER_PATTERN = 1000
+_LOG_INTERVAL_SECONDS = 60.0
+
+
 class RegexRunner:
     """Runs regex searches in a worker process that is killed when it overruns its budget."""
 
-    def __init__(self, budget: float = REGEX_BUDGET_SECONDS, cooldown: float = REGEX_COOLDOWN_SECONDS):
+    def __init__(self, budget: float = REGEX_BUDGET_SECONDS):
         self.budget = budget
-        self.cooldown = cooldown
         self._proc = None
         self._lock = asyncio.Lock()
-        self._tripped: dict[str, float] = {}
+        self._timeouts: dict[str, deque] = {}     # pattern -> monotonic times of its budget overruns
+        self._last_logged: dict[str, float] = {}
         self.restarts = 0
 
     async def _start(self):
@@ -246,15 +282,49 @@ class RegexRunner:
             raise ConnectionError("regex worker exited")
         return bool(json.loads(reply).get("hit"))
 
-    async def search(self, pattern: str, text: str) -> bool:
-        """True if pattern matches text (case-insensitive). False when it overruns the budget."""
-        text = text[:REGEX_TEXT_LIMIT]
+    def _note_timeout(self, pattern: str) -> None:
         now = monotonic()
-        until = self._tripped.get(pattern)
-        if until is not None:
-            if until > now:
-                return False
-            del self._tripped[pattern]
+        times = self._timeouts.get(pattern)
+        if times is None:
+            if len(self._timeouts) >= _MAX_TRACKED_PATTERNS:
+                self._prune(now)
+            if len(self._timeouts) >= _MAX_TRACKED_PATTERNS:
+                self._timeouts.pop(next(iter(self._timeouts)))
+            times = self._timeouts[pattern] = deque(maxlen=_MAX_TIMEOUTS_PER_PATTERN)
+        times.append(now)
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - SLOW_PATTERN_WINDOW_SECONDS
+        for p in [p for p, t in self._timeouts.items() if not t or t[-1] < cutoff]:
+            del self._timeouts[p]
+            self._last_logged.pop(p, None)
+
+    def timeouts_in_last_hour(self, pattern: str) -> int:
+        """How many times this pattern overran its budget in the last hour."""
+        times = self._timeouts.get(pattern)
+        if not times:
+            return 0
+        cutoff = monotonic() - SLOW_PATTERN_WINDOW_SECONDS
+        return sum(1 for t in times if t >= cutoff)
+
+    def _log_timeout(self, pattern: str) -> None:
+        now = monotonic()
+        if now - self._last_logged.get(pattern, -_LOG_INTERVAL_SECONDS) < _LOG_INTERVAL_SECONDS:
+            return
+        if len(self._last_logged) >= _MAX_TRACKED_PATTERNS:
+            self._last_logged.clear()
+        self._last_logged[pattern] = now
+        shown = pattern if len(pattern) <= 80 else pattern[:80] + "..."
+        logger.warning("automod regex %r exceeded %.2fs; worker restarted, the message was rejected "
+                       "(logged once a minute per pattern)", shown, self.budget)
+
+    async def search(self, pattern: str, text: str) -> bool:
+        """True if pattern matches text (case-insensitive).
+
+        Raises RegexCheckError when the pattern overruns the budget or the worker
+        fails twice: the caller must then treat the text as not checked.
+        """
+        text = text[:REGEX_TEXT_LIMIT]
         async with self._lock:
             for attempt in (1, 2):
                 try:
@@ -270,19 +340,15 @@ class RegexRunner:
                 except asyncio.TimeoutError:
                     await self._kill()
                     self.restarts += 1
-                    if len(self._tripped) > 256:
-                        self._tripped = {p: u for p, u in self._tripped.items() if u > now}
-                    self._tripped[pattern] = monotonic() + self.cooldown
-                    shown = pattern if len(pattern) <= 80 else pattern[:80] + "..."
-                    logger.warning("automod regex %r exceeded %.2fs; worker restarted, pattern skipped for %ds",
-                                   shown, self.budget, int(self.cooldown))
-                    return False
+                    self._note_timeout(pattern)
+                    self._log_timeout(pattern)
+                    raise RegexCheckError(pattern, True) from None
                 except (ConnectionError, BrokenPipeError, OSError, ValueError) as e:
                     await self._kill()
                     if attempt == 2:
                         logger.warning("automod regex worker failed: %s", e)
-                        return False
-        return False
+                        raise RegexCheckError(pattern, False) from None
+        raise RegexCheckError(pattern, False)
 
     async def close(self):
         async with self._lock:

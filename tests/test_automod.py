@@ -101,9 +101,9 @@ def test_runner_matches_and_truncates():
     asyncio.run(go())
 
 
-def test_slow_pattern_is_stopped_and_loop_keeps_running():
+def test_slow_pattern_is_stopped_loop_keeps_running_and_the_check_fails_closed():
     async def go():
-        r = automod.RegexRunner(budget=0.25, cooldown=5.0)
+        r = automod.RegexRunner(budget=0.25)
         gaps = []
 
         async def ticker():
@@ -114,32 +114,64 @@ def test_slow_pattern_is_stopped_and_loop_keeps_running():
                 gaps.append(now - last)
                 last = now
         t = asyncio.create_task(ticker())
+
+        async def overrun(pattern, text):
+            try:
+                await r.search(pattern, text)
+            except automod.RegexCheckError as e:
+                assert e.timed_out and e.pattern == pattern
+                return True
+            return False
         try:
             await asyncio.sleep(0.1)
             t0 = time.monotonic()
             # not accepted by the validator, but a rule saved before validation could hold it
-            hit = await r.search(r"(a+)+$", "a" * 40 + "b")
+            assert await overrun(r"(a+)+$", "a" * 40 + "b"), "an overrun must raise, not read as no match"
             took = time.monotonic() - t0
-            assert hit is False
             assert took < 1.5, f"slow pattern held the caller for {took:.2f}s"
             assert max(gaps) < 0.2, f"event loop stalled for {max(gaps):.2f}s"
             assert r.restarts == 1
-            # tripped: the same pattern is skipped without touching the worker
-            t0 = time.monotonic()
-            assert await r.search(r"(a+)+$", "a" * 40 + "b") is False
-            assert time.monotonic() - t0 < 0.05
-            assert r.restarts == 1
+            # the pattern is NOT skipped afterwards: the next message is checked, and fails closed again
+            assert await overrun(r"(a+)+$", "a" * 40 + "b")
+            assert r.restarts == 2
+            assert r.timeouts_in_last_hour(r"(a+)+$") == 2
+            assert r.timeouts_in_last_hour("abc") == 0
             # the worker was replaced and still answers other patterns
             assert await r.search("abc", "xxABCxx")
             # a polynomial pattern that passes the validator is stopped the same way
             poly = r"a*a*a*a*a*a*b"
             assert automod.regex_problem(poly) is None
-            assert await r.search(poly, "a" * 1999) is False
+            assert await overrun(poly, "a" * 1999)
             assert max(gaps) < 0.2, f"event loop stalled for {max(gaps):.2f}s"
         finally:
             t.cancel()
             await r.close()
     asyncio.run(go())
+
+
+def test_timeout_counter_expires_and_is_bounded():
+    r = automod.RegexRunner()
+    now = time.monotonic()
+    r._timeouts["old"] = automod.deque([now - automod.SLOW_PATTERN_WINDOW_SECONDS - 5, now - 10])
+    assert r.timeouts_in_last_hour("old") == 1
+    for i in range(automod._MAX_TRACKED_PATTERNS + 50):
+        r._note_timeout(f"p{i}")
+    assert len(r._timeouts) <= automod._MAX_TRACKED_PATTERNS
+    for _ in range(automod._MAX_TIMEOUTS_PER_PATTERN + 10):
+        r._note_timeout("busy")
+    assert r.timeouts_in_last_hour("busy") == automod._MAX_TIMEOUTS_PER_PATTERN
+
+
+def test_slow_pattern_count_for_a_rule():
+    r = automod.RegexRunner()
+    r._note_timeout("a*a*b")
+    r._note_timeout("a*a*b")
+    r._note_timeout("other")
+    cfg = {"words": ["a*a*b", "fine", "other"], "match_mode": "regex"}
+    assert automod.slow_pattern_timeouts(r, "word_filter", cfg) == 3
+    assert automod.slow_pattern_timeouts(r, "word_filter", {"words": ["a*a*b"], "match_mode": "contains"}) == 0
+    assert automod.slow_pattern_timeouts(r, "link_filter", cfg) == 0
+    assert automod.slow_pattern_timeouts(r, "word_filter", None) == 0
 
 
 def test_runner_recovers_when_worker_dies():
@@ -197,7 +229,7 @@ def test_cancelled_search_does_not_leak_its_reply_to_the_next_search():
 
 def test_cancelled_slow_search_does_not_time_out_the_next_pattern():
     async def go():
-        r = automod.RegexRunner(budget=0.5, cooldown=30.0)
+        r = automod.RegexRunner(budget=0.5)
         try:
             assert await r.search("warm", "warm")
             poly = r"a*a*a*a*a*a*b"
@@ -212,8 +244,8 @@ def test_cancelled_slow_search_does_not_time_out_the_next_pattern():
             assert await r.search("zzz", "hello") is False
             assert await r.search("hello", "say hello") is True
             assert r.restarts == 0, "trivial pattern was timed out behind the cancelled one"
-            assert "zzz" not in r._tripped
-            assert poly not in r._tripped   # a cancelled search is not a budget overrun
+            assert r.timeouts_in_last_hour("zzz") == 0
+            assert r.timeouts_in_last_hour(poly) == 0   # a cancelled search is not a budget overrun
         finally:
             await r.close()
     asyncio.run(go())
@@ -233,6 +265,112 @@ def test_stale_unsafe_rule_is_skipped_at_run_time():
         finally:
             await server._automod_regex.close()
     asyncio.run(go())
+
+
+def test_check_automod_raises_when_a_pattern_overruns_and_apply_automod_rejects_without_penalty():
+    import server
+
+    class Ws:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    async def go():
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Database(str(Path(tmp) / "t.db"))
+            await d.connect()
+            saved = (server.db, server._automod_regex, server._automod_rules_cache, server._automod_cache_time,
+                     server.broadcast_to_channel)
+            server.db = d
+            server._automod_regex = automod.RegexRunner(budget=0.25)
+            told = []
+
+            async def fake_broadcast(*a, **k):
+                told.append(a)
+            server.broadcast_to_channel = fake_broadcast
+            try:
+                uid = await d.create_user("author3", "x")
+                cid = await d.create_chat_channel("room3", created_by=uid)
+                channel = await d.get_chat_channel_by_name("room3")
+                poly = "a*a*a*a*a*a*!"
+                assert automod.regex_problem(poly) is None
+                await d.create_automod_rule("word_filter", "slow", {"words": [poly], "match_mode": "regex"},
+                                            "timeout", uid, action_duration=60)
+                server._automod_cache_time = 0
+                for edit_of in (None, {"id": 9, "message": "old text"}):
+                    ws = Ws()
+                    t0 = time.monotonic()
+                    blocked = await server.apply_automod(ws, "a" * 1999, user_id=uid, user_role="user",
+                                                         channel=channel, channel_name="room3",
+                                                         username="author3", my_state={}, edit_of=edit_of)
+                    assert time.monotonic() - t0 < 1.5
+                    assert blocked is True, "a message that could not be checked must be rejected"
+                    err = ws.sent[0]
+                    assert err["error_code"] == "automod_unchecked" and "could not be checked" in err["message"]
+                    assert "shorten or rephrase" in err["message"]
+                    if edit_of:
+                        assert ws.sent[1] == {"type": "edit_rejected", "message_id": 9, "message": "old text"}
+                    else:
+                        assert len(ws.sent) == 1
+                assert told == [], "nobody else may be told"
+                assert not await d.is_user_timed_out(uid, cid), "no penalty for a check that could not finish"
+                cur = await d.conn.execute("SELECT COUNT(*) AS n FROM automod_actions")
+                assert (await cur.fetchone())["n"] == 0
+                # not skipped for the next message: still rejected, and counted
+                assert await server.apply_automod(Ws(), "a" * 1999, user_id=uid, user_role="user", channel=channel,
+                                                  channel_name="room3", username="author3", my_state={}) is True
+                assert server._automod_regex.timeouts_in_last_hour(poly) == 3
+                # a short message the rule can finish on is checked normally
+                assert await server.apply_automod(Ws(), "hello", user_id=uid, user_role="user", channel=channel,
+                                                  channel_name="room3", username="author3", my_state={}) is False
+            finally:
+                await server._automod_regex.close()
+                (server.db, server._automod_regex, server._automod_rules_cache, server._automod_cache_time,
+                 server.broadcast_to_channel) = saved
+                await d.close()
+    asyncio.run(go())
+
+
+def test_admin_list_reports_slow_pattern_timeouts():
+    import server
+    cfg = json.dumps({"words": ["a*a*b"], "match_mode": "regex"})
+    rows = [{"id": 1, "type": "word_filter", "name": "slow", "config": cfg, "enabled": 1},
+            {"id": 2, "type": "link_filter", "name": "links", "config": "{}", "enabled": 1}]
+
+    async def go():
+        async def auth(request):
+            return type("T", (), {"user_id": 1, "has_scope": lambda self, s: True})()
+
+        async def get_rules(enabled_only=False):
+            return [dict(r) for r in rows]
+
+        saved = (server.authenticate_request, server.db.get_automod_rules, server._automod_regex)
+        server.authenticate_request, server.db.get_automod_rules = auth, get_rules
+        server._automod_regex = automod.RegexRunner()
+        server._automod_regex._note_timeout("a*a*b")
+        server._automod_regex._note_timeout("a*a*b")
+        try:
+            resp = await server.http_get_automod_rules(object())
+            return {r["id"]: r["slow_pattern_timeouts"] for r in json.loads(resp.body)["rules"]}
+        finally:
+            server.authenticate_request, server.db.get_automod_rules, server._automod_regex = saved
+
+    assert asyncio.run(go()) == {1: 2, 2: 0}
+    admin = (ROOT / "static" / "admin.html").read_text()
+    assert "slow pattern, " in admin and "skipped for 60" not in admin
+
+
+def test_rate_limit_runs_before_automod_in_the_send_and_edit_paths():
+    src = (ROOT / "server.py").read_text()
+    edit = src[src.index('elif msg_type == "edit_message":'):src.index('elif msg_type == "pin_message":')]
+    assert edit.index("_chat_member_blocked(") < edit.index("apply_automod(")
+    send_at = src.index('elif msg_type == "message":')
+    send = src[send_at:src.index("elif msg_type ==", send_at + 10)]
+    assert send.index("_chat_member_blocked(") < send.index("apply_automod(")
+    helper = src[src.index("async def _chat_member_blocked"):src.index("async def _dm_participant_blocked")]
+    assert "msg_times" in helper and "rate_limit" in helper
 
 
 def test_patterns_ending_in_a_group_close_are_handled():
