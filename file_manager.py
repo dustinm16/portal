@@ -14,6 +14,7 @@ from pwd import getpwuid
 from grp import getgrgid
 
 import backup_manager
+import update_manager
 
 logger = logging.getLogger("portal")
 
@@ -37,11 +38,38 @@ def _is_blocked_name(name: str) -> bool:
     return any(name.startswith(p) for p in BLOCKED_PREFIXES)
 
 
-def _is_archives_dir(path: Path, adir: Path = None) -> bool:
-    """True for the install's backups/archives directory or anything inside it."""
-    if adir is None:
-        adir = Path(os.path.realpath(backup_manager.archives_dir()))
-    return adir == path or adir in path.parents
+def _is_backups_dir(path: Path, bdir: Path = None) -> bool:
+    """True for the install's whole backups directory (archives, snapshots, ...) or anything inside it."""
+    if bdir is None:
+        bdir = Path(os.path.realpath(update_manager.BACKUPS_DIR))
+    return bdir == path or bdir in path.parents
+
+
+def _static_dir() -> Path:
+    """The install's static directory, which the web server serves."""
+    return Path(os.path.realpath(update_manager.PORTAL_DIR / "static"))
+
+
+def _protected_inside(source: Path):
+    """Name of the first protected file, or symlink, in *source* (or *source* itself), else None.
+
+    Walks without following symlinks. A directory that cannot be read counts as
+    protected: the check fails closed.
+    """
+    if _is_blocked_name(source.name):
+        return source.name
+    if source.is_symlink():
+        return source.name
+    if not source.is_dir():
+        return None
+    failed = []
+    for dirpath, dirnames, filenames in os.walk(str(source), onerror=failed.append):
+        for name in dirnames + filenames:
+            if _is_blocked_name(name) or (Path(dirpath) / name).is_symlink():
+                return name
+    if failed:
+        return str(source)
+    return None
 
 
 def _validate_path(path: str, root: str) -> Path:
@@ -78,9 +106,9 @@ def _validate_path(path: str, root: str) -> Path:
     if _is_blocked_name(resolved.name) or rel in BLOCKED_FILES:
         raise ValueError("Access to this file is not allowed")
     # Backup archives and database copies, also when an ancestor is their work directory,
-    # and the whole archives directory of this install.
+    # and the whole backups directory of this install.
     if any(backup_manager.is_protected_name(part) for part in resolved.relative_to(root_path).parts) \
-            or _is_archives_dir(resolved):
+            or _is_backups_dir(resolved):
         raise ValueError("Access to this file is not allowed")
 
     return resolved
@@ -140,11 +168,11 @@ def list_directory(path: str, root: str) -> list[dict]:
         raise ValueError("Not a directory")
 
     entries = []
-    adir = Path(os.path.realpath(backup_manager.archives_dir()))
+    bdir = Path(os.path.realpath(update_manager.BACKUPS_DIR))
     try:
         for item in resolved.iterdir():
             # Skip blocked files
-            if _is_blocked_name(item.name) or _is_archives_dir(item, adir):
+            if _is_blocked_name(item.name) or _is_backups_dir(item, bdir):
                 continue
             entries.append(_file_entry(item))
     except PermissionError:
@@ -255,9 +283,9 @@ def delete_path(path: str, root: str, recursive: bool = False) -> None:
                                 f"Cannot recursively delete: contains protected file '{name}'"
                             )
                         child = Path(dirpath) / name
-                        if _is_archives_dir(child):
+                        if _is_backups_dir(child):
                             raise ValueError(
-                                "Cannot recursively delete: contains the backup archives directory"
+                                "Cannot recursively delete: contains the backups directory"
                             )
                         if child.is_symlink():
                             raise ValueError(
@@ -287,6 +315,16 @@ def rename_path(old_path: str, new_path: str, root: str) -> None:
 
     if new_resolved.exists():
         raise ValueError("Destination already exists")
+
+    # Nothing protected may be moved into the tree the web server serves.
+    static = _static_dir()
+    if (static == new_resolved or static in new_resolved.parents) \
+            and not (static == old_resolved or static in old_resolved.parents):
+        found = _protected_inside(old_resolved)
+        if found:
+            raise ValueError(
+                f"Access to this file is not allowed: '{found}' cannot be moved into the static directory"
+            )
 
     try:
         old_resolved.rename(new_resolved)

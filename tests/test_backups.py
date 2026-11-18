@@ -840,15 +840,21 @@ def test_file_manager_blocks_backups():
         check("a new file cannot be written into the archives directory",
               refused(fm.write_file, archives_rel + "/anything.txt", root, b"x")
               and not (adir / "anything.txt").exists())
-        check("the archives directory is not listed in backups/",
-              "archives" not in [e["name"] for e in fm.list_directory("/proj/backups", root)])
+        check("the backups directory is not listed in the project directory",
+              "backups" not in [e["name"] for e in fm.list_directory("/proj", root)])
         check("the archives directory cannot be deleted", refused(fm.delete_path, archives_rel, root, True) and adir.exists())
         try:
             fm.delete_path("/proj/backups", root, True)
             rec_refused = False
         except ValueError as e:
-            rec_refused = "recursively" in str(e)
+            rec_refused = "not allowed" in str(e)
         check("a recursive delete of backups/ is refused", rec_refused and adir.exists())
+        try:
+            fm.delete_path("/proj", root, True)
+            rec_refused = False
+        except ValueError as e:
+            rec_refused = "recursively" in str(e)
+        check("a recursive delete of a parent of backups/ is refused", rec_refused and adir.exists())
         # An archive deleted through the backup manager itself still works.
         bm.delete_archive(info["name"])
         check("the backup manager still deletes its own archive", not (adir / info["name"]).exists())
@@ -856,6 +862,70 @@ def test_file_manager_blocks_backups():
         for ok_name in ("portal-backup-notes.txt", "portal-db.md", "backups.tar.gz", "partial-x.tar.gz"):
             (base / ok_name).write_text("ok")
             check(f"{ok_name} is still reachable", fm.read_file("/" + ok_name, root) == b"ok")
+
+
+def test_file_manager_refuses_the_whole_backups_directory_and_static_smuggling():
+    import file_manager as fm
+    with Sandbox() as sb:
+        base = Path(sb._tmp.name)
+        root = str(base)
+        bdir = um.BACKUPS_DIR
+        (bdir / "snapshots").mkdir(parents=True, exist_ok=True)
+        (bdir / "update_history.jsonl").write_text("{}")
+        (bdir / "snapshots" / "snap.json").write_text("{}")
+        (sb.root / "static").mkdir(exist_ok=True)
+        (sb.root / "static" / "index.html").write_text("<html>")
+        plain = sb.root / "notes.txt"
+        plain.write_text("hello")
+
+        def refused(fn, *a):
+            try:
+                fn(*a)
+                return False
+            except ValueError as e:
+                return "not allowed" in str(e)
+
+        for rel in ("/proj/backups", "/proj/backups/snapshots", "/proj/backups/update_history.jsonl",
+                    "/proj/backups/snapshots/snap.json", "/proj/backups/new.txt"):
+            check(f"{rel}: list/read/write are refused",
+                  refused(fm.list_directory, rel, root) and refused(fm.read_file, rel, root)
+                  and refused(fm.write_file, rel, root, b"x"))
+            check(f"{rel}: info and delete are refused", refused(fm.get_file_info, rel, root)
+                  and refused(fm.delete_path, rel, root, True))
+            check(f"{rel}: rename source and destination are refused",
+                  refused(fm.rename_path, rel, "/proj/moved", root)
+                  and refused(fm.rename_path, "/proj/notes.txt", rel, root))
+        check("update_history.jsonl and snapshots survived", (bdir / "update_history.jsonl").exists()
+              and (bdir / "snapshots" / "snap.json").exists() and plain.exists())
+        check("backups is not listed", "backups" not in [e["name"] for e in fm.list_directory("/proj", root)])
+
+        # Smuggling a protected name into the served static directory is refused.
+        (sb.root / "stuff").mkdir()
+        (sb.root / "stuff" / "ok.txt").write_text("fine")
+        (sb.root / "stuff" / "sub").mkdir()
+        (sb.root / "stuff" / "sub" / ".env.example").write_text("K=V")
+        check("a folder containing a protected name cannot be moved into static",
+              refused(fm.rename_path, "/proj/stuff", "/proj/static/stuff", root)
+              and (sb.root / "stuff" / "sub" / ".env.example").exists() and not (sb.root / "static" / "stuff").exists())
+        (sb.root / "plain_dir").mkdir()
+        (sb.root / "plain_dir" / "ok.txt").write_text("fine")
+        os.symlink("/etc/hostname", sb.root / "plain_dir" / "link")
+        check("a folder containing a symlink cannot be moved into static",
+              refused(fm.rename_path, "/proj/plain_dir", "/proj/static/plain_dir", root))
+        (sb.root / "plain_dir" / "link").unlink()
+        fm.rename_path("/proj/plain_dir", "/proj/static/plain_dir", root)
+        check("an ordinary folder can be moved into static",
+              (sb.root / "static" / "plain_dir" / "ok.txt").read_text() == "fine")
+        fm.rename_path("/proj/notes.txt", "/proj/static/notes.txt", root)
+        check("an ordinary file can be moved into static", (sb.root / "static" / "notes.txt").read_text() == "hello")
+        fm.rename_path("/proj/static/notes.txt", "/proj/notes2.txt", root)
+        check("an ordinary file can be moved out of static", (sb.root / "notes2.txt").exists())
+        check("an ordinary file in the project is still readable", fm.read_file("/proj/notes2.txt", root) == b"hello")
+        # a protected tree already in static may be shuffled around inside static
+        (sb.root / "static" / "a").mkdir()
+        (sb.root / "static" / "a" / "x.txt").write_text("x")
+        fm.rename_path("/proj/static/a", "/proj/static/b", root)
+        check("a rename inside static works", (sb.root / "static" / "b" / "x.txt").exists())
 
 
 def test_download_and_delete_need_the_cookie():
@@ -920,7 +990,7 @@ if __name__ == "__main__":
                test_extra_destination_private_tmp, test_extra_destination_served_dirs,
                test_consistency_under_writes, test_config_and_schedule, test_startup_check, test_due_check_after_restart,
                test_resolve_archive,
-               test_restore, test_config_without_open_database, test_file_manager_blocks_backups, test_download_and_delete_need_the_cookie,
+               test_restore, test_config_without_open_database, test_file_manager_blocks_backups, test_file_manager_refuses_the_whole_backups_directory_and_static_smuggling, test_download_and_delete_need_the_cookie,
                test_update_requires_backup):
         fn()
     print(f"\n{len(FAILS)} failed" if FAILS else "\nall passed")
