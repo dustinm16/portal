@@ -248,7 +248,7 @@ Sign out every session of the current account except the one making the request 
 ---
 
 #### POST /api/users/{id}/sessions/revoke
-Admin "sign out everywhere": revoke every browser session and token of one user and close what was opened with them. Needs the admin role, a credential with the `admin` and all scopes (a browser session of an admin has both), and the same role hierarchy as password resets (a plain admin cannot act on an admin or superadmin; `403`). API keys and stream keys of the user are not revoked. On the caller's own account the session being used is kept (`kept_current_session` is true). Recorded in the audit log as `sessions_revoke`. `404` for an unknown user.
+Admin "sign out everywhere": revoke every browser session and token of one user and close what was opened with them. Needs the admin role (read from the database, so someone just promoted can use the session they already hold) and a full-scope credential (a browser session, or a token or key made with `*`; a stream key or scoped key gets `403`), and the same role hierarchy as password resets (a plain admin cannot act on an admin or superadmin; `403`). API keys and stream keys of the user are not revoked. On the caller's own account the session being used is kept (`kept_current_session` is true). Recorded in the audit log as `sessions_revoke`. `404` for an unknown user.
 
 **Response:**
 ```json
@@ -3730,7 +3730,7 @@ The admin-edited never-ban list and the effective list that no automatic block m
 #### PUT /api/admin/never-ban
 Replace the admin list: `{"entries": ["203.0.113.0/24", "198.51.100.7"]}`. A bare address becomes /32 or /128; duplicates are collapsed. Entries must be strict CIDR (no host bits set), at most 100. Refused with `400`: `0.0.0.0/0`, `::/0`, an IPv4 prefix shorter than /8, an IPv6 prefix shorter than /16, anything overlapping the IPv4-mapped range, host bits, anything that is not an address or network, more than 100 entries, a non-list. Saving also drops scanner strikes and blocks already held in memory for covered addresses.
 
-**Auth**: Superadmin. Audited `never_ban.update`.
+**Auth**: Superadmin. Audited as `never_ban.update` with the saved entries (`entries`, `count`), and recorded as a `never_ban_changed` security event (counts only).
 
 **Response (200)**: the same object as GET plus `"saved": true` and `"scanner_blocks_cleared": <n>`.
 

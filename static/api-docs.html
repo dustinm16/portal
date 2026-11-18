@@ -683,7 +683,7 @@
                         <span class="endpoint-desc">Admin: sign a user out everywhere</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Revokes every browser session and token of the user and closes what was opened with them. Needs the admin role and a credential with the <code>admin</code> and all scopes, and follows the same role hierarchy as password resets (403 otherwise). API keys and stream keys are not revoked. On your own account the session you are using is kept. Written to the audit log as <code>sessions_revoke</code>.</p>
+                        <p>Revokes every browser session and token of the user and closes what was opened with them. Needs the admin role (read from the database, so someone just promoted can use the session they already hold) and a full-scope credential (a browser session, or a token or key made with <code>*</code>; a stream key or scoped key gets 403), and follows the same role hierarchy as password resets (403 otherwise). API keys and stream keys are not revoked. On your own account the session you are using is kept. Written to the audit log as <code>sessions_revoke</code>.</p>
                     </div>
                 </div>
 
@@ -5790,7 +5790,7 @@ Headers:
                         <span class="badge-admin">SUPERADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Body: <code>{"entries": ["203.0.113.0/24", "198.51.100.7"]}</code>. A bare address becomes /32 or /128; duplicates are collapsed. Entries must be strict CIDR (no host bits set), at most 100. Refused with <code>400</code>: <code>0.0.0.0/0</code>, <code>::/0</code>, an IPv4 prefix shorter than /8, an IPv6 prefix shorter than /16, anything overlapping the IPv4-mapped range, host bits, anything that is not an address or network, more than 100 entries, a non-list. Saving also drops scanner strikes and blocks already held in memory for covered addresses. Auth: superadmin. Audited as <code>never_ban.update</code>. Response (200): the same object as GET plus <code>"saved": true</code> and <code>"scanner_blocks_cleared"</code>.</p>
+                        <p>Body: <code>{"entries": ["203.0.113.0/24", "198.51.100.7"]}</code>. A bare address becomes /32 or /128; duplicates are collapsed. Entries must be strict CIDR (no host bits set), at most 100. Refused with <code>400</code>: <code>0.0.0.0/0</code>, <code>::/0</code>, an IPv4 prefix shorter than /8, an IPv6 prefix shorter than /16, anything overlapping the IPv4-mapped range, host bits, anything that is not an address or network, more than 100 entries, a non-list. Saving also drops scanner strikes and blocks already held in memory for covered addresses. Auth: superadmin. Audited as <code>never_ban.update</code> with the saved entries, and recorded as a <code>never_ban_changed</code> security event (counts only). Response (200): the same object as GET plus <code>"saved": true</code> and <code>"scanner_blocks_cleared"</code>.</p>
                     </div>
                 </div>
 
