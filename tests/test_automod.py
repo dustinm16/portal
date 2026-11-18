@@ -373,6 +373,63 @@ def test_rate_limit_runs_before_automod_in_the_send_and_edit_paths():
     assert "msg_times" in helper and "rate_limit" in helper
 
 
+def test_spam_filter_rules_are_reported_as_not_enforced():
+    r = automod.unenforced_reason("spam_filter", {"max_messages": 5})
+    assert r and "never applied" in r
+    assert automod.unenforced_reason("link_filter", {}) is None
+    import server
+
+    rows = [{"id": 1, "type": "spam_filter", "name": "spam", "config": "{}", "enabled": 1},
+            {"id": 2, "type": "spam_filter", "name": "spam off", "config": "{}", "enabled": 0}]
+
+    async def go():
+        async def auth(request):
+            return type("T", (), {"user_id": 1, "has_scope": lambda self, s: True})()
+
+        async def get_rules(enabled_only=False):
+            return [dict(x) for x in rows]
+
+        saved = (server.authenticate_request, server.db.get_automod_rules)
+        server.authenticate_request, server.db.get_automod_rules = auth, get_rules
+        try:
+            resp = await server.http_get_automod_rules(object())
+            return {x["id"]: x["not_enforced_reason"] for x in json.loads(resp.body)["rules"]}
+        finally:
+            server.authenticate_request, server.db.get_automod_rules = saved
+    reasons = asyncio.run(go())
+    assert reasons[1] and reasons[2] is None, reasons
+
+
+def test_admin_form_keeps_a_stored_spam_filter_config_and_states_the_comma_rule():
+    import shutil
+    import subprocess
+    admin = (ROOT / "static" / "admin.html").read_text()
+    assert "patterns are separated by commas, so a pattern cannot contain a comma" in admin
+    if not shutil.which("node"):
+        return
+    start = admin.index("function getAutomodConfig() {")
+    fn = admin[start:admin.index("async function submitAutomodRule", start)]
+    script = fn + r"""
+const fields = {};
+global.document = { getElementById: id => (id === 'am-type' ? { value: global.__type } : null) };
+global.window = {};
+const out = {};
+window._amEditType = 'spam_filter'; window._amEditConfig = { max_messages: 5, window_seconds: 10 };
+global.__type = 'spam_filter';
+out.kept = getAutomodConfig();
+window._amEditType = null; window._amEditConfig = { words: ['x'] };
+out.created = getAutomodConfig();
+window._amEditType = 'word_filter'; window._amEditConfig = { words: ['x'] };
+out.switched = getAutomodConfig();
+console.log(JSON.stringify(out));
+"""
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)
+    assert got["kept"] == {"max_messages": 5, "window_seconds": 10}, got
+    assert got["created"] == {} and got["switched"] == {}, got
+
+
 def test_patterns_ending_in_a_group_close_are_handled():
     # The quantifier scan used to read one character past the end of the pattern.
     for p in (r"(\d+)", r"(foo|bar)", r"colou?r(s)", r"(?:ab)", r"a(b(c))", r"(a)(b)"):

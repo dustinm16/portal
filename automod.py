@@ -146,7 +146,10 @@ def unenforced_reason(rule_type: str, config) -> str | None:
 
     Mirrors what chat does when it meets a stored regex pattern that now fails
     regex_problem(): that pattern is skipped, the rule's other patterns still run.
+    A spam_filter rule is stored but chat has no check for it.
     """
+    if rule_type == "spam_filter":
+        return "spam_filter rules are stored but never applied to messages"
     if rule_type != "word_filter" or not isinstance(config, dict):
         return None
     if config.get("match_mode", "contains") != "regex":

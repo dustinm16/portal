@@ -3663,7 +3663,7 @@ Create a new rule.
 }
 ```
 
-**Rule types:** `word_filter`, `spam_filter` (not enforced: stored, but chat does not act on it), `link_filter`, `caps_filter`, `mention_spam`
+**Rule types:** `word_filter`, `spam_filter` (not enforced: stored, but chat does not act on it; an enabled one carries a `not_enforced_reason` in the list), `link_filter`, `caps_filter`, `mention_spam`
 **Actions:** `warn`, `delete`, `timeout`, `mute`
 
 The config is validated on create and on update (400 on failure). Regex mode (`word_filter` with `match_mode: "regex"`):

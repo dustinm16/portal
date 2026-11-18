@@ -293,7 +293,12 @@ async def run(ctx):
         ctx.ok("automod: updating a missing rule is 404", status == 404, f"{status} {body}")
         status, body = await make_rule("spam", "spam_filter", {"max_messages": 5})
         ctx.ok("automod: the spam_filter type is still accepted (stored, not enforced)", status == 201, f"{status} {body}")
-        for rid in (fine, typed, body.get("id")):
+        spam_id = body.get("id")
+        status_l, listing = await api("GET", "/api/admin/automod")
+        spam_row = next((r for r in listing.get("rules", []) if r["id"] == spam_id), {})
+        ctx.ok("automod: an enabled spam_filter rule is listed as not enforced",
+               status_l == 200 and "never applied" in (spam_row.get("not_enforced_reason") or ""), json.dumps(spam_row)[:300])
+        for rid in (fine, typed, spam_id):
             if rid:
                 await api("DELETE", f"/api/admin/automod/{rid}")
 
