@@ -764,6 +764,60 @@ def test_unsafe_configured_recordings_folder_is_not_frozen_against_rollback():
         assert (sb.root / "tools" / "t.py").read_text() == "v1\n"
 
 
+def _populate_uploads(root: Path) -> None:
+    up = root / "static" / "uploads"
+    (up / "chat").mkdir(parents=True)
+    (up / "emotes").mkdir()
+    (up / "chat" / "kept.png").write_text("uploaded before the snapshot")
+    (up / "chat" / "deleted_later.png").write_text("removed on purpose after the snapshot")
+    (up / "emotes" / "e.png").write_text("emote")
+    (root / "static" / "app.js").write_text("code v1\n")
+
+
+def test_snapshot_skips_uploads_and_rollback_keeps_them():
+    with Sandbox() as sb:
+        populate(sb.root)
+        _populate_uploads(sb.root)
+        meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+        snap = Path(meta["path"])
+        assert not (snap / "static" / "uploads").exists(), "member uploads were copied into the snapshot"
+        assert (snap / "static" / "app.js").read_text() == "code v1\n", "the rest of static/ is still snapshotted"
+        # life goes on: a new upload, one removed on purpose, code changes
+        up = sb.root / "static" / "uploads"
+        (up / "chat" / "new_after.png").write_text("uploaded after the snapshot")
+        (up / "chat" / "deleted_later.png").unlink()
+        (up / "emotes" / "e.png").write_text("emote replaced")
+        (sb.root / "static" / "app.js").write_text("code v2\n")
+        (sb.root / "static" / "stray.js").write_text("added by the update\n")
+        _run_rollback_with_restart(sb, meta["id"])
+        assert (sb.root / "static" / "app.js").read_text() == "code v1\n", "code under static/ was not restored"
+        assert not (sb.root / "static" / "stray.js").exists()
+        assert (up / "chat" / "new_after.png").read_text() == "uploaded after the snapshot", "a newer upload was lost"
+        assert not (up / "chat" / "deleted_later.png").exists(), "a deleted upload came back"
+        assert (up / "emotes" / "e.png").read_text() == "emote replaced", "an upload was replaced by an old copy"
+        assert (up / "chat" / "kept.png").read_text() == "uploaded before the snapshot"
+
+
+def test_rollback_to_an_older_snapshot_that_holds_uploads_does_not_restore_them():
+    """Snapshots taken before uploads were left out still contain static/uploads."""
+    with Sandbox() as sb:
+        populate(sb.root)
+        _populate_uploads(sb.root)
+        meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+        snap = Path(meta["path"])
+        old = snap / "static" / "uploads" / "chat"
+        old.mkdir(parents=True)
+        (old / "kept.png").write_text("old copy")
+        (old / "deleted_later.png").write_text("old copy of a deleted file")
+        up = sb.root / "static" / "uploads"
+        (up / "chat" / "deleted_later.png").unlink()
+        (sb.root / "static" / "app.js").write_text("code v2\n")
+        _run_rollback_with_restart(sb, meta["id"])
+        assert (sb.root / "static" / "app.js").read_text() == "code v1\n"
+        assert (up / "chat" / "kept.png").read_text() == "uploaded before the snapshot", "old copy overwrote a live upload"
+        assert not (up / "chat" / "deleted_later.png").exists(), "an old snapshot brought a deleted upload back"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

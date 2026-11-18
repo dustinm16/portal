@@ -492,9 +492,21 @@ def _recordings_dirs() -> list:
     return paths
 
 
+def _uploads_dirs() -> list:
+    """Absolute path of static/uploads: never snapshotted, never replaced by a rollback.
+
+    Chat files, avatars, emotes and stream thumbnails that members uploaded are
+    live data (the folder is not part of the code and is ignored by git). A
+    snapshot copy would be old by the time of a rollback: restoring it would
+    delete everything uploaded since and bring back files that were deleted
+    on purpose (retention, removed messages).
+    """
+    return [os.path.realpath(os.path.join(str(PORTAL_DIR), "static", "uploads"))]
+
+
 def _preserved_state_dirs() -> list:
     """Folders of live data that snapshots skip and rollbacks leave alone."""
-    return _vod_staging_dirs() + _recordings_dirs()
+    return _vod_staging_dirs() + _recordings_dirs() + _uploads_dirs()
 
 
 def _snapshot_size(snap_dir: Path) -> int:
@@ -1210,6 +1222,20 @@ def _rollback_staging_keep() -> tuple:
     return names, keeps
 
 
+def _keep_ignore(snap_dir: Path, keeps):
+    """copytree ignore function that skips the preserved folders when restoring a snapshot."""
+    root = Path(os.path.realpath(str(PORTAL_DIR)))
+    base = Path(snap_dir)
+
+    def _ignore(src, names):
+        try:
+            here = root / Path(src).relative_to(base)
+        except ValueError:
+            return set()
+        return {n for n in names if here / n in keeps}
+    return _ignore
+
+
 def _rmtree_except(directory: Path, keeps) -> None:
     """Remove everything under *directory* except the *keeps* paths and the folders leading to them."""
     if isinstance(keeps, Path):
@@ -1422,8 +1448,10 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
                 # Preserve symlinks as-is (don't follow — prevents symlink escape)
                 os.symlink(os.readlink(item), dest)
             elif item.is_dir():
-                # dest may still exist when it holds the preserved staging folder
-                shutil.copytree(str(item), str(dest), symlinks=True, dirs_exist_ok=True)
+                # dest may still exist when it holds a preserved folder. An older snapshot
+                # (taken before static/uploads was left out) may hold one: never copy it back.
+                shutil.copytree(str(item), str(dest), symlinks=True, dirs_exist_ok=True,
+                                ignore=_keep_ignore(snap_dir, staging_keeps))
             else:
                 shutil.copy2(str(item), str(dest))
         except Exception as e:

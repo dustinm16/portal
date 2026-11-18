@@ -323,6 +323,7 @@ Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus
 - Chat upload files are deleted with their messages; the orphan sweep only reports.
 - ffmpeg (thumbnails, relays, recordings) runs at lower priority, and a thumbnail that cannot be captured answers 503 with `Retry-After`.
 - A voice call is held for 20 seconds when its connection drops, so it can be resumed. Making a channel private removes the call members who may not stay.
+- Member uploads (`static/uploads`: chat files, avatars, emotes, stream thumbnails) are no longer copied into update snapshots or replaced by a rollback, the same as recordings and the VOD staging folder. Older snapshots that still contain the folder do not restore it either. Upload files are therefore not part of any snapshot; back up `static/uploads` yourself if you need a copy.
 
 ## Streaming
 
