@@ -12857,9 +12857,6 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
 
     # Handle WebSocket upgrade
     if request.headers.get("Upgrade", "").lower() == "websocket":
-        # A relay is tracked in the WebSocket registry (closed with code 4001),
-        # not as a proxied call.
-        _unregister_user_proxy_call(token.user_id, call)
         if call.aborted:
             return web.Response(status=401, text="Session revoked")
         ws = web.WebSocketResponse()
@@ -12882,6 +12879,13 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             # Registered inside the try so the finally below always unregisters
             # it, and a session revocation closes this relay as well.
             _register_user_ws(token.user_id, ws, token.token_id)
+            # The relay is tracked in the WebSocket registry (closed with code
+            # 4001) from here on. The call stayed registered through prepare(),
+            # so a revocation during it is seen here.
+            _unregister_user_proxy_call(token.user_id, call)
+            if call.aborted:
+                await ws.close(code=4001, message=b"session revoked")
+                return ws
             connector = _SSRFSafeConnector(ssl=verify_ssl)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(ws_url) as upstream:
@@ -12978,6 +12982,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                     return web.Response(status=413, text="Request body too large")
 
             _extra = config.get("extra_headers")
+            if call.aborted:
+                # revoked while the request body was being read
+                return web.Response(status=401, text="Session revoked")
             async with _proxy_open_upstream(
                 session, request.method, upstream_url, fwd_headers, body,
                 # Browser mode: the redirect goes to the browser with its

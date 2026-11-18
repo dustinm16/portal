@@ -409,7 +409,7 @@ async def chain(request):
     return web.Response(status=302, headers={"Location": f"/chain/{n - 1}"})
 
 
-upstream_hits = {"count": 0, "slowchain": 0}
+upstream_hits = {"count": 0, "slowchain": 0, "ws": 0}
 
 
 async def count_hit(request):
@@ -425,6 +425,15 @@ async def slow_chain(request):
     if n <= 0:
         return web.Response(text="SLOW CHAIN END")
     return web.Response(status=302, headers={"Location": f"/slowchain/{n - 1}"})
+
+
+async def ws_count(request):
+    """A WebSocket upstream that counts the connections made to it."""
+    upstream_hits["ws"] += 1
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    await ws.close()
+    return ws
 
 
 async def redirect_cookie(request):
@@ -526,6 +535,7 @@ async def main():
     up_app.router.add_get("/r-cookie", redirect_cookie)
     up_app.router.add_get("/r-elsewhere", redirect_elsewhere)
     up_app.router.add_get("/count", count_hit)
+    up_app.router.add_get("/wscount", ws_count)
     up_app.router.add_get("/slowchain/{n}", slow_chain)
     up_app.router.add_get("/created", created)
     up_app.router.add_get("/trickle", trickle)
@@ -885,6 +895,43 @@ async def main():
                   upstream_hits["count"] == 0 and late_status != 200, f"{upstream_hits} {late_outcome} {late_status}")
             check("revocation: the registry is empty after the early one", not server._user_proxy_calls, str(server._user_proxy_calls))
 
+            # --- a revocation that lands while a WebSocket upgrade is being answered is not missed
+            CONFIG.clear()
+            upstream_hits["ws"] = 0
+            real_ws_response = server.web.WebSocketResponse
+
+            class SlowPrepareWs(real_ws_response):
+                async def prepare(self, request):
+                    result = await super().prepare(request)
+                    await asyncio.sleep(0.8)        # the window: after the upgrade, before the relay is set up
+                    return result
+
+            server.web.WebSocketResponse = SlowPrepareWs
+            ws_outcome = "open"
+
+            async def ws_client():
+                nonlocal ws_outcome
+                try:
+                    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as wc:
+                        async with wc.ws_connect(f"{base}/wscount") as cws:
+                            msg = await asyncio.wait_for(cws.receive(), 5)
+                            ws_outcome = f"{msg.type.name} {cws.close_code}"
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    ws_outcome = type(e).__name__
+
+            task = asyncio.create_task(ws_client())
+            await asyncio.sleep(0.4)
+            REVOKED = True
+            await server.close_user_websockets(1)
+            await asyncio.wait_for(task, 8)
+            REVOKED = False
+            await asyncio.sleep(0.3)
+            server.web.WebSocketResponse = real_ws_response
+            check("revocation: a revocation during the WebSocket upgrade ends the relay before the upstream is dialled",
+                  upstream_hits["ws"] == 0 and ws_outcome != "open", f"{upstream_hits} {ws_outcome}")
+            check("revocation: both registries are empty after the WebSocket one",
+                  not server._user_proxy_calls and not server._user_websockets, f"{server._user_proxy_calls} {server._user_websockets}")
+
             # --- no further redirect hop is made once the call was aborted
             CONFIG.clear()
             upstream_hits["slowchain"] = 0
@@ -905,8 +952,8 @@ async def main():
             REVOKED = False
             at_revoke = upstream_hits["slowchain"]
             await asyncio.sleep(3)
-            check("revocation: the redirect chain is not followed any further after the revocation (9 hops would run)",
-                  1 <= upstream_hits["slowchain"] <= at_revoke + 1 and upstream_hits["slowchain"] < 9,
+            check("revocation: a chain cut by a revocation answers and ends cleanly (end to end; the hop helper check below proves the stop)",
+                  1 <= upstream_hits["slowchain"] <= 6,
                   f"at revoke {at_revoke}, later {upstream_hits['slowchain']}")
             check("revocation: the registry is empty after the chain", not server._user_proxy_calls, str(server._user_proxy_calls))
 

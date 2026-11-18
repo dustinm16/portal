@@ -88,7 +88,7 @@ username=admin&password=secret&remember_me=on
 ---
 
 #### GET /logout
-End current session. The chat sockets opened with this session are closed (code 4001) and its voice call ends; the account's other sessions are not affected.
+End current session. The chat sockets opened with this session are closed (code 4001), its voice call ends and its in-flight proxied downloads are cut; the account's other sessions are not affected.
 
 **Response:** Redirect to `/login`
 
