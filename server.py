@@ -323,6 +323,43 @@ def _register_user_ws(user_id: int, ws, token_id: str) -> None:
     _user_websockets.setdefault(user_id, {})[ws] = token_id
 
 
+async def _credential_still_valid(token) -> bool:
+    """True if the credential a socket was opened with is still good: the account
+    exists and the session token (or API key) is neither revoked nor expired.
+
+    A socket is registered for revocation (_register_user_ws) and checked here
+    afterwards. A revocation that landed before the registration did not see the
+    socket, one that lands after it closes the socket itself, and this read
+    follows the registration, so it sees any revocation of the first kind.
+    """
+    try:
+        if await db.get_user_by_id(token.user_id) is None:
+            return False
+        jti = str(token.token_id or "")
+        if jti.startswith("streamkey-"):
+            return True    # a stream key is not a session; its sockets are only closed with the account
+        if jti.startswith("apikey-"):
+            key_id = int(jti[len("apikey-"):])
+            for key in await db.get_user_api_keys(token.user_id):
+                if key["id"] != key_id:
+                    continue
+                if key.get("revoked"):
+                    return False
+                exp = key.get("expires_at")
+                if exp:
+                    try:
+                        if datetime.fromisoformat(exp.replace("Z", "+00:00")) < datetime.now(timezone.utc):
+                            return False
+                    except ValueError:
+                        pass
+                return True
+            return False
+        return await db.is_token_valid(jti)
+    except Exception:
+        logger.warning("could not re-check a WebSocket credential; closing the socket", exc_info=True)
+        return False
+
+
 def _unregister_user_ws(user_id: int, ws) -> None:
     conns = _user_websockets.get(user_id)
     if conns is not None:
@@ -11436,6 +11473,11 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     try:
         # Registered inside the try so the finally below always unregisters it.
         _register_user_ws(token.user_id, ws, token.token_id)
+        # The upgrade awaited between authentication and here; a revocation in that
+        # window did not see this socket, so check the credential once it is registered.
+        if not await _credential_still_valid(token):
+            await ws.close(code=4001, message=b"session revoked")
+            return ws
         if path == "/" or path == "/ws":
             await handle_ping_ws(mws, token)
         elif path == "/ws/terminal/local":
@@ -15887,6 +15929,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         # suspension point before it, so a cancellation later on still runs the finally.
         my_state = _chat_state_acquire(user_id, chat_fresh_state)
         _register_user_ws(user_id, raw_ws, token.token_id)
+        # Authentication and the upgrade awaited before this point; a revocation in that
+        # window did not see this socket, so check the credential once it is registered.
+        if not await _credential_still_valid(token):
+            await raw_ws.close(code=4001, message=b"session revoked")
+            return raw_ws
 
         # Send DM conversations list on connect
         try:
