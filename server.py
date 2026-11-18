@@ -4417,6 +4417,8 @@ async def fire_webhook_event(event: str, payload: dict) -> None:
 async def _deliver_webhook(webhook: dict, event: str, payload: dict,
                             attempt: int = 1) -> None:
     """Deliver payload to a single webhook endpoint with retry."""
+    if Config.STAGE_MODE:
+        return  # staged test mode: never send anything outside the host
     webhook_id = webhook["id"]
     url = webhook.get("url")
     secret = webhook.get("secret")
@@ -7252,6 +7254,9 @@ async def http_apply_certs(request: web.Request) -> web.Response:
     except Exception as e:
         logger.error(f"Failed to validate certificates: {e}")
         return web.json_response({"error": "Failed to validate certificates"}, status=400)
+
+    if Config.STAGE_MODE:
+        return web.json_response({"error": "Restart is disabled in staged test mode"}, status=409)
 
     logger.warning(f"Server restart requested by user {token.user_id} to apply new certificates")
 
@@ -17071,6 +17076,9 @@ class PortalServer:
             logger.error("Configuration errors detected. Please fix and restart.")
             sys.exit(1)
 
+        if Config.STAGE_MODE:
+            logger.warning("PORTAL_STAGE_MODE is on: staged test instance, host side effects are disabled")
+
         # Initialize database
         await db.connect()
         logger.info(f"Database connected: {Config.DATABASE_PATH}")
@@ -17121,13 +17129,16 @@ class PortalServer:
         asyncio.create_task(self._data_cleanup_task())
 
         # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
-        asyncio.create_task(self._viewer_sync_task())
+        # (skipped in staged test mode: it would poll the host's real MediaMTX)
+        if not Config.STAGE_MODE:
+            asyncio.create_task(self._viewer_sync_task())
 
         # Start RTMP token cleanup task (runs every 5 minutes)
         asyncio.create_task(self._rtmp_token_cleanup_task())
 
         # Start relay health monitor (restarts orphaned relays every 45 seconds)
-        asyncio.create_task(self._relay_health_monitor_task())
+        if not Config.STAGE_MODE:
+            asyncio.create_task(self._relay_health_monitor_task())
 
         # Initialize vulnerability scanner - check database for NVD API key (encrypted)
         nvd_api_key_raw = await db.get_setting("nvd_api_key")
@@ -17154,9 +17165,10 @@ class PortalServer:
             await gameservers.seed_catalog(db)
             await gameservers.ensure_default_storage_root(db)
             await gameservers.resync_all_from_catalog(db)
-            await gameservers.migrate_broken_runtimes(db)
-            gameservers.start_build_check_loop(db)
-            await gameservers.ensure_steam_runtime_libs()
+            if not Config.STAGE_MODE:  # these touch systemd units, steamcmd and the real home dir
+                await gameservers.migrate_broken_runtimes(db)
+                gameservers.start_build_check_loop(db)
+                await gameservers.ensure_steam_runtime_libs()
         except Exception as e:
             logger.warning(f"Game catalog seed failed: {e}")
 

@@ -121,10 +121,25 @@ class Config:
     TURN_USERNAME: str = os.getenv("TURN_USERNAME", "")
     TURN_PASSWORD: str = os.getenv("TURN_PASSWORD", "")
 
+    # Staged-instance test mode (tools/stage_smoke.py). For testing only: the
+    # server skips every side effect on the host (managed-service autostart,
+    # outgoing webhooks, game-server and update work, MediaMTX polling) so a
+    # copy of the data can be run safely. Only the exact value "1" enables it,
+    # and validate() refuses it on a non-loopback address or on port 443.
+    STAGE_MODE: bool = os.getenv("PORTAL_STAGE_MODE", "") == "1"
+
     @classmethod
     def validate(cls) -> list[str]:
         """Validate configuration and return list of errors."""
         errors = []
+
+        if cls.STAGE_MODE and (
+            cls.HOST not in ("127.0.0.1", "::1", "localhost") or cls.PORT in (80, 443)
+        ):
+            errors.append(
+                "PORTAL_STAGE_MODE=1 is for testing only: it needs HOST=127.0.0.1 "
+                "and a port other than 80/443. Remove it from the production .env"
+            )
 
         if not cls.JWT_SECRET or cls.JWT_SECRET == "change_me_to_a_random_64_char_hex_string":
             errors.append("JWT_SECRET must be set to a secure random value")

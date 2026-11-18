@@ -18,6 +18,8 @@ from pathlib import Path
 from time import time
 from typing import Optional
 
+from config import Config
+
 logger = logging.getLogger("portal.updates")
 
 PORTAL_DIR = Path(__file__).parent.resolve()
@@ -807,6 +809,8 @@ async def _apply_system_update(job: dict) -> None:
 
 async def start_apply(component: str, version: Optional[str] = None) -> str:
     """Dispatch an update job for the given component. Returns job_id."""
+    if Config.STAGE_MODE:
+        raise RuntimeError("Updates are disabled in staged test mode")
     component = component.lower()
     if component not in ("portal", "pip", "mediamtx", "system"):
         raise ValueError(f"Unknown component: {component}")
@@ -939,6 +943,8 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
 
 async def start_rollback(snap_id: str) -> str:
     """Start a rollback job. Returns job_id."""
+    if Config.STAGE_MODE:
+        raise RuntimeError("Rollback is disabled in staged test mode")
     lock = _get_update_lock()
     if lock.locked():
         raise RuntimeError("Another update or rollback job is already running")

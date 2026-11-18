@@ -311,6 +311,32 @@ pip install flake8
 flake8 server.py database.py auth.py --max-line-length=120
 ```
 
+### Staged smoke test (developer notes)
+
+`tools/stage_smoke.py` copies the working tree into a private temporary directory (mode 0700), starts the portal there on `127.0.0.1` with its own database, `.env`, encryption salt and self-signed certificate, runs every check in `tools/smoke_checks/`, prints one line per check and exits non-zero if any check failed. It never touches the real database, `.env`, service or port 443. Run it with the project's interpreter:
+
+```bash
+venv/bin/python tools/stage_smoke.py                  # fresh database, port 8461
+venv/bin/python tools/stage_smoke.py --only baseline  # one check module
+venv/bin/python tools/stage_smoke.py --keep           # keep the stage directory for inspection
+venv/bin/python tools/stage_smoke.py --selftest-fail  # adds a check that always fails: must exit 1 and name it
+```
+
+The runner starts the staged server, stops it and starts it again on the same database, and fails if either start logs a traceback or a skipped migration or if the schema changed on the second start. Exit status: 0 all checks passed, 1 a check failed, 2 the runner could not set up or start the stage (it prints the tail of the staged server log), 130 interrupted (Ctrl-C), 143 terminated (SIGTERM), 129 hangup (SIGHUP). The staged server is stopped and the directory removed on a normal exit and on SIGINT, SIGTERM and SIGHUP (not on SIGKILL, which cannot be caught).
+
+To test against a copy of existing data, pass a database, and optionally its `.env` and `.encryption_salt` (the database is copied through the SQLite backup API, opened read-only, and the runner compares checksums of the source files before and after):
+
+```bash
+venv/bin/python tools/stage_smoke.py --from-db /path/to/portal.db --env /path/to/.env \
+    --salt /path/to/.encryption_salt [--admin-password '...']
+```
+
+Point it at a copy, not at a database that is in use. HOST, PORT, HOSTNAME, SSL_CERT, SSL_KEY, DATABASE_PATH and RECORDINGS_DIR are overridden in the staged `.env`, other settings that hold an absolute path and the Shodan and NVD API keys are dropped, and the checks that need the admin password are reported as SKIP unless `--admin-password` is given.
+
+The staged server runs with `PORTAL_STAGE_MODE=1`, which skips managed-service autostart, outgoing webhooks, update, rollback and restart actions, game-server background work and MediaMTX polling. It is for testing only; the server refuses to start with it on a non-loopback address or on port 80/443. It does not block an explicit admin action that runs a host command (for example starting a systemd-backed service from the admin panel), so do not click through the staged UI against real data.
+
+A check is a file `tools/smoke_checks/check_<name>.py` with `async def run(ctx) -> None`. The `ctx` object offers `base_url`, `stage_dir`, `admin_user`, `admin_password`, `http()` (an aiohttp session with TLS verification off), `await login(session, user, password, totp_code=None)`, `await run_py(code)` (runs Python against the staged database), `ok(name, passed, detail)` and `skip(name, reason)`. A check must only talk to `base_url` and must not start or stop the server.
+
 ## Third-Party Components
 
 Portal is a single Python/aiohttp application, but it can download and manage a few

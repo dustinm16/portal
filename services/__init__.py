@@ -8,6 +8,8 @@ import asyncio
 import logging
 from typing import Dict, Optional, Type
 
+from config import Config
+
 from .base import ManagedService, ServiceInfo
 
 logger = logging.getLogger("portal.services")
@@ -97,8 +99,8 @@ class ServiceManager:
                     except Exception as e:
                         logger.warning(f"sync_status failed for {svc_data['name']}: {e}")
 
-                # Start if enabled
-                if svc_data.get('enabled'):
+                # Start if enabled (never in staged test mode: no side effects on the host)
+                if svc_data.get('enabled') and not Config.STAGE_MODE:
                     logger.info(f"Auto-starting enabled service: {svc_data['name']}")
                     success, error = await service.start()
                     if not success:
