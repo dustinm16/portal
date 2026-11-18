@@ -6669,9 +6669,10 @@ async def _capture_thumbnail(cache_key: str, stream_id: int, stream_key: str) ->
             return "failed", None
         now = time()
         _thumbnail_cache[cache_key] = (now, stdout)
-        # Clean old cache entries
+        # Drop frames too old to serve even as the stale fallback (pruning at the
+        # fresh-frame TTL would leave the fallback nothing to serve)
         for k in list(_thumbnail_cache.keys()):
-            if now - _thumbnail_cache[k][0] > _THUMBNAIL_CACHE_TTL * 2:
+            if now - _thumbnail_cache[k][0] > _THUMBNAIL_STALE_MAX:
                 del _thumbnail_cache[k]
         return "ok", stdout
     except asyncio.TimeoutError:

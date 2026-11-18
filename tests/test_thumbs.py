@@ -384,6 +384,21 @@ def test_failed_capture_does_not_serve_a_frame_older_than_five_minutes():
     run(body)
 
 
+def test_a_capture_keeps_other_frames_that_the_stale_fallback_can_still_serve():
+    async def body(env):
+        server._thumbnail_cache["live_bbb"] = (time.time() - 100, b"STALE-BUT-SERVABLE")
+        server._thumbnail_cache["live_ccc"] = (time.time() - 301, b"TOO-OLD")
+        r = await env.get("live_aaa")           # a fresh capture, which prunes the cache
+        assert r.status == 200
+        assert server._thumbnail_cache["live_bbb"][1] == b"STALE-BUT-SERVABLE", "pruned before the stale limit"
+        assert "live_ccc" not in server._thumbnail_cache, "a frame past the stale limit was kept"
+        # the fallback still works for that stream after another stream's capture
+        env.mode("fail")
+        r = await env.get("live_bbb")
+        assert r.status == 200 and r.body == b"STALE-BUT-SERVABLE"
+    run(body)
+
+
 def test_media_probe_runs_in_a_thread_once_and_which_is_cached():
     async def body(env):
         loop_thread = threading.get_ident()
