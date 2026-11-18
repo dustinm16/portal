@@ -711,6 +711,59 @@ def test_unmarked_configured_folder_is_not_treated_as_staging_by_snapshot_or_rol
         assert (sb.root / "tools" / "t.py").read_text() == "v1\n", "an unmarked folder was frozen against rollback"
 
 
+def _populate_recordings(folder: Path) -> Path:
+    folder.mkdir(parents=True)
+    cast = folder / "rec_1_1_20260101_000000_ab.cast"
+    cast.write_text("recorded")
+    return cast
+
+
+def test_snapshot_skips_recordings_and_rollback_keeps_them():
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        default_cast = _populate_recordings(sb.root / "recordings")
+        custom_cast = _populate_recordings(sb.root / "privatedata" / "rec")  # nested custom folder
+        (sb.root / "privatedata" / "code.py").write_text("v1\n")
+        saved = Config.RECORDINGS_DIR
+        try:
+            for configured, cast in ((str(sb.root / "recordings"), default_cast),
+                                     (str(sb.root / "privatedata" / "rec"), custom_cast)):
+                Config.RECORDINGS_DIR = configured
+                meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+                snap = Path(meta["path"])
+                assert not (snap / os.path.relpath(configured, sb.root)).exists(), \
+                    f"the recordings folder was copied into the snapshot ({configured})"
+                (sb.root / "server.py").write_text("changed\n")
+                cast.write_text("recorded after the snapshot")
+                _run_rollback_with_restart(sb, meta["id"])
+                assert (sb.root / "server.py").read_text() == "print('x')\n"
+                assert cast.read_text() == "recorded after the snapshot", f"rollback replaced recordings in {configured}"
+                cast.write_text("recorded")
+        finally:
+            Config.RECORDINGS_DIR = saved
+        assert (sb.root / "privatedata" / "code.py").read_text() == "v1\n"
+
+
+def test_unsafe_configured_recordings_folder_is_not_frozen_against_rollback():
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        code = sb.root / "tools"
+        code.mkdir()
+        (code / "t.py").write_text("v1\n")  # holds code, so the portal itself refuses it as a recordings folder
+        saved = Config.RECORDINGS_DIR
+        Config.RECORDINGS_DIR = str(code)
+        try:
+            meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+            assert (Path(meta["path"]) / "tools" / "t.py").exists()
+            (code / "t.py").write_text("v2\n")
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.RECORDINGS_DIR = saved
+        assert (sb.root / "tools" / "t.py").read_text() == "v1\n"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -21,6 +21,7 @@ from time import time
 from typing import Optional
 
 from config import Config
+import recording_paths
 import vod_staging
 
 logger = logging.getLogger("portal.updates")
@@ -470,6 +471,32 @@ def _vod_staging_dirs() -> list:
     return paths
 
 
+def _recordings_dirs() -> list:
+    """Absolute paths of the terminal recordings folder: never snapshotted, never removed by a rollback.
+
+    Recordings are private session history and can be large; a snapshot is
+    readable by whoever reads the backups folder and a rollback would replace
+    them with an older copy. That is the default folder in the project plus
+    the configured one, but a configured folder only counts when it passes the
+    same safety check the portal applies to it at start (recording_paths), so
+    a RECORDINGS_DIR that points at a code folder is not frozen against
+    rollback.
+    """
+    paths = [os.path.realpath(os.path.join(str(PORTAL_DIR), "recordings"))]
+    try:
+        configured = os.path.realpath(Config.RECORDINGS_DIR)
+        if configured not in paths and not recording_paths.refusal_reason(configured, str(PORTAL_DIR)):
+            paths.append(configured)
+    except (OSError, ValueError):
+        pass
+    return paths
+
+
+def _preserved_state_dirs() -> list:
+    """Folders of live data that snapshots skip and rollbacks leave alone."""
+    return _vod_staging_dirs() + _recordings_dirs()
+
+
 def _snapshot_size(snap_dir: Path) -> int:
     """Return total size of snapshot directory in bytes."""
     total = 0
@@ -707,7 +734,7 @@ async def create_snapshot(reason: str = "manual", db_path: Optional[str] = None)
         logger.info("Git stash created for snapshot %s", snap_id)
 
     # Copy files excluding certain dirs/files
-    vod_dirs = set(_vod_staging_dirs())
+    vod_dirs = set(_preserved_state_dirs())
 
     def _ignore(src, names):
         ignored = set()
@@ -1155,16 +1182,17 @@ _ROLLBACK_PRESERVE_FILES = {".env", "portal.db", "portal.db-shm", "portal.db-wal
 
 
 def _rollback_staging_keep() -> tuple:
-    """(preserve_names, keep_path) for the VOD staging folder during a rollback.
+    """(preserve_names, keep_paths) for the live-data folders during a rollback.
 
-    A staging folder directly under the project folder is preserved by name like
-    data/. One nested deeper (for example "code/vods") sets keep_path: the folders
-    above it are cleaned and restored around it, and it is left alone.
+    The folders are the VOD staging folder and the terminal recordings folder. One
+    directly under the project folder is preserved by name like data/. One nested
+    deeper (for example "code/vods") goes into keep_paths: the folders above it are
+    cleaned and restored around it, and it is left alone.
     """
     names = set()
-    keep = None
+    keeps = []
     root = os.path.realpath(str(PORTAL_DIR))
-    for path in _vod_staging_dirs():
+    for path in _preserved_state_dirs():
         rel = os.path.relpath(os.path.realpath(path), root)
         parts = Path(rel).parts
         if not parts or parts[0] == os.pardir or os.path.isabs(rel):
@@ -1174,18 +1202,20 @@ def _rollback_staging_keep() -> tuple:
         if len(parts) == 1:
             names.add(parts[0])
         else:
-            keep = Path(root) / rel
-    return names, keep
+            keeps.append(Path(root) / rel)
+    return names, keeps
 
 
-def _rmtree_except(directory: Path, keep: Path) -> None:
-    """Remove everything under *directory* except *keep* and the folders leading to it."""
+def _rmtree_except(directory: Path, keeps) -> None:
+    """Remove everything under *directory* except the *keeps* paths and the folders leading to them."""
+    if isinstance(keeps, Path):
+        keeps = [keeps]
     for child in directory.iterdir():
-        if child == keep:
+        if child in keeps:
             continue
         if not child.is_symlink() and child.is_dir():
-            if child in keep.parents:
-                _rmtree_except(child, keep)
+            if any(child in k.parents for k in keeps):
+                _rmtree_except(child, keeps)
             else:
                 shutil.rmtree(str(child))
         else:
@@ -1337,7 +1367,7 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
     if not snap_dir.exists():
         raise RuntimeError(f"Snapshot directory not found: {snap_id}")
 
-    staging_names, staging_keep = _rollback_staging_keep()
+    staging_names, staging_keeps = _rollback_staging_keep()
     PRESERVE_DIRS = _ROLLBACK_PRESERVE_DIRS | staging_names
     PRESERVE_FILES = _ROLLBACK_PRESERVE_FILES
 
@@ -1369,8 +1399,8 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
         if item.name in PRESERVE_DIRS or item.name in PRESERVE_FILES:
             continue
         try:
-            if staging_keep is not None and not item.is_symlink() and item.resolve() in staging_keep.parents:
-                _rmtree_except(item.resolve(), staging_keep)
+            if not item.is_symlink() and any(item.resolve() in k.parents for k in staging_keeps):
+                _rmtree_except(item.resolve(), staging_keeps)
             elif item.is_dir():
                 shutil.rmtree(str(item))
             else:
