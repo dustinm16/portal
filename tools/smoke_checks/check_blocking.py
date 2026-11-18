@@ -267,6 +267,8 @@ async def _admin_checks(ctx, adm, loopback_trusted):
            and cf.get("source") in ("built-in", "fetched"), str(cf))
     if superadmin:
         was = cf.get("enabled")
+        async with adm.get(f"{base}/api/admin/security-events?event=cf_refresh_toggled&limit=5", headers=hdr) as er:
+            toggled_before = (await er.json(content_type=None)).get("total", 0)
         try:
             async with adm.put(f"{base}/api/admin/cf-ranges", json={"enabled": "yes"}, headers=hdr) as r:
                 await r.read()
@@ -274,6 +276,10 @@ async def _admin_checks(ctx, adm, loopback_trusted):
             async with adm.put(f"{base}/api/admin/cf-ranges", json={"enabled": not was}, headers=hdr) as r:
                 flipped = await r.json(content_type=None)
             _ok(ctx, "blocking: PUT cf-ranges flips the weekly refresh", r.status == 200 and flipped.get("enabled") is (not was), str(flipped))
+            async with adm.get(f"{base}/api/admin/security-events?event=cf_refresh_toggled&limit=5", headers=hdr) as er:
+                toggled = await er.json(content_type=None)
+            _ok(ctx, "blocking: turning the refresh on or off is a security event",
+                   toggled.get("total") == toggled_before + 1, f"{toggled_before} -> {toggled.get('total')}")
         finally:
             async with adm.put(f"{base}/api/admin/cf-ranges", json={"enabled": bool(was)}, headers=hdr) as r:
                 await r.read()
