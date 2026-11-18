@@ -388,14 +388,16 @@ async def run(ctx):
         ctx.ok("automod: nobody else is told about the refused message",
                not any(e.get("type") in ("message", "user_timed_out", "user_muted") and "a" * 100 in json.dumps(e)
                        for e in ev["amobs"][marks["amobs"]:]), json.dumps(ev["amobs"][marks["amobs"]:])[:300])
-        # not skipped afterwards: the same pattern is checked again and the next message is refused again
+        # the member's breaker is open for 60 s: the next message is refused again at once, without a regex run
         again, err2 = await refused_unchecked("amalice", "a" * 1998)
-        ctx.ok("automod: a pattern that overran its limit is checked again and fails closed again",
-               again is not None and again < 3.0, f"{again}")
+        ctx.ok("automod: a member whose message overran the limit is refused again without a regex run",
+               again is not None and again < 1.0, f"{again}")
         status, body = await api("GET", "/api/admin/automod")
         mine = next((r for r in body.get("rules", []) if r["id"] == slow_rule), {})
-        ctx.ok("automod: the admin list counts the timeouts of the slow pattern",
-               mine.get("slow_pattern_timeouts", 0) >= 2, json.dumps(mine)[:300])
+        ctx.ok("automod: the admin list counts the timeouts of the slow pattern (the refused retry is not one)",
+               mine.get("slow_pattern_timeouts", 0) == 1, json.dumps(mine)[:300])
+        ctx.ok("automod: the admin list carries the regex worker failure count",
+               mine.get("regex_worker_failures") == 0, json.dumps(mine)[:300])
         rc, out = await ctx.run_py(STATE % {"mid": ids["amalice"], "uid": data["amalice"], "ch": ch, "words": []})
         st_slow = _result(out) or {}
         ctx.ok("automod: no penalty is booked for a message that could not be checked",
