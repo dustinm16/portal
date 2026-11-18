@@ -3617,9 +3617,16 @@
                 handleMessage(data);
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
                 console.log('Chat disconnected');
                 updateConnectionStatus(false);
+
+                // The session was signed out elsewhere (password reset, role
+                // change, revoked token): go to the login page, do not retry.
+                if (event && event.code === 4001) {
+                    window.location.replace('/login');
+                    return;
+                }
 
                 // Reconnect with exponential backoff
                 const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);

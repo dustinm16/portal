@@ -756,6 +756,7 @@ async function regeneratePublicKey(streamId) {
         if (response.ok) {
             Portal.toast('Share link rotated', 'success');
             showStreamDetails(streamId);
+            loadUserStreams();
         } else {
             const error = await response.json().catch(() => ({}));
             Portal.toast(error.error || 'Failed to rotate share link', 'error');

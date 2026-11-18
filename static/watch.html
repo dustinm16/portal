@@ -1256,8 +1256,13 @@
                 handleChatMessage(data);
             };
 
-            chatWs.onclose = () => {
+            chatWs.onclose = (event) => {
                 chatWs = null;
+                // The session was signed out elsewhere: reload instead of retrying.
+                if (event && event.code === 4001) {
+                    window.location.reload();
+                    return;
+                }
                 // Reconnect after a delay
                 setTimeout(() => {
                     if (streamData) {

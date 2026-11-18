@@ -13,7 +13,7 @@ if any check failed. It never touches the production checkout, database,
 Run it with the project's interpreter: the same interpreter starts the staged
 server and runs the checks.
 
-Check module interface (tools/smoke_checks/check_<lane>.py):
+Check module interface (tools/smoke_checks/check_<name>.py):
 
     async def run(ctx) -> None
 

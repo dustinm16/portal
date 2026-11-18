@@ -260,6 +260,27 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model, and
 [SECURITY-AUDIT-2026-09.md](docs/SECURITY-AUDIT-2026-09.md) for the most recent
 audit (releases v1.7.0 → v1.10.3, RCE / host-access focus).
 
+## Backups and Rollback
+
+```bash
+sudo venv/bin/python server.py backup-db                 # backups/portal-db-<timestamp>.db
+sudo venv/bin/python server.py backup-db --out /path/to/copy.db
+```
+
+`backup-db` takes a consistent copy of the database through the SQLite backup API and runs an integrity check on it. It is safe while the portal is running, never overwrites an existing file, writes the copy owner-only (0600), needs free space of about twice the database size, and refuses a destination directory that other accounts can write to (a sticky directory such as `/tmp` is accepted). Run it before every upgrade.
+
+Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus an integrity-checked copy of the database. A rollback restores the code only: it does not restore the database, `.env`, the virtual environment or `backups/`. The database copy inside a snapshot is there for manual recovery. Rollback refuses to run if the snapshot or the backup directories are owned by another account or writable by group or others; fix the ownership and modes (`chown` to the portal's account, `chmod 700`) and retry.
+
+### Upgrade notes for 1.10.8
+
+- Accounts with two-factor authentication must send `totp_code` (a TOTP or backup code) with `POST /api/token`, or use an API key.
+- Share links of private streams are replaced once on the first start. Send viewers the new link from the stream's details. Private streams send no go-live notification.
+- Connection, relay, webhook and VOD storage targets are checked against the address they resolve to. Names that resolve to private, loopback, link-local or shared (100.64.0.0/10) addresses are refused with "Host not allowed".
+- Media stream connections need an API URL and a WebRTC URL; user VPN bridge connections are SOCKS only.
+- An admin password reset or a role change signs the user out everywhere, including API keys. A user changing their own password keeps their API keys.
+- Tokens, stream keys and session values are redacted in the logs, so searching the logs for a key no longer finds it.
+- WebRTC publish and playback sessions that were open across a restart are closed and have to reconnect.
+
 ## Streaming
 
 Publish from OBS or any RTMP client:
