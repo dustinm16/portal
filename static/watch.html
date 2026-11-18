@@ -1867,7 +1867,7 @@
                         shareBtn.disabled = !!state.screenSharerId;
                     }
                 }
-                users.textContent = state.users.map(u => u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' 🖥️' : '')).join(', ');
+                users.textContent = state.users.map(u => u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' (screen)' : '')).join(', ');
             } else {
                 btn.classList.remove('in-voice');
                 btn.textContent = 'Join Voice';
