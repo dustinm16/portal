@@ -1323,6 +1323,28 @@ async def security_event(event: str, *, request=None, ip=None, user=None, user_i
         pass
 
 
+def _tried_name(username, fail_reason) -> str:
+    """The name to record for a failed login: the typed name when it is an existing
+    account (a wrong password), else the fixed text. The typed text of an unknown name
+    may be a password pasted into the wrong box, so it is never stored or logged."""
+    return username if fail_reason == "bad_password" else secevents.UNKNOWN_ACCOUNT
+
+
+def _tried_label(username, fail_reason) -> str:
+    """The same for a log line: the quoted account name, or "an unknown account"."""
+    return f"'{username}'" if fail_reason == "bad_password" else "an unknown account"
+
+
+async def _existing_username(username) -> str:
+    """The typed name when it names an existing account, else the fixed text (one lookup)."""
+    try:
+        if isinstance(username, str) and await db.get_user_by_username(username):
+            return username
+    except Exception:
+        pass
+    return secevents.UNKNOWN_ACCOUNT
+
+
 async def _username_of(user_id) -> Optional[str]:
     """Account name for a user id, or None; for event rows, never raises."""
     try:
@@ -2105,8 +2127,9 @@ async def http_create_token(request: web.Request) -> web.Response:
     # Authenticate user
     user, fail_reason = await authenticate_user_reason(username, password)
     if not user:
-        logger.warning(f"Failed login attempt for '{username}' from {client_ip}")
-        security_event_nowait("login_failed", request=request, ip=client_ip, username=username,
+        logger.warning(f"Failed login attempt for {_tried_label(username, fail_reason)} from {client_ip}")
+        security_event_nowait("login_failed", request=request, ip=client_ip,
+                              username=_tried_name(username, fail_reason),
                               result=fail_reason, details={"via": "token"})
         return web.json_response({"error": "Invalid credentials"}, status=401)
 
@@ -3161,8 +3184,8 @@ async def http_register(request: web.Request) -> web.Response:
     row = await cursor.fetchone()
     if row and row[0] > 0:
         logger.warning(f"Registration rate limit: {username} from {client_ip} (already registered in last 24h)")
-        security_event_nowait("register_failed", request=request, ip=client_ip, username=username,
-                              result="ip_limit")
+        security_event_nowait("register_failed", request=request, ip=client_ip,
+                              username=await _existing_username(username), result="ip_limit")
         return web.json_response(
             {"error": "Registration limit reached. Only one account per IP per 24 hours."},
             status=429
@@ -3173,8 +3196,8 @@ async def http_register(request: web.Request) -> web.Response:
     if not is_valid:
         log_invite_code_usage(username, False, client_ip)
         logger.warning(f"Invalid invite code used for registration attempt: {username} from {client_ip}")
-        security_event_nowait("register_failed", request=request, ip=client_ip, username=username,
-                              result="invalid_invite")
+        security_event_nowait("register_failed", request=request, ip=client_ip,
+                              username=await _existing_username(username), result="invalid_invite")
         return web.json_response(
             {"error": "Invalid or expired invite code"},
             status=403
@@ -12698,8 +12721,9 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
     user, fail_reason = await authenticate_user_reason(username, password)
     if not user:
-        logger.warning(f"Failed web login for '{username}' from {client_ip}")
-        security_event_nowait("login_failed", request=request, ip=client_ip, username=username,
+        logger.warning(f"Failed web login for {_tried_label(username, fail_reason)} from {client_ip}")
+        security_event_nowait("login_failed", request=request, ip=client_ip,
+                              username=_tried_name(username, fail_reason),
                               result=fail_reason, details={"via": "web"})
         if "application/json" in content_type:
             return web.json_response({"error": "Invalid credentials"}, status=401)

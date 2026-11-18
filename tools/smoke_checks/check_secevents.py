@@ -153,11 +153,15 @@ async def run(ctx):
     async with ua_http(ua_unknown) as s:
         r = await ctx.login(s, ghost, "whatever-password-1")
         ctx.ok("secevents: unknown-user login is refused", r.status == 401, str(r.status))
-    got = await _wait_rows(ctx, "event = 'login_failed' AND username_tried = ?", (ghost,))
-    ctx.ok("secevents: unknown-user failure has ip, user agent and reason",
+    got = await _wait_rows(ctx, "event = 'login_failed' AND user_agent = ?", (ua_unknown,))
+    ctx.ok("secevents: unknown-user failure has ip, user agent and reason, and the fixed text instead of the typed name",
            len(got) == 1 and got[0]["ip"] == "127.0.0.1" and got[0]["user_agent"] == ua_unknown
            and got[0]["result"] == "unknown_user" and got[0]["user_id"] is None
+           and got[0]["username_tried"] == "(unknown account)"
            and got[0]["category"] == "auth", str(got)[:300])
+    ctx.ok("secevents: the typed name of an unknown account is in no row and not in the server log",
+           not _rows(ctx, "username_tried = ? OR details LIKE ?", (ghost, f"%{ghost}%"))
+           and ghost not in ctx.server_log() and "Failed web login for an unknown account" in ctx.server_log())
 
     async with ua_http(ua_2fa) as s:
         r = await ctx.login(s, "se_2fa", users["se_2fa"]["password"], totp_code=wrong_code)
@@ -312,10 +316,11 @@ async def run(ctx):
                         if e.get("user_agent") == ua and e.get("ip") == "127.0.0.1"]
         ctx.ok("secevents: the unfiltered Security view shows the failed login, the 2FA failure and the API key",
                all(len(v) == 1 for v in seen.values()), str({k: len(v) for k, v in seen.items()}))
-        async with admin.get(base + f"/api/admin/security-events?category=auth&username={ghost}") as r:
+        async with admin.get(base + f"/api/admin/security-events?category=auth&event=login_failed"
+                                    f"&username=%28unknown%20account%29&since={start[:10]}&limit=200") as r:
             data = await r.json(content_type=None)
-        ctx.ok("secevents: the Auth filter lists the unknown-user failure and only auth rows",
-               r.status == 200 and len(data["events"]) == 1
+        ctx.ok("secevents: the Auth filter lists the unknown-user failure (under the fixed text) and only auth rows",
+               r.status == 200 and sum(1 for e in data["events"] if e.get("user_agent") == ua_unknown) == 1
                and all(e["category"] == "auth" for e in data["events"]), str(data)[:200])
         async with admin.get(base + "/api/admin/security-events?category=security&username=se_plain") as r:
             data = await r.json(content_type=None)

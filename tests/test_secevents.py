@@ -370,8 +370,10 @@ async def main_async(tmp):
         bad = await rows("event = 'login_failed' AND result = 'bad_password'")
         check("unknown-user failure row has ip, agent, truncated username, category auth",
               len(unk) == 1 and unk[0]["ip"] == "127.0.0.1" and unk[0]["user_agent"] == UA
-              and unk[0]["username_tried"] == "ghost" + "g" * 59 and unk[0]["category"] == "auth"
+              and unk[0]["username_tried"] == secevents.UNKNOWN_ACCOUNT and unk[0]["category"] == "auth"
               and unk[0]["user_id"] is None, str(unk))
+        check("the typed text of an unknown account is stored nowhere in the row",
+              "ghost" not in json.dumps(unk), str(unk))
         check("bad-password failure row names the account only by what was typed",
               len(bad) == 1 and bad[0]["username_tried"] == "u1", str(bad))
 
@@ -397,6 +399,42 @@ async def main_async(tmp):
               len(flood) - len(unk) <= 2 and calls["insert"] == 0 and calls["upsert"] <= 1,
               f"rows {len(flood)} calls {calls}")
         check("flood count is kept", sum(r["count"] for r in flood) == 501, str(sum(r["count"] for r in flood)))
+        check("none of the 500 typed unknown names was stored",
+              not await rows("username_tried LIKE 'nobody%'"), "")
+
+        # the warning log lines: the name only for an existing account
+        import logging
+        records = []
+
+        class Grab(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+        grab = Grab()
+        server.logger.addHandler(grab)
+        pasted = "Pasted-Password-9x"
+        try:
+            await login(anon, pasted, "x")                    # web login, unknown account
+            async with anon.post(base + "/api/token", json={"username": pasted + "T", "password": "x"}) as r:
+                await r.read()                                # token route, unknown account
+            await login(anon, "u1", "wrong-pass-again")        # web login, existing account
+            async with anon.post(base + "/api/token", json={"username": "u1", "password": "wrong-pass-again"}) as r:
+                await r.read()
+        finally:
+            server.logger.removeHandler(grab)
+        text = "\n".join(records)
+        check("log: an unknown account is named 'an unknown account' on both login routes",
+              text.count("Failed web login for an unknown account") == 1
+              and text.count("Failed login attempt for an unknown account") == 1, text[-400:])
+        check("log: the typed text of an unknown account is not logged", pasted not in text, text[-400:])
+        check("log: an existing account is still named",
+              "Failed web login for 'u1'" in text and "Failed login attempt for 'u1'" in text, text[-400:])
+        await secevents.log.flush()
+        check("the pasted text is not in any row either", not await rows("username_tried LIKE ?", ("%" + pasted + "%",)))
+        check("_existing_username: an existing account is kept, an unknown one is replaced, a non-string too",
+              await server._existing_username("u1") == "u1"
+              and await server._existing_username("no-such-user") == secevents.UNKNOWN_ACCOUNT
+              and await server._existing_username(12345) == secevents.UNKNOWN_ACCOUNT
+              and await server._existing_username(None) == secevents.UNKNOWN_ACCOUNT)
 
         # flood where the rate limit trips as well: only aggregate rows grow
         Config.RATE_LIMIT_REQUESTS = 50
@@ -554,6 +592,9 @@ async def main_async(tmp):
                 got = [g for g in await rows("event = 'user_created'")]
             check(f"{ev} recorded", bool(got) and got[0]["ip"] == "127.0.0.1", str(got))
         check("failed registration is aggregated", await agg_total("register_failed", "invalid_invite") == 1)
+        reg_rows = await rows("event = 'register_failed'")
+        check("a failed registration for a name that is not an account stores the fixed text",
+              len(reg_rows) == 1 and reg_rows[0]["username_tried"] == secevents.UNKNOWN_ACCOUNT, str(reg_rows))
         deleted_rows = await rows("event = 'role_changed'")
         check("rows are kept after the target account is deleted",
               len(deleted_rows) == 1 and json.loads(deleted_rows[0]["details"])["target_username"] == "madeby")

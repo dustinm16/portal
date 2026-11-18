@@ -30,7 +30,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,9 @@ AGGREGATED = frozenset({
 
 CATEGORIES = ("auth", "security")
 
+# What a failed login or registration stores when the typed name is not an account:
+# people paste passwords into the user name box, so the typed text is never kept.
+UNKNOWN_ACCOUNT = "(unknown account)"
 USERNAME_MAX = 64
 USER_AGENT_MAX = 200
 RESULT_MAX = 32

@@ -3811,14 +3811,14 @@ Events (category `auth`): `login_success`, `login_failed` (result `unknown_user`
 {
   "events": [{
     "id": 12, "ts": "2026-11-18 16:59:01", "event": "login_failed", "category": "auth",
-    "user_id": null, "username_tried": "ghost", "ip": "203.0.113.9",
+    "user_id": null, "username_tried": "(unknown account)", "ip": "203.0.113.9",
     "user_agent": "Mozilla/5.0 ...", "result": "unknown_user",
     "details": "{\"via\":\"web\"}", "count": 37, "agg_key": "203.0.113.9|login_failed|unknown_user|2026-11-18 16:59"
   }],
   "total": 1
 }
 ```
-`username_tried` holds the account that was typed (failures) or the account that acted (other events); the target of an admin action is in `details`.
+`username_tried` holds the account that was typed when it is an existing account (failed logins and registrations; an unknown name is stored as `(unknown account)`, never as typed) or the account that acted (other events); the target of an admin action is in `details`.
 
 #### GET /api/admin/security-events/export
 Streams the filtered rows as a download. `format=csv` (default) or `format=json`, plus the filters above. At most 50,000 rows, newest first; the headers `X-Export-Rows` and `X-Export-Truncated` say what was sent and whether older rows were left out (narrow `since` / `until` to get them). JSON is `{"events": [...], "count": N, "truncated": false}`. CSV columns: `id, ts, event, category, user_id, username_tried, ip, user_agent, result, count, details`; a text cell that starts with `=`, `+`, `-`, `@`, tab or carriage return gets a leading apostrophe so a spreadsheet does not run it. Every export is recorded as one `security_log_export` event (reading the list is not).
