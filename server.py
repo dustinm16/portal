@@ -14118,8 +14118,12 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
 
 
 async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: str,
-                               msg_times: list, rate_limit: int, rate_window: float) -> bool:
+                               msg_times: list, rate_limit: int, rate_window: float,
+                               slowmode: bool = True) -> bool:
     """The checks a member's chat message or edit must pass before anything else runs.
+
+    slowmode=False skips the slow-mode wait (edits: fixing a typo right after
+    posting is not a new message; the rate limit still applies).
 
     Stream ban, timeout or mute, the per-socket rate limit and slow mode, in that
     order; the error reply is sent to ws and True is returned when one applies.
@@ -14168,7 +14172,7 @@ async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: st
     msg_times.append(monotonic())
 
     # Slowmode check (mods/admins bypass)
-    slowmode_secs = channel.get("slowmode_seconds") or 0
+    slowmode_secs = (channel.get("slowmode_seconds") or 0) if slowmode else 0
     if slowmode_secs > 0 and user_role not in ("admin", "superadmin", "moderator"):
         last_msg_time = _slowmode_last_msg.get((channel["id"], user_id), 0)
         now_sm = monotonic()
@@ -16531,7 +16535,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # limit, slow mode) before automod sees it.
                         if await _chat_member_blocked(ws, edit_ch, user_id=user_id, user_role=user_role,
                                                       msg_times=chat_msg_times, rate_limit=chat_rate_limit,
-                                                      rate_window=chat_rate_window):
+                                                      rate_window=chat_rate_window,
+                                                      slowmode=False):
                             # The client shows an edit before the server confirms it: give the
                             # author the stored text back, as for an edit automod refuses.
                             await ws.send_json({
