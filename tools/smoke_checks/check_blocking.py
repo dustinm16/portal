@@ -206,6 +206,10 @@ async def _admin_checks(ctx, adm, loopback_trusted):
         if not loopback_trusted:
             _ok(ctx, "blocking: the saver's own address (loopback here) is reported as covered",
                    body.get("your_ip") == "127.0.0.1" and body.get("your_ip_covered") is True, str(body.get("your_ip")))
+        async def _never_ban_events():
+            async with adm.get(f"{base}/api/admin/security-events?event=never_ban_changed&limit=5", headers=hdr) as er:
+                return await er.json(content_type=None)
+        events_before = (await _never_ban_events()).get("total", 0)
         try:
             for label, entries in {
                 "0.0.0.0/0": ["0.0.0.0/0"], "::/0": ["::/0"], "an IPv4 prefix shorter than /8": ["1.0.0.0/7"],
@@ -228,6 +232,12 @@ async def _admin_checks(ctx, adm, loopback_trusted):
                 saved = await r.json(content_type=None)
                 _ok(ctx, "blocking: PUT never-ban saves, normalises and deduplicates",
                        r.status == 200 and saved.get("entries") == ["203.0.113.0/24", "198.51.100.7/32", "45.9.9.0/24"], str(saved.get("entries")))
+            ev = await _never_ban_events()
+            newest = (ev.get("events") or [{}])[0]
+            _ok(ctx, "blocking: a saved never-ban list is a security event (counts, actor), refused saves are not",
+                   ev.get("total") == events_before + 1 and '"entries":3' in (newest.get("details") or "")
+                   and newest.get("user_id") is not None and "203.0.113" not in (newest.get("details") or ""),
+                   f"{events_before} -> {ev.get('total')} {newest}")
             admin_group = next((g for g in saved.get("effective", []) if g["source"] == "admin"), {})
             _ok(ctx, "blocking: the effective list shows the saved entries under the admin source",
                    "45.9.9.0/24" in admin_group.get("entries", []))

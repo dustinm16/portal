@@ -345,6 +345,58 @@ async def db_cases():
 
 asyncio.run(db_cases())
 
+
+class _JsonRequest:
+    """Just enough of a request for the never-ban handler."""
+    transport = None
+
+    def __init__(self, body):
+        self._body = body
+        self.headers = {}
+
+    async def json(self):
+        return self._body
+
+
+async def never_ban_audit_cases():
+    import json as _json
+    import secevents
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Database(str(Path(tmp) / "nb.db"))
+        await d.connect()
+        saved = (server.db, server._backup_superadmin, server._never_ban_admin_nets)
+        try:
+            uid = await d.create_user("nb_root", "x")
+            server.db = d
+            secevents.log.bind(d)
+
+            async def fake_superadmin(request):
+                return {"id": uid, "username": "nb_root"}, None
+            server._backup_superadmin = fake_superadmin
+            server._never_ban_admin_nets = []
+            r = await server.http_put_never_ban(_JsonRequest({"entries": ["203.0.113.0/24", "198.51.100.7", "45.9.9.0/24"]}))
+            r2 = await server.http_put_never_ban(_JsonRequest({"entries": ["45.9.9.0/24", "192.0.2.0/24"]}))
+            audit = [e for e in await d.get_audit_log(action="never_ban.update")]
+            detail = {e["id"]: _json.loads(e["details"]) for e in audit}
+            first = detail[min(detail)] if detail else {}
+            check("never-ban update: the audit entry holds the saved entries, not only their number",
+                  r.status == 200 and first.get("entries") == ["203.0.113.0/24", "198.51.100.7/32", "45.9.9.0/24"]
+                  and first.get("count") == 3, str(first))
+            cur = await d.conn.execute("SELECT * FROM security_events WHERE event = 'never_ban_changed' ORDER BY id")
+            ev = [dict(x) for x in await cur.fetchall()]
+            second = _json.loads(ev[1]["details"]) if len(ev) == 2 else {}
+            check("never-ban update: each change is a security event with the actor and counts",
+                  r2.status == 200 and len(ev) == 2 and ev[0]["user_id"] == uid and ev[0]["category"] == "security"
+                  and second == {"entries": 2, "added": 1, "removed": 2, "scanner_blocks_cleared": 0}, str(ev))
+            check("never-ban update: the event does not carry the entries",
+                  "203.0.113" not in (ev[0]["details"] or ""))
+        finally:
+            server.db, server._backup_superadmin, server._never_ban_admin_nets = saved
+            await d.close()
+
+
+asyncio.run(never_ban_audit_cases())
+
 # ---------------------------------------------------------------------------
 # CLI: unblock and clear-bans
 # ---------------------------------------------------------------------------
@@ -410,13 +462,31 @@ with tempfile.TemporaryDirectory() as tmp:
     rc, out = run_cli(ban_cli.unblock, "not-an-ip", path)
     check("unblock of a non-address exits 2", rc == 2, out)
     check("the CLI does not change the schema", schema_of(path) == before)
+
+    def cli_events():
+        c = sqlite3.connect(path)
+        try:
+            return c.execute("SELECT event, category, ip, result, details, count FROM security_events ORDER BY id").fetchall()
+        finally:
+            c.close()
+    evs = cli_events()
+    check("unblock records one ip_unblocked security event per command, source cli",
+          len(evs) == 3 and all(e[0] == "ip_unblocked" and e[1] == "security" and e[2] == "cli" and e[5] == 1 for e in evs)
+          and '"target_ip":"203.0.113.9"' in evs[0][4] and '"kind":"cli"' in evs[0][4], str(evs))
+    rc, out = run_cli(ban_cli.unblock, "9.9.9.9", path)
+    check("an unblock that found nothing records nothing", rc == 1 and len(cli_events()) == 3)
     rc, out = run_cli(ban_cli.clear_bans, path)
     c = sqlite3.connect(path)
     n = c.execute("SELECT COUNT(*) FROM blocked_ips").fetchone()[0]
     c.close()
     check("clear-bans removes everything and lists it", rc == 0 and n == 0 and "5.5.5.5" in out, out)
+    evs = cli_events()
+    check("clear-bans records one event with the number removed",
+          len(evs) == 4 and '"scope":"all"' in evs[-1][4] and '"removed":1' in evs[-1][4] and "5.5.5.5" in evs[-1][4], str(evs[-1:]))
     rc, out = run_cli(ban_cli.clear_bans, path)
-    check("clear-bans on an empty list is a no-op", rc == 0 and "no blocks" in out, out)
+    check("clear-bans on an empty list is a no-op", rc == 0 and "no blocks" in out and len(cli_events()) == 4, out)
+    check("the CLI writes the same columns the server does",
+          ban_cli._EVENT_COLUMNS == Database._SEC_COLS)
 
     missing = str(Path(tmp) / "nope.db")
     rc, out = run_cli(ban_cli.unblock, "1.2.3.4", missing)

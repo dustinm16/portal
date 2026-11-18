@@ -127,6 +127,8 @@ async def swap_cases():
     d = Database(TEST_DB)
     await d.connect()
     server.db = d
+    import secevents
+    secevents.log.bind(d)
     builtin_nets = [ipaddress.ip_network(n) for n in BUILTIN]
     try:
         server._apply_cloudflare_networks(builtin_nets, "built-in")
@@ -189,6 +191,18 @@ async def swap_cases():
         finally:
             Config.STAGE_MODE = False
         check("a staged instance refuses to fetch", st["ok"] is False and "staged" in st["message"], str(st))
+        import secevents
+        cur = await d.conn.execute("SELECT * FROM security_events WHERE event = 'cf_ranges_refreshed' ORDER BY id")
+        evs = [dict(x) for x in await cur.fetchall()]
+        ok_ev = [e for e in evs if e["result"] == "ok"]
+        bad_ev = [e for e in evs if e["result"] == "failed"]
+        check("every refresh is a security event: the success carries the counts",
+              len(ok_ev) == 1 and json.loads(ok_ev[0]["details"]) == {
+                  "v4": len(V4) + 1, "v6": len(V6), "added": 1, "removed": 0}
+              and ok_ev[0]["category"] == "security" and ok_ev[0]["ip"] == "system", str(ok_ev))
+        check("every failed refresh is an event with the reason",
+              len(bad_ev) == 7 and all(json.loads(e["details"]).get("reason") for e in bad_ev)
+              and "staged" in json.loads(bad_ev[-1]["details"])["reason"], str(bad_ev[-2:]))
         # with a fetch error nothing changes either
         st = await server.refresh_cloudflare_ranges(urls=("https://127.0.0.1:9/ips-v4", "https://127.0.0.1:9/ips-v6"))
         check("an unreachable source keeps the built-in list and records the failure",
@@ -196,6 +210,7 @@ async def swap_cases():
     finally:
         server._extra_trusted_networks[:] = server._parse_extra_trusted()
         server._apply_cloudflare_networks(builtin_nets, "built-in")
+        secevents.log.bind(None)
         await d.close()
 
 

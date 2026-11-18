@@ -1116,6 +1116,7 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     prev = await _cf_load_last()
     status = {"ok": False, "at": now, "last_ok_at": prev.get("last_ok_at")}
+    changed = (0, 0)
     try:
         if texts is None:
             if Config.STAGE_MODE and urls is None:
@@ -1127,6 +1128,7 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
             v4_text, v6_text = texts
         new = ipguard.validate_cf_lists(v4_text, v6_text, _cf_networks)
         old_set, new_set = set(_cf_networks), set(new)
+        changed = (len(new_set - old_set), len(old_set - new_set))
         payload = {
             "v4": [str(n) for n in new if n.version == 4],
             "v6": [str(n) for n in new if n.version == 6],
@@ -1152,6 +1154,13 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
         await db.set_setting(CF_SETTING_LAST, json.dumps(status))
     except Exception as e:
         logger.warning(f"Could not save the Cloudflare refresh result: {e}")
+    if status["ok"]:
+        detail = {"v4": status["v4"], "v6": status["v6"],
+                  "added": changed[0], "removed": changed[1]}
+    else:
+        detail = {"reason": status.get("message")}
+    await security_event("cf_ranges_refreshed", ip="system",
+                         result="ok" if status["ok"] else "failed", details=detail)
     return status
 
 
@@ -2296,6 +2305,11 @@ async def http_revoke_my_session(request: web.Request) -> web.Response:
     # What was opened with that session ends with it; the other sessions stay.
     await close_user_websockets(token.user_id, only_token_id=target["token_id"])
     logger.info(f"Session {public_id} of user {token.user_id} signed out by the user")
+    await security_event(
+        "session_revoked", request=request, user_id=token.user_id,
+        username=await _username_of(token.user_id), result="own",
+        details={"token_id": target["token_id"][:8], "target_user_id": token.user_id,
+                 "own": True})
     return web.json_response({"status": "revoked"})
 
 
@@ -2312,6 +2326,11 @@ async def http_revoke_my_other_sessions(request: web.Request) -> web.Response:
     closed = await close_user_websockets(token.user_id, except_token_id=token.token_id,
                                          keep_prefixes=("apikey-", "streamkey-"))
     logger.info(f"User {token.user_id} signed out {revoked} other session(s)")
+    await security_event(
+        "session_revoked", request=request, user_id=token.user_id,
+        username=await _username_of(token.user_id), result="others",
+        details={"sessions_revoked": revoked, "websockets_closed": closed,
+                 "target_user_id": token.user_id, "own": True})
     return web.json_response({"status": "ok", "revoked": revoked, "websockets_closed": closed})
 
 
@@ -2353,6 +2372,12 @@ async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
                     details={"sessions_revoked": revoked, "websockets_closed": closed,
                              "kept_current_session": own})
     logger.info(f"Sessions of user {user_id} signed out by {actor_role} {token.user_id}")
+    await security_event(
+        "session_revoked", request=request, user_id=token.user_id,
+        username=actor["username"] if actor else None, result="admin_all",
+        details={"target_user_id": user_id, "target_username": target_user["username"],
+                 "sessions_revoked": revoked, "websockets_closed": closed,
+                 "kept_current_session": own, "own": own})
     return web.json_response({"status": "ok", "revoked": revoked,
                               "kept_current_session": own})
 
@@ -20263,11 +20288,19 @@ async def http_put_never_ban(request: web.Request) -> web.Response:
     except ipguard.ListError as e:
         return web.json_response({"error": str(e)}, status=400)
     global _never_ban_admin_nets
+    before = {str(n) for n in _never_ban_admin_nets}
     await db.set_setting(NEVER_BAN_SETTING, json.dumps([str(n) for n in nets]))
     _never_ban_admin_nets = nets
     cleared = _forget_probe_state(nets)
+    saved = [str(n) for n in nets]
     await audit_log("never_ban.update", user["id"], user.get("username", "unknown"),
-                    details={"entries": len(nets), "scanner_blocks_cleared": cleared})
+                    details={"count": len(saved), "entries": saved,
+                             "scanner_blocks_cleared": cleared})
+    # Counts only here (the entries are in the audit entry): a long list would not fit a detail.
+    await security_event("never_ban_changed", request=request, user=user,
+                         details={"entries": len(saved), "added": len(set(saved) - before),
+                                  "removed": len(before - set(saved)),
+                                  "scanner_blocks_cleared": cleared})
     logger.info(f"Never-ban list set to {len(nets)} entr(ies) by user {user['id']}")
     view = _never_ban_view(request)
     view["saved"] = True

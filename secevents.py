@@ -65,6 +65,8 @@ EVENTS = {
     "ip_blocked": "security",
     "ip_unblocked": "security",
     "probe_block": "security",
+    "never_ban_changed": "security",
+    "cf_ranges_refreshed": "security",
     "rate_limited": "security",
     "host_key_accepted": "security",
     "security_log_export": "security",

@@ -4,7 +4,9 @@
 with the standard library. They never start the server, never run migrations
 and never create a missing database. Run them with the server stopped: a
 running server keeps its block list in memory until it restarts, and scanner
-blocks (which are only in memory) disappear on restart.
+blocks (which are only in memory) disappear on restart. Each removal is also
+recorded as an ``ip_unblocked`` security event (source ``cli``), in the same
+transaction, when the database already has the security event table.
 """
 
 import ipaddress
@@ -12,6 +14,12 @@ import sqlite3
 import sys
 from pathlib import Path
 from urllib.parse import quote
+
+import secevents
+
+# Same columns and order as Database._SEC_COLS (a test keeps them equal).
+_EVENT_COLUMNS = ("ts", "event", "category", "user_id", "username_tried", "ip",
+                  "user_agent", "result", "details", "count", "agg_key")
 
 
 def _canon(text):
@@ -54,8 +62,31 @@ def _describe(row) -> str:
     return f"  {row['ip_address']}  ({row['source']}, until {until}){reason}"
 
 
-def _delete(conn, rows) -> None:
+def _record_event(conn, details: dict) -> None:
+    """Write one ip_unblocked security event in the open transaction.
+
+    Skipped without a word when the database has no security_events table yet
+    (this tool never migrates). The row has no client address: it names the
+    command line as its source.
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'security_events'").fetchone()
+    if not has_table:
+        return
+    row = secevents.SecurityEventLog._row(
+        "ip_unblocked", "cli", None, None, None, "cli", {**details, "kind": "cli"})
+    row["count"] = 1
+    row["agg_key"] = None
+    conn.execute(
+        f"INSERT INTO security_events ({', '.join(_EVENT_COLUMNS)}) "
+        f"VALUES ({', '.join('?' for _ in _EVENT_COLUMNS)})",
+        tuple(row.get(c) for c in _EVENT_COLUMNS))
+
+
+def _delete(conn, rows, event_details: dict) -> None:
+    """Delete the rows and record the security event in one transaction."""
     conn.executemany("DELETE FROM blocked_ips WHERE id = ?", [(r["id"],) for r in rows])
+    _record_event(conn, event_details)
     conn.commit()
 
 
@@ -79,7 +110,7 @@ def unblock(ip: str, db_path: str) -> int:
             print(f"No database block found for {want}.")
             _after_note(0)
             return 1
-        _delete(conn, rows)
+        _delete(conn, rows, {"target_ip": want, "removed": len(rows)})
     finally:
         conn.close()
     print(f"Removed {len(rows)} block(s) for {want}:")
@@ -95,7 +126,8 @@ def clear_bans(db_path: str) -> int:
     try:
         rows = _rows(conn)
         if rows:
-            _delete(conn, rows)
+            _delete(conn, rows, {"scope": "all", "removed": len(rows),
+                                 "target_ips": [r["ip_address"] for r in rows[:10]]})
     finally:
         conn.close()
     print(f"Removed {len(rows)} block(s):" if rows else "There were no blocks in the database.")

@@ -21,6 +21,7 @@ os.environ["DATABASE_PATH"] = str(Path(_TMP.name) / "sessions-test.db")
 
 import auth  # noqa: E402
 import server  # noqa: E402
+import secevents  # noqa: E402
 import session_devices as sd  # noqa: E402
 from database import db, Database  # noqa: E402
 
@@ -132,6 +133,11 @@ async def token_row(token_id):
     cur = await db.conn.execute("SELECT * FROM tokens WHERE token_id = ?", (token_id,))
     row = await cur.fetchone()
     return dict(row) if row else None
+
+
+async def sec_rows(event="session_revoked"):
+    cur = await db.conn.execute("SELECT * FROM security_events WHERE event = ? ORDER BY id", (event,))
+    return [dict(r) for r in await cur.fetchall()]
 
 
 async def test_schema():
@@ -315,6 +321,12 @@ async def test_routes():
         except auth.AuthError:
             still = False
         check("revoke one: the phone's next request is refused", still is False)
+        ev = await sec_rows()
+        d = json.loads(ev[-1]["details"]) if ev else {}
+        check("revoke one: recorded as a security event with the user, result own and the session",
+              len(ev) == 1 and ev[0]["user_id"] == alice and ev[0]["result"] == "own"
+              and d.get("own") is True and d.get("token_id") == phone[:8] and phone not in (ev[0]["details"] or ""),
+              str(ev))
 
         # revoke others
         _, phone2 = await make_session(alice, "198.51.100.11", ANDROID_CHROME)
@@ -330,6 +342,10 @@ async def test_routes():
               and not ws_stream.closed)
         check("revoke others: another member's session is untouched",
               (await token_row(bob_sess))["revoked"] == 0 and not ws_bob.closed)
+        ev = [e for e in await sec_rows() if e["result"] == "others"]
+        d = json.loads(ev[0]["details"]) if ev else {}
+        check("revoke others: one security event carries the number of sessions ended",
+              len(ev) == 1 and ev[0]["user_id"] == alice and d.get("sessions_revoked") == 2, str(ev))
         r = await server.http_list_my_sessions(FakeRequest())
         data = body(r)["sessions"]
         check("list after revoke-others: only the laptop remains, current", len(data) == 1 and data[0]["current"])
@@ -349,6 +365,15 @@ async def test_routes():
               r.status == 200 and body(r)["revoked"] == 2 and (await token_row(laptop))["revoked"] == 1
               and (await token_row(l2))["revoked"] == 1 and ws_laptop.closed)
         check("admin everywhere: the admin's own session is untouched", (await token_row(a1))["revoked"] == 0)
+        ev = [e for e in await sec_rows() if e["result"] == "admin_all"]
+        d = json.loads(ev[-1]["details"]) if ev else {}
+        check("admin everywhere: a security event names the admin as actor and the member as target",
+              len(ev) == 2 and ev[1]["user_id"] == admin and d.get("target_user_id") == alice
+              and d.get("target_username") == "sess_alice" and d.get("sessions_revoked") == 2
+              and d.get("kept_current_session") is False, str(ev))
+        check("admin everywhere on themselves is recorded too, keeping the current session",
+              json.loads(ev[0]["details"]).get("kept_current_session") is True
+              and json.loads(ev[0]["details"]).get("target_user_id") == admin)
         r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": str(bob)}))
         cur = await db.conn.execute(
             "SELECT actor_id, target_id, details FROM audit_log WHERE action = 'sessions_revoke' AND target_id = ?", (bob,))
@@ -390,6 +415,7 @@ async def main():
     test_parser()
     await test_schema()
     await db.connect()
+    secevents.log.bind(db)
     try:
         uid = await make_user("sess_throttle")
         await test_throttle(uid)

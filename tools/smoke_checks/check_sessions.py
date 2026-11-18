@@ -46,15 +46,18 @@ async def main():
     cur = await db.conn.execute(
         "SELECT actor_id, target_id, details FROM audit_log WHERE action = 'sessions_revoke' AND target_id = ?", (%d,))
     audit = [dict(r) for r in await cur.fetchall()]
+    cur = await db.conn.execute(
+        "SELECT result, details FROM security_events WHERE event = 'session_revoked' AND user_id = ? ORDER BY id", (%d,))
+    events = [dict(r) for r in await cur.fetchall()]
     await db.close()
-    print(json.dumps({"tokens": rows, "audit": audit}))
+    print(json.dumps({"tokens": rows, "audit": audit, "events": events}))
 
 asyncio.run(main())
 '''
 
 
 async def _rows(ctx, user_id):
-    rc, out = await ctx.run_py(ROWS % (user_id, user_id))
+    rc, out = await ctx.run_py(ROWS % (user_id, user_id, user_id))
     return json.loads(out.strip().splitlines()[-1])
 
 
@@ -203,6 +206,10 @@ async def run(ctx):
         st, data, _ = await _req(laptop, ctx, "POST", "/api/me/sessions/revoke-others")
         ctx.ok("sessions: sign out other devices is accepted", st == 200 and (data or {}).get("revoked") == 1,
                f"{st} {data}")
+        events = (await _rows(ctx, uid_a))["events"]
+        others = [e for e in events if e["result"] == "others"]
+        ctx.ok("sessions: signing out other devices is one security event with the number ended",
+               len(others) == 1 and json.loads(others[0]["details"]).get("sessions_revoked") == 1, str(events))
         st, _, _ = await _req(phone, ctx, "GET", "/api/me")
         ctx.ok("sessions: the phone's next request answers 401", st == 401, f"status {st}")
         code = await _close_code(phone_ws)
@@ -224,6 +231,9 @@ async def run(ctx):
             tab = [s for s in data["sessions"] if not s["current"]]
             st, _, _ = await _req(laptop, ctx, "DELETE", f"/api/me/sessions/{tab[0]['id']}") if tab else (0, 0, 0)
             ctx.ok("sessions: one device can be signed out by its id", bool(tab) and st == 200, f"status {st}")
+            events = (await _rows(ctx, uid_a))["events"]
+            ctx.ok("sessions: signing out one device is a security event for the user",
+                   len([e for e in events if e["result"] == "own"]) == 1, str(events))
             st, _, _ = await _req(tablet, ctx, "GET", "/api/me")
             ctx.ok("sessions: that device's next request answers 401", st == 401, f"status {st}")
             st, _, _ = await _req(laptop, ctx, "GET", "/api/me")
@@ -266,5 +276,9 @@ async def run(ctx):
             audit = (await _rows(ctx, uid_b))["audit"]
             ctx.ok("sessions: the admin action is audited with actor and target",
                    len(audit) == 1 and audit[0]["actor_id"] == admin_id, str(audit))
+            events = [e for e in (await _rows(ctx, admin_id))["events"] if e["result"] == "admin_all"]
+            hit = [e for e in events if json.loads(e["details"]).get("target_user_id") == uid_b]
+            ctx.ok("sessions: the admin action is a security event with actor and target",
+                   len(hit) == 1 and json.loads(hit[0]["details"]).get("target_username") == name_b, str(events)[:300])
             st, _, _ = await _req(laptop, ctx, "GET", "/api/me")
             ctx.ok("sessions: an unrelated member keeps their session", st == 200, f"status {st}")
