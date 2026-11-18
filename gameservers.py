@@ -887,6 +887,8 @@ def _windows_launch_exe(app_info: str | None) -> str | None:
         oslist = re.search(r'"oslist"\s+"([^"]*)"', entry)
         if oslist and "linux" in oslist.group(1):
             return None
+        if not oslist and exe and not exe.group(1).lower().endswith(".exe"):
+            return None     # no oslist = all platforms; a non-.exe is a Linux launch
         if exe and not found and exe.group(1).lower().endswith(".exe"):
             if not oslist or "windows" in oslist.group(1):
                 found = re.sub(r"\\+", "/", exe.group(1)).lstrip("/")
@@ -1090,7 +1092,7 @@ async def adopt(db, *, catalog_key: str | None = None, custom: dict | None = Non
     s_cmd = start_cmd or cat["start_cmd"]
     args = start_args if start_args is not None else cat["start_args"]
     slogin = _validate_steam_login(steam_login or cat["steam_login"])
-    stop_sig = stop_signal or cat["stop_signal"]
+    stop_sig = _stop_signal_for(stop_signal or cat["stop_signal"], runtime)
     build = _installed_build(install_dir, app_id)
 
     old_service = None
@@ -1563,7 +1565,9 @@ async def set_launch_options(db, gs_id: int, *, start_args=None, stop_signal=Non
             raise PermissionError("changing the runtime requires admin")
         new_rt = normalize_runtime(runtime)
         _require_runtime(new_rt)
-        if stop_signal is None:
+        # the UI posts the current signal back untouched, so "equals the stored
+        # one" means the caller did not choose a signal
+        if stop_signal is None or stop_signal == (gs.get("stop_signal") or "SIGTERM"):
             new_sig = _stop_signal_for(new_sig, new_rt)
 
     changed = (new_args != (gs.get("start_args") or "")
@@ -1984,6 +1988,14 @@ async def _migrate_runtime(db, gs: dict, cat: dict) -> bool:
     is fixed by the Update button. A server that can launch is never touched."""
     want = normalize_runtime(cat.get("runtime"))
     if want == (gs.get("runtime") or "native"):
+        return False
+    # a missing launch file only means "broken" if the install is really there;
+    # an unmounted or empty game-data dir at boot must not flip a working server
+    idir = gs.get("install_dir") or ""
+    try:
+        if not (os.path.isdir(idir) and os.listdir(idir)):
+            return False
+    except OSError:
         return False
     if os.path.isfile(_resolve_launch_cmd(gs["install_dir"], gs["start_cmd"])):
         return False
