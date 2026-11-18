@@ -5,8 +5,9 @@ A stage has no ffmpeg and no MediaMTX. The capture therefore runs in-process
 (ctx.run_py) through the real request handler and the real stream records in the stage
 database, with a fake ffmpeg (a Python script put first on PATH in that process only)
 that logs its pid, niceness and arguments and then answers, hangs or fails. The route
-itself is also asked over HTTP: an offline stream and a stage without MediaMTX must
-answer without starting any process.
+itself is also asked over HTTP: an offline stream must answer without starting any
+process, and a live stream with no usable MediaMTX (none configured on a fresh stage, none
+reachable on a stage from a production copy) must answer 503 with Retry-After.
 
 Needs a phone or a real stream (not provable here): the nice value of the real ffmpeg
 processes of a live stream with a relay and a recording (`ps -o pid,ni,cmd -C ffmpeg`).
@@ -124,6 +125,7 @@ async def main():
     server._THUMBNAIL_TIMEOUT = 0.5
     rs = await asyncio.gather(*[get(a) for _ in range(5)])
     out["timeout_status"] = sorted(set(r.status for r in rs))
+    out["timeout_retry_after"] = sorted(set(r.headers.get("Retry-After") or "" for r in rs))
     lg = log()
     out["timeout_spawns"] = len(lg)
     out["timeout_pid_left"] = os.path.exists("/proc/%%d" %% lg[0]["pid"]) if lg else None
@@ -212,8 +214,10 @@ async def run(ctx):
     ctx.ok("thumbs: the running ffmpeg has nice 10 (relative to the portal's own)",
            r["nice_seen"] is not None and r["nice_seen"] == r["nice_base"] + 10,
            f"seen {r['nice_seen']}, portal {r['nice_base']}")
-    ctx.ok("thumbs: after a forced timeout every waiting request gets 504 and one ffmpeg ran",
-           r["timeout_status"] == [504] and r["timeout_spawns"] == 1, f"{r['timeout_status']} spawns {r['timeout_spawns']}")
+    ctx.ok("thumbs: after a forced timeout every waiting request gets 503 with Retry-After and one ffmpeg ran",
+           r["timeout_status"] == [503] and r["timeout_retry_after"] != [""] and "" not in r["timeout_retry_after"]
+           and r["timeout_spawns"] == 1,
+           f"{r['timeout_status']} {r['timeout_retry_after']} spawns {r['timeout_spawns']}")
     ctx.ok("thumbs: after a forced timeout the ffmpeg is gone from /proc (no orphan, no zombie)",
            r["timeout_pid_left"] is False, str(r["timeout_pid_left"]))
     ctx.ok("thumbs: with two captures running a third stream gets 503 with Retry-After and starts nothing",
@@ -239,8 +243,13 @@ async def run(ctx):
             ctx.ok("thumbs: HTTP: an unknown key is 403", resp.status == 403, str(resp.status))
         async with s.get(f"{ctx.base_url}/api/stream/{keys['a']['pub']}/thumbnail") as resp:
             body = await resp.text()
-            ctx.ok("thumbs: HTTP: a live stream on a stage without MediaMTX is 503, not a hang or 500",
-                   resp.status == 503 and "MediaMTX" in body, f"{resp.status} {body[:80]}")
+            # A fresh stage has no MediaMTX settings (503 "not configured"). A stage started
+            # from a production database copy has them, but nothing it can reach serves this
+            # stream, so the capture fails or times out: also 503. Either way a temporary
+            # answer with Retry-After, never 500, 504 or a hang.
+            ctx.ok("thumbs: HTTP: a live stream on a stage without a usable MediaMTX is 503 with Retry-After, not a hang, 500 or 504",
+                   resp.status == 503 and bool(resp.headers.get("Retry-After")),
+                   f"{resp.status} Retry-After={resp.headers.get('Retry-After')} {body[:80]}")
 
         # Stream cards retry a failed thumbnail (2 s, 4 s, 8 s) through one shared script
         async with s.get(f"{ctx.base_url}/static/js/stream-thumb.js?v=1") as resp:

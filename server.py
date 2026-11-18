@@ -6648,7 +6648,8 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     is still served when a fresh one cannot be made. Requests for a stream
     whose frame is being captured wait for that one capture instead of starting
     another. At most two captures run at once; beyond that the last good frame is
-    served, or 503 with Retry-After if there is none.
+    served, or 503 with Retry-After if there is none. A capture that failed or
+    timed out answers the same way (503 with Retry-After, never 500 or 504).
     """
     key = request.match_info.get("stream_key", "")
 
@@ -6691,14 +6692,17 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     if outcome == "ok":
         return _thumbnail_response(data, _THUMBNAIL_CACHE_TTL)
     if outcome == "noconfig":
-        return web.json_response({"error": "MediaMTX not configured"}, status=503)
+        return web.json_response({"error": "MediaMTX not configured"}, status=503,
+                                 headers={"Retry-After": str(_THUMBNAIL_RETRY_AFTER)})
     # Serve last known good frame rather than an error during transient HLS hiccups
     stale = _stale_thumbnail_response(cache_key)
     if stale is not None:
         return stale
-    if outcome == "timeout":
-        return web.json_response({"error": "Thumbnail capture timeout"}, status=504)
-    return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
+    # No frame can be made now (failed or timed out): a temporary condition, so
+    # 503 with Retry-After in every case, never 500 or 504.
+    error = "Thumbnail capture timeout" if outcome == "timeout" else "Failed to capture thumbnail"
+    return web.json_response({"error": error}, status=503,
+                             headers={"Retry-After": str(_THUMBNAIL_RETRY_AFTER)})
 
 
 # Server-side record of WebRTC sessions opened through the WHIP/WHEP proxies:

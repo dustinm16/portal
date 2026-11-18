@@ -185,7 +185,8 @@ def test_timeout_kills_and_reaps_ffmpeg():
         env.mode("hang")
         with mock.patch.object(server, "_THUMBNAIL_TIMEOUT", 0.5):
             rs = await asyncio.gather(*[env.get("live_aaa") for _ in range(5)])
-        assert [r.status for r in rs] == [504] * 5, [r.status for r in rs]
+        assert [r.status for r in rs] == [503] * 5, [r.status for r in rs]
+        assert all(r.headers.get("Retry-After") == str(server._THUMBNAIL_RETRY_AFTER) for r in rs)
         log = env.log()
         assert len(log) == 1, log
         assert gone(log[0]["pid"]), "ffmpeg is still there (running or zombie)"
@@ -204,11 +205,11 @@ def test_timeout_serves_the_stale_frame():
     run(body)
 
 
-def test_failed_capture_is_500_or_stale_and_slot_returns():
+def test_failed_capture_is_503_or_stale_and_slot_returns():
     async def body(env):
         env.mode("fail")
         r = await env.get("live_aaa")
-        assert r.status == 500
+        assert r.status == 503 and r.headers["Retry-After"] == str(server._THUMBNAIL_RETRY_AFTER), (r.status, r.headers)
         server._thumbnail_cache["live_aaa"] = (time.time() - 100, b"OLD")
         r = await env.get("live_aaa")
         assert r.status == 200 and r.body == b"OLD"
@@ -279,6 +280,7 @@ def test_missing_mediamtx_config_is_503_and_starts_nothing():
         with mock.patch.object(server, "_get_mediamtx_config", none):
             r = await env.get("live_aaa")
         assert r.status == 503 and not env.log()
+        assert r.headers["Retry-After"] == str(server._THUMBNAIL_RETRY_AFTER)
     run(body)
 
 
@@ -378,7 +380,7 @@ def test_failed_capture_does_not_serve_a_frame_older_than_five_minutes():
         env.mode("fail")
         server._thumbnail_cache["live_aaa"] = (time.time() - 400, b"TOO-OLD")
         r = await env.get("live_aaa")
-        assert r.status == 500, (r.status, r.body)
+        assert r.status == 503 and r.headers["Retry-After"] == str(server._THUMBNAIL_RETRY_AFTER), (r.status, r.body)
     run(body)
 
 
