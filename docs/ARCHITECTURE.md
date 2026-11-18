@@ -1085,7 +1085,7 @@ GET  /api/voice/ice-servers          - ICE server config (STUN/TURN)
 WS   /ws/chat                        - Voice signaling (piggybacks on chat WS)
 ```
 
-Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively. A dropped chat socket keeps the voice seat for 20 s (`voice_user_reconnecting`, then `voice_user_resumed` or `voice_user_left`); see API.md. Voice works in both channels and DMs — DM voice uses room identifier `dm:{conversation_id}`.
+Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively. A dropped chat socket keeps the voice seat for 20 s (`voice_user_reconnecting`, then `voice_user_resumed` or `voice_user_left`); see API.md. Voice works in both channels and DMs — DM voice uses room identifier `dm:{conversation_id}`. Per-user playback volume (0-200%, iOS and no-Web-Audio fallback to element volume capped at 100%; iOS Safari may ignore element volume, so the popover then points to the mute) and local mute are client-only: `voice.js` routes each remote stream through a shared playback AudioContext and a GainNode per peer (the muted `<audio>` element stays attached for Chromium), every loudness change goes through `_applyGain`, and the settings live in `localStorage` (`voice_peer_prefs_<own id>`), never on the server.
 
 ### System Info
 

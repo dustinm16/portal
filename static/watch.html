@@ -659,6 +659,9 @@
         .watch-voice-reconnect.show { display: block; }
         .watch-voice-controls { flex-wrap: wrap; }
         .watch-voice-users { flex: 1; overflow-x: auto; color: var(--text-muted, #72767d); white-space: nowrap; }
+        .watch-voice-users .wv-user { padding: 0 0.15rem; }
+        .watch-voice-users .wv-user[data-voice-uid] { cursor: pointer; text-decoration: underline dotted; }
+        .watch-voice-users .wv-user.local-muted { opacity: 0.6; text-decoration: line-through; }
         @media (pointer: coarse) { .watch-voice-controls button, .watch-voice-btn { min-height: 44px; } }
         .watch-screen-share { display:none; background:#000; border-bottom:1px solid rgba(255,255,255,0.1); padding:0.3rem; flex-direction:column; }
         .watch-screen-share.active { display:flex; }
@@ -843,7 +846,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=44"></script>
-    <script src="/static/js/voice.js?v=8"></script>
+    <script src="/static/js/voice.js?v=9"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -1321,6 +1324,7 @@
                 // Voice stays in the main window; the pop-out is text only.
                 if (!chatOnly) {
                     VoiceChat.init(chatWs, onWatchVoiceState, onWatchScreenShareChange, currentUser?.id);
+                    setupWatchVoiceMenu();
                 }
                 chatWs.send(JSON.stringify({
                     type: 'join',
@@ -1837,6 +1841,19 @@
             else VoiceChat.join();
         }
 
+        // Per-user volume popover on the participant names (wired once; the
+        // names are re-rendered on every voice event).
+        function setupWatchVoiceMenu() {
+            VoiceChat.attachUserMenu(document.getElementById('wv-users'), {
+                selector: '[data-voice-uid]',
+                enterOpens: true,
+                nameFor: (uid) => {
+                    const u = VoiceChat.getState().users.find(x => x.user_id === uid);
+                    return u ? u.username : '';
+                }
+            });
+        }
+
         function onWatchVoiceState(state) {
             const btn = document.getElementById('watch-voice-btn');
             const controls = document.getElementById('watch-voice-controls');
@@ -1867,7 +1884,22 @@
                         shareBtn.disabled = !!state.screenSharerId;
                     }
                 }
-                users.textContent = state.users.map(u => u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' (screen)' : '')).join(', ');
+                VoiceChat.renderKeepingFocus(users, () => {
+                    users.textContent = '';
+                    state.users.forEach((u, i) => {
+                        const tag = u.local_muted ? ' (muted by you)' : (u.local_volume !== 100 ? ` (${Number(u.local_volume)}%)` : '');
+                        const span = document.createElement('span');
+                        span.className = 'wv-user' + (u.local_muted ? ' local-muted' : '');
+                        span.textContent = u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' (screen)' : '') + tag;
+                        if (u.user_id !== currentUser?.id) {
+                            span.setAttribute('data-voice-uid', String(Number(u.user_id)));
+                            span.tabIndex = 0;
+                            span.title = 'Right-click, long-press or press Enter to set volume';
+                        }
+                        users.appendChild(span);
+                        if (i < state.users.length - 1) users.appendChild(document.createTextNode(', '));
+                    });
+                });
             } else {
                 btn.classList.remove('in-voice');
                 btn.textContent = 'Join Voice';

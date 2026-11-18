@@ -1941,6 +1941,9 @@
         .voice-user-mini.speaking {
             outline: 2px solid var(--accent-green, #43b581);
         }
+        .voice-user-mini[data-voice-uid] { cursor: pointer; }
+        .voice-user-mini.local-muted { opacity: 0.6; text-decoration: line-through; }
+        .voice-user-mini.local-muted .vum-tag { text-decoration: none; display: inline-block; }
         .voice-user-mini.reconnecting, .user-item.reconnecting .user-name {
             opacity: 0.55;
             font-style: italic;
@@ -3061,7 +3064,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=44"></script>
-    <script src="/static/js/voice.js?v=8"></script>
+    <script src="/static/js/voice.js?v=9"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -3619,6 +3622,7 @@
 
                 // Initialize voice chat with this WebSocket
                 VoiceChat.init(ws, onVoiceStateChange, onScreenShareChange, currentUser?.id);
+                setupVoiceUserMenus();
 
                 // Join current channel
                 ws.send(JSON.stringify({
@@ -4127,8 +4131,12 @@
                         ? `<span class="user-voice-indicator">(reconnecting)</span>`
                         : `<span class="user-voice-indicator">${user.voice_muted ? '🔇' : '🎙️'}${user.voice_deafened ? '🔈' : ''}</span>`) : '';
                 const dmBtn = (user.user_id != null && user.user_id !== currentUser?.id) ? `<span class="dm-icon-btn" onclick="event.stopPropagation(); openDmWithUser(${user.user_id})" title="Direct Message">DM</span>` : '';
+                // Volume popover: only for real accounts in voice (a masked anonymous
+                // entry has no user_id and gets nothing), never from anon_ref
+                const volAttrs = (user.in_voice && user.user_id != null && user.user_id !== currentUser?.id)
+                    ? ` data-voice-uid="${Number(user.user_id)}"${VoiceChat.isInVoice() ? ' tabindex="0"' : ''}` : '';
                 return `
-                <div class="user-item ${voiceClass}" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status, user.last_seen_at)}"
+                <div class="user-item ${voiceClass}"${volAttrs} title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status, user.last_seen_at)}"
                      onclick="insertMention('${escapeHtml(user.nickname || user.username)}')" style="cursor: pointer;">
                     <span class="user-status ${user.status || 'online'}"></span>
                     <div class="user-info">
@@ -6418,6 +6426,20 @@
             }
         }
 
+        // Per-user volume popover: wired once on containers that are never
+        // replaced (their children are re-rendered). The name comes from the
+        // voice payload, so an anonymous member in a DM call stays "Anonymous".
+        function setupVoiceUserMenus() {
+            const nameFor = (uid) => {
+                const u = VoiceChat.getState().users.find(x => x.user_id === uid);
+                return u ? u.username : '';
+            };
+            VoiceChat.attachUserMenu(document.getElementById('voice-users-mini'),
+                { selector: '[data-voice-uid]', nameFor, enterOpens: true });
+            VoiceChat.attachUserMenu(document.getElementById('user-list'),
+                { selector: '.user-item[data-voice-uid]', nameFor });
+        }
+
         function onVoiceStateChange(state) {
             const joinBtn = document.getElementById('voice-join-btn');
             const joinLabel = document.getElementById('voice-join-label');
@@ -6459,9 +6481,14 @@
                 }
 
                 // Update mini user list
-                usersMini.innerHTML = state.users.map(u =>
-                    `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}${u.reconnecting ? ' reconnecting' : ''}">${escapeHtml(u.username)}${u.reconnecting ? ' (reconnecting)' : ''}${u.muted ? ' 🔇' : ''}${u.screen_sharing ? ' 🖥️' : ''}</span>`
-                ).join('');
+                VoiceChat.renderKeepingFocus(usersMini, () => {
+                    usersMini.innerHTML = state.users.map(u => {
+                        const mine = u.user_id === currentUser?.id;
+                        const tag = u.local_muted ? ' (muted by you)' : (u.local_volume !== 100 ? ` (${Number(u.local_volume)}%)` : '');
+                        const attrs = mine ? '' : ` data-voice-uid="${Number(u.user_id)}" tabindex="0" title="Right-click, long-press or press Enter to set volume"`;
+                        return `<span class="voice-user-mini${u.speaking ? ' speaking' : ''}${u.reconnecting ? ' reconnecting' : ''}${u.local_muted ? ' local-muted' : ''}"${attrs}>${escapeHtml(u.username)}${u.reconnecting ? ' (reconnecting)' : ''}${u.muted ? ' 🔇' : ''}${u.screen_sharing ? ' 🖥️' : ''}<span class="vum-tag">${tag}</span></span>`;
+                    }).join('');
+                });
             } else {
                 joinBtn.classList.remove('in-voice');
                 joinLabel.textContent = 'Join Voice';

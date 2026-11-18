@@ -2,6 +2,7 @@
  * Voice Chat Module — WebRTC P2P mesh voice chat
  * Piggybacks signaling on existing /ws/chat WebSocket.
  * Supports VAD (Voice Activity Detection) and PTT (Push-to-Talk).
+ * Per-user playback volume (0-200%) and local mute, kept in this browser only.
  */
 const VoiceChat = (() => {
     // State
@@ -17,7 +18,15 @@ const VoiceChat = (() => {
     let _speaking = false;
     let _iceServers = [];
     let _peers = new Map();       // user_id -> RTCPeerConnection
-    let _audioElements = new Map(); // user_id -> <audio>
+    // Remote audio per peer: {el, stream, track, source, gain}. Every change of
+    // loudness goes through _applyGain.
+    let _playback = new Map();    // user_id -> playback entry
+    let _playCtx = null;          // shared playback AudioContext (not the VAD one)
+    let _playCtxFailed = false;   // creating it threw: element volume only
+    let _peerPrefs = new Map();   // user_id -> {vol, muted}, this browser only
+    let _peerPrefsKey = null;
+    let _volumeIgnored = false;   // the element did not take a volume below 100%
+    let _menu = null;             // the open per-user popover
     let _voiceUsers = new Map();  // user_id -> {username, muted, deafened, speaking}
     let _onStateChange = null;    // callback for UI updates
     let _onScreenShareChange = null; // callback for screen share UI
@@ -76,6 +85,7 @@ const VoiceChat = (() => {
         _onStateChange = onStateChange || null;
         _onScreenShareChange = onScreenShareChange || null;
         _loadPrefs();
+        _loadPeerPrefs();
         _fetchIceServers();
         if (ws && !ws.__voiceBound) {
             ws.__voiceBound = true;
@@ -179,6 +189,9 @@ const VoiceChat = (() => {
 
     async function join(room) {
         if (_inVoice) return;
+        // Created here, inside the click that started the join: a context made
+        // after the microphone prompt may no longer count as a user gesture.
+        _ensurePlayCtx();
         try {
             _localStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -189,6 +202,7 @@ const VoiceChat = (() => {
             });
         } catch (e) {
             console.error('[Voice] Microphone access denied:', e);
+            _closePlayCtx();
             _notifyState();
             return;
         }
@@ -250,12 +264,10 @@ const VoiceChat = (() => {
         }
         _peers.clear();
 
-        // Remove audio elements
-        for (const [uid, el] of _audioElements) {
-            el.srcObject = null;
-            el.remove();
-        }
-        _audioElements.clear();
+        // Remove audio elements, gain nodes and the playback context
+        for (const uid of Array.from(_playback.keys())) _detachPlayback(uid);
+        _closePlayCtx();
+        _closeUserMenu();
         _pendingCandidates.clear();
         _makingOffer.clear();
 
@@ -295,10 +307,8 @@ const VoiceChat = (() => {
     function toggleDeafen() {
         if (!_inVoice) return;
         _deafened = !_deafened;
-        // Deafen: mute all remote audio elements
-        for (const [uid, el] of _audioElements) {
-            el.muted = _deafened;
-        }
+        // Deafen silences every peer through the same path as a local mute
+        _applyAllGains();
         if (_ws && _ws.readyState === WebSocket.OPEN) {
             _ws.send(JSON.stringify({ type: 'voice_deafen', deafened: _deafened }));
         }
@@ -420,6 +430,486 @@ const VoiceChat = (() => {
         _notifyState();
     }
 
+    // ---- Per-user playback: volume 0-200%, local mute ---------------------
+    // Remote audio plays through one shared AudioContext: stream -> GainNode ->
+    // output. The <audio> element stays attached but muted, because Chromium
+    // delivers no audio from a remote WebRTC stream to Web Audio unless the
+    // stream is also attached to a media element. Where Web Audio is not used
+    // (iOS, no AudioContext, a context that is not running) the element itself
+    // plays, with its volume capped at 100%. Preferences are kept in this
+    // browser's localStorage only and are never sent to the server.
+    const MAX_VOLUME = 200;
+    const MAX_VOLUME_ELEMENT = 100;
+    const MAX_STORED_PEERS = 500;
+
+    function _isIOS() {
+        try {
+            const ua = navigator.userAgent || '';
+            if (/iPad|iPhone|iPod/.test(ua)) return true;
+            // iPadOS reports itself as a Mac with a touch screen
+            return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+        } catch { return false; }
+    }
+
+    function _audioContextClass() {
+        if (typeof window === 'undefined') return null;
+        return window.AudioContext || window.webkitAudioContext || null;
+    }
+
+    function _webAudioWanted() {
+        return !_playCtxFailed && !_isIOS() && !!_audioContextClass();
+    }
+
+    // Slider ceiling on this device
+    function getMaxVolume() {
+        return _webAudioWanted() ? MAX_VOLUME : MAX_VOLUME_ELEMENT;
+    }
+
+    function _ensurePlayCtx() {
+        if (!_webAudioWanted()) return null;
+        if (_playCtx && _playCtx.state === 'closed') _playCtx = null;
+        if (!_playCtx) {
+            try {
+                const Ctor = _audioContextClass();
+                _playCtx = new Ctor();
+                _playCtx.onstatechange = () => _applyAllGains();
+            } catch (e) {
+                console.warn('[Voice] Web Audio playback unavailable:', e);
+                _playCtx = null;
+                _playCtxFailed = true;
+                return null;
+            }
+        }
+        if (_playCtx.state === 'suspended') {
+            try {
+                const p = _playCtx.resume();
+                if (p && p.catch) p.catch(() => {});
+            } catch {}
+        }
+        return _playCtx;
+    }
+
+    function _closePlayCtx() {
+        if (!_playCtx) return;
+        const ctx = _playCtx;
+        _playCtx = null;
+        ctx.onstatechange = null;
+        try {
+            const p = ctx.close();
+            if (p && p.catch) p.catch(() => {});
+        } catch {}
+    }
+
+    function _disconnectNodes(pb) {
+        if (pb.source) { try { pb.source.disconnect(); } catch {} pb.source = null; }
+        if (pb.gain) { try { pb.gain.disconnect(); } catch {} pb.gain = null; }
+    }
+
+    // Called for every remote audio track, also after a renegotiation or a
+    // replaced peer connection: nodes are rebuilt for a new stream or track and
+    // the stored preference is applied again.
+    function _attachPlayback(userId, stream, track) {
+        let pb = _playback.get(userId);
+        if (!pb) {
+            const el = document.createElement('audio');
+            el.autoplay = true;
+            el.id = `voice-audio-${userId}`;
+            el.style.display = 'none';
+            document.body.appendChild(el);
+            pb = { el, stream: null, track: null, source: null, gain: null };
+            _playback.set(userId, pb);
+        }
+        if (pb.stream !== stream || pb.track !== track || (!pb.gain && _webAudioWanted())) {
+            _disconnectNodes(pb);
+            pb.stream = stream;
+            pb.track = track;
+            pb.el.srcObject = stream;
+            const ctx = _ensurePlayCtx();
+            if (ctx) {
+                try {
+                    pb.source = ctx.createMediaStreamSource(stream);
+                    pb.gain = ctx.createGain();
+                    pb.source.connect(pb.gain);
+                    pb.gain.connect(ctx.destination);
+                } catch (e) {
+                    console.warn('[Voice] Could not route audio through Web Audio:', e);
+                    _disconnectNodes(pb);
+                }
+            }
+        }
+        _applyGain(userId);
+    }
+
+    function _detachPlayback(userId) {
+        const pb = _playback.get(userId);
+        if (!pb) return;
+        _disconnectNodes(pb);
+        pb.el.srcObject = null;
+        pb.el.remove();
+        _playback.delete(userId);
+    }
+
+    // The only place that sets how loud a peer is. Deafen and the local mute
+    // both mean silence; otherwise the stored volume applies.
+    function _applyGain(userId) {
+        const pb = _playback.get(userId);
+        if (!pb) return;
+        const pref = _getPeerPref(userId);
+        const silent = _deafened || pref.muted;
+        const viaWebAudio = !!(pb.gain && _playCtx && _playCtx.state === 'running');
+        if (viaWebAudio) {
+            pb.gain.gain.value = silent ? 0 : Math.min(pref.vol, MAX_VOLUME) / 100;
+            pb.el.muted = true;
+        } else {
+            if (pb.gain) pb.gain.gain.value = 0;
+            const v = Math.min(pref.vol, MAX_VOLUME_ELEMENT) / 100;
+            pb.el.volume = v;
+            // iOS Safari ignores element.volume and reads back 1: remember it,
+            // the popover then says that only the mute works there.
+            if (v !== 1 && Math.abs(pb.el.volume - v) > 0.01) _volumeIgnored = true;
+            pb.el.muted = silent || v === 0;
+        }
+    }
+
+    function _applyAllGains() {
+        for (const uid of _playback.keys()) _applyGain(uid);
+    }
+
+    // ---- Per-user preferences (localStorage, keyed by the peer's user id) ----
+    function _validPeerId(userId) {
+        const id = Number(userId);
+        return Number.isInteger(id) && id > 0 ? id : null;
+    }
+
+    function _getPeerPref(userId) {
+        return _peerPrefs.get(Number(userId)) || { vol: 100, muted: false };
+    }
+
+    // One entry per account that uses this browser, so two accounts on one
+    // device do not share settings.
+    function _storageKey() {
+        return 'voice_peer_prefs_' + (_myUserId != null ? _myUserId : 'none');
+    }
+
+    function _loadPeerPrefs() {
+        const key = _storageKey();
+        if (_peerPrefsKey === key) return;
+        _peerPrefsKey = key;
+        _peerPrefs = new Map();
+        try {
+            const raw = localStorage.getItem(key);
+            const data = raw ? JSON.parse(raw) : null;
+            if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+            for (const k of Object.keys(data)) {
+                if (_peerPrefs.size >= MAX_STORED_PEERS) break;
+                const id = _validPeerId(k);
+                const v = data[k];
+                if (id === null || !v || typeof v !== 'object') continue;
+                const vol = Math.round(Number(v.vol));
+                const pref = {
+                    vol: Number.isFinite(vol) ? Math.max(0, Math.min(MAX_VOLUME, vol)) : 100,
+                    muted: v.muted === true
+                };
+                if (pref.vol !== 100 || pref.muted) _peerPrefs.set(id, pref);
+            }
+        } catch {}
+    }
+
+    function _savePeerPrefs() {
+        try {
+            if (!_peerPrefs.size) { localStorage.removeItem(_storageKey()); return; }
+            const out = {};
+            for (const [id, p] of _peerPrefs) out[id] = { vol: p.vol, muted: p.muted };
+            localStorage.setItem(_storageKey(), JSON.stringify(out));
+        } catch {}
+    }
+
+    function _setPeerPref(userId, patch) {
+        const id = _validPeerId(userId);
+        if (id === null || _isMe(id)) return false;
+        const next = { ..._getPeerPref(id), ...patch };
+        if (next.vol === 100 && !next.muted) _peerPrefs.delete(id);
+        else if (_peerPrefs.has(id) || _peerPrefs.size < MAX_STORED_PEERS) _peerPrefs.set(id, next);
+        else return false;
+        _savePeerPrefs();
+        _applyGain(id);
+        _notifyState();
+        return true;
+    }
+
+    function getPeerPref(userId) {
+        const p = _getPeerPref(userId);
+        return { volume: Math.min(p.vol, getMaxVolume()), muted: p.muted };
+    }
+
+    function setPeerVolume(userId, percent) {
+        const n = Math.round(Number(percent));
+        if (!Number.isFinite(n)) return false;
+        return _setPeerPref(userId, { vol: Math.max(0, Math.min(getMaxVolume(), n)) });
+    }
+
+    function setPeerMuted(userId, muted) {
+        return _setPeerPref(userId, { muted: !!muted });
+    }
+
+    function resetPeer(userId) {
+        return _setPeerPref(userId, { vol: 100, muted: false });
+    }
+
+    function isInCall(userId) {
+        return _inVoice && _voiceUsers.has(Number(userId)) && !_isMe(userId);
+    }
+
+    // ---- Per-user popover (plain DOM, outside every re-rendered container) ----
+    const MENU_CSS = `
+.voice-user-menu{position:fixed;z-index:10050;min-width:230px;max-width:min(92vw,320px);padding:.8rem;border-radius:6px;
+background:var(--bg-secondary,#2f3136);color:var(--text-primary,#dcddde);border:1px solid var(--border-color,#4f545c);
+box-shadow:0 6px 24px rgba(0,0,0,.45);font-size:.9rem}
+.voice-user-menu .vum-title{font-weight:600;margin-bottom:.6rem;overflow-wrap:anywhere}
+.voice-user-menu .vum-row{display:flex;align-items:center;gap:.6rem;margin-bottom:.6rem}
+.voice-user-menu input[type=range]{flex:1;min-width:0}
+.voice-user-menu .vum-pct{min-width:3.2em;text-align:right}
+.voice-user-menu .vum-note{font-size:.75rem;color:var(--text-muted,#72767d);margin-bottom:.6rem}
+.voice-user-menu .vum-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.voice-user-menu button{padding:.4rem .7rem;border-radius:4px;cursor:pointer;font:inherit;
+background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--border-color,#4f545c)}
+.voice-user-menu button[aria-pressed="true"]{color:var(--accent-red,#f04747);border-color:var(--accent-red,#f04747)}
+@media (pointer:coarse){.voice-user-menu button{min-height:44px}.voice-user-menu input[type=range]{min-height:44px}}
+[data-voice-uid]{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+`;
+
+    function _ensureMenuStyle() {
+        if (document.getElementById('voice-user-menu-style')) return;
+        const st = document.createElement('style');
+        st.id = 'voice-user-menu-style';
+        st.textContent = MENU_CSS;
+        (document.head || document.body).appendChild(st);
+    }
+
+    function _closeUserMenu(restoreFocus) {
+        if (!_menu) return;
+        const m = _menu;
+        _menu = null;
+        document.removeEventListener('keydown', m.onKey, true);
+        document.removeEventListener('pointerdown', m.onDown, true);
+        m.root.remove();
+        if (restoreFocus) {
+            // The tile may have been re-rendered since: find it again by id.
+            let target = m.anchor && m.anchor.isConnected ? m.anchor : null;
+            if (!target) target = document.querySelector(`[data-voice-uid="${m.uid}"]`);
+            if (target && target.focus) target.focus();
+        }
+    }
+
+    function _el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+    }
+
+    // Open the volume popover for a peer in the current call. `at` is {x, y}
+    // from a pointer; without it the popover sits under the anchor element.
+    function openUserMenu(userId, name, anchor, at) {
+        const uid = _validPeerId(userId);
+        if (uid === null || !isInCall(uid)) return false;
+        if (_menu && _menu.uid === uid) {
+            if (_menu.slider && _menu.slider.focus) _menu.slider.focus();
+            return true;
+        }
+        _closeUserMenu();
+        _ensureMenuStyle();
+        _ensurePlayCtx();   // a gesture on the page: a suspended context may start now
+
+        const label = String(name == null ? '' : name).slice(0, 80) || 'Participant';
+        const root = _el('div', 'voice-user-menu');
+        root.setAttribute('role', 'dialog');
+        root.setAttribute('aria-label', 'Volume for ' + label);
+        root.tabIndex = -1;
+        root.appendChild(_el('div', 'vum-title', label));
+
+        const max = getMaxVolume();
+        const row = _el('div', 'vum-row');
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = '0';
+        slider.max = String(max);
+        slider.step = '5';
+        slider.id = `voice-user-menu-vol-${uid}`;
+        slider.setAttribute('aria-label', 'Volume for ' + label);
+        const pct = _el('span', 'vum-pct');
+        pct.setAttribute('aria-live', 'polite');
+        row.appendChild(slider);
+        row.appendChild(pct);
+        root.appendChild(row);
+        const note = _el('div', 'vum-note');
+        root.appendChild(note);
+
+        const actions = _el('div', 'vum-actions');
+        const muteBtn = _el('button', 'vum-mute', 'Mute for me');
+        muteBtn.type = 'button';
+        const resetBtn = _el('button', 'vum-reset', 'Reset');
+        resetBtn.type = 'button';
+        const closeBtn = _el('button', 'vum-close', 'Close');
+        closeBtn.type = 'button';
+        actions.appendChild(muteBtn);
+        actions.appendChild(resetBtn);
+        actions.appendChild(closeBtn);
+        root.appendChild(actions);
+
+        const refresh = () => {
+            const p = getPeerPref(uid);
+            slider.value = String(p.volume);
+            pct.textContent = p.volume + '%';
+            muteBtn.setAttribute('aria-pressed', p.muted ? 'true' : 'false');
+            muteBtn.textContent = p.muted ? 'Unmute for me' : 'Mute for me';
+            note.textContent = _volumeIgnored
+                ? 'This device does not allow volume changes below 100%. Use Mute for me.'
+                : (max < MAX_VOLUME ? 'Volume is capped at 100% on this device.' : '');
+            note.style.display = note.textContent ? '' : 'none';
+        };
+        refresh();
+
+        slider.addEventListener('input', () => {
+            setPeerVolume(uid, slider.value);
+            refresh();
+        });
+        muteBtn.addEventListener('click', () => { setPeerMuted(uid, !getPeerPref(uid).muted); refresh(); });
+        resetBtn.addEventListener('click', () => { resetPeer(uid); refresh(); });
+        closeBtn.addEventListener('click', () => _closeUserMenu(true));
+
+        const onKey = (ev) => {
+            if (ev.key === 'Escape') {
+                ev.preventDefault();
+                ev.stopPropagation();
+                _closeUserMenu(true);
+            } else if (ev.key === 'Tab') {
+                // keep keyboard focus inside the popover while it is open
+                const items = [slider, muteBtn, resetBtn, closeBtn];
+                const i = items.indexOf(document.activeElement);
+                const next = ev.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : (i === items.length - 1 ? 0 : i + 1);
+                ev.preventDefault();
+                items[next].focus();
+            }
+        };
+        const onDown = (ev) => {
+            if (!root.contains(ev.target)) _closeUserMenu(false);
+        };
+        document.addEventListener('keydown', onKey, true);
+        document.addEventListener('pointerdown', onDown, true);
+
+        document.body.appendChild(root);
+        _menu = { uid, root, anchor, slider, onKey, onDown };
+
+        // Place it: at the pointer, else under the anchor; kept inside the window.
+        let x = 8, y = 8;
+        if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) { x = at.x; y = at.y; }
+        else if (anchor && anchor.getBoundingClientRect) {
+            const r = anchor.getBoundingClientRect();
+            x = r.left; y = r.bottom + 4;
+        }
+        const w = root.offsetWidth || 260, h = root.offsetHeight || 160;
+        const vw = window.innerWidth || 800, vh = window.innerHeight || 600;
+        root.style.left = Math.max(8, Math.min(x, vw - w - 8)) + 'px';
+        root.style.top = Math.max(8, Math.min(y, vh - h - 8)) + 'px';
+        slider.focus();
+        return true;
+    }
+
+    function closeUserMenu() { _closeUserMenu(true); }
+
+    function _tileUid(container, target, selector) {
+        const el = target && target.closest ? target.closest(selector) : null;
+        if (!el || !container.contains(el)) return null;
+        const raw = el.getAttribute('data-voice-uid');
+        if (!/^\d+$/.test(raw || '')) return null;
+        const uid = Number(raw);
+        return isInCall(uid) ? { el, uid } : null;
+    }
+
+    // Wire a container (it stays in the page; its children may be re-rendered)
+    // so that right-click, long-press, the context-menu key and Shift+F10 open
+    // the popover for the child that carries data-voice-uid. opts.selector
+    // picks those children, opts.nameFor(uid, el) gives the display name,
+    // opts.enterOpens lets Enter open it on a focused child (Space is left
+    // alone: it is the default push-to-talk key).
+    function attachUserMenu(container, opts) {
+        if (!container || container.__voiceMenuBound) return;
+        container.__voiceMenuBound = true;
+        _ensureMenuStyle();   // the no-callout rule must exist before the first long press
+        const selector = (opts && opts.selector) || '[data-voice-uid]';
+        const nameFor = (opts && opts.nameFor) || ((uid, el) => el.textContent.trim());
+        const open = (hit, at) => openUserMenu(hit.uid, nameFor(hit.uid, hit.el), hit.el, at);
+
+        container.addEventListener('contextmenu', (ev) => {
+            const hit = _tileUid(container, ev.target, selector);
+            if (!hit) return;       // not a peer in our call: leave the browser's own menu alone
+            ev.preventDefault();
+            const at = (ev.clientX || ev.clientY) ? { x: ev.clientX, y: ev.clientY } : null;
+            open(hit, at);
+        });
+
+        container.addEventListener('keydown', (ev) => {
+            const hit = _tileUid(container, ev.target, selector);
+            if (!hit) return;
+            const menuKey = ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey);
+            const enter = opts && opts.enterOpens && ev.target === hit.el && ev.key === 'Enter';
+            if (menuKey || enter) {
+                ev.preventDefault();
+                open(hit, null);
+            }
+        });
+
+        // Long press (touch). The click that can follow it is swallowed so that
+        // it does not also trigger the tile's own action (for example a mention).
+        let timer = null, startX = 0, startY = 0, fired = false, swallowUntil = 0;
+        const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+        container.addEventListener('touchstart', (ev) => {
+            cancel();
+            fired = false;
+            if (!ev.touches || ev.touches.length !== 1) return;
+            const hit = _tileUid(container, ev.target, selector);
+            if (!hit) return;
+            startX = ev.touches[0].clientX;
+            startY = ev.touches[0].clientY;
+            timer = setTimeout(() => {
+                timer = null;
+                fired = true;
+                open(hit, { x: startX, y: startY });
+            }, 500);
+        }, { passive: true });
+        container.addEventListener('touchmove', (ev) => {
+            const t = ev.touches && ev.touches[0];
+            if (timer && t && (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10)) cancel();
+        }, { passive: true });
+        const end = () => {
+            cancel();
+            if (fired) swallowUntil = Date.now() + 700;
+            fired = false;
+        };
+        container.addEventListener('touchend', end);
+        container.addEventListener('touchcancel', end);
+        container.addEventListener('click', (ev) => {
+            if (Date.now() < swallowUntil) {
+                swallowUntil = 0;
+                ev.preventDefault();
+                ev.stopPropagation();
+            }
+        }, true);
+    }
+
+    // Re-render a container that holds peer tiles without losing the keyboard
+    // focus: the focused tile is found again by its id afterwards.
+    function renderKeepingFocus(container, render) {
+        const a = document.activeElement;
+        const raw = a && container && container.contains(a) && a.getAttribute ? a.getAttribute('data-voice-uid') : null;
+        render();
+        if (raw && /^\d+$/.test(raw)) {
+            const el = container.querySelector(`[data-voice-uid="${raw}"]`);
+            if (el && el.focus) el.focus();
+        }
+    }
+
     // WebRTC peer management
     function _createPeerConnection(userId) {
         const pc = new RTCPeerConnection({ iceServers: _iceServers });
@@ -475,17 +965,9 @@ const VoiceChat = (() => {
         // Remote tracks (audio + video)
         pc.ontrack = (e) => {
             if (e.track.kind === 'audio') {
-                let audio = _audioElements.get(userId);
-                if (!audio) {
-                    audio = document.createElement('audio');
-                    audio.autoplay = true;
-                    audio.id = `voice-audio-${userId}`;
-                    audio.style.display = 'none';
-                    document.body.appendChild(audio);
-                    _audioElements.set(userId, audio);
-                }
-                audio.srcObject = e.streams[0];
-                audio.muted = _deafened;
+                let stream = e.streams && e.streams[0];
+                if (!stream && typeof MediaStream !== 'undefined') stream = new MediaStream([e.track]);
+                if (stream) _attachPlayback(userId, stream, e.track);
             } else if (e.track.kind === 'video') {
                 // Screen share video track received
                 if (_onScreenShareChange) {
@@ -591,8 +1073,7 @@ const VoiceChat = (() => {
             pc.close();
             _peers.delete(userId);
         }
-        const audio = _audioElements.get(userId);
-        if (audio) { audio.srcObject = null; audio.remove(); _audioElements.delete(userId); }
+        _detachPlayback(userId);
         _screenSenders.delete(userId);
         _pendingCandidates.delete(userId);
         _makingOffer.delete(userId);
@@ -648,6 +1129,7 @@ const VoiceChat = (() => {
         }
         _voiceUsers.delete(userId);
         _dropPeer(userId);
+        if (_menu && _menu.uid === Number(userId)) _closeUserMenu();
         _notifyState();
     }
 
@@ -877,9 +1359,7 @@ const VoiceChat = (() => {
                 mode: _prefs.mode,
                 pttKey: _prefs.pttKey,
                 vadThreshold: _prefs.vadThreshold,
-                users: Array.from(_voiceUsers.entries()).map(([id, u]) => ({
-                    user_id: id, ...u
-                }))
+                users: _stateUsers()
             });
         }
     }
@@ -896,10 +1376,15 @@ const VoiceChat = (() => {
             mode: _prefs.mode,
             pttKey: _prefs.pttKey,
             vadThreshold: _prefs.vadThreshold,
-            users: Array.from(_voiceUsers.entries()).map(([id, u]) => ({
-                user_id: id, ...u
-            }))
+            users: _stateUsers()
         };
+    }
+
+    function _stateUsers() {
+        return Array.from(_voiceUsers.entries()).map(([id, u]) => {
+            const p = _getPeerPref(id);
+            return { user_id: id, ...u, local_volume: p.vol, local_muted: p.muted };
+        });
     }
 
     function getPrefs() { return { ..._prefs }; }
@@ -927,6 +1412,16 @@ const VoiceChat = (() => {
         getPrefs,
         isInVoice,
         startScreenShare,
-        stopScreenShare
+        stopScreenShare,
+        getMaxVolume,
+        getPeerPref,
+        setPeerVolume,
+        setPeerMuted,
+        resetPeer,
+        isInCall,
+        openUserMenu,
+        closeUserMenu,
+        attachUserMenu,
+        renderKeepingFocus
     };
 })();

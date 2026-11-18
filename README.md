@@ -329,6 +329,11 @@ Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus
 - A voice call is held for 20 seconds when its connection drops, so it can be resumed. Making a channel private removes the call members who may not stay.
 - Member uploads (`static/uploads`: chat files, avatars, emotes, stream thumbnails) are no longer copied into update snapshots or replaced by a rollback, the same as recordings and the VOD staging folder. Older snapshots that still contain the folder do not restore it either. Upload files are therefore not part of any snapshot; back up `static/uploads` yourself if you need a copy.
 
+### Upgrade notes for 1.13.0
+
+- Voice calls have a per-person volume (0 to 200%) and a local mute. Right-click or long-press a name in the voice bar or the online-users list (the watch page has the voice bar only) to open it; with the keyboard, focus the name and press Enter (voice bar) or the context-menu key or Shift+F10. The settings are stored in each member's own browser (`localStorage`, one entry per account) and are never sent to the server, so nothing changes on the server, in the database or in the API, and they do not follow a member to another browser or device. Deafen still silences everyone. On iPhone and iPad the slider stops at 100%, and Safari there may ignore element volume, so below 100% only **Mute for me** is certain to work (the popover says so when the device refuses a volume).
+- `voice.js` is now `?v=9` on the chat and watch pages; browsers pick it up on the next page load. A call that is already open on an older page keeps the old behaviour until that page is reloaded.
+
 ## Streaming
 
 Publish from OBS or any RTMP client:

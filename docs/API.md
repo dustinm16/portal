@@ -2190,6 +2190,8 @@ TURN server is optional — only included if configured via environment variable
 - Users can only be in voice in one channel at a time; switching text channels auto-leaves voice
 - User list (`users` messages) includes `in_voice`, `voice_muted`, `voice_deafened`, `voice_speaking` fields
 
+**Per-user volume and local mute (client only):** the voice bar and the user list let each member set a playback volume (0 to 200%) and a local mute for every other member of the call they are in; right-click or long-press a name in the voice bar or the online-users list (or focus it and press Enter, the context-menu key or Shift+F10) to open the popover. Both settings change only what that browser plays. They are kept in that browser's `localStorage` under `voice_peer_prefs_<own user id>`, keyed by the other member's user id, and are never sent to the server, so there is no API and no message for them and other members cannot see them. Deafen silences everyone regardless of these settings. On iPhone and iPad (and where Web Audio is unavailable) audio plays through the audio element and the slider stops at 100%; iOS Safari may ignore element volume, so there only the local mute is certain to work, and the popover says so when the device refuses a volume. A member who is anonymous in a channel is not in a channel call (see above), and the online-users list gives other members no `user_id` for them, so no setting can be attached to them there; in a direct-message call they appear as "Anonymous" with the account id the call payload already carries.
+
 ---
 
 ### Public Endpoints

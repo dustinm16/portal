@@ -260,7 +260,7 @@ def test_new_labels_are_plain_text():
 
 
 def test_voice_user_list_marks_screen_sharing_in_plain_text():
-    line = next(l for l in WATCH.splitlines() if "users.textContent = state.users.map" in l)
+    line = next(l for l in WATCH.splitlines() if "span.textContent = u.username" in l)
     assert "' (screen)'" in line
     assert all(ord(c) < 0x2000 for c in line), "no emoji in the voice user list"
 
