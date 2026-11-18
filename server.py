@@ -437,7 +437,10 @@ async def _checked_relay_target(rtmp_url: str, relay_key: str) -> tuple[list[str
     userinfo, at, hostport = parts.netloc.rpartition("@")
     port = f":{parts.port}" if parts.port else ""
     new_netloc = f"{userinfo}{at}{'[' + ip + ']' if ':' in ip else ip}{port}"
-    app = parts.path.lstrip("/").split("/", 1)[0]
+    # The application name is the first two path segments when the base has
+    # more than one (the stream key is appended as the play path), as ffmpeg
+    # itself splits it.
+    app = "/".join([seg for seg in parts.path.split("/") if seg][:2])
     tcurl = f"rtmp://{hostport}" + (f"/{app}" if app else "")
     new_base = urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
     return ["-rtmp_tcurl", tcurl], f"{new_base}/{relay_key}"
@@ -17340,6 +17343,11 @@ async def http_delete_user(request: web.Request) -> web.Response:
 
     # Delete user and all associated data via ORM
     await db.delete_user(user_id)
+    # A deleted account must not keep working through sockets it already had open.
+    try:
+        await close_user_websockets(user_id)
+    except Exception as e:
+        logger.warning(f"Could not close sockets of deleted user {user_id}: {e}")
 
     logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
 
