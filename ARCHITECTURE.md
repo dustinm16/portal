@@ -158,6 +158,7 @@ Permission Hierarchy:
 ├── system_monitor.py      # Process, systemd service, and network monitoring
 ├── file_manager.py        # Local filesystem operations (admin)
 ├── sftp_browser.py        # Remote SFTP file browsing (per-user)
+├── hostkeys.py            # SSH host-key pinning (trust on first use) for terminals, SFTP, VOD storage
 │
 ├── plugins/               # Connection plugins
 │   ├── __init__.py        # Plugin registry

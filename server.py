@@ -116,6 +116,7 @@ import system_monitor
 import file_manager
 import gameservers
 import jobs as bg_jobs
+import hostkeys
 import sftp_browser
 from host_check import (
     BLOCKED_HOSTS, is_blocked_host, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
@@ -1662,6 +1663,12 @@ async def http_create_service(request: web.Request) -> web.Response:
     if service_type == "managed" and host == "localhost":
         host = "127.0.0.1"
 
+    if isinstance(config, dict):
+        if "host_key_ignore" in config and not isinstance(config["host_key_ignore"], bool):
+            return web.json_response({"error": "Invalid host key setting"}, status=400)
+        # An admin may pre-fill a valid fingerprint; anything else is dropped.
+        config = hostkeys.guard_replacement({}, config, target_changed=False, trusted_incoming=True)
+
     try:
         service_id = await db.create_service(
             name=name,
@@ -1764,8 +1771,28 @@ async def http_update_service(request: web.Request) -> web.Response:
         if isinstance(scopes, str):
             scopes = [s.strip() for s in scopes.split(",") if s.strip()]
         updates["required_scopes"] = ",".join(scopes)
+    # A changed effective SSH target (the host and port the ssh plugin dials:
+    # the config's own host/port when set, else the columns) drops the SSH
+    # host-key pin, whether or not a config is sent with the edit.
+    target_changed = _service_target_changed(
+        service, updates, data.get("config") if "config" in data else None)
     if "config" in data:
-        updates["config"] = json.dumps(data["config"])
+        new_config = data["config"]
+        if isinstance(new_config, dict):
+            # The SSH host-key pin is only set by the accept route or an admin
+            # pre-filling a valid fingerprint.
+            if "host_key_ignore" in new_config and not isinstance(new_config["host_key_ignore"], bool):
+                return web.json_response({"error": "Invalid host key setting"}, status=400)
+            new_config = hostkeys.guard_replacement(
+                service.get("config"), new_config,
+                target_changed=target_changed, trusted_incoming=True)
+            updates["config"] = new_config   # a dict: stored encrypted
+        else:
+            updates["config"] = json.dumps(new_config)
+    elif target_changed and isinstance(service.get("config"), dict) and (
+            hostkeys.FINGERPRINT_KEY in service["config"] or hostkeys.REFUSED_KEY in service["config"]):
+        updates["config"] = hostkeys.guard_replacement(
+            service["config"], service["config"], target_changed=True)
 
     # Managed service fields
     for field in ["display_name", "description", "binary_path", "working_dir"]:
@@ -3087,6 +3114,10 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     host = data.get("host", "").strip()
     port = data.get("port")
     config = data.get("config", {})
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        return web.json_response({"error": "Config must be an object"}, status=400)
     ssh_key_id = data.get("ssh_key_id")
     icon = data.get("icon")
     portal_access = 1 if data.get("portal_access", 1) else 0
@@ -3137,6 +3168,12 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     # Use default icon if not specified
     if not icon:
         icon = type_info["icon"]
+
+    # A new connection never arrives with a host-key pin (only accepting a
+    # key sets one) and the opt-out must be a real boolean.
+    if "host_key_ignore" in config and not isinstance(config["host_key_ignore"], bool):
+        return web.json_response({"error": "Invalid host key setting"}, status=400)
+    config = hostkeys.strip_new_pin(config)
 
     # Enforce config size limit to prevent oversized database entries
     config_str = json.dumps(config) if isinstance(config, dict) else (config or "{}")
@@ -3269,6 +3306,9 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
         if not data["host"]:
             return web.json_response({"error": "Host required"}, status=400)
 
+    if "config" in data and not isinstance(data["config"], dict):
+        return web.json_response({"error": "Config must be an object"}, status=400)
+
     # Resolve UUID to internal connection
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
     if not connection:
@@ -3283,9 +3323,16 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
         if isinstance(existing_config, str):
             existing_config = json.loads(existing_config) if existing_config else {}
         if isinstance(existing_config, dict):
-            # Existing config provides defaults; incoming config overrides
-            merged = {**existing_config, **config}
-            data["config"] = merged
+            # Existing config provides defaults; incoming config overrides.
+            # The SSH host-key pin is the exception: it only ever comes from
+            # the accept route, and a changed host or port drops it.
+            if "host_key_ignore" in config and not isinstance(config["host_key_ignore"], bool):
+                return web.json_response({"error": "Invalid host key setting"}, status=400)
+            target_changed = (
+                ("host" in data and data["host"] != connection.get("host"))
+                or ("port" in data and (data["port"] or None) != (connection.get("port") or None)))
+            data["config"] = hostkeys.guard_config(
+                existing_config, config, target_changed=target_changed)
 
     # Enforce config size limit
     config_check = data.get("config", {})
@@ -3420,6 +3467,79 @@ async def http_connect_user_connection(request: web.Request) -> web.Response:
         "ssh_public_key": ssh_public_key,
         "websocket_url": f"/ws/user-connection/{conn_uuid}"
     })
+
+
+async def http_accept_connection_host_key(request: web.Request) -> web.Response:
+    """POST /api/connections/{id}/host-key/accept - pin (or replace) an SSH
+    connection's host key.
+
+    Owner only: the connection is looked up as the signed-in user's own, so a
+    grantee of a shared connection gets 404. This is the only way a user
+    connection gets a pin; no WebSocket message can reach it.
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    connection = await db.get_user_connection_by_uuid(request.match_info.get("id", ""), token.user_id)
+    if not connection or connection.get("user_id") != token.user_id:
+        return web.json_response({"error": "Connection not found"}, status=404)
+    if connection.get("type") not in sftp_browser.SFTP_ELIGIBLE_TYPES:
+        return web.json_response({"error": "Connection is not SSH/SFTP type"}, status=400)
+    body, fp, err = await _read_accept_request(request)
+    if err:
+        return err
+    target = _user_connection_ssh_target(connection)
+    err = _check_accepted_prompt(body, fp, "connection", connection["id"], token.user_id, target)
+    if err:
+        return err
+
+    config = dict(connection.get("config") or {})
+    config[hostkeys.FINGERPRINT_KEY] = fp
+    config.pop(hostkeys.REFUSED_KEY, None)
+    if not await db.update_user_connection_config_if_target(
+            connection["id"], token.user_id, config, connection.get("host"), connection.get("port")):
+        return _stale_host_key("The connection was changed while this prompt was open; connect again")
+    logger.info(f"SSH host key accepted for connection {connection['id']} by user {token.user_id}: {fp}")
+    user = await db.get_user_by_id(token.user_id)
+    await db.log_activity(token.user_id, get_display_name(user) if user else "unknown",
+                          "host_key_accept", f"Accepted host key for connection '{connection.get('name')}' ({fp})")
+    return web.json_response({"status": "accepted", "fingerprint": fp})
+
+
+async def http_accept_service_host_key(request: web.Request) -> web.Response:
+    """POST /api/services/{id}/host-key/accept - pin (or replace) the host key
+    of an admin-defined SSH service. Admin only."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+    service_id = request.match_info.get("id", "")
+    if not service_id.isdigit():
+        return web.json_response({"error": "Invalid service ID"}, status=400)
+    service = await db.get_service_by_id(int(service_id))
+    if not service:
+        return web.json_response({"error": "Service not found"}, status=404)
+    if service.get("plugin") != "ssh":
+        return web.json_response({"error": "Service is not an SSH service"}, status=400)
+    body, fp, err = await _read_accept_request(request)
+    if err:
+        return err
+    err = _check_accepted_prompt(body, fp, "service", service["id"], token.user_id, _service_ssh_target(service))
+    if err:
+        return err
+
+    config = dict(service.get("config") or {})
+    config[hostkeys.FINGERPRINT_KEY] = fp
+    config.pop(hostkeys.REFUSED_KEY, None)
+    if not await db.update_service_config_if_target(
+            service["id"], config, service.get("host"), service.get("port")):
+        return _stale_host_key("The service was changed while this prompt was open; connect again")
+    logger.info(f"SSH host key accepted for service {service['id']} by user {token.user_id}: {fp}")
+    user = await db.get_user_by_id(token.user_id)
+    await db.log_activity(token.user_id, get_display_name(user) if user else "unknown",
+                          "host_key_accept", f"Accepted host key for service '{service.get('name')}' ({fp})")
+    return web.json_response({"status": "accepted", "fingerprint": fp})
 
 
 async def http_users_lookup(request: web.Request) -> web.Response:
@@ -6687,24 +6807,49 @@ async def http_shodan_set_api_key(request: web.Request) -> web.Response:
 # =============================================================================
 
 
-async def _connect_vod_sftp(user_id: int):
-    """Connect to user's VOD SFTP storage. Returns (conn, sftp, None) or (None, None, error)."""
-    storage = await db.get_vod_storage(user_id)
-    if not storage:
-        return None, None, "No VOD storage configured"
+_vod_pin_lock = asyncio.Lock()
 
+
+async def _vod_note_host_key(user_id: int, storage: dict, *, pin: Optional[str] = None,
+                             refused: Optional[str] = None) -> bool:
+    """Record a VOD storage host-key event in its config: pin a key (first use
+    after an upgrade, only while no pin exists) or note the key that was refused.
+    Returns True when something was written."""
+    async with _vod_pin_lock:
+        current = await db.get_vod_storage(user_id)
+        if (not current or current["host"] != storage["host"]
+                or (current["port"] or 22) != (storage["port"] or 22)):
+            return False
+        config = dict(current.get("config") or {})
+        if pin:
+            if hostkeys.normalize_fingerprint(config.get(hostkeys.FINGERPRINT_KEY)):
+                return False        # someone pinned meanwhile; never overwrite here
+            config[hostkeys.FINGERPRINT_KEY] = pin
+            config.pop(hostkeys.REFUSED_KEY, None)
+        elif refused:
+            config[hostkeys.REFUSED_KEY] = {
+                "fingerprint": refused, "at": datetime.now(timezone.utc).isoformat()}
+        else:
+            return False
+        return await db.update_vod_storage_config(
+            user_id, config, current["host"], current["port"])
+
+
+async def _vod_activity(user_id: int, action: str, detail: str) -> None:
+    user = await db.get_user_by_id(user_id)
+    await db.log_activity(user_id, get_display_name(user) if user else "unknown", action, detail)
+
+
+async def _vod_dial(user_id: int, storage: dict, addrs: list):
+    """Dial VOD storage on already policy-checked addresses and verify its host
+    key. There is nobody to ask at upload time, so a first key is pinned
+    automatically (and logged); a different key later is refused and logged.
+    Returns (conn, sftp, None) or (None, None, error)."""
     config = storage.get("config") or {}
-    try:
-        _addrs = await resolve_checked_host(storage["host"], storage["port"] or 22)
-    except HostCheckError:
-        logger.warning(f"VOD SFTP host refused by outbound host policy for user {user_id}")
-        return None, None, "Host not allowed"
     connect_opts = {
-        # Dial the checked address so a later DNS answer cannot differ.
-        "host": _addrs[0],   # replaced per attempt by try_each_address below
+        "host": addrs[0],   # replaced per attempt by connect_verified
         "port": storage["port"] or 22,
         "username": storage["username"],
-        "known_hosts": None,
     }
 
     if storage["auth_method"] == "key":
@@ -6716,11 +6861,18 @@ async def _connect_vod_sftp(user_id: int):
     elif storage["auth_method"] == "password":
         connect_opts["password"] = config.get("password", "")
 
+    pinned, ignore = hostkeys.policy_for(config)
     try:
-        conn = await try_each_address(
-            _addrs, lambda a: asyncssh.connect(**{**connect_opts, "host": a}), 10)
-        sftp = await conn.start_sftp_client()
-        return conn, sftp, None
+        conn, seen = await hostkeys.connect_verified(
+            addrs, connect_opts, pinned=pinned, ignore=ignore, trust_unpinned=True, timeout=10)
+    except hostkeys.HostKeyRefused as refused:
+        logger.warning(
+            f"VOD SFTP host key changed for user {user_id}: expected {refused.expected}, "
+            f"server presented {refused.fingerprint}; upload/download refused")
+        await _vod_note_host_key(user_id, storage, refused=refused.fingerprint)
+        await _vod_activity(user_id, "vod_host_key_refused",
+                            f"VOD storage host key changed (now {refused.fingerprint}); connection refused")
+        return None, None, "Host key changed; review it in VOD storage settings"
     except asyncio.TimeoutError:
         return None, None, "Connection timed out"
     except asyncssh.Error as e:
@@ -6729,6 +6881,34 @@ async def _connect_vod_sftp(user_id: int):
     except OSError as e:
         logger.warning(f"VOD SFTP connection error for user {user_id}: {e}")
         return None, None, "Connection failed"
+
+    if seen and not pinned and not ignore:
+        if await _vod_note_host_key(user_id, storage, pin=seen):
+            logger.info(f"VOD SFTP host key pinned on first use for user {user_id}: {seen}")
+            await _vod_activity(user_id, "vod_host_key_pinned",
+                                f"VOD storage host key pinned on first use ({seen})")
+    try:
+        sftp = await conn.start_sftp_client()
+    except (asyncssh.Error, OSError) as e:
+        conn.close()
+        logger.warning(f"VOD SFTP session error for user {user_id}: {e}")
+        return None, None, "Connection failed"
+    return conn, sftp, None
+
+
+async def _connect_vod_sftp(user_id: int):
+    """Connect to user's VOD SFTP storage. Returns (conn, sftp, None) or (None, None, error)."""
+    storage = await db.get_vod_storage(user_id)
+    if not storage:
+        return None, None, "No VOD storage configured"
+
+    try:
+        # Dial the checked addresses so a later DNS answer cannot differ.
+        _addrs = await resolve_checked_host(storage["host"], storage["port"] or 22)
+    except HostCheckError:
+        logger.warning(f"VOD SFTP host refused by outbound host policy for user {user_id}")
+        return None, None, "Host not allowed"
+    return await _vod_dial(user_id, storage, _addrs)
 
 
 async def http_get_vod_storage(request: web.Request) -> web.Response:
@@ -6747,6 +6927,14 @@ async def http_get_vod_storage(request: web.Request) -> web.Response:
     del redacted["config"]
     redacted["has_password"] = bool(config.get("password"))
     redacted["has_key"] = bool(config.get("private_key"))
+    # Host key: what is pinned, whether the check is off, and the last key refused
+    pinned, ignore = hostkeys.policy_for(config)
+    refused = config.get(hostkeys.REFUSED_KEY)
+    redacted["host_key_fingerprint"] = pinned
+    redacted["host_key_ignore"] = ignore
+    redacted["host_key_refused"] = (
+        {"fingerprint": refused.get("fingerprint"), "at": refused.get("at")}
+        if isinstance(refused, dict) and hostkeys.valid_fingerprint(refused.get("fingerprint")) else None)
 
     return web.json_response({"storage": redacted})
 
@@ -6797,10 +6985,8 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
         if password == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                try:
-                    existing_config = json.loads(existing.get("config", "{}"))
-                except json.JSONDecodeError:
-                    existing_config = {}
+                # get_vod_storage already returns the decrypted config as a dict
+                existing_config = existing.get("config") or {}
                 password = existing_config.get("password", "")
         config["password"] = password
     elif auth_method == "key":
@@ -6809,12 +6995,25 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
         if private_key == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                try:
-                    existing_config = json.loads(existing.get("config", "{}"))
-                except json.JSONDecodeError:
-                    existing_config = {}
+                # get_vod_storage already returns the decrypted config as a dict
+                existing_config = existing.get("config") or {}
                 private_key = existing_config.get("private_key", "")
         config["private_key"] = private_key
+
+    # Host key: the pin survives an edit only while the target is unchanged
+    # (a new host or port starts again); the opt-out is the owner's own setting.
+    previous = await db.get_vod_storage(token.user_id)
+    prev_config = (previous.get("config") or {}) if previous else {}
+    if "host_key_ignore" in data and not isinstance(data["host_key_ignore"], bool):
+        return web.json_response({"error": "Invalid host key setting"}, status=400)
+    if previous and previous["host"] == host and (previous["port"] or 22) == port:
+        kept = hostkeys.normalize_fingerprint(prev_config.get(hostkeys.FINGERPRINT_KEY))
+        if kept:
+            config[hostkeys.FINGERPRINT_KEY] = kept
+        if isinstance(prev_config.get(hostkeys.REFUSED_KEY), dict):
+            config[hostkeys.REFUSED_KEY] = prev_config[hostkeys.REFUSED_KEY]
+    config[hostkeys.IGNORE_KEY] = data.get(
+        "host_key_ignore", hostkeys.policy_for(prev_config)[1]) is True
 
     storage_id = await db.save_vod_storage(
         token.user_id,
@@ -6840,6 +7039,127 @@ async def http_delete_vod_storage(request: web.Request) -> web.Response:
     if not deleted:
         return web.json_response({"error": "No storage config found"}, status=404)
     return web.json_response({"message": "Storage config deleted"})
+
+
+async def _accepted_fingerprint(request: web.Request):
+    """Read and validate the fingerprint an accept request names.
+    Returns (fingerprint, None) or (None, error response)."""
+    body, fp, err = await _read_accept_request(request)
+    return fp, err
+
+
+async def _read_accept_request(request: web.Request):
+    """Read an accept request body. Returns (body, fingerprint, None) or
+    (None, None, error response)."""
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None, None, web.json_response({"error": "Invalid JSON"}, status=400)
+    data = data if isinstance(data, dict) else {}
+    fp = hostkeys.normalize_fingerprint(data.get("fingerprint"))
+    if not fp:
+        return None, None, web.json_response({"error": "A SHA256 host key fingerprint is required"}, status=400)
+    return data, fp, None
+
+
+def _stale_host_key(message: str) -> web.Response:
+    return web.json_response({"error": message, "type": "host_key_stale"}, status=409)
+
+
+def _user_connection_ssh_target(connection: dict) -> tuple:
+    """(host, port) the SSH/SFTP code dials for a user connection."""
+    return connection.get("host") or "", connection.get("port") or 22
+
+
+def _service_ssh_target(service: dict) -> tuple:
+    """(host, port) the ssh plugin dials for an admin-defined service (the
+    config can override the service's own host and port, as in the plugin)."""
+    config = service.get("config") if isinstance(service.get("config"), dict) else {}
+    return (config.get("host", service.get("host")) or "",
+            _coerce_port(config.get("port"), _coerce_port(service.get("port"), 22)))
+
+
+def _service_target_changed(service: dict, updates: dict, new_config=None) -> bool:
+    """True when an edit changes the host or port the ssh plugin dials: the
+    columns in `updates` or the host/port inside the incoming `new_config`."""
+    after = dict(service)
+    for column in ("host", "port"):
+        if column in updates:
+            after[column] = updates[column]
+    if isinstance(new_config, dict):
+        after["config"] = new_config
+    return _service_ssh_target(service) != _service_ssh_target(after)
+
+
+def _coerce_port(value, default: int) -> int:
+    """A TCP port as an int; `default` when the value is missing or not a valid port
+    (a config saved through the form can hold the port as text or null)."""
+    if isinstance(value, bool):
+        return default
+    try:
+        port = int(str(value).strip()) if isinstance(value, (str, float)) else int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 0 < port < 65536 else default
+
+
+def _present_host_key(payload: dict, scope: str, ident, user_id: int, target: tuple) -> dict:
+    """Add the target and a signed token to a host-key prompt for someone who
+    may accept it, so the accept request can prove what was shown."""
+    host, port = target
+    payload["host"], payload["port"] = host, port
+    payload["accept_token"] = hostkeys.HostKeyAcceptToken.issue(
+        Config.JWT_SECRET, scope, ident, user_id, host, port, payload["fingerprint"])
+    return payload
+
+
+def _check_accepted_prompt(body: dict, fp: str, scope: str, ident, user_id: int, target: tuple):
+    """Refuse (409) an accept for a prompt that no longer matches. Returns an
+    error response, or None when the host, port and fingerprint the user saw are
+    still the connection's and were presented by this portal to this user."""
+    host, port = body.get("host"), body.get("port")
+    if not isinstance(host, str) or isinstance(port, bool) or not isinstance(port, int):
+        return web.json_response({"error": "host, port and fingerprint of the prompt are required"}, status=400)
+    try:
+        target_port = int(target[1])
+    except (TypeError, ValueError):
+        target_port = None
+    if (host, port) != (target[0], target_port):
+        return _stale_host_key("This connection now points at a different host or port; connect again to review its key")
+    if not hostkeys.HostKeyAcceptToken.check(
+            Config.JWT_SECRET, body.get("token"), scope, ident, user_id, host, port, fp):
+        return _stale_host_key("The fingerprint does not match the one presented, or the prompt expired; connect again")
+    return None
+
+
+async def http_accept_vod_host_key(request: web.Request) -> web.Response:
+    """POST /api/vods/storage/host-key/accept - pin (or replace) the VOD storage
+    host key. The storage belongs to the signed-in user alone. The fingerprint
+    must be the refused one the settings page showed; anything else is a 409."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    fp, err = await _accepted_fingerprint(request)
+    if err:
+        return err
+    storage = await db.get_vod_storage(token.user_id)
+    if not storage:
+        return web.json_response({"error": "No VOD storage configured"}, status=404)
+    async with _vod_pin_lock:
+        storage = await db.get_vod_storage(token.user_id) or storage   # a transfer may have refused a key meanwhile
+        config = dict(storage.get("config") or {})
+        # Only the key the owner was shown (the last one a transfer refused).
+        refused = config.get(hostkeys.REFUSED_KEY)
+        shown = hostkeys.normalize_fingerprint(refused.get("fingerprint")) if isinstance(refused, dict) else None
+        if not shown or shown != fp:
+            return _stale_host_key("That is not the key the storage last presented; reload the VOD storage settings")
+        config[hostkeys.FINGERPRINT_KEY] = fp
+        config.pop(hostkeys.REFUSED_KEY, None)
+        if not await db.update_vod_storage_config(token.user_id, config, storage["host"], storage["port"]):
+            return web.json_response({"error": "Storage changed; try again"}, status=409)
+    logger.info(f"VOD storage host key accepted by user {token.user_id}: {fp}")
+    await _vod_activity(token.user_id, "vod_host_key_accepted", f"VOD storage host key accepted ({fp})")
+    return web.json_response({"status": "accepted", "fingerprint": fp})
 
 
 async def http_test_vod_storage(request: web.Request) -> web.Response:
@@ -6874,11 +7194,18 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
 
     connect_opts = {
         # Dial the checked address so a later DNS answer cannot differ.
-        "host": _addrs[0],   # replaced per attempt by try_each_address below
+        "host": _addrs[0],   # replaced per attempt by connect_verified below
         "port": port,
         "username": username,
-        "known_hosts": None,
     }
+
+    # Host key: the saved pin applies while the target is unchanged; otherwise
+    # this is a first look at the host (nothing is pinned by a test).
+    saved = await db.get_vod_storage(token.user_id)
+    pinned = None
+    if saved and saved["host"] == host and (saved["port"] or 22) == port:
+        pinned = hostkeys.policy_for(saved.get("config"))[0]
+    ignore = data.get("host_key_ignore") is True
 
     # Resolve credentials (may need to fetch existing if "***")
     if auth_method == "key":
@@ -6886,10 +7213,8 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
         if private_key == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                try:
-                    existing_config = json.loads(existing.get("config", "{}"))
-                except json.JSONDecodeError:
-                    existing_config = {}
+                # get_vod_storage already returns the decrypted config as a dict
+                existing_config = existing.get("config") or {}
                 private_key = existing_config.get("private_key", "")
         if private_key:
             try:
@@ -6902,18 +7227,19 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
         if password == "***":
             existing = await db.get_vod_storage(token.user_id)
             if existing:
-                try:
-                    existing_config = json.loads(existing.get("config", "{}"))
-                except json.JSONDecodeError:
-                    existing_config = {}
+                # get_vod_storage already returns the decrypted config as a dict
+                existing_config = existing.get("config") or {}
                 password = existing_config.get("password", "")
         connect_opts["password"] = password
 
     conn = None
     try:
-        conn = await try_each_address(
-            _addrs, lambda a: asyncssh.connect(**{**connect_opts, "host": a}), 10)
+        conn, seen = await hostkeys.connect_verified(
+            _addrs, connect_opts, pinned=pinned, ignore=ignore, trust_unpinned=True, timeout=10)
         sftp = await conn.start_sftp_client()
+        key_note = ""
+        if seen and not pinned:
+            key_note = f" Host key {seen} will be pinned on first upload."
 
         # Try to list the remote path
         if remote_path:
@@ -6921,11 +7247,17 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
             mkv_count = sum(1 for f in files if f.lower().endswith(".mkv"))
             return web.json_response({
                 "success": True,
-                "message": f"Connected successfully. Found {mkv_count} MKV file(s) in {remote_path}."
+                "message": f"Connected successfully. Found {mkv_count} MKV file(s) in {remote_path}.{key_note}"
             })
         else:
-            return web.json_response({"success": True, "message": "Connected successfully."})
+            return web.json_response({"success": True, "message": f"Connected successfully.{key_note}"})
 
+    except hostkeys.HostKeyRefused as refused:
+        return web.json_response({
+            "success": False,
+            "error": f"Host key changed: the server now presents {refused.fingerprint}, "
+                     f"but {refused.expected} is pinned.",
+        })
     except asyncio.TimeoutError:
         return web.json_response({"success": False, "error": "Connection timed out"})
     except asyncssh.Error as e:
@@ -8821,7 +9153,19 @@ async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     if connection.get("type") not in sftp_browser.SFTP_ELIGIBLE_TYPES:
         return None, None, web.json_response({"error": "Connection is not SSH/SFTP type"}, status=400)
 
-    ssh_conn, sftp_client, error = await sftp_browser.connect_sftp(connection)
+    try:
+        ssh_conn, sftp_client, error = await sftp_browser.connect_sftp(connection)
+    except hostkeys.HostKeyRefused as refused:
+        # 409 with the fingerprint; only the owner is told they may accept
+        payload = hostkeys.refusal_payload(
+            refused, can_accept=connection.get("user_id") == token.user_id)
+        if payload["can_accept"]:
+            payload["accept_url"] = f"/api/connections/{conn_uuid}/host-key/accept"
+            _present_host_key(payload, "connection", connection["id"], token.user_id,
+                              _user_connection_ssh_target(connection))
+        payload["error"] = payload["message"]
+        logger.warning(f"SFTP host key {refused.state} for connection {connection['id']} (user {token.user_id})")
+        return None, None, web.json_response(payload, status=409)
     if error:
         return None, None, web.json_response({"error": error}, status=502)
 
@@ -10653,6 +10997,27 @@ async def handle_local_terminal_ws(
             await ws.close(code=4500, message=b"Terminal error")
 
 
+async def _refuse_host_key(ws: web.WebSocketResponse, refused: "hostkeys.HostKeyRefused", *,
+                           can_accept: bool, accept_url: str, label: str, user_id: int,
+                           scope: str, ident, target: tuple) -> None:
+    """Tell a terminal client its SSH host key was not accepted, and close.
+
+    Accepting is never done here: the message only says whether this user may
+    accept (computed from their identity) and where; the accept itself is an
+    authenticated HTTP request (see the host-key accept routes).
+    """
+    logger.warning(f"SSH host key {refused.state} for {label} (user {user_id}); connection refused")
+    payload = hostkeys.refusal_payload(refused, can_accept=can_accept)
+    if can_accept:
+        payload["accept_url"] = accept_url
+        _present_host_key(payload, scope, ident, user_id, target)
+    try:
+        await ws.send_json(payload)
+        await ws.close(code=1000, message=b"Host key not accepted")
+    except ConnectionError:
+        pass
+
+
 async def handle_user_connection_ws(
     ws: web.WebSocketResponse,
     path: str,
@@ -10745,8 +11110,6 @@ async def handle_user_connection_ws(
 
     # Plugin-specific adjustments
     if plugin_name == "ssh":
-        # SSH: set known_hosts to ignore for user connections
-        config.setdefault("known_hosts", "ignore")
         if config.get("auth_method") == "key" and config.get("private_key"):
             logger.info(f"Using SSH key auth for connection {conn_id}")
         elif not config.get("auth_method"):
@@ -10786,6 +11149,14 @@ async def handle_user_connection_ws(
 
     try:
         await plugin.handle_websocket(ws, target, token.user_id)
+    except hostkeys.HostKeyRefused as refused:
+        # Only the owner may accept a key; a grantee of a shared connection never can.
+        await _refuse_host_key(
+            ws, refused,
+            can_accept=connection.get("user_id") == token.user_id,
+            accept_url=f"/api/connections/{conn_uuid}/host-key/accept",
+            label=f"connection {conn_id}", user_id=token.user_id,
+            scope="connection", ident=conn_id, target=_user_connection_ssh_target(connection))
     except Exception as e:
         logger.error(f"User connection {conn_id} error: {e}")
         traffic_metrics.record_error(-conn_id)
@@ -10884,6 +11255,13 @@ async def handle_relay_ws(
 
     try:
         await plugin.handle_websocket(ws, target, token.user_id)
+    except hostkeys.HostKeyRefused as refused:
+        await _refuse_host_key(
+            ws, refused,
+            can_accept=token.has_scope("admin") or token.has_scope("*"),
+            accept_url=f"/api/services/{service['id']}/host-key/accept",
+            label=f"service {service['id']}", user_id=token.user_id,
+            scope="service", ident=service["id"], target=_service_ssh_target(service))
     except Exception as e:
         logger.error(f"Plugin {plugin_name} error for {service['name']}: {e}")
         traffic_metrics.record_error(service["id"])
@@ -18053,6 +18431,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/connections/{id}", http_delete_user_connection)
     app.router.add_post("/api/connections/{id}/pin", http_toggle_connection_pin)
     app.router.add_get("/api/connections/{id}/connect", http_connect_user_connection)
+    app.router.add_post("/api/connections/{id}/host-key/accept", http_accept_connection_host_key)
+    app.router.add_post("/api/services/{id}/host-key/accept", http_accept_service_host_key)
     app.router.add_get("/api/connections/{id}/shares", http_list_connection_shares)
     app.router.add_post("/api/connections/{id}/shares", http_add_connection_shares)
     app.router.add_delete("/api/connections/{id}/shares/{grantee}", http_remove_connection_share)
@@ -18119,6 +18499,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/vods/storage", http_save_vod_storage)
     app.router.add_delete("/api/vods/storage", http_delete_vod_storage)
     app.router.add_post("/api/vods/storage/test", http_test_vod_storage)
+    app.router.add_post("/api/vods/storage/host-key/accept", http_accept_vod_host_key)
     app.router.add_get("/api/vods", http_list_vods)
     app.router.add_get("/api/vods/download/{filename:.*}", http_download_vod)
     app.router.add_post("/api/vods/download-archive", http_download_vod_archive)

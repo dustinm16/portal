@@ -452,6 +452,8 @@
                     <li>Optionally select an SSH key from your managed keys</li>
                     <li>Optionally override the default login shell (bash, zsh, fish)</li>
                 </ol>
+                <h4>Host key check</h4>
+                <p>The first time you connect, Portal shows the server's host key fingerprint (SHA256) instead of connecting. Compare it with the server's: run <code>ssh-keygen -lf</code> on the <code>/etc/ssh/ssh_host_&lt;type&gt;_key.pub</code> file that matches the key type shown in the prompt (for example <code>ed25519</code>). Then choose <strong>Accept this key</strong>. Only the connection's owner can accept; people a connection is shared with are told to ask the owner. If the key later changes, the connection is refused with a "Host key changed" message until the owner accepts the new key. The same check covers the SFTP file browser and VOD storage. The connection form has a <strong>Do not verify host key</strong> option, which is off by default and not recommended.</p>
                 <h4>Security Considerations</h4>
                 <ul>
                     <li>Use SSH key authentication instead of passwords whenever possible</li>

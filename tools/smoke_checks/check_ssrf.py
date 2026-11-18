@@ -459,7 +459,7 @@ async def run(ctx):
                    "required")
         async with s.get(f"{ctx.base_url}/") as r:
             ctx.ok("hosts: index loads the current dashboard script version",
-                   "user-connections.js?v=46" in await r.text(), str(r.status))
+                   "user-connections.js?v=47" in await r.text(), str(r.status))
 
         # Non-string name or host is a 400 (never a 500), on create and update.
         for field in ("name", "host"):

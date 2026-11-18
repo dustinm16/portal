@@ -885,6 +885,35 @@
                     </div>
                 </div>
 
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/services/{id}/host-key/accept</span>
+                        <span class="endpoint-desc">Trust an SSH host key</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Pin the SSH host key of an admin-defined <code>ssh</code> service. Admin only. Until a key is pinned, and whenever the server presents a different key, the WebSocket relay sends a <code>host_key</code> message (see User Connections) and closes before any credential is sent. An admin may also pre-fill <code>config.host_key_fingerprint</code> when creating or editing the service. An edit that changes the host or port the plugin dials (the <code>config.host</code> / <code>config.port</code> when set, else the service's own) clears the pin.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">fingerprint</span></td><td><span class="param-type">string</span></td><td>The <code>fingerprint</code> from the prompt (<code>SHA256:</code> and 43 base64 characters) <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">host</span></td><td><span class="param-type">string</span></td><td>The <code>host</code> from the prompt <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">port</span></td><td><span class="param-type">integer</span></td><td>The <code>port</code> from the prompt <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">token</span></td><td><span class="param-type">string</span></td><td>The <code>accept_token</code> from the prompt <span class="param-required">required</span></td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <pre>{"status": "accepted", "fingerprint": "SHA256:..."}</pre>
+                        <h4>Errors</h4>
+                        <table class="param-table">
+                            <tr><th>Status</th><th>Meaning</th></tr>
+                            <tr><td>400</td><td>Missing or malformed fingerprint, host or port</td></tr>
+                            <tr><td>404</td><td>Service not found</td></tr>
+                            <tr><td>409</td><td>The prompt is stale: <code>{"error": "...", "type": "host_key_stale"}</code>. The host or port no longer matches the stored target, the token is missing or forged, the fingerprint is not the one the portal presented (or the token expired after 30 minutes), or the target was edited while the prompt was open. Connect again to get a fresh prompt.</td></tr>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- User Connections -->
                 <h2 id="connections">User Connections</h2>
                 <p>User Connections are personal remote access points that you configure for your own use. Unlike Services (admin-configured), connections are private to each user.</p>
@@ -1102,6 +1131,59 @@
                             <tr><td>database, redis, tcp_tunnel, etc.</td><td>Info Toast</td><td>Shows host:port (no web viewer)</td></tr>
                         </table>
                         <p>All viewer pages connect via <code>wss://portal/ws/user-connection/{id}</code> which routes through the appropriate plugin based on the connection type.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/connections/{id}/host-key/accept</span>
+                        <span class="endpoint-desc">Trust an SSH host key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Pin the SSH host key of an <code>ssh</code> or <code>sftp</code> connection. Owner only. Changing the connection's host or port clears the pin. The pin cannot be set through <code>PUT /api/connections/{id}</code>.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">fingerprint</span></td><td><span class="param-type">string</span></td><td>The <code>fingerprint</code> from the prompt (<code>SHA256:</code> and 43 base64 characters) <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">host</span></td><td><span class="param-type">string</span></td><td>The <code>host</code> from the prompt <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">port</span></td><td><span class="param-type">integer</span></td><td>The <code>port</code> from the prompt <span class="param-required">required</span></td></tr>
+                            <tr><td><span class="param-name">token</span></td><td><span class="param-type">string</span></td><td>The <code>accept_token</code> from the prompt <span class="param-required">required</span></td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <pre>{"status": "accepted", "fingerprint": "SHA256:..."}</pre>
+                        <h4>Errors</h4>
+                        <table class="param-table">
+                            <tr><th>Status</th><th>Meaning</th></tr>
+                            <tr><td>400</td><td>Missing or malformed fingerprint, host or port</td></tr>
+                            <tr><td>404</td><td>Connection not found (only the owner can accept; a user the connection is shared with gets 404)</td></tr>
+                            <tr><td>409</td><td>The prompt is stale: <code>{"error": "...", "type": "host_key_stale"}</code>. The host or port no longer matches the stored target, the token is missing or forged, the fingerprint is not the one the portal presented (or the token expired after 30 minutes), or the target was edited while the prompt was open. Connect again to get a fresh prompt.</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">WS</span>
+                        <span class="endpoint-path">host_key refusal</span>
+                        <span class="endpoint-desc">Host key not trusted or changed</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>When the server's SSH host key is not pinned yet (<code>unpinned</code>) or differs from the pinned one (<code>changed</code>), the connection is refused during the key exchange, before any password or key is sent. The WebSocket <code>/ws/user-connection/{id}</code> (and the service relay) sends this text message and closes normally; the SFTP routes <code>/api/sftp/{conn_id}/...</code> answer HTTP <strong>409</strong> with the same body plus an <code>error</code> field. <code>can_accept</code>, <code>accept_url</code>, <code>host</code>, <code>port</code> and <code>accept_token</code> are present only for someone who may accept (the owner of a connection, an admin for a service).</p>
+                        <pre>{
+  "type": "host_key",
+  "state": "unpinned",
+  "fingerprint": "SHA256:Xo0bW0n0m9t5mJ0b7G0m3sPjv0o8m5k1u8x4Zr2Qy1A",
+  "expected": null,
+  "algorithm": "ssh-ed25519",
+  "can_accept": true,
+  "accept_url": "/api/connections/{id}/host-key/accept",
+  "host": "192.168.1.100",
+  "port": 22,
+  "accept_token": "1767225600.3f9c...",
+  "message": "This host's key has not been trusted yet. ..."
+}</pre>
+                        <p>The connection can be set to skip the check with <code>config.host_key_ignore: true</code> (not recommended).</p>
                     </div>
                 </div>
 
@@ -1853,6 +1935,31 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                     </div>
                     <div class="endpoint-body">
                         <p>Tests the SFTP connection with the provided credentials and reports how many MKV files were found.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/vods/storage/host-key/accept</span>
+                        <span class="endpoint-desc">Trust an SSH host key</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Pin (or replace) the VOD storage host key. The storage pins the key it sees on its first connect automatically; a different key later is refused and <code>GET /api/vods/storage</code> shows it as <code>host_key_refused</code>. Only <code>fingerprint</code> is used here; <code>host</code>, <code>port</code> and <code>token</code> are not required. The fingerprint must be the <code>host_key_refused.fingerprint</code> that <code>GET /api/vods/storage</code> shows; any other fingerprint, or no refused key being stored, is answered with 409.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">fingerprint</span></td><td><span class="param-type">string</span></td><td>The <code>fingerprint</code> from the prompt (<code>SHA256:</code> and 43 base64 characters) <span class="param-required">required</span></td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <pre>{"status": "accepted", "fingerprint": "SHA256:..."}</pre>
+                        <h4>Errors</h4>
+                        <table class="param-table">
+                            <tr><th>Status</th><th>Meaning</th></tr>
+                            <tr><td>400</td><td>Missing or malformed fingerprint</td></tr>
+                            <tr><td>404</td><td>No VOD storage configured</td></tr>
+                            <tr><td>409</td><td>The fingerprint is not the stored refused key (<code>{"error": "...", "type": "host_key_stale"}</code>), or the storage host or port was changed meanwhile (<code>{"error": "Storage changed; try again"}</code>)</td></tr>
+                        </table>
                     </div>
                 </div>
 
@@ -3886,6 +3993,9 @@ Headers:
 
                 <h2 id="sftp-browser">SFTP Browser</h2>
                 <p>Browse and manage files on remote servers via your existing SSH/SFTP connections. Per-user access -- only connections you own are accessible. Ephemeral connections are opened per-request.</p>
+                <div class="alert alert-info">
+                    <strong>Host key check:</strong> if the server's SSH host key is not pinned yet or has changed, every route below answers <strong>409</strong> with a <code>type: "host_key"</code> body (see <code>host_key refusal</code> under User Connections and <code>POST /api/connections/{id}/host-key/accept</code>). No credential is sent to the server in that case.
+                </div>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">

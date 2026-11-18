@@ -11,7 +11,8 @@ from typing import Optional
 
 import asyncssh
 
-from host_check import HostCheckError, resolve_checked_host, try_each_address
+from host_check import HostCheckError, resolve_checked_host
+from hostkeys import HostKeyRefused, connect_verified, policy_for
 
 logger = logging.getLogger("portal")
 
@@ -19,14 +20,23 @@ logger = logging.getLogger("portal")
 SFTP_ELIGIBLE_TYPES = {"ssh", "sftp"}
 
 
-async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientConnection], Optional[asyncssh.SFTPClient], Optional[str]]:
+async def connect_sftp(connection: dict, addrs: Optional[list] = None) -> tuple[Optional[asyncssh.SSHClientConnection], Optional[asyncssh.SFTPClient], Optional[str]]:
     """Establish SFTP session from a user_connection record.
+
+    The server's host key is verified against the connection's pin before any
+    credential is sent.
 
     Args:
         connection: User connection dict from database (with decrypted config)
+        addrs: already policy-checked addresses to dial; resolved and checked
+            here when not given
 
     Returns:
         (conn, sftp_client, None) on success or (None, None, error_msg) on failure
+
+    Raises:
+        HostKeyRefused: the host key is not pinned yet or differs from the pin
+            (the caller decides who may accept it)
     """
     config = connection.get("config", {})
     if isinstance(config, str):
@@ -37,18 +47,19 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
 
     # Outbound host policy: check what the name resolves to and dial that
     # address, so a later DNS answer cannot differ from the one checked.
-    try:
-        addrs = await resolve_checked_host(connection["host"], connection.get("port") or 22)
-    except HostCheckError:
-        logger.warning("SFTP connect refused by outbound host policy")
-        return None, None, "Host not allowed"
+    if addrs is None:
+        try:
+            addrs = await resolve_checked_host(connection["host"], connection.get("port") or 22)
+        except HostCheckError:
+            logger.warning("SFTP connect refused by outbound host policy")
+            return None, None, "Host not allowed"
 
     connect_opts = {
         "host": addrs[0],   # replaced per attempt by try_each_address below
         "port": connection.get("port") or 22,
         "username": config.get("username", ""),
-        "known_hosts": None,
     }
+    pinned, ignore = policy_for(config)
 
     # Auth method
     private_key = config.get("private_key")
@@ -65,10 +76,12 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
         return None, None, "No credentials configured (need password or private key)"
 
     try:
-        conn = await try_each_address(
-            addrs, lambda a: asyncssh.connect(**{**connect_opts, "host": a}), 10)
+        conn, _seen = await connect_verified(
+            addrs, connect_opts, pinned=pinned, ignore=ignore, timeout=10)
         sftp = await conn.start_sftp_client()
         return conn, sftp, None
+    except HostKeyRefused:
+        raise
     except asyncio.TimeoutError:
         return None, None, "Connection timed out"
     except asyncssh.PermissionDenied:

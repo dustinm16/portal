@@ -325,6 +325,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=44"></script>
+    <script src="/static/js/hostkey.js?v=1"></script>
     <script>
         let isAdmin = false;
         let editingFile = null;  // { path, connId, panel }
@@ -536,7 +537,20 @@
                 if (res.status === 401) { window.location.href = '/login'; return; }
                 if (!res.ok) {
                     const d = await res.json();
-                    document.getElementById(p.status).innerHTML = `<span class="conn-status error">${escapeHtml(d.error)}</span>`;
+                    const statusEl = document.getElementById(p.status);
+                    statusEl.innerHTML = `<span class="conn-status error">${escapeHtml(d.error)}</span>`;
+                    if (res.status === 409 && d.type === 'host_key') {
+                        // Host key not trusted yet / changed: show the fingerprint; only the owner can accept
+                        const review = document.createElement('a');
+                        review.href = '#';
+                        review.textContent = ' Review host key';
+                        review.addEventListener('click', (ev) => {
+                            ev.preventDefault();
+                            HostKey.prompt(d, { onAccepted: () => loadPanelDirectory(panel) });
+                        });
+                        statusEl.appendChild(review);
+                        HostKey.prompt(d, { onAccepted: () => loadPanelDirectory(panel) });
+                    }
                     return;
                 }
                 document.getElementById(p.status).innerHTML = '<span class="conn-status connected">Connected</span>';

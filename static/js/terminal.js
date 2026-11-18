@@ -111,6 +111,9 @@ function connect() {
                 case 'auth_required':
                     handleAuthRequired(data);
                     break;
+                case 'host_key':
+                    handleHostKey(data);
+                    break;
                 default:
                     // Unknown JSON message, might be terminal output
                     if (data.data) {
@@ -146,6 +149,21 @@ function connect() {
         console.error('WebSocket error:', error);
         updateStatus('disconnected', 'Error');
     };
+}
+
+/**
+ * The server refused the SSH host key (not trusted yet, or changed).
+ * Only the owner gets an Accept button; accepting reconnects.
+ */
+function handleHostKey(data) {
+    const changed = data.state === 'changed';
+    const colour = changed ? '31' : '33';
+    term.writeln(`\x1b[${colour}m${changed ? 'Host key changed' : 'Host key not trusted yet'}\x1b[0m`);
+    term.writeln(String(data.message || ''));
+    term.writeln(`Fingerprint: ${data.fingerprint}${data.algorithm ? ' (' + data.algorithm + ')' : ''}`);
+    if (changed && data.expected) term.writeln(`Accepted earlier: ${data.expected}`);
+    term.writeln('');
+    HostKey.prompt(data, { onAccepted: () => reconnect() });
 }
 
 /**

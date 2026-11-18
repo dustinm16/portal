@@ -1159,6 +1159,7 @@ async function submitConnection(event) {
             }
             const sshShell = document.getElementById('connection-ssh-shell').value;
             if (sshShell) config.shell = sshShell;
+            config.host_key_ignore = document.getElementById('connection-ssh-host-key-ignore').checked;
             break;
         case 'database':
             config.db_type = document.getElementById('connection-db-type').value;
@@ -1272,6 +1273,7 @@ async function editConnection(connectionId) {
                     // (SSH passwords are entered at connect time, not stored in form)
                 }
                 document.getElementById('connection-ssh-shell').value = config.shell || '';
+                document.getElementById('connection-ssh-host-key-ignore').checked = config.host_key_ignore === true;
                 break;
             case 'database':
                 document.getElementById('connection-db-type').value = config.db_type || 'mysql';

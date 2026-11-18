@@ -434,6 +434,8 @@ async function showVodStorageModal() {
     document.getElementById('vod-remote-path').value = '/home/user/vods';
     document.getElementById('vod-test-result').style.display = 'none';
     document.getElementById('vod-delete-btn').style.display = 'none';
+    document.getElementById('vod-host-key-ignore').checked = false;
+    renderVodHostKey(null);
     onVodAuthMethodChange();
 
     try {
@@ -449,6 +451,8 @@ async function showVodStorageModal() {
             if (s.has_password) document.getElementById('vod-password').value = '***';
             if (s.has_key) document.getElementById('vod-private-key').value = '***';
             document.getElementById('vod-delete-btn').style.display = 'inline-flex';
+            document.getElementById('vod-host-key-ignore').checked = !!s.host_key_ignore;
+            renderVodHostKey(s);
             onVodAuthMethodChange();
         }
     } catch (err) { console.error('Failed to load VOD storage config:', err); }
@@ -467,6 +471,7 @@ async function saveVodStorage(event) {
     };
     if (data.auth_method === 'password') data.password = document.getElementById('vod-password').value;
     else data.private_key = document.getElementById('vod-private-key').value;
+    data.host_key_ignore = document.getElementById('vod-host-key-ignore').checked;
 
     try {
         const response = await Portal.fetch('/api/vods/storage', {
@@ -509,6 +514,7 @@ async function testVodConnection() {
     };
     if (data.auth_method === 'password') data.password = document.getElementById('vod-password').value;
     else data.private_key = document.getElementById('vod-private-key').value;
+    data.host_key_ignore = document.getElementById('vod-host-key-ignore').checked;
 
     try {
         const response = await Portal.fetch('/api/vods/storage/test', {
@@ -536,6 +542,57 @@ async function testVodConnection() {
         resultEl.textContent = 'Network error';
     } finally {
         btn.textContent = origText;
+        btn.disabled = false;
+    }
+}
+
+/**
+ * Show the pinned host key of the saved storage and, when an upload was refused
+ * because the key changed, the new key with an Accept button (owner only: this
+ * is the user's own storage). `s` is the stored storage object, or null.
+ */
+function renderVodHostKey(s) {
+    const statusEl = document.getElementById('vod-hostkey-status');
+    const refusedEl = document.getElementById('vod-hostkey-refused');
+    refusedEl.style.display = 'none';
+    if (!s) {
+        statusEl.textContent = 'The server key is pinned automatically on the first connection.';
+        return;
+    }
+    if (s.host_key_ignore) statusEl.textContent = 'The host key is not verified.';
+    else if (s.host_key_fingerprint) statusEl.textContent = 'Pinned: ' + s.host_key_fingerprint;
+    else statusEl.textContent = 'Not pinned yet. It is pinned automatically on the first connection.';
+
+    if (s.host_key_refused && s.host_key_refused.fingerprint) {
+        document.getElementById('vod-hostkey-refused-fp').textContent = s.host_key_refused.fingerprint;
+        refusedEl.style.display = 'block';
+        const btn = document.getElementById('vod-hostkey-accept-btn');
+        btn.dataset.fingerprint = s.host_key_refused.fingerprint;
+        if (!btn.dataset.bound) {
+            btn.dataset.bound = '1';
+            btn.addEventListener('click', acceptVodHostKey);
+        }
+    }
+}
+
+async function acceptVodHostKey(event) {
+    const btn = event.currentTarget;
+    const fingerprint = btn.dataset.fingerprint;
+    if (!fingerprint) return;
+    btn.disabled = true;
+    try {
+        const response = await Portal.fetch('/api/vods/storage/host-key/accept', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fingerprint })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) { Portal.toast(result.error || 'Could not accept the host key', 'error'); return; }
+        Portal.toast('Host key accepted', 'success');
+        renderVodHostKey({ host_key_fingerprint: fingerprint, host_key_ignore: document.getElementById('vod-host-key-ignore').checked });
+        loadVods();
+    } catch (err) {
+        Portal.toast('Could not accept the host key', 'error');
+    } finally {
         btn.disabled = false;
     }
 }

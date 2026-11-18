@@ -7,7 +7,7 @@ from typing import Optional
 
 from aiohttp import web, WSMsgType
 
-from host_check import try_each_address
+from hostkeys import HostKeyRefused, connect_verified, policy_for
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -64,7 +64,7 @@ class SSHPlugin(PluginBase):
                 },
                 "auth_method": {
                     "type": "string",
-                    "enum": ["password", "key", "agent"],
+                    "enum": ["password", "key"],
                     "description": "Authentication method",
                     "default": "password"
                 },
@@ -76,11 +76,10 @@ class SSHPlugin(PluginBase):
                     "type": "string",
                     "description": "Path to private key file"
                 },
-                "known_hosts": {
-                    "type": "string",
-                    "enum": ["strict", "trust_first", "ignore"],
-                    "description": "Host key verification",
-                    "default": "trust_first"
+                "host_key_ignore": {
+                    "type": "boolean",
+                    "description": "Do not verify host key (not recommended: the server's identity is then not checked)",
+                    "default": False
                 },
                 "shell": {
                     "type": "string",
@@ -118,18 +117,30 @@ class SSHPlugin(PluginBase):
             "host": host,
             "port": port,
             "username": username,
-            "known_hosts": None if config.get("known_hosts") == "ignore" else (),
         }
+        # The host key is checked during the key exchange (before any
+        # credential is sent) against the pin stored in the config; see hostkeys.
+        pinned_key, ignore_key = policy_for(config)
 
+        # Only the credential stored with this connection is ever offered; the
+        # portal's own keys, ssh-agent and ssh config are never used (see
+        # hostkeys.locked_client_options).
+        if auth_method == "agent":
+            await ws.send_json({"type": "error", "message": "SSH agent authentication is not supported"})
+            return
         if auth_method == "key":
             key_content = config.get("private_key")
             key_path = config.get("private_key_path")
             if key_content:
                 connect_opts["client_keys"] = [asyncssh.import_private_key(key_content)]
             elif key_path:
+                if config.get("_pinned_hosts"):
+                    # A user connection: a path would be read from the portal
+                    # server's disk, with the portal's own file access.
+                    await ws.send_json({"type": "error",
+                                        "message": "Key file paths are not allowed here; paste the private key instead"})
+                    return
                 connect_opts["client_keys"] = [key_path]
-        elif auth_method == "agent":
-            connect_opts["agent_forwarding"] = True
 
         # Track terminal size from client resize messages
         term_cols, term_rows = 80, 24
@@ -179,11 +190,10 @@ class SSHPlugin(PluginBase):
             # User connections arrive with the already policy-checked addresses
             # in _pinned_hosts (set by the connection handler); dial those,
             # trying each in turn on connect-level failures only.
-            conn = await try_each_address(
+            conn, _seen = await connect_verified(
                 config.get("_pinned_hosts") or [host],
-                lambda a: asyncssh.connect(**{**connect_opts, "host": a, "connect_timeout": 15}),
-                None
-            )
+                {**connect_opts, "connect_timeout": 15},
+                pinned=pinned_key, ignore=ignore_key, timeout=None)
             async with conn:
                 # Build process options - only pass command when explicitly set
                 proc_opts = {
@@ -206,6 +216,10 @@ class SSHPlugin(PluginBase):
 
                     await self._ssh_loop(ws, process)
 
+        except HostKeyRefused:
+            # Not a failure to report here: the caller shows the fingerprint
+            # to the user and decides who may accept it.
+            raise
         except asyncssh.Error as e:
             logger.warning(f"SSH connection failed for user {user_id}: {e}")
             await ws.send_json({"type": "error", "message": "SSH connection failed"})

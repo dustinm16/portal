@@ -2806,6 +2806,21 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def update_service_config_if_target(
+        self, service_id: int, config: dict, host: Optional[str], port: Optional[int]
+    ) -> bool:
+        """Replace a service's (encrypted) config, only if its host and port
+        columns are still `host` and `port` (an edit made meanwhile wins)."""
+        import json
+        cursor = await self.conn.execute(
+            "UPDATE services SET config = ?, updated_at = ? "
+            "WHERE id = ? AND COALESCE(host, '') = ? AND COALESCE(port, 0) = ?",
+            (encrypt_config(json.dumps(config)), datetime.now(timezone.utc).isoformat(),
+             service_id, host or "", port or 0)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
     # Category operations
     async def create_category(self, name: str, icon: str = "folder", sort_order: int = 0) -> int:
         """Create a new category and return its ID."""
@@ -3276,6 +3291,21 @@ class Database:
                SET {set_clause}, updated_at = CURRENT_TIMESTAMP
                WHERE id = ? AND user_id = ?""",
             values
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_user_connection_config_if_target(
+        self, conn_id: int, user_id: int, config: dict, host: str, port: Optional[int]
+    ) -> bool:
+        """Replace a connection's (encrypted) config, only if it still points at
+        `host`:`port` (a missing port means 22), so an edit of the target made
+        meanwhile wins over a stale host-key accept."""
+        import json
+        cursor = await self.conn.execute(
+            "UPDATE user_connections SET config = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND user_id = ? AND host = ? AND COALESCE(NULLIF(port, 0), 22) = ?",
+            (encrypt_config(json.dumps(config)), conn_id, user_id, host, port or 22)
         )
         await self.conn.commit()
         return cursor.rowcount > 0
@@ -4725,6 +4755,20 @@ class Database:
         )
         await self.conn.commit()
         return cursor.lastrowid
+
+    async def update_vod_storage_config(self, user_id: int, config: dict,
+                                        host: str, port: Optional[int]) -> bool:
+        """Replace the (encrypted) config of a VOD storage row, only if it still
+        points at `host`:`port` (so a concurrent edit of the target wins)."""
+        import json as _json
+        cursor = await self.conn.execute(
+            "UPDATE vod_storage SET config = ?, updated_at = ? "
+            "WHERE user_id = ? AND host = ? AND COALESCE(port, 22) = ?",
+            (encrypt_config(_json.dumps(config)), datetime.now(timezone.utc).isoformat(),
+             user_id, host, port or 22)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     async def delete_vod_storage(self, user_id: int) -> bool:
         """Delete VOD storage config for a user."""

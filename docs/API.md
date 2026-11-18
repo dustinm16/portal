@@ -863,6 +863,12 @@ Get connection details needed to establish a WebSocket relay (plugin info, WebSo
 
 ---
 
+#### POST /api/connections/{id}/host-key/accept
+Trust (pin) the SSH host key of an `ssh`/`sftp` connection. **Owner only** (a user the connection is shared with gets 404). Body `{"fingerprint": "SHA256:...", "host", "port", "token"}` where all four come from the `host_key` prompt (`fingerprint` is 43 base64 characters, as `ssh-keygen -lf` prints it; `token` is the prompt's `accept_token`) -> `{"status": "accepted", "fingerprint": "..."}`. A missing or malformed `fingerprint`, `host` or `port` gives 400; a missing, forged or expired `token` gives 409 like any other stale prompt. HTTP 409 `{"error", "type": "host_key_stale"}` means the prompt is stale: the connection's host or port changed, the fingerprint is not the one the portal presented (or the token expired after 30 minutes), or the connection was edited while the prompt was open; connect again for a fresh prompt. The pin is stored in the connection's encrypted config as `host_key_fingerprint`; it cannot be set or overwritten through `PUT /api/connections/{id}`, and changing `host` or `port` clears it. Until a key is pinned (and whenever the server presents a different key) connecting is refused before any credential is sent:
+- WebSocket `/ws/user-connection/{id}`: a text message `{"type": "host_key", "state": "unpinned"|"changed", "fingerprint", "expected", "algorithm", "can_accept", "accept_url", "host", "port", "accept_token", "message"}`, then a normal close. `can_accept` is true only for the owner; `accept_url`, `host`, `port` and `accept_token` are present only then.
+- SFTP routes `/api/sftp/{id}/...`: HTTP 409 with the same body.
+- Config `host_key_ignore: true` (boolean) is the explicit per-connection opt-out and skips the check. The older `known_hosts` setting is no longer read.
+
 #### GET /api/connections/{id}/shares
 List who a connection is shared with (owner only). → `{"shares": [{"user_id", "username", "created_at"}]}`
 
@@ -893,7 +899,7 @@ Get available connection types with schemas.
       "default_port": 22,
       "schema": {
         "username": {"type": "string"},
-        "auth_method": {"type": "string", "enum": ["password", "key", "agent"]}
+        "auth_method": {"type": "string", "enum": ["password", "key"]}
       }
     }
   }
@@ -2337,6 +2343,14 @@ Remove VOD storage configuration. Does not delete remote files.
   "success": true
 }
 ```
+
+---
+
+#### POST /api/vods/storage/host-key/accept
+Pin the VOD storage host key. Body `{"fingerprint": "SHA256:..."}`, which must be the `host_key_refused.fingerprint` the settings showed; any other fingerprint, or no refused key being stored, gives 409 `{"error", "type": "host_key_stale"}`. The storage pins the key it sees on its first connect automatically (logged in the activity feed); a different key later is refused and logged (`vod_host_key_refused`), `GET /api/vods/storage` then shows `host_key_refused: {fingerprint, at}` next to `host_key_fingerprint`, and this route accepts the new key. `host_key_ignore` (boolean, in the save body) turns the check off.
+
+#### POST /api/services/{id}/host-key/accept
+Same for an admin-defined `ssh` service (admin only), with the same body and the same 409 for a stale prompt. An admin may also set `config.host_key_fingerprint` when creating or editing the service. An edit that changes the host or port the plugin dials (`config.host` / `config.port` when set, else the service's own) clears the pin.
 
 ---
 
