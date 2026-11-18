@@ -407,6 +407,141 @@ async def _err_url(url):
 
 asyncio.run(fetch_cases())
 
+# ---------------------------------------------------------------------------
+# A way back to the built-in list: refresh off, reset in the server, reset from the command line
+# ---------------------------------------------------------------------------
+
+async def reset_cases():
+    import secevents
+    d = Database(TEST_DB)
+    await d.connect()
+    server.db = d
+    secevents.log.bind(d)
+    builtin_nets = [ipaddress.ip_network(n) for n in BUILTIN]
+    probe_ip = "45.0.1.1"
+    try:
+        server._apply_cloudflare_networks(builtin_nets, "built-in")
+        await d.set_setting(server.CF_SETTING_ENABLED, "true")
+        st = await server.refresh_cloudflare_ranges(texts=(TEXT4 + NEW_V4 + "\n", TEXT6))
+        check("setup: a fetched list is saved and applied", st["ok"] and server._is_trusted_proxy(probe_ip))
+        view = await server._cf_ranges_view()
+        check("the view says a saved list is in use", view["saved_list"] and view["saved_list_applied"]
+              and not view["saved_list_ignored"], str(view))
+
+        server._apply_cloudflare_networks(builtin_nets, "built-in")
+        await d.set_setting(server.CF_SETTING_ENABLED, "false")
+        await server._load_cloudflare_state()
+        check("refresh off: the saved list is not applied at start, the built-in list is used",
+              server._cf_source == "built-in" and not server._is_trusted_proxy(probe_ip))
+        check("refresh off: the saved list is kept", bool(await d.get_setting(server.CF_SETTING_LIST)))
+        view = await server._cf_ranges_view()
+        check("refresh off: the view says the saved list is kept but not applied",
+              view["saved_list"] and not view["saved_list_applied"] and view["saved_list_ignored"]
+              and view["enabled"] is False, str(view))
+
+        await d.set_setting(server.CF_SETTING_ENABLED, "true")
+        await server._load_cloudflare_state()
+        check("refresh switched on again: the saved list is applied at the next start",
+              server._cf_source == "fetched" and server._is_trusted_proxy(probe_ip))
+
+        before = await server.reset_cloudflare_ranges()
+        check("reset: the built-in list is in use at once, without a restart",
+              server._cf_source == "built-in" and not server._is_trusted_proxy(probe_ip)
+              and server._is_trusted_proxy("173.245.48.5") and server._cf_fetched_at is None)
+        check("reset: it reports what was replaced", before["source"] == "fetched" and before["v4"] == len(V4) + 1, str(before))
+        check("reset: the saved list is cleared", await d.get_setting(server.CF_SETTING_LIST) is None)
+        await server._load_cloudflare_state()
+        check("reset: it stays reset after a restart", server._cf_source == "built-in")
+        view = await server._cf_ranges_view()
+        check("reset: the view shows no saved list", not view["saved_list"] and not view["saved_list_ignored"], str(view))
+        check("reset: the combined trusted list is the built-in part plus TRUSTED_PROXIES",
+              len(server._trusted_proxy_networks) == len(BUILTIN) + len(server._extra_trusted_networks))
+        check("the reset event is a known security event with the security category",
+              secevents.EVENTS.get("cf_ranges_reset") == "security")
+    finally:
+        server._apply_cloudflare_networks(builtin_nets, "built-in")
+        secevents.log.bind(None)
+        await d.close()
+
+
+asyncio.run(reset_cases())
+
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import sqlite3  # noqa: E402
+import ban_cli  # noqa: E402
+
+
+def run_cli(fn, *a):
+    buf, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+        try:
+            rc = fn(*a)
+        except SystemExit as e:
+            rc = e.code
+    return rc, buf.getvalue() + err.getvalue()
+
+
+def schema_of(path):
+    c = sqlite3.connect(path)
+    try:
+        return c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+    finally:
+        c.close()
+
+
+async def make_cli_db(path, saved=True):
+    d = Database(path)
+    await d.connect()
+    if saved:
+        await d.set_setting(server.CF_SETTING_LIST, json.dumps({"v4": V4, "v6": V6, "fetched_at": "x"}))
+        await d.set_setting(server.CF_SETTING_ENABLED, "true")
+    await d.close()
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = str(Path(tmp) / "cli.db")
+    asyncio.run(make_cli_db(path))
+    before = schema_of(path)
+    rc, out = run_cli(ban_cli.cf_ranges_reset, path)
+    c = sqlite3.connect(path)
+    left = c.execute("SELECT COUNT(*) FROM settings WHERE key = ?", (server.CF_SETTING_LIST,)).fetchone()[0]
+    kept = c.execute("SELECT value FROM settings WHERE key = ?", (server.CF_SETTING_ENABLED,)).fetchone()
+    ev = c.execute("SELECT event, category, ip, result, details, count FROM security_events").fetchall()
+    c.close()
+    check("cf-ranges-reset clears the saved list, leaves the other settings and says to restart",
+          rc == 0 and left == 0 and kept and kept[0] == "true" and "Restart the portal" in out, out)
+    check("cf-ranges-reset records one cf_ranges_reset security event from the command line",
+          len(ev) == 1 and ev[0][0] == "cf_ranges_reset" and ev[0][1] == "security" and ev[0][2] == "cli"
+          and json.loads(ev[0][4]).get("kind") == "cli" and ev[0][5] == 1, str(ev))
+    check("cf-ranges-reset does not change the schema", schema_of(path) == before)
+    rc, out = run_cli(ban_cli.cf_ranges_reset, path)
+    c = sqlite3.connect(path)
+    n = c.execute("SELECT COUNT(*) FROM security_events").fetchone()[0]
+    c.close()
+    check("cf-ranges-reset with nothing saved says so and records nothing", rc == 0 and "no saved" in out and n == 1, out)
+    rc, out = run_cli(ban_cli.cf_ranges_reset, str(Path(tmp) / "missing.db"))
+    check("cf-ranges-reset refuses a missing database and creates none",
+          rc not in (0, None) and not (Path(tmp) / "missing.db").exists(), out)
+    bare = str(Path(tmp) / "bare.db")
+    sqlite3.connect(bare).close()
+    rc, out = run_cli(ban_cli.cf_ranges_reset, bare)
+    check("cf-ranges-reset tolerates a database with no tables and migrates nothing",
+          rc == 0 and schema_of(bare) == [], out)
+    if (Path(SRC) / ".env").exists():
+        print("skip: the entry-point test needs a tree without a .env (the staged smoke check covers it)")
+    else:
+        path2 = str(Path(tmp) / "entry.db")
+        asyncio.run(make_cli_db(path2))
+        env = dict(os.environ, DATABASE_PATH=path2, JWT_SECRET="x" * 64)
+        res = subprocess.run([sys.executable, "server.py", "cf-ranges-reset"], cwd=SRC, env=env,
+                             capture_output=True, text=True, timeout=120)
+        c = sqlite3.connect(path2)
+        n = c.execute("SELECT COUNT(*) FROM settings WHERE key = ?", (server.CF_SETTING_LIST,)).fetchone()[0]
+        c.close()
+        check("server.py cf-ranges-reset works through the real entry point", res.returncode == 0 and n == 0,
+              res.stdout + res.stderr)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: " + "; ".join(failures))

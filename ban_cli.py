@@ -1,4 +1,4 @@
-"""Command-line removal of IP blocks, for an admin who is locked out.
+"""Command-line removal of IP blocks and of the saved Cloudflare range list, for an admin who is locked out.
 
 `server.py unblock <ip>` and `server.py clear-bans` open the database directly
 with the standard library. They never start the server, never run migrations
@@ -7,6 +7,12 @@ running server keeps its block list in memory until it restarts, and scanner
 blocks (which are only in memory) disappear on restart. Each removal is also
 recorded as an ``ip_unblocked`` security event (source ``cli``), in the same
 transaction, when the database already has the security event table.
+
+`server.py cf-ranges-reset` works the same way: it deletes the saved fetched
+Cloudflare list (setting `cf_ranges_list`) so the next start uses the built-in
+list, and records a ``cf_ranges_reset`` security event with the source ``cli``.
+It writes no audit_log entry: that table needs an account as its actor and
+holds encrypted details, and this tool has neither.
 """
 
 import ipaddress
@@ -68,8 +74,8 @@ def _describe(row) -> str:
     return f"  {_printable(row['ip_address'])}  ({_printable(row['source'])}, until {until}){reason}"
 
 
-def _record_event(conn, details: dict) -> None:
-    """Write one ip_unblocked security event in the open transaction.
+def _record_event(conn, details: dict, event: str = "ip_unblocked") -> None:
+    """Write one security event (default ip_unblocked) in the open transaction.
 
     Skipped without a word when the database has no security_events table yet
     (this tool never migrates). The row has no client address: it names the
@@ -80,7 +86,7 @@ def _record_event(conn, details: dict) -> None:
     if not has_table:
         return
     row = secevents.SecurityEventLog._row(
-        "ip_unblocked", "cli", None, None, None, "cli", {**details, "kind": "cli"})
+        event, "cli", None, None, None, "cli", {**details, "kind": "cli"})
     row["count"] = 1
     row["agg_key"] = None
     conn.execute(
@@ -140,4 +146,27 @@ def clear_bans(db_path: str) -> int:
     for r in rows:
         print(_describe(r))
     _after_note(len(rows))
+    return 0
+
+
+def cf_ranges_reset(db_path: str) -> int:
+    """Delete the saved Cloudflare list so the built-in list is used at the next start."""
+    conn = _connect(db_path)
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").fetchone()
+        removed = 0
+        if has_table:
+            removed = conn.execute("DELETE FROM settings WHERE key = 'cf_ranges_list'").rowcount
+        if removed:
+            _record_event(conn, {"removed": removed}, event="cf_ranges_reset")
+        conn.commit()
+    finally:
+        conn.close()
+    if removed:
+        print("Removed the saved Cloudflare range list. The built-in list is used from the next start.")
+        print("Restart the portal if it is running: it keeps the list in memory.\n"
+              "Or use Admin > Settings > Cloudflare ranges > Use the built-in list while it runs.")
+    else:
+        print("There was no saved Cloudflare range list in the database.")
     return 0

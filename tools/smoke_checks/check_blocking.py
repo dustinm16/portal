@@ -112,7 +112,7 @@ async def run(ctx):
     async with ctx.http() as anon:
         for method, path in (("GET", "/api/admin/never-ban"), ("PUT", "/api/admin/never-ban"),
                              ("GET", "/api/admin/proxy-trust"), ("GET", "/api/admin/cf-ranges"),
-                             ("PUT", "/api/admin/cf-ranges")):
+                             ("PUT", "/api/admin/cf-ranges"), ("POST", "/api/admin/cf-ranges/reset")):
             async with anon.request(method, base + path, json={}, headers={"Accept": "application/json"}) as r:
                 await r.read()
                 _ok(ctx, f"blocking: anonymous {method} {path} is refused", r.status in (401, 403), str(r.status))
@@ -121,7 +121,7 @@ async def run(ctx):
         if resp.status == 200:
             for method, path in (("GET", "/api/admin/never-ban"), ("PUT", "/api/admin/never-ban"),
                                  ("GET", "/api/admin/proxy-trust"), ("GET", "/api/admin/cf-ranges"),
-                                 ("PUT", "/api/admin/cf-ranges")):
+                                 ("PUT", "/api/admin/cf-ranges"), ("POST", "/api/admin/cf-ranges/reset")):
                 async with user.request(method, base + path, json={"entries": ["203.0.113.0/24"], "enabled": False},
                                         headers={"Accept": "application/json"}) as r:
                     await r.read()
@@ -272,6 +272,26 @@ async def _admin_checks(ctx, adm, loopback_trusted):
             async with adm.put(f"{base}/api/admin/cf-ranges", json={"enabled": bool(was)}, headers=hdr) as r:
                 await r.read()
                 _ok(ctx, "blocking: the refresh setting is restored", r.status == 200, str(r.status))
+
+        # ---- "use the built-in list": route, audit entry, security event ------
+        async def _events(name):
+            async with adm.get(f"{base}/api/admin/security-events?event={name}&limit=5", headers=hdr) as er:
+                return await er.json(content_type=None)
+        async def _audits(name):
+            async with adm.get(f"{base}/api/admin/audit-log?action={name}&limit=5", headers=hdr) as er:
+                return await er.json(content_type=None)
+        ev_before = (await _events("cf_ranges_reset")).get("total", 0)
+        au_before = (await _audits("cf_ranges.reset")).get("total", 0)
+        async with adm.post(f"{base}/api/admin/cf-ranges/reset", headers=hdr) as r:
+            reset = await r.json(content_type=None)
+        _ok(ctx, "blocking: POST cf-ranges/reset puts the built-in list in use and clears the saved one",
+               r.status == 200 and reset.get("source") == "built-in" and reset.get("saved_list") is False
+               and reset.get("v4", 0) >= 10 and reset.get("reset") is True, str(reset))
+        ev = await _events("cf_ranges_reset")
+        au = await _audits("cf_ranges.reset")
+        _ok(ctx, "blocking: the reset is a security event and an audit entry",
+               ev.get("total") == ev_before + 1 and au.get("total") == au_before + 1
+               and (ev.get("events") or [{}])[0].get("user_id") is not None, f"{ev.get('total')} {au.get('total')}")
     else:
         ctx.skip("blocking: PUT cf-ranges", "the admin account is not a superadmin")
 
@@ -360,6 +380,17 @@ async def _lockout_recovery(ctx):
         _ok(ctx, "blocking: `server.py clear-bans` removes every ban and lists them",
                rc == 0 and left == 0 and MARKER in out and MARKER + "-2" in out, out.strip()[-300:])
         _ok(ctx, "blocking: clear-bans ran no migration either", _schema_hash(_db(ctx)) == before)
+
+        was = _sql(ctx, "SELECT value FROM settings WHERE key = 'cf_ranges_list'")
+        _sql(ctx, "INSERT OR REPLACE INTO settings (key, value) VALUES ('cf_ranges_list', ?)", ('{"v4": [], "v6": []}',))
+        ev_before = _sql(ctx, "SELECT COUNT(*) FROM security_events WHERE event = 'cf_ranges_reset' AND ip = 'cli'")[0][0]
+        rc, out = await _cli(ctx, "cf-ranges-reset")
+        left = _sql(ctx, "SELECT COUNT(*) FROM settings WHERE key = 'cf_ranges_list'")[0][0]
+        ev_after = _sql(ctx, "SELECT COUNT(*) FROM security_events WHERE event = 'cf_ranges_reset' AND ip = 'cli'")[0][0]
+        _ok(ctx, "blocking: `server.py cf-ranges-reset` on the stopped server clears the saved list, records a cli security event and runs no migration",
+               rc == 0 and left == 0 and ev_after == ev_before + 1 and _schema_hash(_db(ctx)) == before, out.strip()[-300:])
+        if was:
+            _sql(ctx, "INSERT OR REPLACE INTO settings (key, value) VALUES ('cf_ranges_list', ?)", (was[0][0],))
 
         await ctx.start_server(wait_healthy=True)
         status = await _health_status(ctx, tries=5)

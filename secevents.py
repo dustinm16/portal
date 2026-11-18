@@ -67,6 +67,7 @@ EVENTS = {
     "probe_block": "security",
     "never_ban_changed": "security",
     "cf_ranges_refreshed": "security",
+    "cf_ranges_reset": "security",
     "rate_limited": "security",
     "host_key_accepted": "security",
     "security_log_export": "security",

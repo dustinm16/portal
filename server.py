@@ -1179,9 +1179,16 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
 
 
 async def _load_cloudflare_state() -> None:
-    """At startup: use the last good fetched list if it still validates, else keep the built-in one."""
+    """At startup: use the last good fetched list if it still validates, else keep the built-in one.
+
+    With the weekly refresh switched off the saved list is not applied (it is kept,
+    and used again when the refresh is switched back on and the portal restarts).
+    """
     raw = await db.get_setting(CF_SETTING_LIST)
     if not raw:
+        return
+    if (await db.get_setting(CF_SETTING_ENABLED)) == "false":
+        logger.info("The Cloudflare range refresh is off: using the built-in list, the saved list is kept but not applied")
         return
     try:
         data = json.loads(raw)
@@ -1191,6 +1198,16 @@ async def _load_cloudflare_state() -> None:
         logger.info(f"Using the saved Cloudflare ranges from {data.get('fetched_at')}")
     except Exception as e:
         logger.warning(f"Ignoring the saved Cloudflare ranges, using the built-in list: {e}")
+
+
+async def reset_cloudflare_ranges() -> dict:
+    """Use the built-in list: clear the saved fetched list and swap at once. Returns the counts."""
+    before = {"source": _cf_source,
+              "v4": sum(1 for n in _cf_networks if n.version == 4),
+              "v6": sum(1 for n in _cf_networks if n.version == 6)}
+    await db.delete_setting(CF_SETTING_LIST)
+    _apply_cloudflare_networks([ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS], "built-in")
+    return before
 
 
 async def _cf_refresh_loop() -> None:
@@ -20333,8 +20350,15 @@ async def http_get_proxy_trust(request: web.Request) -> web.Response:
 
 
 async def _cf_ranges_view() -> dict:
+    enabled = (await db.get_setting(CF_SETTING_ENABLED)) != "false"
+    saved = bool(await db.get_setting(CF_SETTING_LIST))
     return {
-        "enabled": (await db.get_setting(CF_SETTING_ENABLED)) != "false",
+        "enabled": enabled,
+        # A fetched list is saved but the built-in one is in use (the refresh is off, or the
+        # saved list was refused at start); with the refresh off the saved list is not applied.
+        "saved_list": saved,
+        "saved_list_applied": saved and _cf_source == "fetched",
+        "saved_list_ignored": saved and (not enabled or _cf_source != "fetched"),
         "source": _cf_source,
         "fetched_at": _cf_fetched_at,
         "v4": sum(1 for n in _cf_networks if n.version == 4),
@@ -20367,6 +20391,22 @@ async def http_put_cf_ranges(request: web.Request) -> web.Response:
     await audit_log("cf_ranges.settings", user["id"], user.get("username", "unknown"),
                     details={"enabled": data["enabled"]})
     return web.json_response(await _cf_ranges_view())
+
+
+async def http_reset_cf_ranges(request: web.Request) -> web.Response:
+    """POST /api/admin/cf-ranges/reset - clear the saved list and use the built-in one at once (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    before = await reset_cloudflare_ranges()
+    await audit_log("cf_ranges.reset", user["id"], user.get("username", "unknown"),
+                    details={"was": before["source"], "v4": before["v4"], "v6": before["v6"]})
+    await security_event("cf_ranges_reset", request=request, user=user,
+                         details={"was": before["source"], "v4": before["v4"], "v6": before["v6"]})
+    logger.warning(f"Cloudflare ranges reset to the built-in list by user {user['id']}")
+    view = await _cf_ranges_view()
+    view["reset"] = True
+    return web.json_response(view)
 
 
 # =============================================================================
@@ -21094,6 +21134,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/proxy-trust", http_get_proxy_trust)
     app.router.add_get("/api/admin/cf-ranges", http_get_cf_ranges)
     app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
+    app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
 
     # File Manager (admin only)
     app.router.add_get("/api/files/list", http_list_files)
@@ -22191,6 +22232,7 @@ def main():
     unblock_cmd = subparsers.add_parser("unblock", help="Remove the IP block(s) for one address from the database (run with the server stopped)")
     unblock_cmd.add_argument("ip", help="IPv4 or IPv6 address")
     subparsers.add_parser("clear-bans", help="Remove every IP block from the database (run with the server stopped)")
+    subparsers.add_parser("cf-ranges-reset", help="Forget the saved Cloudflare range list so the built-in one is used (run with the server stopped)")
 
     # Update component
     update_cmd = subparsers.add_parser("update", help="Apply an update to a component")
@@ -22290,6 +22332,9 @@ def main():
     elif args.command == "clear-bans":
         import ban_cli
         sys.exit(ban_cli.clear_bans(Config.DATABASE_PATH))
+    elif args.command == "cf-ranges-reset":
+        import ban_cli
+        sys.exit(ban_cli.cf_ranges_reset(Config.DATABASE_PATH))
     elif args.command == "update":
         async def _run_update():
             print(f"Starting update: {args.component}" + (f" version {args.version}" if args.version else ""))

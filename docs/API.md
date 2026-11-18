@@ -3746,14 +3746,19 @@ The proxy-trust self-check. `suspect` is true when at least 30 of the last 100 r
 `message` is `null` when `suspect` is false. The same condition logs one warning. A warning is also logged at start when the portal listens on loopback only but loopback is not trusted.
 
 #### GET /api/admin/cf-ranges
-The Cloudflare range refresh: `{"enabled": true, "source": "built-in"|"fetched", "fetched_at": "2026-11-18 03:00:00"|null, "v4": 15, "v6": 7, "last": {"ok": true, "at": "...", "message": "...", "v4": 15, "v6": 7, "added": [], "removed": [], "last_ok_at": "..."}|null, "stage_mode": false}`. A failed refresh has `"ok": false`, a `message` and the time of the last good refresh in `last_ok_at`; the list in use is then unchanged.
+The Cloudflare range refresh: `{"enabled": true, "source": "built-in"|"fetched", "fetched_at": "2026-11-18 03:00:00"|null, "v4": 15, "v6": 7, "last": {"ok": true, "at": "...", "message": "...", "v4": 15, "v6": 7, "added": [], "removed": [], "last_ok_at": "..."}|null, "stage_mode": false}`. A failed refresh has `"ok": false`, a `message` and the time of the last good refresh in `last_ok_at`; the list in use is then unchanged. `saved_list` is true when a fetched list is saved, `saved_list_applied` when it is the one in use and `saved_list_ignored` when it is saved but not applied (the weekly refresh is off, or the list failed the checks at start): the built-in list is used then.
 
 **Auth**: Admin
 
 #### PUT /api/admin/cf-ranges
 `{"enabled": true|false}` turns the weekly refresh on or off (setting `cf_ranges_refresh`, default on). Turning it off keeps the list now in use. Returns the same object as GET. `400` unless `enabled` is a boolean.
 
-**Auth**: Superadmin. Audited `cf_ranges.settings`.
+**Auth**: Superadmin. Audited `cf_ranges.settings`. With the refresh off, a saved fetched list is not applied at the next start (it is kept).
+
+#### POST /api/admin/cf-ranges/reset
+Use the built-in Cloudflare list: clears the saved fetched list and swaps to the built-in list at once, without a restart. Returns the same object as GET plus `"reset": true`. Without the portal running, `sudo venv/bin/python server.py cf-ranges-reset` clears the saved list (no migration; the built-in list is used from the next start).
+
+**Auth**: Superadmin. Audited `cf_ranges.reset` and recorded as the security event `cf_ranges_reset`.
 
 The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.cloudflare.com/ips-v6` (certificate verified, 10 s timeout, 64 KB cap, no cookies, no redirect to another host, nothing sent about the portal). It accepts a list only if every line is a network, there are at least 10 IPv4 and 5 IPv6 ranges, no range is private, loopback or reserved, no range is broader than the broadest built-in range of its family (/13 IPv4, /29 IPv6), at most 5 ranges per family are new compared with the list trusted now (the built-in list at the first refresh), and for each family the list still covers at least half of the built-in ranges and more than half of the current ones. The same checks run when the saved list is loaded at start (except the count of new ranges). It then swaps the trusted list at once (no restart), clears the trusted-peer cache and saves the list and the result in settings. It does not run in a staged instance.
 
