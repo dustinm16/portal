@@ -3964,6 +3964,14 @@ async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+async def _chat_role_of_user(user_id) -> str:
+    """Role used for chat policy decisions, honouring the legacy admin flag."""
+    user = await db.get_user_by_id(user_id)
+    if not user:
+        return "user"
+    return user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+
+
 async def http_get_stream_bans(request: web.Request) -> web.Response:
     """Get all bans for a stream (stream owner only)."""
     token = await authenticate_request(request)
@@ -3982,7 +3990,8 @@ async def http_get_stream_bans(request: web.Request) -> web.Response:
         if not token.has_scope("admin") and not token.has_scope("*"):
             return web.json_response({"error": "Not authorized"}, status=403)
 
-    bans = await db.get_stream_bans(stream_id)
+    viewer_role = await _chat_role_of_user(token.user_id)
+    bans = _mask_ban_rows(await db.get_stream_bans(stream_id), token.user_id, viewer_role)
     return web.json_response({"bans": bans})
 
 
@@ -4074,12 +4083,48 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
         if not token.has_scope("admin") and not token.has_scope("*"):
             return web.json_response({"error": "Not authorized"}, status=403)
 
-    success = await db.remove_stream_ban(stream_id, user_id)
+    # Without staff rights only the named ban goes: a ban made from an anonymous
+    # post must not react to an account id the caller guessed.
+    caller_role = await _chat_role_of_user(token.user_id)
+    success = await db.remove_stream_ban(
+        stream_id, user_id, include_anonymous=caller_role in _CHAT_STAFF_ROLES)
     if success:
         logger.info(f"User {user_id} unbanned from stream {stream['name']} by user {token.user_id}")
         return web.json_response({"success": True, "message": "User unbanned"})
 
     return web.json_response({"error": "Ban not found"}, status=404)
+
+
+async def http_remove_stream_ban_by_id(request: web.Request) -> web.Response:
+    """Remove a ban from stream chat by the id of the ban (stream owner only).
+
+    This is the way to lift a ban made from an anonymous post: the ban list
+    shows such a ban without the account, and only its ban id.
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        stream_id = int(request.match_info.get("id"))
+        ban_id = int(request.match_info.get("ban_id"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+
+    stream = await db.get_user_stream(stream_id)
+    if not stream:
+        return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Only owner or admin can unban
+    if stream["user_id"] != token.user_id:
+        if not token.has_scope("admin") and not token.has_scope("*"):
+            return web.json_response({"error": "Not authorized"}, status=403)
+
+    removed = await db.remove_stream_ban_by_id(stream_id, ban_id)
+    if not removed:
+        return web.json_response({"error": "Ban not found"}, status=404)
+    logger.info(f"Ban {ban_id} removed from stream {stream['name']} by user {token.user_id}")
+    return web.json_response({"success": True, "message": "User unbanned"})
 
 
 async def http_get_public_streams(request: web.Request) -> web.Response:
@@ -4740,11 +4785,14 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
 
 
 def _sanitize_relay_stderr(stderr_text: str) -> str:
-    """Redact third-party stream keys from ffmpeg relay stderr output.
+    """Redact the stream key from rtmp:// and rtmps:// URLs in ffmpeg relay stderr.
 
-    ffmpeg stderr may contain the full target URL (e.g. rtmp://live.twitch.tv/app/sk_XXXX).
-    The existing SensitiveDataFilter only catches our own key prefixes (live_, pub_, rtmp_).
-    This strips everything after the last '/' in rtmp:// or rtmps:// URLs.
+    ffmpeg stderr may contain the full target URL (e.g. rtmp://host/app/<key>),
+    and the key belongs to the destination platform. This keeps the URL up to
+    its last '/' and replaces the final segment, so the key never reaches the
+    database or the log. It is applied before the text is stored or logged;
+    the log filter (logger.SENSITIVE_PATTERNS) is a second line of defence for
+    the formats it recognises and does not replace this step.
     """
     return re.sub(r'(rtmps?://[^\s/]+(?:/[^\s/]+)*/)([^\s"\']+)', r'\1[KEY_REDACTED]', stderr_text)
 
@@ -5982,6 +6030,64 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
         return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
 
 
+# Server-side record of WebRTC sessions opened through the WHIP/WHEP proxies:
+# session_id -> (kind "whip"|"whep", stream_id, MediaMTX path, created time).
+# The session proxy decides how to route and what to authorise from this record,
+# never from anything the client puts in the URL. In-memory only: after a portal
+# restart, sessions opened earlier are unknown and are refused (MediaMTX expires
+# them on its own).
+_webrtc_sessions: dict[str, tuple[str, int, str, float]] = {}
+_WEBRTC_SESSION_MAX = 4096
+_WEBRTC_SESSION_TTL = 7 * 24 * 3600
+# Per stream and kind. Playback sessions need only a playback key and no login,
+# so a viewer must not be able to push a publisher's record out of the table:
+# viewers are capped per stream, and under global pressure playback records go
+# before publishing records.
+_WEBRTC_SESSION_MAX_PER_STREAM = {"whep": 64, "whip": 16}
+
+
+def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_path: str) -> None:
+    """Record a session opened via the proxy; prune expired and excess entries."""
+    if not session_id:
+        return
+    now = monotonic()
+    for sid in [k for k, v in _webrtc_sessions.items() if now - v[3] > _WEBRTC_SESSION_TTL]:
+        del _webrtc_sessions[sid]
+    # Per-stream cap: drop that stream's oldest records of the same kind
+    same = [k for k, v in _webrtc_sessions.items() if v[0] == kind and v[1] == stream_id and k != session_id]
+    for sid in same[:max(0, len(same) - _WEBRTC_SESSION_MAX_PER_STREAM.get(kind, 16) + 1)]:
+        del _webrtc_sessions[sid]
+    # Global cap: oldest playback record first, a publishing record only if none is left
+    while len(_webrtc_sessions) >= _WEBRTC_SESSION_MAX and session_id not in _webrtc_sessions:
+        victim = next((k for k, v in _webrtc_sessions.items() if v[0] == "whep"), None)
+        if victim is None:
+            victim = next(iter(_webrtc_sessions))
+        del _webrtc_sessions[victim]
+    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now)
+
+
+async def _authorize_webrtc_session(key: str, session_id: str) -> tuple[tuple | None, str, int]:
+    """Authorise a PATCH/DELETE on a WebRTC session.
+
+    Returns (record, error, http_status). A playback (WHEP) session needs any
+    valid stream key for its stream; a publishing (WHIP) session needs the
+    publish key, so a playback key cannot alter or end a publisher's session.
+    """
+    stream, error = await _validate_stream_access(key)
+    if error:
+        return None, error, 403
+    rec = _webrtc_sessions.get(session_id)
+    if not rec or rec[1] != stream["id"]:
+        return None, "Unknown session", 404
+    if rec[0] == "whip":
+        _, perr = await _validate_stream_access(key, require_publish=True)
+        if perr:
+            # Same answer as for an unknown session: a playback key must not be
+            # able to tell which session id is the publisher's.
+            return None, "Unknown session", 404
+    return rec, "", 200
+
+
 async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
     """WebRTC WHEP endpoint for playback through port 443.
 
@@ -6030,6 +6136,7 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                     if location:
                         # Extract session ID from location
                         session_id = location.split("/")[-1]
+                        _webrtc_session_remember(session_id, "whep", stream["id"], private_key)
                         # Use the same key type that was used to access
                         location = f"/api/stream/{key}/webrtc/session/{session_id}"
 
@@ -6106,6 +6213,7 @@ async def http_stream_webrtc_whip(request: web.Request) -> web.Response:
                     location = resp.headers.get("Location", "")
                     if location:
                         session_id = location.split("/")[-1]
+                        _webrtc_session_remember(session_id, "whip", stream["id"], full_stream_key)
                         location = f"/api/stream/{stream_key}/webrtc/session/{session_id}"
 
                     return web.Response(
@@ -6135,14 +6243,18 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
     """Proxy WebRTC session management (ICE candidates, etc.).
 
     Route: PATCH/DELETE /api/stream/{stream_key}/webrtc/session/{session_id}
+
+    The session is routed to MediaMTX's whip or whep endpoint according to how
+    it was opened, and a publishing session requires the publish key.
     """
     stream_key = request.match_info.get("stream_key", "")
     session_id = request.match_info.get("session_id", "")
 
-    # Validate stream access
-    stream, error = await _validate_stream_access(stream_key)
+    # Authorise against the session's recorded type before anything else
+    rec, error, status = await _authorize_webrtc_session(stream_key, session_id)
     if error:
-        return web.json_response({"error": error}, status=403)
+        return web.json_response({"error": error}, status=status)
+    kind, _stream_id, mtx_path, _created = rec
 
     # Get MediaMTX configuration
     mtx_config = await _get_mediamtx_config()
@@ -6151,13 +6263,9 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
 
     webrtc_port = mtx_config.get("webrtc_port", 8889)
 
-    # The stream path in MediaMTX is the stream key
-    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
-
-    # Determine the correct MediaMTX endpoint based on request method
     method = request.method
     # WebRTC uses plain HTTP internally (localhost only)
-    url = f"http://127.0.0.1:{webrtc_port}/{full_stream_key}/whep/{session_id}"
+    url = f"http://127.0.0.1:{webrtc_port}/{mtx_path}/{kind}/{session_id}"
 
     try:
         body = await request.read()
@@ -6172,6 +6280,8 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 content = await resp.read()
+                if method == "DELETE" and resp.status < 300:
+                    _webrtc_sessions.pop(session_id, None)
                 return web.Response(
                     body=content,
                     status=resp.status,
@@ -12445,6 +12555,15 @@ def _format_poll_for_client(poll: dict, user_id: int = None) -> dict:
     return result
 
 
+async def _anonymous_poll_creator(poll: dict):
+    """The poll creator's user id if the poll was posted anonymously, else None."""
+    msg_id = poll.get("message_id")
+    msg = await db.get_chat_message(msg_id) if msg_id else None
+    if msg and msg.get("anonymous"):
+        return poll.get("user_id")
+    return None
+
+
 async def _parse_mentions(text: str) -> set[int]:
     """Parse @mentions from message text, return set of mentioned user IDs."""
     pattern = r'@([\w\- ]+?)(?=\s*[@\n]|[.,!?;:\)\]}>]|\s*$)'
@@ -13382,6 +13501,160 @@ async def http_link_preview(request: web.Request) -> web.Response:
         return web.json_response({"error": "Failed to fetch preview"}, status=502)
 
 
+# Chat roles that may see who wrote an anonymous message (moderation needs it).
+_CHAT_STAFF_ROLES = frozenset(("moderator", "admin", "superadmin"))
+
+# Per-process key for the opaque handle that lets a client tell anonymous
+# participants apart in presence events without learning their account id.
+_ANON_REF_KEY = secrets.token_bytes(16)
+
+
+def _anon_ref(channel, user_id) -> str:
+    """Opaque, per-process handle for an anonymous participant in one channel.
+    The channel is part of the input so the same person cannot be matched
+    across channels by comparing handles."""
+    data = ("%s:%s" % (channel, user_id)).encode()
+    return hmac.new(_ANON_REF_KEY, data, hashlib.sha256).hexdigest()[:12]
+
+
+def _viewer_sees_identity(viewer_id, viewer_role, subject_id) -> bool:
+    """True if this viewer may receive the real account id of an anonymous
+    participant: the participant themself, moderators and admins. Nobody else
+    does, including the owner of a stream whose chat this is."""
+    return viewer_id == subject_id or (viewer_role or "") in _CHAT_STAFF_ROLES
+
+
+def _mask_anonymous_author(m: dict, viewer_id, viewer_role=None) -> None:
+    """Strip the author's identity from an anonymous chat message payload.
+
+    Policy: ordinary members never receive the real user id or role of an
+    anonymous message's author (the id maps back to a username through other
+    APIs; a role such as admin narrows the author down). The author and staff
+    (moderator, admin, superadmin) keep the id and role so edit, delete and
+    moderation actions still work; they still see the display name
+    "Anonymous". The nickname is never sent for an anonymous message.
+    """
+    if not m.get("anonymous"):
+        return
+    m["nickname"] = None
+    m.pop("author_nickname", None)
+    if _viewer_sees_identity(viewer_id, viewer_role, m.get("user_id")):
+        return
+    m["user_id"] = None
+    m["role"] = None
+    m.pop("author_role", None)
+    poll = m.get("poll")
+    if isinstance(poll, dict):
+        m["poll"] = {**poll, "user_id": None}
+
+
+def _mask_ban_rows(bans, viewer_id, viewer_role=None) -> list:
+    """Copy of a stream ban list for one viewer. A ban recorded from an
+    anonymous post names no one unless the viewer is entitled to the author's
+    identity (staff, or the banned account itself); other viewers get
+    user_id None and the name "Anonymous" and lift it by the ban id."""
+    out = []
+    for b in bans:
+        b = dict(b)
+        if b.get("anonymous") and not _viewer_sees_identity(viewer_id, viewer_role, b.get("user_id")):
+            b["user_id"] = None
+            b["banned_username"] = "Anonymous"
+        out.append(b)
+    return out
+
+
+# Only presence events carry the handle, so it can be matched with an entry of
+# the online list. Moderation notices (ban, timeout, ...) never do: they can
+# be provoked by a caller who names an account id, and the handle would then
+# map that account to its entry in the list.
+_ANON_REF_EVENT_TYPES = frozenset({"user_joined", "user_left", "user_status_changed",
+                                   "user_anonymous_changed"})
+
+
+def _hide_subject(payload: dict, subject_id, channel=None) -> dict:
+    """Copy of a live payload about an anonymous participant with the real id,
+    role, nickname, status text and last-seen time removed and a fine-grained
+    status reduced to "online". Presence events get an opaque handle instead
+    so several anonymous participants stay distinguishable."""
+    p = dict(payload)
+    if "status" in p:
+        p["status"] = "online"
+    for key in ("user_id", "role", "nickname", "deleted_by", "status_message", "last_seen_at"):
+        if key in p:
+            p[key] = None
+    poll = p.get("poll")
+    if isinstance(poll, dict):
+        p["poll"] = {**poll, "user_id": None}
+    if p.get("type") in _ANON_REF_EVENT_TYPES:
+        p["anon_ref"] = _anon_ref(channel, subject_id)
+    return p
+
+
+async def _mask_reactor_ids(reactions_by_message: dict, viewer_id, viewer_role) -> None:
+    """Drop the id of every reactor who is currently in anonymous mode from the
+    reactions[].user_ids lists of one viewer's history payload. Counts are not
+    touched; the viewer's own id and staff viewers' lists are left as they are."""
+    if (viewer_role or "") in _CHAT_STAFF_ROLES:
+        return
+    ids = {uid for reactions in reactions_by_message.values()
+           for r in reactions for uid in r.get("user_ids", [])}
+    ids.discard(viewer_id)
+    if not ids:
+        return
+    anonymous = {u["id"] for u in await db.get_users_status(list(ids)) if u.get("chat_anonymous")}
+    if not anonymous:
+        return
+    for reactions in reactions_by_message.values():
+        for r in reactions:
+            r["user_ids"] = [uid for uid in r.get("user_ids", []) if uid not in anonymous]
+
+
+def _chat_users_list(users_info: list, channel: str, viewer_id, viewer_role) -> list:
+    """Online-user entries for one viewer. Anonymous participants appear under
+    the name "Anonymous" with no nickname or avatar; ordinary members get an
+    opaque handle instead of their id and role, and no status text, last-seen
+    time or fine-grained status (those are visible under the real name in
+    other places and would link the entry to an account)."""
+    out = []
+    for u in users_info:
+        avatar = {}
+        if u.get("avatar"):
+            try:
+                avatar = json.loads(u["avatar"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        voice_info = voice_state.get(channel, {}).get(u["id"], {})
+        anon = bool(u.get("chat_anonymous"))
+        entry = {
+            "user_id": u["id"],
+            "username": "Anonymous" if anon else (u.get("nickname") or u["username"]),
+            "nickname": None if anon else u.get("nickname"),
+            "status": u.get("status", "online"),
+            "status_message": u.get("status_message"),
+            "last_seen_at": u.get("last_seen_at"),
+            "role": u.get("role", "user"),
+            "anonymous": anon,
+            "avatar": {} if anon else avatar,
+            "in_voice": bool(voice_info),
+            "voice_muted": voice_info.get("muted", False),
+            "voice_deafened": voice_info.get("deafened", False),
+            "voice_speaking": voice_info.get("speaking", False),
+            "screen_sharing": voice_info.get("screen_sharing", False)
+        }
+        if anon and not _viewer_sees_identity(viewer_id, viewer_role, u["id"]):
+            entry["user_id"] = None
+            entry["role"] = None
+            entry["status"] = "online"
+            entry["status_message"] = None
+            entry["last_seen_at"] = None
+            entry["anon_ref"] = _anon_ref(channel, u["id"])
+        out.append(entry)
+    # Masked entries go last, ordered by their opaque handle, so the position
+    # of an anonymous entry says nothing about the account id.
+    out.sort(key=lambda e: (1, e["anon_ref"]) if e.get("anon_ref") else (0, ""))
+    return out
+
+
 async def http_get_chat_thread(request: web.Request) -> web.Response:
     """Get reply chain for a message (thread view)."""
     token = await authenticate_request(request)
@@ -13399,7 +13672,7 @@ async def http_get_chat_thread(request: web.Request) -> web.Response:
         return web.json_response({"error": "Message not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    user_role = (user.get("role") or "user") if user else "user"
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
     ch_id = root_msg.get("channel_id")
     if ch_id:
         channel = await db.get_chat_channel(ch_id)
@@ -13454,6 +13727,7 @@ async def http_get_chat_thread(request: web.Request) -> web.Response:
             m["username"] = "Anonymous"
         elif ui.get("nickname"):
             m["username"] = ui["nickname"]
+        _mask_anonymous_author(m, token.user_id, user_role)
 
     return web.json_response({"thread": chain})
 
@@ -14050,7 +14324,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "type": "user_left",
                                 "user_id": user_id,
                                 "username": display_name
-                            }, exclude=ws)
+                            }, exclude=ws, anon_subject=user_id if my_state["anonymous"] else None)
                             # Broadcast updated users list to remaining users
                             await broadcast_users_list(current_channel)
 
@@ -14134,6 +14408,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     m["username"] = "Anonymous"
                                 elif ui.get("nickname"):
                                     m["username"] = ui["nickname"]
+                                _mask_anonymous_author(m, user_id, user_role)
 
                             # Enrich reply previews
                             reply_ids = [m["reply_to"] for m in messages if m.get("reply_to")]
@@ -14170,11 +14445,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if messages:
                             msg_ids = [m["id"] for m in messages]
                             all_reactions = await db.get_bulk_reactions(msg_ids)
+                            await _mask_reactor_ids(all_reactions, user_id, user_role)
                             all_polls = await db.get_polls_by_message_ids(msg_ids)
                             for m in messages:
                                 m["reactions"] = all_reactions.get(m["id"], [])
                                 if m["id"] in all_polls:
                                     m["poll"] = _format_poll_for_client(all_polls[m["id"]], user_id)
+                                    if m.get("anonymous") and not _viewer_sees_identity(
+                                            user_id, user_role, all_polls[m["id"]].get("user_id")):
+                                        m["poll"]["user_id"] = None
 
                         await ws.send_json({
                             "type": "history",
@@ -14192,6 +14471,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         p["username"] = "Anonymous"
                                     elif p_ui.get("nickname"):
                                         p["username"] = p_ui["nickname"]
+                                    _mask_anonymous_author(p, user_id, user_role)
                                 await ws.send_json({
                                     "type": "pinned_messages",
                                     "messages": pinned
@@ -14205,30 +14485,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # Send user list with status info
                         user_ids = [entry[1] for entry in chat_rooms[current_channel]]
                         users_info = await db.get_users_status(list(set(user_ids)))
-                        users_list = []
-                        for u in users_info:
-                            avatar = {}
-                            if u.get("avatar"):
-                                try:
-                                    avatar = json.loads(u["avatar"])
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-                            voice_info = voice_state.get(current_channel, {}).get(u["id"], {})
-                            users_list.append({
-                                "user_id": u["id"],
-                                "username": "Anonymous" if u.get("chat_anonymous") else (u.get("nickname") or u["username"]),
-                                "nickname": u.get("nickname"),
-                                "status": u.get("status", "online"),
-                                "status_message": u.get("status_message"),
-                                "role": u.get("role", "user"),
-                                "anonymous": bool(u.get("chat_anonymous")),
-                                "avatar": avatar,
-                                "in_voice": bool(voice_info),
-                                "voice_muted": voice_info.get("muted", False),
-                                "voice_deafened": voice_info.get("deafened", False),
-                                "voice_speaking": voice_info.get("speaking", False),
-                                "screen_sharing": voice_info.get("screen_sharing", False)
-                            })
+                        users_list = _chat_users_list(users_info, current_channel, user_id, user_role)
                         await ws.send_json({
                             "type": "users",
                             "users": users_list
@@ -14242,7 +14499,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "username": display_name,
                             "role": user_role,
                             "anonymous": my_state["anonymous"]
-                        }, exclude=ws)
+                        }, exclude=ws, anon_subject=user_id if my_state["anonymous"] else None)
                         # Broadcast updated users list to all in channel
                         await broadcast_users_list(current_channel)
 
@@ -14266,7 +14523,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                                     "username": display_name,
                                                     "status": "online",
                                                     "status_message": u_status.get("status_message")
-                                                })
+                                                }, anon_subject=user_id if my_state["anonymous"] else None)
                                                 break
                             except Exception as e:
                                 logger.debug(f"Auto-online status update failed: {e}")
@@ -14360,11 +14617,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         await broadcast_to_channel(current_channel, {
                                             "type": "user_timed_out",
                                             "user_id": user_id,
-                                            "username": my_state.get("nickname") or username,
+                                            "username": "Anonymous" if my_state["anonymous"] else (my_state.get("nickname") or username),
                                             "duration": automod_result.get("duration", 300),
                                             "reason": f"AutoMod: {automod_result['rule_name']}",
                                             "moderator": "AutoMod"
-                                        })
+                                        }, anon_subject=user_id if my_state["anonymous"] else None)
                                     await ws.send_json({
                                         "type": "error",
                                         "error_code": "automod",
@@ -14378,10 +14635,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         await broadcast_to_channel(current_channel, {
                                             "type": "user_muted",
                                             "user_id": user_id,
-                                            "username": my_state.get("nickname") or username,
+                                            "username": "Anonymous" if my_state["anonymous"] else (my_state.get("nickname") or username),
                                             "reason": f"AutoMod: {automod_result['rule_name']}",
                                             "moderator": "AutoMod"
-                                        })
+                                        }, anon_subject=user_id if my_state["anonymous"] else None)
                                     await ws.send_json({
                                         "type": "error",
                                         "error_code": "automod",
@@ -14493,7 +14750,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             broadcast_payload["attachment_name"] = attachment_name
                             broadcast_payload["attachment_size"] = attachment_size
                             broadcast_payload["attachment_type"] = attachment_type
-                        await broadcast_to_channel(current_channel, broadcast_payload)
+                        await broadcast_to_channel(current_channel, broadcast_payload,
+                                                   anon_subject=user_id if my_state["anonymous"] else None)
 
                         # Fire webhook event
                         asyncio.create_task(fire_webhook_event("message.created", {
@@ -14567,7 +14825,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "type": "message_deleted",
                                 "message_id": message_id,
                                 "deleted_by": user_id
-                            })
+                            }, anon_subject=del_msg["user_id"] if del_msg.get("anonymous") else None)
                             asyncio.create_task(fire_webhook_event("message.deleted", {
                                 "message_id": message_id, "channel": current_channel,
                                 "deleted_by": user_id
@@ -14605,7 +14863,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "user_id": user_id,
                             "added": added,
                             "count": count
-                        })
+                        }, anon_subject=user_id if my_state["anonymous"] else None)
 
                     elif msg_type == "edit_message":
                         if not current_channel:
@@ -14737,7 +14995,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
                         display_name = my_state.get("nickname") or username
-                        target_name = target_user.get("nickname") or target_user["username"]
+                        target_anon = bool(target_user.get("chat_anonymous"))
+                        target_name = "Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])
                         await broadcast_to_channel(current_channel, {
                             "type": "user_timed_out",
                             "user_id": target_user_id,
@@ -14745,7 +15004,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "duration": duration,
                             "reason": reason,
                             "moderator": display_name
-                        })
+                        }, anon_subject=target_user_id if target_anon else None)
                         await send_notification(target_user_id, "timeout",
                             f"You were timed out in #{current_channel}",
                             f"Duration: {duration}s" + (f" — {reason}" if reason else ""),
@@ -14783,14 +15042,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         await db.create_chat_timeout(target_user_id, user_id, "mute", channel["id"], reason)
                         display_name = my_state.get("nickname") or username
-                        target_name = target_user.get("nickname") or target_user["username"]
+                        target_anon = bool(target_user.get("chat_anonymous"))
+                        target_name = "Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])
                         await broadcast_to_channel(current_channel, {
                             "type": "user_muted",
                             "user_id": target_user_id,
                             "username": target_name,
                             "reason": reason,
                             "moderator": display_name
-                        })
+                        }, anon_subject=target_user_id if target_anon else None)
                         await send_notification(target_user_id, "mute",
                             f"You were muted in #{current_channel}",
                             reason or "No reason given",
@@ -14821,14 +15081,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         removed = await db.remove_chat_timeout(target_user_id, channel["id"])
                         if removed:
                             target_user = await db.get_user_by_id(target_user_id)
-                            target_name = (target_user.get("nickname") or target_user["username"]) if target_user else "Unknown"
+                            target_anon = bool(target_user.get("chat_anonymous")) if target_user else False
+                            target_name = ("Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])) if target_user else "Unknown"
                             display_name = my_state.get("nickname") or username
                             await broadcast_to_channel(current_channel, {
                                 "type": "user_unmuted",
                                 "user_id": target_user_id,
                                 "username": target_name,
                                 "moderator": display_name
-                            })
+                            }, anon_subject=target_user_id if target_anon else None)
                             await audit_log("user_unmute", user_id, username,
                                             target_id=target_user_id, target_type="user",
                                             target_name=target_name, channel_name=current_channel)
@@ -14948,7 +15209,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "user_id": user_id,
                                 "username": display_name,
                                 "created_at": datetime.now(timezone.utc).isoformat()
-                            })
+                            }, anon_subject=user_id if my_state["anonymous"] else None)
 
                     elif msg_type == "vote_poll":
                         poll_id = data.get("poll_id")
@@ -14997,7 +15258,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 await broadcast_to_channel(ch_name, {
                                     "type": "poll_updated",
                                     "poll": updated_poll
-                                })
+                                }, anon_subject=await _anonymous_poll_creator(poll))
                         else:
                             await ws.send_json({"type": "error", "message": "Already voted (multi-vote not allowed)"})
 
@@ -15031,21 +15292,32 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await broadcast_to_channel(ch["name"], {
                                 "type": "poll_closed",
                                 "poll": updated_poll
-                            })
+                            }, anon_subject=await _anonymous_poll_creator(poll))
 
                     elif msg_type == "ban":
-                        # Stream owner can ban a user from chat
+                        # Stream owner can ban a user from chat, named either by
+                        # account id or by the id of one of their messages (the
+                        # server then looks the author up, so the client never
+                        # needs the id of an anonymous author).
                         if not current_channel:
                             continue
 
+                        by_message = data.get("user_id") is None and data.get("message_id") is not None
+                        target_user_id = None
+                        ban_message_id = None
+                        ban_msg_anonymous = False
                         try:
-                            target_user_id = int(data.get("user_id"))
+                            if by_message:
+                                ban_message_id = int(data.get("message_id"))
+                            else:
+                                target_user_id = int(data.get("user_id"))
                         except (TypeError, ValueError):
-                            await ws.send_json({"type": "error", "message": "Invalid user_id"})
+                            await ws.send_json({"type": "error",
+                                                "message": "Invalid message_id" if by_message else "Invalid user_id"})
                             continue
                         reason = data.get("reason", "")
 
-                        if not target_user_id:
+                        if not by_message and not target_user_id:
                             await ws.send_json({"type": "error", "message": "user_id required"})
                             continue
 
@@ -15066,6 +15338,19 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
                             continue
 
+                        if by_message:
+                            # Only messages of this stream's chat resolve, and
+                            # only after the authorisation above.
+                            ban_msg = await db.get_chat_message(ban_message_id)
+                            if (not ban_msg or ban_msg.get("channel_id") != channel["id"]
+                                    or not ban_msg.get("user_id")):
+                                await ws.send_json({"type": "error", "message": "Message not found"})
+                                continue
+                            target_user_id = ban_msg["user_id"]
+                            # The message stays anonymous even if its author has
+                            # switched anonymous mode off since.
+                            ban_msg_anonymous = bool(ban_msg.get("anonymous"))
+
                         # Can't ban yourself or the stream owner
                         if target_user_id == user_id:
                             await ws.send_json({"type": "error", "message": "Cannot ban yourself"})
@@ -15074,33 +15359,54 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Cannot ban stream owner"})
                             continue
 
-                        # Create the ban
+                        # Create the ban. A ban made from an anonymous post is
+                        # its own record (one per message) that is never
+                        # refused because the author is already banned, so the
+                        # answer does not show whether that is the case.
                         ban_id = await db.create_stream_ban(
                             stream_id=stream["id"],
                             user_id=target_user_id,
                             banned_by=user_id,
-                            reason=reason
+                            reason=reason,
+                            anonymous=ban_msg_anonymous,
+                            message_id=ban_message_id if ban_msg_anonymous else None
                         )
 
                         if ban_id:
                             # Get banned user info
                             banned_user = await db.get_user_by_id(target_user_id)
+                            # Only a ban made from an anonymous post is masked.
+                            # A ban by account id is answered and announced by
+                            # name whatever the target's current mode is: the
+                            # caller supplied the id, and a different answer
+                            # for anonymous accounts would let them probe it.
+                            # The exception is a staff caller: staff are shown
+                            # the id on anonymous posts and can ban from them by
+                            # id, and their answer is no probe because they
+                            # already see the identity.
+                            banned_anon = ban_msg_anonymous or (
+                                user_role in _CHAT_STAFF_ROLES
+                                and bool(banned_user and banned_user.get("chat_anonymous")))
                             banned_username = banned_user["username"] if banned_user else f"User {target_user_id}"
 
                             # Notify the channel
                             await broadcast_to_channel(current_channel, {
                                 "type": "user_banned",
                                 "user_id": target_user_id,
-                                "username": banned_username,
+                                "username": "Anonymous" if banned_anon else banned_username,
                                 "banned_by": username,
                                 "reason": reason
-                            })
+                            }, anon_subject=target_user_id if banned_anon else None)
 
-                            # Send confirmation to the banner
+                            # Send confirmation to the banner; an anonymous
+                            # target stays anonymous unless the banner is entitled
+                            # to the identity.
+                            hide_target = banned_anon and not _viewer_sees_identity(
+                                user_id, user_role, target_user_id)
                             await ws.send_json({
                                 "type": "ban_success",
-                                "user_id": target_user_id,
-                                "username": banned_username
+                                "user_id": None if hide_target else target_user_id,
+                                "username": "Anonymous" if hide_target else banned_username
                             })
 
                             logger.info(f"User {banned_username} banned from stream {stream['name']} by {username}")
@@ -15113,16 +15419,23 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "User may already be banned"})
 
                     elif msg_type == "unban":
-                        # Stream owner can unban a user
+                        # Stream owner can unban a user, named either by account
+                        # id or by the id of the ban (the only way to lift a ban
+                        # made from an anonymous post without knowing the author).
                         if not current_channel:
                             continue
 
+                        by_ban_id = data.get("user_id") is None and data.get("ban_id") is not None
                         try:
-                            target_user_id = int(data.get("user_id"))
+                            if by_ban_id:
+                                target_ban_id = int(data.get("ban_id"))
+                            else:
+                                target_user_id = int(data.get("user_id"))
                         except (TypeError, ValueError):
-                            await ws.send_json({"type": "error", "message": "Invalid user_id"})
+                            await ws.send_json({"type": "error",
+                                                "message": "Invalid ban_id" if by_ban_id else "Invalid user_id"})
                             continue
-                        if not target_user_id:
+                        if not by_ban_id and not target_user_id:
                             await ws.send_json({"type": "error", "message": "user_id required"})
                             continue
 
@@ -15142,15 +15455,30 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
                             continue
 
-                        success = await db.remove_stream_ban(stream["id"], target_user_id)
+                        removed_anonymous = False
+                        if by_ban_id:
+                            removed = await db.remove_stream_ban_by_id(stream["id"], target_ban_id)
+                            success = removed is not None
+                            if success:
+                                target_user_id = removed["user_id"]
+                                removed_anonymous = bool(removed.get("anonymous"))
+                        else:
+                            # Without staff rights only the named ban goes: a ban
+                            # made from an anonymous post must not react to an
+                            # account id the caller guessed.
+                            success = await db.remove_stream_ban(
+                                stream["id"], target_user_id,
+                                include_anonymous=user_role in _CHAT_STAFF_ROLES)
                         if success:
                             banned_user = await db.get_user_by_id(target_user_id)
                             banned_username = banned_user["username"] if banned_user else f"User {target_user_id}"
+                            hide_target = removed_anonymous and not _viewer_sees_identity(
+                                user_id, user_role, target_user_id)
 
                             await ws.send_json({
                                 "type": "unban_success",
-                                "user_id": target_user_id,
-                                "username": banned_username
+                                "user_id": None if hide_target else target_user_id,
+                                "username": "Anonymous" if hide_target else banned_username
                             })
                             logger.info(f"User {banned_username} unbanned from stream {stream['name']} by {username}")
                             await audit_log("user_unban", user_id, username,
@@ -15181,7 +15509,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
                             continue
 
-                        bans = await db.get_stream_bans(stream["id"])
+                        bans = _mask_ban_rows(await db.get_stream_bans(stream["id"]),
+                                              user_id, user_role)
                         await ws.send_json({
                             "type": "bans_list",
                             "bans": bans
@@ -15206,6 +15535,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             target_room = current_channel
                         else:
                             await ws.send_json({"type": "error", "message": "Join a channel first"})
+                            continue
+
+                        # Voice payloads carry the real account id of every
+                        # participant, so an anonymous member cannot be in a
+                        # channel voice room (direct messages are between
+                        # people who already know each other).
+                        if my_state["anonymous"] and not target_room.startswith("dm:"):
+                            await ws.send_json({"type": "voice_denied",
+                                                "message": ANON_VOICE_MESSAGE})
                             continue
 
                         # Check not already in voice anywhere
@@ -15294,7 +15632,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue  # Don't relay signals to self
 
                         # Find target in voice state
-                        if voice_room in voice_state and target_user_id in voice_state[voice_room]:
+                        if (voice_room in voice_state and user_id in voice_state[voice_room]
+                                and target_user_id in voice_state[voice_room]):
                             target_ws = voice_state[voice_room][target_user_id]["ws"]
                             try:
                                 if not target_ws.closed:
@@ -15715,7 +16054,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 "type": "user_left",
                 "user_id": user_id,
                 "username": display_name
-            })
+            }, anon_subject=user_id if my_state["anonymous"] else None)
             # Broadcast updated users list to remaining users
             await broadcast_users_list(current_channel)
             # Remove empty rooms
@@ -16189,51 +16528,50 @@ async def broadcast_users_list(channel: str):
         return
     user_ids = [entry[1] for entry in chat_rooms[channel]]
     users_info = await db.get_users_status(list(set(user_ids)))
-    users_list = []
-    for u in users_info:
-        avatar = {}
-        if u.get("avatar"):
-            try:
-                avatar = json.loads(u["avatar"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        voice_info = voice_state.get(channel, {}).get(u["id"], {})
-        users_list.append({
-            "user_id": u["id"],
-            "username": "Anonymous" if u.get("chat_anonymous") else (u.get("nickname") or u["username"]),
-            "nickname": u.get("nickname"),
-            "status": u.get("status", "online"),
-            "status_message": u.get("status_message"),
-            "last_seen_at": u.get("last_seen_at"),
-            "role": u.get("role", "user"),
-            "anonymous": bool(u.get("chat_anonymous")),
-            "avatar": avatar,
-            "in_voice": bool(voice_info),
-            "voice_muted": voice_info.get("muted", False),
-            "voice_deafened": voice_info.get("deafened", False),
-            "voice_speaking": voice_info.get("speaking", False),
-            "screen_sharing": voice_info.get("screen_sharing", False)
-        })
-    await broadcast_to_channel(channel, {
-        "type": "users",
-        "users": users_list
-    })
+    # One list per viewer: anonymous participants are shown without their id
+    # to ordinary members.
+    dead_connections = set()
+    for entry in list(chat_rooms[channel]):
+        ws = entry[0]
+        try:
+            if not ws.closed:
+                await ws.send_json({
+                    "type": "users",
+                    "users": _chat_users_list(users_info, channel, entry[1], entry[3] if len(entry) > 3 else None)
+                })
+            else:
+                dead_connections.add(entry)
+        except (ConnectionError, ConnectionResetError, TypeError):
+            dead_connections.add(entry)
+    chat_rooms[channel] -= dead_connections
 
 
-async def broadcast_to_channel(channel: str, message: dict, exclude=None):
-    """Broadcast a message to all users in a channel."""
+async def broadcast_to_channel(channel: str, message: dict, exclude=None, anon_subject=None):
+    """Broadcast a message to all users in a channel.
+
+    anon_subject is the account id of an anonymous participant the payload is
+    about (author, poster, moderation target). Staff and that participant get
+    the payload as is; everyone else gets a copy without the real id and role.
+    """
     if channel not in chat_rooms:
         return
 
+    hidden = None
     dead_connections = set()
     for entry in chat_rooms[channel]:
         # Handle both old (3-tuple) and new (5-tuple) formats during transition
         ws = entry[0]
         if ws == exclude:
             continue
+        payload = message
+        if anon_subject is not None and not _viewer_sees_identity(
+                entry[1], entry[3] if len(entry) > 3 else None, anon_subject):
+            if hidden is None:
+                hidden = _hide_subject(message, anon_subject, channel)
+            payload = hidden
         try:
             if not ws.closed:
-                await ws.send_json(message)
+                await ws.send_json(payload)
             else:
                 dead_connections.add(entry)
         except (ConnectionError, ConnectionResetError, TypeError):
@@ -16241,6 +16579,34 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None):
 
     # Clean up dead connections
     chat_rooms[channel] -= dead_connections
+
+
+ANON_VOICE_MESSAGE = "Voice chat in a channel is not available in anonymous mode"
+
+
+async def drop_channel_voice(user_id: int) -> None:
+    """Take a user out of every channel voice room and tell them why.
+
+    Used when anonymous mode is switched on: voice payloads carry the real
+    account id, so the member cannot stay in a channel voice room.
+    """
+    for room in list(voice_state.keys()):
+        users = voice_state.get(room)
+        if not users or user_id not in users or room.startswith("dm:"):
+            continue
+        entry = users[user_id]
+        if entry.get("screen_sharing"):
+            await broadcast_to_voice_room(room, {"type": "screen_share_stopped", "user_id": user_id})
+        del users[user_id]
+        try:
+            if not entry["ws"].closed:
+                await entry["ws"].send_json({"type": "voice_denied", "message": ANON_VOICE_MESSAGE})
+        except (ConnectionError, ConnectionResetError, TypeError):
+            pass
+        await broadcast_to_voice_room(room, {"type": "voice_user_left", "user_id": user_id})
+        if not users:
+            voice_state.pop(room, None)
+        await broadcast_users_list(room)
 
 
 async def broadcast_to_voice_room(room: str, message: dict, exclude=None):
@@ -16471,16 +16837,17 @@ async def http_update_user_status(request: web.Request) -> web.Response:
     # Broadcast status change to all chat rooms the user is in
     user = await db.get_user_by_id(token.user_id)
     username = user["username"] if user else "Unknown"
+    is_anon = bool(user.get("chat_anonymous")) if user else False
     for channel, users in chat_rooms.items():
         for entry in users:
             if entry[1] == token.user_id:
                 await broadcast_to_channel(channel, {
                     "type": "user_status_changed",
                     "user_id": token.user_id,
-                    "username": username,
+                    "username": "Anonymous" if is_anon else username,
                     "status": status,
                     "status_message": status_message
-                })
+                }, anon_subject=token.user_id if is_anon else None)
                 break
 
     return web.json_response({
@@ -16519,7 +16886,9 @@ async def http_update_user_nickname(request: web.Request) -> web.Response:
     # Broadcast nickname change to all chat rooms
     user = await db.get_user_by_id(token.user_id)
     username = user["username"] if user else "Unknown"
-    for channel, users in chat_rooms.items():
+    # An anonymous participant's nickname is not shown to anyone; the user
+    # list is refreshed when anonymous mode is switched off.
+    for channel, users in ([] if (user and user.get("chat_anonymous")) else chat_rooms.items()):
         for entry in users:
             if entry[1] == token.user_id:
                 await broadcast_to_channel(channel, {
@@ -16535,11 +16904,30 @@ async def http_update_user_nickname(request: web.Request) -> web.Response:
     })
 
 
+# Rate limiting for the anonymous-mode toggle: user_id -> list of timestamps.
+# Every toggle rebroadcasts the user list of each room the user is in.
+_anonymous_toggle_times: dict[int, list[float]] = {}
+_ANONYMOUS_TOGGLE_LIMIT = 5
+_ANONYMOUS_TOGGLE_WINDOW = 60.0
+
+
 async def http_update_chat_anonymous(request: web.Request) -> web.Response:
     """Update user's chat anonymous mode (hide username)."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+
+    now = monotonic()
+    times = _anonymous_toggle_times.setdefault(token.user_id, [])
+    times[:] = [t for t in times if now - t < _ANONYMOUS_TOGGLE_WINDOW]
+    if len(times) >= _ANONYMOUS_TOGGLE_LIMIT:
+        return web.json_response(
+            {"error": "Too many changes, try again in a minute"}, status=429,
+            headers={"Retry-After": str(int(_ANONYMOUS_TOGGLE_WINDOW))})
+    times.append(now)
+    for uid in [k for k, v in _anonymous_toggle_times.items()
+                if not v or now - v[-1] >= _ANONYMOUS_TOGGLE_WINDOW]:
+        del _anonymous_toggle_times[uid]
 
     try:
         data = await request.json()
@@ -16553,21 +16941,26 @@ async def http_update_chat_anonymous(request: web.Request) -> web.Response:
     # Update live WS handler state immediately
     if token.user_id in chat_user_state:
         chat_user_state[token.user_id]["anonymous"] = anonymous
+    if anonymous:
+        await drop_channel_voice(token.user_id)
 
     # Broadcast change to all chat rooms
     user = await db.get_user_by_id(token.user_id)
     username = user["username"] if user else "Unknown"
     nickname = chat_user_state.get(token.user_id, {}).get("nickname")
     display_name = "Anonymous" if anonymous else (nickname or username)
-    for channel, users in chat_rooms.items():
-        for entry in users:
+    for channel, users in list(chat_rooms.items()):
+        for entry in list(users):
             if entry[1] == token.user_id:
                 await broadcast_to_channel(channel, {
                     "type": "user_anonymous_changed",
                     "user_id": token.user_id,
                     "username": display_name,
                     "anonymous": anonymous
-                })
+                }, anon_subject=token.user_id if anonymous else None)
+                # Replace every viewer's user list so the entry changes
+                # between the real identity and "Anonymous" in one step.
+                await broadcast_users_list(channel)
                 break
 
     return web.json_response({
@@ -16614,7 +17007,8 @@ async def http_update_avatar(request: web.Request) -> web.Response:
     # Broadcast avatar change to all chat rooms
     user = await db.get_user_by_id(token.user_id)
     username = user["username"] if user else "Unknown"
-    for channel, users in chat_rooms.items():
+    # An anonymous participant's avatar is not shown to anyone.
+    for channel, users in ([] if (user and user.get("chat_anonymous")) else chat_rooms.items()):
         for entry in users:
             if entry[1] == token.user_id:
                 await broadcast_to_channel(channel, {
@@ -17497,6 +17891,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/streams/{id}/bans", http_get_stream_bans)
     app.router.add_post("/api/streams/{id}/bans", http_create_stream_ban)
     app.router.add_delete("/api/streams/{id}/bans/{user_id}", http_remove_stream_ban)
+    app.router.add_delete("/api/streams/{id}/bans/id/{ban_id}", http_remove_stream_ban_by_id)
     # Stream relay destinations
     app.router.add_get("/api/streams/{id}/relays", http_list_relay_destinations)
     app.router.add_post("/api/streams/{id}/relays", http_create_relay_destination)

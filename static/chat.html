@@ -3045,7 +3045,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=43"></script>
-    <script src="/static/js/voice.js?v=5"></script>
+    <script src="/static/js/voice.js?v=6"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -3656,8 +3656,9 @@
                     updateUserList(data.users);
                     break;
                 case 'user_joined':
-                    onlineUsers.set(data.user_id, {
+                    onlineUsers.set(userKey(data), {
                         user_id: data.user_id,
+                        anon_ref: data.anon_ref,
                         username: data.username,
                         nickname: null,
                         role: data.role || 'user',
@@ -3668,41 +3669,41 @@
                     showChannelNotification(`${data.username} joined`);
                     break;
                 case 'user_left':
-                    onlineUsers.delete(data.user_id || data.username);
+                    onlineUsers.delete(userKey(data) ?? data.username);
                     renderUserList();
                     showChannelNotification(`${data.username} left`);
                     break;
                 case 'user_status_changed':
-                    if (onlineUsers.has(data.user_id)) {
-                        const user = onlineUsers.get(data.user_id);
+                    if (onlineUsers.has(userKey(data))) {
+                        const user = onlineUsers.get(userKey(data));
                         user.status = data.status;
                         user.status_message = data.status_message;
                         renderUserList();
                     }
                     // Keep own status indicator in sync (e.g. auto-online on reconnect)
-                    if (data.user_id === currentUser?.id) {
+                    if (data.user_id != null && data.user_id === currentUser?.id) {
                         if (currentUser) currentUser.status = data.status;
                         updateMyStatusDisplay(data.status);
                     }
                     break;
                 case 'user_nickname_changed':
-                    if (onlineUsers.has(data.user_id)) {
-                        const user = onlineUsers.get(data.user_id);
+                    if (onlineUsers.has(userKey(data))) {
+                        const user = onlineUsers.get(userKey(data));
                         user.nickname = data.nickname;
                         renderUserList();
                     }
                     break;
                 case 'user_anonymous_changed':
-                    if (onlineUsers.has(data.user_id)) {
-                        const user = onlineUsers.get(data.user_id);
+                    if (onlineUsers.has(userKey(data))) {
+                        const user = onlineUsers.get(userKey(data));
                         user.username = data.username;
                         user.anonymous = data.anonymous;
                         renderUserList();
                     }
                     break;
                 case 'user_avatar_changed':
-                    if (onlineUsers.has(data.user_id)) {
-                        const user = onlineUsers.get(data.user_id);
+                    if (onlineUsers.has(userKey(data))) {
+                        const user = onlineUsers.get(userKey(data));
                         user.avatar = data.avatar;
                         renderUserList();
                     }
@@ -4060,8 +4061,15 @@
         function updateUserList(users) {
             // users is now an array of {user_id, username, nickname, status, status_message}
             onlineUsers = new Map();
-            users.forEach(u => onlineUsers.set(u.user_id, u));
+            users.forEach(u => onlineUsers.set(userKey(u), u));
             renderUserList();
+        }
+
+        // Key of a user-list entry. An anonymous participant has no user_id for
+        // ordinary members, only an opaque anon_ref.
+        function userKey(u) {
+            if (u.user_id != null) return u.user_id;
+            return u.anon_ref ? 'anon:' + u.anon_ref : null;
         }
 
         function renderUserList() {
@@ -4083,12 +4091,12 @@
 
             // Primary display: nickname if exists, otherwise username (unless anonymous)
             list.innerHTML = users.map(user => {
-                const displayName = user.nickname || user.username;
+                const displayName = user.anonymous ? 'Anonymous' : (user.nickname || user.username);
                 const showUsername = user.nickname && !user.anonymous;
                 const voiceClass = user.in_voice ? (user.voice_speaking ? 'in-voice speaking' : 'in-voice') : '';
                 const voiceIcons = user.in_voice ?
                     `<span class="user-voice-indicator">${user.voice_muted ? '🔇' : '🎙️'}${user.voice_deafened ? '🔈' : ''}</span>` : '';
-                const dmBtn = user.user_id !== currentUser?.id ? `<span class="dm-icon-btn" onclick="event.stopPropagation(); openDmWithUser(${user.user_id})" title="Direct Message">DM</span>` : '';
+                const dmBtn = (user.user_id != null && user.user_id !== currentUser?.id) ? `<span class="dm-icon-btn" onclick="event.stopPropagation(); openDmWithUser(${user.user_id})" title="Direct Message">DM</span>` : '';
                 return `
                 <div class="user-item ${voiceClass}" title="${user.status_message ? escapeHtml(user.status_message) : getStatusLabel(user.status, user.last_seen_at)}"
                      onclick="insertMention('${escapeHtml(user.nickname || user.username)}')" style="cursor: pointer;">
@@ -6180,6 +6188,7 @@
                 // Try to find user from online list first
                 let userId = null;
                 for (const [uid, u] of onlineUsers) {
+                    if (u.anonymous || u.user_id == null) continue;
                     if (u.username === username || u.nickname === username) { userId = uid; break; }
                 }
                 if (!userId) {

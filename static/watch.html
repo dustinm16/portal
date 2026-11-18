@@ -791,7 +791,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=43"></script>
-    <script src="/static/js/voice.js?v=5"></script>
+    <script src="/static/js/voice.js?v=6"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -1355,9 +1355,14 @@
                 currentUser.role === 'superadmin'
             );
 
-            const showBanBtn = canModerate && currentUser &&
+            const showBanBtn = canModerate && currentUser && !msg.anonymous &&
+                               msg.user_id != null &&
                                msg.user_id !== currentUser.id &&
                                msg.user_id !== streamData.user_id;
+            // The author of an anonymous message is not named to the owner:
+            // the ban is requested by message id and the server resolves it.
+            const showBanByMessage = canModerate && currentUser &&
+                                     msg.anonymous && msg.id != null && msg.user_id !== currentUser.id;
 
             const roleBadge = msg.role && msg.role !== 'user'
                 ? `<span class="mod-badge">${msg.role}</span>`
@@ -1365,7 +1370,9 @@
 
             const banBtn = showBanBtn
                 ? `<button class="chat-mod-btn" onclick="banUser(${msg.user_id}, '${escapeHtml(displayName)}')" title="Ban user">Ban</button>`
-                : '';
+                : (showBanByMessage
+                    ? `<button class="chat-mod-btn" onclick="banMessageAuthor(${Number(msg.id)}, '${escapeHtml(displayName)}')" title="Ban the author of this message">Ban</button>`
+                    : '');
 
             // Reply preview
             let replyHtml = '';
@@ -1489,12 +1496,34 @@
             }));
         }
 
+        function banMessageAuthor(messageId, username) {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+
+            const reason = prompt(`Ban ${username} from this stream's chat?\nEnter reason (optional):`);
+            if (reason === null) return;
+
+            chatWs.send(JSON.stringify({
+                type: 'ban',
+                message_id: messageId,
+                reason: reason
+            }));
+        }
+
         function unbanUser(userId) {
             if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
 
             chatWs.send(JSON.stringify({
                 type: 'unban',
                 user_id: userId
+            }));
+        }
+
+        function unbanByBanId(banId) {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+
+            chatWs.send(JSON.stringify({
+                type: 'unban',
+                ban_id: banId
             }));
         }
 
@@ -1526,7 +1555,7 @@
                             <strong>${escapeHtml(ban.banned_username)}</strong>
                             ${ban.reason ? `<br><small style="color: var(--text-muted);">Reason: ${escapeHtml(ban.reason)}</small>` : ''}
                         </div>
-                        <button onclick="unbanUser(${ban.user_id}); document.getElementById('ban-list-modal').remove();"
+                        <button onclick="${ban.user_id != null ? `unbanUser(${Number(ban.user_id)})` : `unbanByBanId(${Number(ban.id)})`}; document.getElementById('ban-list-modal').remove();"
                                 style="background: var(--accent-blue); border: none; padding: 0.5rem 1rem; border-radius: 4px; color: white; cursor: pointer;">
                             Unban
                         </button>
@@ -1555,6 +1584,8 @@
         function showUserMenu(event, userId, username) {
             event.stopPropagation();
 
+            // Anonymous authors carry no user id for most viewers
+            if (userId == null) return;
             if (currentUser && userId === currentUser.id) return;
 
             const existing = document.querySelector('.mod-menu');

@@ -25,19 +25,51 @@ LOG_DIR = Path(__file__).parent / "logs"
 LOG_FILE = LOG_DIR / "portal.log"
 AUDIT_FILE = LOG_DIR / "audit.log"
 
-# Patterns to filter from logs (security)
+# Patterns to filter from logs (security). Compiled once at import time.
+# Redaction must be idempotent: the filter runs once per handler on the same record.
 SENSITIVE_PATTERNS = [
     (re.compile(r'(password["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
-    (re.compile(r'(token["\s:=]+)[A-Za-z0-9_-]{20,}', re.IGNORECASE), r'\1[REDACTED]'),
+    # token= / ticket= / session= (query strings, form bodies): redact the whole
+    # value, including the dots of a JWT, whatever its length. session= is the
+    # media server's per-viewer HLS session value, forwarded in segment URLs.
+    (re.compile(r'((?:token|ticket|session)=)[^\s&"\'#<>]*', re.IGNORECASE), r'\1[REDACTED]'),
+    # "token: xxx" / "token": "xxx" forms; JWT-aware character class.
+    (re.compile(r'(token["\s:=]+)[A-Za-z0-9._~+/-]{20,}', re.IGNORECASE), r'\1[REDACTED]'),
     (re.compile(r'(api[_-]?key["\s:=]+)portal_[A-Za-z0-9_-]+', re.IGNORECASE), r'\1[REDACTED]'),
+    # Portal API keys anywhere (headers, URLs, messages)
+    (re.compile(r'portal_[A-Za-z0-9]{32,}'), '[API_KEY_REDACTED]'),
     (re.compile(r'(secret["\s:=]+)[^\s,}\]"]+', re.IGNORECASE), r'\1[REDACTED]'),
     (re.compile(r'(-----BEGIN[^-]+-----)[^-]+(-----END[^-]+-----)', re.DOTALL), r'\1[REDACTED]\2'),
     (re.compile(r'rtmp_[A-Za-z0-9_-]{20,}'), '[RTMP_TOKEN_REDACTED]'),
     (re.compile(r'live_[A-Za-z0-9_-]{16,}'), '[STREAM_KEY_REDACTED]'),
-    # pub_xxx (public/view keys) are intentionally NOT redacted — they're
-    # shared with all authenticated users for stream playback and carry no
-    # publish privilege. Only live_xxx (publish) and rtmp_xxx (temp tokens) matter.
+    # Stream playback keys (pub_xxx) are secrets too: a private stream's
+    # playback key is all that grants viewing access, so they must never be
+    # readable in logs. (Older versions left them readable on purpose.)
+    (re.compile(r'pub_[A-Za-z0-9_-]{16,}'), '[PLAYBACK_KEY_REDACTED]'),
+    # Key segment of stream proxy URLs (/api/stream/<key>/...). Playback URLs
+    # may carry the key without its pub_/live_ prefix, so redact the segment
+    # itself; the MediaMTX hook endpoints (/api/stream/auth, /event) are not keys.
+    (re.compile(r'(/api/stream/)(?!(?:auth|event)(?:[/?\s"]|$))[^/\s?"\']+'), r'\1[STREAM_KEY_REDACTED]'),
+    # Incoming-webhook URLs carry their bearer token as the last path segment
+    # (/api/webhooks/incoming/<token>); the token has no recognisable prefix.
+    (re.compile(r'(/api/webhooks/incoming/)[^/\s?"\']+'), r'\1[REDACTED]'),
 ]
+
+# Cheap pre-check so ordinary log lines skip the full pattern list.
+_QUICK_CHECK = re.compile(
+    r'password|token|ticket|session=|api[_-]?key|secret|BEGIN|portal_|rtmp_|live_|pub_|/api/stream/|/api/webhooks/incoming/',
+    re.IGNORECASE,
+)
+
+
+def redact(text: str) -> str:
+    """Apply every SENSITIVE_PATTERNS rule to text."""
+    if not text or not _QUICK_CHECK.search(text):
+        return text
+    for pattern, replacement in SENSITIVE_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
 
 # Log settings (can be modified at runtime)
 LOG_SETTINGS = {
@@ -74,21 +106,31 @@ class BadRequestNoiseFilter(logging.Filter):
 class SensitiveDataFilter(logging.Filter):
     """Filter to redact sensitive data from log messages."""
 
+    _exc_formatter = logging.Formatter()
+
     def filter(self, record: logging.LogRecord) -> bool:
         if LOG_SETTINGS.get("filter_sensitive", True):
-            msg = str(record.msg)
-            for pattern, replacement in SENSITIVE_PATTERNS:
-                msg = pattern.sub(replacement, msg)
-            record.msg = msg
-            # Also filter args if present
-            if record.args:
-                args = []
-                for arg in record.args:
-                    if isinstance(arg, str):
-                        for pattern, replacement in SENSITIVE_PATTERNS:
-                            arg = pattern.sub(replacement, arg)
-                    args.append(arg)
-                record.args = tuple(args)
+            # Redact the fully formatted message, so a secret is caught whether
+            # it sits in the format string or in any argument (positional,
+            # mapping, or a non-string object such as a URL or exception).
+            try:
+                msg = record.getMessage()
+            except Exception:
+                msg = str(record.msg)
+            record.msg = redact(msg)
+            record.args = None
+            # Exception text is rendered later by the formatter; render and
+            # redact it now (the formatter reuses record.exc_text).
+            if record.exc_info:
+                if not record.exc_text:
+                    try:
+                        record.exc_text = self._exc_formatter.formatException(record.exc_info)
+                    except Exception:
+                        record.exc_text = None
+                if record.exc_text:
+                    record.exc_text = redact(record.exc_text)
+            if record.stack_info:
+                record.stack_info = redact(record.stack_info)
         return True
 
 
@@ -107,7 +149,7 @@ class StructuredFormatter(logging.Formatter):
         }
         # Add exception info if present
         if record.exc_info:
-            log_data["exception"] = self.formatException(record.exc_info)
+            log_data["exception"] = record.exc_text or self.formatException(record.exc_info)
         # Add extra fields if present
         for key in ['user_id', 'client_ip', 'request_id', 'action', 'resource']:
             if hasattr(record, key):

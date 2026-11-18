@@ -526,10 +526,11 @@ MIGRATIONS = [
         banned_by INTEGER NOT NULL,
         reason TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        anonymous INTEGER NOT NULL DEFAULT 0,
+        message_id INTEGER,
         FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        FOREIGN KEY (banned_by) REFERENCES users(id) ON DELETE CASCADE,
-        UNIQUE(stream_id, user_id)
+        FOREIGN KEY (banned_by) REFERENCES users(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_stream_bans_stream ON stream_bans(stream_id)",
     "CREATE INDEX IF NOT EXISTS idx_stream_bans_user ON stream_bans(user_id)",
@@ -1171,6 +1172,10 @@ class Database:
         # Fix service_logs FK to reference services instead of managed_services
         await self._migrate_service_logs_fk()
 
+        # Allow several bans per user and stream (one named, any number
+        # recorded from anonymous posts)
+        await self._migrate_stream_bans_anonymous()
+
         # Generate public keys for any streams that don't have one
         await self._populate_stream_public_keys()
 
@@ -1359,6 +1364,69 @@ class Database:
             await self._connection.execute("PRAGMA foreign_keys = ON")
         except Exception:
             await self._connection.execute("PRAGMA foreign_keys = ON")
+
+    async def _migrate_stream_bans_anonymous(self) -> None:
+        """Rebuild stream_bans without UNIQUE(stream_id, user_id).
+
+        A ban made from an anonymous post is recorded with anonymous = 1 and
+        the id of that message. It lives next to a named ban of the same user
+        so that nothing the stream owner can do (banning or unbanning by
+        account id) shows whether a masked ban exists for that account. Only
+        one named ban per user and stream remains unique, through a partial
+        index. Safe to run repeatedly.
+        """
+        conn = self._connection
+        try:
+            cursor = await conn.execute("PRAGMA index_list(stream_bans)")
+            old_constraint = any(row["origin"] == "u" for row in await cursor.fetchall())
+            cursor = await conn.execute("PRAGMA table_info(stream_bans)")
+            cols = {row["name"] for row in await cursor.fetchall()}
+            if old_constraint or not {"anonymous", "message_id"} <= cols:
+                await conn.execute("PRAGMA foreign_keys = OFF")
+                try:
+                    await conn.execute("DROP TABLE IF EXISTS stream_bans_new")
+                    await conn.execute("""
+                        CREATE TABLE stream_bans_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            stream_id INTEGER NOT NULL,
+                            user_id INTEGER NOT NULL,
+                            banned_by INTEGER NOT NULL,
+                            reason TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            anonymous INTEGER NOT NULL DEFAULT 0,
+                            message_id INTEGER,
+                            FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
+                            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (banned_by) REFERENCES users(id) ON DELETE CASCADE
+                        )
+                    """)
+                    anon_sql = "COALESCE(anonymous, 0)" if "anonymous" in cols else "0"
+                    msg_sql = "message_id" if "message_id" in cols else "NULL"
+                    await conn.execute(
+                        "INSERT INTO stream_bans_new "
+                        "(id, stream_id, user_id, banned_by, reason, created_at, anonymous, message_id) "
+                        "SELECT id, stream_id, user_id, banned_by, reason, created_at, "
+                        + anon_sql + ", " + msg_sql + " FROM stream_bans ORDER BY id"
+                    )
+                    await conn.execute("DROP TABLE stream_bans")
+                    await conn.execute("ALTER TABLE stream_bans_new RENAME TO stream_bans")
+                    await conn.commit()
+                finally:
+                    await conn.execute("PRAGMA foreign_keys = ON")
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stream_bans_stream ON stream_bans(stream_id)")
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stream_bans_user ON stream_bans(user_id)")
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_stream_bans_named "
+                "ON stream_bans(stream_id, user_id) WHERE anonymous = 0")
+            await conn.commit()
+        except Exception as e:
+            logger.warning(f"stream_bans migration failed: {e}")
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
 
     async def _populate_stream_public_keys(self) -> None:
         """Generate public keys for streams that don't have one."""
@@ -3857,28 +3925,63 @@ class Database:
         stream_id: int,
         user_id: int,
         banned_by: int,
-        reason: str = None
+        reason: str = None,
+        anonymous: bool = False,
+        message_id: int = None
     ) -> int:
-        """Ban a user from a stream's chat. Returns ban ID or 0 if failed."""
+        """Ban a user from a stream's chat. Returns ban ID or 0 if failed.
+
+        A named ban is unique per user and stream. A ban made from an anonymous
+        post (anonymous=True) is recorded as its own row, once per message, and
+        is never rejected because the user is already banned, so the outcome
+        does not depend on whose post it was.
+        """
         try:
+            if anonymous and message_id is not None:
+                cursor = await self.conn.execute(
+                    "SELECT id FROM stream_bans WHERE stream_id = ? AND anonymous = 1 AND message_id = ?",
+                    (stream_id, message_id)
+                )
+                row = await cursor.fetchone()
+                if row:
+                    return row["id"]
             cursor = await self.conn.execute(
-                """INSERT INTO stream_bans (stream_id, user_id, banned_by, reason)
-                   VALUES (?, ?, ?, ?)""",
-                (stream_id, user_id, banned_by, reason)
+                """INSERT INTO stream_bans (stream_id, user_id, banned_by, reason, anonymous, message_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (stream_id, user_id, banned_by, reason, 1 if anonymous else 0,
+                 message_id if anonymous else None)
             )
             await self.conn.commit()
             return cursor.lastrowid
         except Exception:
             return 0
 
-    async def remove_stream_ban(self, stream_id: int, user_id: int) -> bool:
-        """Remove a ban from a stream."""
+    async def remove_stream_ban(self, stream_id: int, user_id: int,
+                                include_anonymous: bool = False) -> bool:
+        """Remove a user's named ban from a stream. Bans recorded from
+        anonymous posts are removed as well only when include_anonymous is set
+        (callers entitled to know who the author is)."""
         cursor = await self.conn.execute(
-            "DELETE FROM stream_bans WHERE stream_id = ? AND user_id = ?",
-            (stream_id, user_id)
+            "DELETE FROM stream_bans WHERE stream_id = ? AND user_id = ? AND (anonymous = 0 OR ?)",
+            (stream_id, user_id, 1 if include_anonymous else 0)
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def remove_stream_ban_by_id(self, stream_id: int, ban_id: int) -> Optional[dict]:
+        """Remove one ban of this stream by its ban id. Returns the removed row
+        (so the caller can tell whether it was an anonymous one) or None."""
+        cursor = await self.conn.execute(
+            "SELECT id, user_id, anonymous FROM stream_bans WHERE id = ? AND stream_id = ?",
+            (ban_id, stream_id)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await self.conn.execute(
+            "DELETE FROM stream_bans WHERE id = ? AND stream_id = ?", (ban_id, stream_id))
+        await self.conn.commit()
+        return dict(row)
 
     async def is_user_banned_from_stream(self, stream_id: int, user_id: int) -> bool:
         """Check if a user is banned from a stream."""
@@ -3889,14 +3992,18 @@ class Database:
         return await cursor.fetchone() is not None
 
     async def get_stream_bans(self, stream_id: int) -> list[dict]:
-        """Get all bans for a stream."""
+        """Get all bans for a stream. Rows made from anonymous posts carry
+        anonymous = 1; callers must mask them for viewers not entitled to the
+        author's identity."""
         cursor = await self.conn.execute(
-            """SELECT sb.*, u.username as banned_username, ub.username as banned_by_username
+            """SELECT sb.id, sb.stream_id, sb.user_id, sb.banned_by, sb.reason, sb.created_at,
+                      sb.anonymous,
+                      u.username as banned_username, ub.username as banned_by_username
                FROM stream_bans sb
                JOIN users u ON sb.user_id = u.id
                JOIN users ub ON sb.banned_by = ub.id
                WHERE sb.stream_id = ?
-               ORDER BY sb.created_at DESC""",
+               ORDER BY sb.created_at DESC, sb.id DESC""",
             (stream_id,)
         )
         rows = await cursor.fetchall()
@@ -6144,6 +6251,16 @@ class Database:
             if from_user:
                 conditions.append("m.username = ?")
                 params.append(from_user)
+                if msg_table == "chat_messages":
+                    # Anonymous posts must never match an author filter, or the
+                    # filter could be used to attribute them. The flag lives on
+                    # the message row (it can change nothing in the index map),
+                    # so check it at query time. DM messages have no anonymous
+                    # flag.
+                    conditions.append(
+                        "NOT EXISTS (SELECT 1 FROM chat_messages cm "
+                        "WHERE cm.id = m.message_id AND cm.anonymous = 1)"
+                    )
             if has_image:
                 conditions.append("m.has_image = 1")
             if before:
@@ -6196,8 +6313,9 @@ class Database:
             msg_map = {}
             if msg_ids:
                 ph = ",".join("?" * len(msg_ids))
+                anon_col = ", anonymous" if msg_table == "chat_messages" else ""
                 msg_cursor = await self.conn.execute(
-                    f"SELECT id, message, image_url FROM {msg_table} WHERE id IN ({ph})", msg_ids
+                    f"SELECT id, message, image_url{anon_col} FROM {msg_table} WHERE id IN ({ph})", msg_ids
                 )
                 for mrow in await msg_cursor.fetchall():
                     msg_map[mrow["id"]] = mrow
@@ -6209,8 +6327,15 @@ class Database:
                 if msg_row:
                     row["message"] = decrypt_message(msg_row["message"])
                     row["has_image"] = 1 if msg_row["image_url"] else 0
+                    if msg_table == "chat_messages" and msg_row["anonymous"]:
+                        # Anonymous message: results carry no real username or user id
+                        row["username"] = "Anonymous"
+                        row["user_id"] = None
                 else:
                     row["message"] = ""
+                    if msg_table == "chat_messages":
+                        row["username"] = "Anonymous"
+                        row["user_id"] = None
                 row["id"] = row.pop("message_id")
                 results.append(row)
             return results, total

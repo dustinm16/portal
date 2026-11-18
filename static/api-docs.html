@@ -1605,7 +1605,7 @@
                         <span class="endpoint-desc">List banned users</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>List users banned from this stream's chat (owner only).</p>
+                        <p>List users banned from this stream's chat (owner only). A ban made from an anonymous post is listed with <code>user_id</code> null and the name "Anonymous" unless the caller is staff; every entry has an <code>id</code>.</p>
                     </div>
                 </div>
 
@@ -1640,7 +1640,18 @@
                         <span class="endpoint-desc">Unban user from stream chat</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Remove a ban, allowing the user to chat again (owner only).</p>
+                        <p>Remove a ban, allowing the user to chat again (owner only). Does not remove a ban made from an anonymous post unless the caller is staff.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/streams/{id}/bans/id/{ban_id}</span>
+                        <span class="endpoint-desc">Unban by ban id</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Remove one ban by the <code>id</code> shown in the ban list (owner only). Use this for bans made from an anonymous post, which are listed without the account.</p>
                     </div>
                 </div>
 
@@ -2050,7 +2061,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Toggle anonymous mode</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Toggle anonymous mode in chat. Messages sent while anonymous remain anonymous in history.</p>
+                        <p>Toggle anonymous mode in chat. Messages sent while anonymous remain anonymous in history. Each change is announced to every chat room the user is in, so it is limited to 5 per minute per user (HTTP 429 with a Retry-After header beyond that).</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -2744,7 +2755,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 <span class="comment">// Online users list (with profile data)</span>
 {<span class="string">"type"</span>: <span class="string">"users"</span>, <span class="string">"users"</span>: [{<span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {...}}]}
 
-<span class="comment">// Message deleted</span>
+<span class="comment">// Message deleted (deleted_by is null for ordinary members when the message was posted anonymously)</span>
 {<span class="string">"type"</span>: <span class="string">"message_deleted"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"deleted_by"</span>: <span class="number">1</span>}
 
 <span class="comment">// Channel renamed (admin action via REST)</span>
@@ -2898,7 +2909,7 @@ ws.send(JSON.stringify({
                     <tr>
                         <td><span class="param-name">voice_join</span></td>
                         <td>room (optional)</td>
-                        <td>Join voice in the current text channel, or pass <code>room: "dm:{conversation_id}"</code> for DM voice</td>
+                        <td>Join voice in the current text channel, or pass <code>room: "dm:{conversation_id}"</code> for DM voice. Voice in a channel is refused while anonymous mode is on (the server answers <code>voice_denied</code>), and turning anonymous mode on removes the user from a channel voice room the same way</td>
                     </tr>
                     <tr>
                         <td><span class="param-name">voice_leave</span></td>

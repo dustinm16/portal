@@ -70,6 +70,10 @@ const VoiceChat = (() => {
         const type = data.type;
         if (type === 'voice_state') {
             _handleVoiceState(data);
+        } else if (type === 'voice_denied') {
+            // The server refused or ended this user's voice session
+            if (_inVoice) { _cleanup(); _notifyState(); }
+            if (window.Portal && Portal.toast && data.message) Portal.toast(data.message, 'error');
         } else if (type === 'voice_user_joined') {
             _handleUserJoined(data);
         } else if (type === 'voice_user_left') {
