@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
+import stat
 import sys
 import tempfile
 import uuid
@@ -195,7 +197,7 @@ def start_job(name: str, coro) -> str:
 async def _record_history(entry: dict) -> None:
     """Append an entry to the update history JSONL file."""
     try:
-        BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+        _ensure_private_dirs(snapshots=False)
         line = json.dumps({**entry, "ts": _ts()}) + "\n"
         with open(HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(line)
@@ -470,9 +472,192 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
-async def create_snapshot(reason: str = "manual") -> dict:
-    """Create a directory snapshot of the portal (excluding venv, __pycache__, etc.)."""
-    SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+# Files at the top of the project directory that are never copied verbatim into
+# a snapshot: the live database (copied through the SQLite backup API instead),
+# its write-ahead-log side files, and the stray manual backup copy.
+_SNAPSHOT_DB_SKIP = {"portal.db", "portal.db-wal", "portal.db-shm", "portal.db.backup"}
+_SNAPSHOT_DB_NAME = "portal.db"
+
+
+def _ensure_private_dirs(snapshots: bool = True) -> None:
+    """Make sure backups/ (and backups/snapshots/) exist and are private (0700).
+
+    A missing directory is created 0700 regardless of the umask. An existing one
+    that is owned by the portal's user and accessible to group or other is
+    tightened to 0700. A symlink, or a directory owned by someone else, is left
+    alone (the rollback guard refuses to use it).
+    """
+    uid = os.geteuid()
+    for d in ((BACKUPS_DIR, SNAPSHOTS_DIR) if snapshots else (BACKUPS_DIR,)):
+        try:
+            os.mkdir(d, 0o700)
+            os.chmod(d, 0o700)  # umask-independent
+            continue
+        except FileExistsError:
+            pass
+        try:
+            fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            continue  # symlink or unreadable: not ours to change
+        try:
+            st = os.fstat(fd)
+            if st.st_uid == uid and st.st_mode & 0o077:
+                os.fchmod(fd, 0o700)
+        except OSError as e:
+            logger.warning("Could not tighten %s: %s", d, e)
+        finally:
+            os.close(fd)
+
+
+def _sqlite_backup(src: str, dest: str) -> tuple[int, str]:
+    """Write a consistent single-file copy of the SQLite database at *src* to *dest*.
+
+    Uses the online backup API, so everything committed to the write-ahead log
+    is included and the portal can keep running. *dest* is created 0600 and
+    must not already exist. Returns (size_in_bytes, integrity_check_result).
+    Blocking: call from a thread.
+    """
+    if not os.path.isfile(src):
+        raise FileNotFoundError(f"database not found: {src}")
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    try:
+        source = sqlite3.connect(src, timeout=30)
+        try:
+            target = sqlite3.connect(dest)
+            try:
+                source.backup(target)
+                # The backup keeps the WAL flag in the file header; switch the copy
+                # to a rollback journal so it is one self-contained file.
+                target.execute("PRAGMA journal_mode=DELETE")
+                row = target.execute("PRAGMA integrity_check").fetchone()
+                result = str(row[0]) if row else "no result"
+            finally:
+                target.close()
+        finally:
+            source.close()
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.unlink(dest + suffix)
+            except FileNotFoundError:
+                pass
+        os.chmod(dest, 0o600)
+        return os.stat(dest).st_size, result
+    except BaseException:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            try:
+                os.unlink(dest + suffix)
+            except OSError:
+                pass
+        raise
+
+
+def _strip_group_other_write(root: Path, skip_names: set = frozenset()) -> None:
+    """Remove group/other write bits from every file and directory under *root*.
+
+    Entries directly under *root* whose name is in *skip_names* are left alone.
+    """
+    def _fix(path: str) -> None:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        if stat.S_ISLNK(st.st_mode):
+            return
+        if st.st_mode & 0o022:
+            os.chmod(path, stat.S_IMODE(st.st_mode) & ~0o022)
+
+    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False):
+        if dirpath == str(root) and skip_names:
+            dirnames[:] = [n for n in dirnames if n not in skip_names]
+            filenames = [n for n in filenames if n not in skip_names]
+        for name in filenames:
+            _fix(os.path.join(dirpath, name))
+        for name in dirnames:
+            _fix(os.path.join(dirpath, name))
+
+
+def backup_database(out: Optional[str] = None, db_path: Optional[str] = None) -> tuple[Path, int, str]:
+    """Write a consistent copy of the database to a 0600 file and return (path, size, integrity).
+
+    Works while the portal is running. Refuses when less than twice the database
+    size (including its write-ahead log) is free on the destination filesystem,
+    and when the destination directory is writable by group or other without the
+    sticky bit. The copy is built inside a fresh 0700 directory created next to
+    the destination (so SQLite's journal files are never created by name in a
+    shared directory) and then moved into place without overwriting anything.
+    Blocking: call from a thread or from the CLI.
+    """
+    if db_path is None:
+        from config import Config
+        db_path = Config.DATABASE_PATH
+    if not os.path.isfile(db_path):
+        raise RuntimeError(f"Database not found: {db_path}")
+
+    if out:
+        # Resolve only the directory: resolving the final component would follow a
+        # symlink planted at the destination and bypass every check below.
+        p = Path(out).expanduser().absolute()
+        if p.name in ("", "..") or p.parent == p:
+            raise RuntimeError(f"Invalid destination file name: {out}")
+        dest = p.parent.resolve() / p.name
+        if not dest.parent.is_dir():
+            raise RuntimeError(f"Destination directory does not exist: {dest.parent}")
+    else:
+        _ensure_private_dirs(snapshots=False)
+        dest = BACKUPS_DIR / f"portal-db-{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    if dest.exists() or dest.is_symlink():
+        raise RuntimeError(f"Refusing to overwrite existing file: {dest}")
+
+    pst = os.stat(dest.parent)
+    if pst.st_mode & 0o022 and not pst.st_mode & stat.S_ISVTX:
+        raise RuntimeError(
+            f"Refusing to write into {dest.parent}: it is writable by group or other "
+            f"(mode {stat.S_IMODE(pst.st_mode):04o}) and has no sticky bit. "
+            f"Choose a private directory."
+        )
+
+    db_size = os.stat(db_path).st_size
+    try:
+        db_size += os.stat(db_path + "-wal").st_size
+    except OSError:
+        pass
+    free = shutil.disk_usage(str(dest.parent)).free
+    if free < 2 * db_size:
+        raise RuntimeError(
+            f"Not enough free disk space in {dest.parent}: {free} bytes free, "
+            f"need at least {2 * db_size} (twice the database size)"
+        )
+
+    try:
+        workdir = tempfile.mkdtemp(prefix=".portal-backup-", dir=str(dest.parent))  # mode 0700
+    except OSError as e:
+        raise RuntimeError(f"Cannot write into {dest.parent}: {e.strerror or e}") from e
+    try:
+        tmp = os.path.join(workdir, "db")
+        size, result = _sqlite_backup(db_path, tmp)
+        try:
+            os.link(tmp, dest)  # fails if dest appeared meanwhile; never overwrites
+        except FileExistsError:
+            raise RuntimeError(f"Refusing to overwrite existing file: {dest}") from None
+        except OSError:
+            # Filesystem without hard links: fall back to a rename guarded by an exists check.
+            if dest.exists() or dest.is_symlink():
+                raise RuntimeError(f"Refusing to overwrite existing file: {dest}") from None
+            os.rename(tmp, dest)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return dest, size, result
+
+
+async def create_snapshot(reason: str = "manual", db_path: Optional[str] = None) -> dict:
+    """Create a directory snapshot of the portal (excluding venv, __pycache__, etc.).
+
+    The snapshot directory is private (0700). The database is not copied as a
+    raw file; it is written through the SQLite backup API so the snapshot holds
+    one consistent file that includes the write-ahead log.
+    """
+    _ensure_private_dirs()
     snap_id = f"snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     snap_dir = SNAPSHOTS_DIR / snap_id
     meta_file = SNAPSHOTS_DIR / f"{snap_id}.json"
@@ -500,12 +685,54 @@ async def create_snapshot(reason: str = "manual") -> dict:
                 ignored.add(name)
         return ignored
 
+    created = False
     try:
-        shutil.copytree(str(PORTAL_DIR), str(snap_dir), ignore=_ignore)
+        # Mode 0700 regardless of umask or of the source directory's mode.
+        os.mkdir(snap_dir, 0o700)
+        created = True
+        os.chmod(snap_dir, 0o700)
+        # Copy the children one by one: copytree onto snap_dir itself would
+        # finish by copying the project directory's mode onto it.
+        top_ignored = _ignore(str(PORTAL_DIR), [c.name for c in PORTAL_DIR.iterdir()])
+
+        def _copy_children():
+            for child in PORTAL_DIR.iterdir():
+                if child.name in top_ignored or child.name in _SNAPSHOT_DB_SKIP:
+                    continue
+                dest = snap_dir / child.name
+                if child.is_dir():
+                    shutil.copytree(str(child), str(dest), ignore=_ignore)
+                else:
+                    shutil.copy2(str(child), str(dest))
+
+        await asyncio.to_thread(_copy_children)
+        await asyncio.to_thread(_strip_group_other_write, snap_dir)
     except Exception as e:
+        # Never leave a half-written (and meta-less, so invisible) snapshot behind,
+        # but never touch a directory this call did not create (same-second id clash).
+        if created:
+            await asyncio.to_thread(shutil.rmtree, snap_dir, True)
         raise RuntimeError(f"Failed to copy portal directory: {e}") from e
 
-    size = _snapshot_size(snap_dir)
+    db_size = None
+    db_integrity = None
+    if db_path is None:
+        from config import Config
+        db_path = Config.DATABASE_PATH
+    if os.path.isfile(db_path):
+        try:
+            db_size, db_integrity = await asyncio.to_thread(
+                _sqlite_backup, db_path, str(snap_dir / _SNAPSHOT_DB_NAME)
+            )
+        except Exception as e:
+            await asyncio.to_thread(shutil.rmtree, snap_dir, True)
+            raise RuntimeError(f"Failed to back up the database: {e}") from e
+        if db_integrity != "ok":
+            logger.warning("Snapshot %s: database integrity_check returned %r", snap_id, db_integrity)
+    else:
+        logger.warning("Snapshot %s: database file not found at %s", snap_id, db_path)
+
+    size = await asyncio.to_thread(_snapshot_size, snap_dir)
 
     meta = {
         "id": snap_id,
@@ -516,8 +743,19 @@ async def create_snapshot(reason: str = "manual") -> dict:
         "size_human": _format_size(size),
         "git_stash_ref": git_stash_ref,
         "path": str(snap_dir),
+        "db_size_bytes": db_size,
+        "db_integrity": db_integrity,
     }
-    meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    # Owner-only from the first byte: never readable under a permissive umask.
+    fd = os.open(meta_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            fh.write(json.dumps(meta, indent=2))
+    finally:
+        if fd >= 0:
+            os.close(fd)
     await _record_history({"type": "snapshot_created", "snap_id": snap_id, "reason": reason, "version": current_version})
     return meta
 
@@ -858,6 +1096,127 @@ async def start_apply(component: str, version: Optional[str] = None) -> str:
 # Rollback
 # ---------------------------------------------------------------------------
 
+# Database, .env and other state are never restored from a snapshot.
+_ROLLBACK_PRESERVE_DIRS = {"venv", "backups", ".git", "data", "__pycache__"}
+_ROLLBACK_PRESERVE_FILES = {".env", "portal.db", "portal.db-shm", "portal.db-wal", "portal.db.backup"}
+
+
+def _backup_dirs_problems() -> list:
+    """Describe every way backups/ or backups/snapshots/ is not private to the portal user."""
+    uid = os.geteuid()
+    problems = []
+    for d in (BACKUPS_DIR, SNAPSHOTS_DIR):
+        try:
+            st = os.lstat(d)
+        except OSError as e:
+            problems.append(f"{d.name}/ ({e.strerror or e})")
+            continue
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            problems.append(f"{d.name}/ (not a plain directory)")
+        elif st.st_uid != uid:
+            problems.append(f"{d.name}/ (owned by uid {st.st_uid}, expected {uid})")
+        elif st.st_mode & 0o022:
+            problems.append(f"{d.name}/ (mode {stat.S_IMODE(st.st_mode):04o} is writable by group or other)")
+    return problems
+
+
+def _check_snapshot_restorable(snap_dir: Path, skip_names: set) -> None:
+    """Refuse a snapshot that someone other than the portal's own user could have altered.
+
+    backups/ and backups/snapshots/ must be plain directories owned by the user
+    running the portal and not writable by group or other (someone who can write
+    there could swap the snapshot after it was verified). Every directory and file
+    rollback is about to restore must be owned by that user and must not be
+    writable by group or other. Symlinks are judged by owner only (their own mode
+    is meaningless on Linux). Raises RuntimeError before anything has been copied
+    or removed.
+    """
+    uid = os.geteuid()
+    problems = _backup_dirs_problems()
+
+    def _inspect(path: str) -> None:
+        st = os.lstat(path)
+        rel = os.path.relpath(path, str(snap_dir)) if path != str(snap_dir) else "."
+        if st.st_uid != uid:
+            problems.append(f"{rel} (owned by uid {st.st_uid}, expected {uid})")
+        elif not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022:
+            problems.append(f"{rel} (mode {stat.S_IMODE(st.st_mode):04o} is writable by group or other)")
+
+    _inspect(str(snap_dir))
+    if snap_dir.is_symlink() or not snap_dir.is_dir():
+        problems.append(". (not a plain directory)")
+    for item in snap_dir.iterdir():
+        if item.name in skip_names:
+            continue
+        _inspect(str(item))
+        if item.is_dir() and not item.is_symlink():
+            for dirpath, dirnames, filenames in os.walk(str(item), followlinks=False):
+                for name in dirnames + filenames:
+                    _inspect(os.path.join(dirpath, name))
+    if problems:
+        shown = "; ".join(problems[:5])
+        more = f" (and {len(problems) - 5} more)" if len(problems) > 5 else ""
+        raise RuntimeError(
+            f"Refusing to roll back: snapshot is not private to the portal user: {shown}{more}. "
+            f"Nothing was changed. Inspect the snapshot, then fix its owner and permissions "
+            f"(chown to the portal user, chmod -R go-w; chmod 0700 the backups directories) or delete it."
+        )
+
+
+def _adopt_legacy_snapshot(snap_dir: Path, meta: dict, skip_names: set = frozenset()) -> bool:
+    """Tighten a snapshot made before snapshots were private, when that is safe.
+
+    Older releases copied the project directory's mode (typically 0775) onto the
+    snapshot, so every such snapshot would be refused by _check_snapshot_restorable.
+    A snapshot is adopted (group/other write bits stripped, directory set to 0700)
+    only if all of the following hold, otherwise nothing is changed and the normal
+    check decides:
+      - its metadata predates the database-integrity field (made by older code);
+      - backups/ and backups/snapshots/ are owned by the portal user and not
+        writable by group or other;
+      - every entry rollback would restore (names in *skip_names* are not looked
+        at and not changed) is owned by the portal user, is not writable by
+        other, and is group-writable only when its group is the portal user's
+        own primary group.
+    Returns True if the snapshot was adopted. Blocking: call from a thread.
+    """
+    if "db_integrity" in meta:
+        return False
+    uid, gid = os.geteuid(), os.getegid()
+    if _backup_dirs_problems():
+        return False
+    try:
+        if snap_dir.is_symlink() or not snap_dir.is_dir():
+            return False
+        top = os.lstat(snap_dir)
+        if top.st_uid != uid or top.st_mode & 0o002:
+            return False
+        if top.st_mode & 0o020 and top.st_gid != gid:
+            return False
+        entries = [e for e in snap_dir.iterdir() if e.name not in skip_names]
+        paths = []
+        for e in entries:
+            paths.append(str(e))
+            if e.is_dir() and not e.is_symlink():
+                for dirpath, dirnames, filenames in os.walk(str(e), followlinks=False):
+                    paths.extend(os.path.join(dirpath, n) for n in dirnames + filenames)
+        for path in paths:
+            st = os.lstat(path)
+            if st.st_uid != uid:
+                return False
+            if stat.S_ISLNK(st.st_mode):
+                continue
+            if st.st_mode & 0o002:
+                return False
+            if st.st_mode & 0o020 and st.st_gid != gid:
+                return False
+    except OSError:
+        return False
+    _strip_group_other_write(snap_dir, skip_names)
+    os.chmod(snap_dir, 0o700)
+    return True
+
+
 async def _apply_rollback(job: dict, snap_id: str) -> None:
     """Restore portal files from snapshot and reinstall dependencies."""
     # Validate snap_id
@@ -872,7 +1231,16 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
     if not snap_dir.exists():
         raise RuntimeError(f"Snapshot directory not found: {snap_id}")
 
+    PRESERVE_DIRS = _ROLLBACK_PRESERVE_DIRS
+    PRESERVE_FILES = _ROLLBACK_PRESERVE_FILES
+
     meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    if await asyncio.to_thread(_adopt_legacy_snapshot, snap_dir, meta, PRESERVE_DIRS | PRESERVE_FILES):
+        _log(job, f"Snapshot {snap_id} predates private snapshots; removed group/other write permissions from it.")
+
+    # Verify every file that would be restored before changing anything.
+    await asyncio.to_thread(_check_snapshot_restorable, snap_dir, PRESERVE_DIRS | PRESERVE_FILES)
+
     _log(job, f"Rolling back to snapshot {snap_id} (version: {meta.get('version', 'unknown')})...")
 
     # Create a safety snapshot before rollback
@@ -884,8 +1252,9 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
         _log(job, f"WARNING: Could not create safety snapshot: {e}")
 
     # Restore files: remove current portal dir contents (excluding venv, backups, .git, data)
-    PRESERVE_DIRS = {"venv", "backups", ".git", "data", "__pycache__"}
-    PRESERVE_FILES = {".env", "portal.db", "portal.db-shm", "portal.db-wal", "portal.db.backup"}
+    # The safety snapshot above takes a while; re-verify so the snapshot cannot
+    # have been swapped or loosened in the meantime.
+    await asyncio.to_thread(_check_snapshot_restorable, snap_dir, PRESERVE_DIRS | PRESERVE_FILES)
 
     _log(job, "Removing current portal files (preserving venv, db, .env, etc.)...")
     for item in PORTAL_DIR.iterdir():

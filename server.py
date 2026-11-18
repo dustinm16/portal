@@ -17828,6 +17828,11 @@ def main():
     # Create snapshot
     subparsers.add_parser("create-snapshot", help="Create a manual portal snapshot")
 
+    # Consistent database copy (safe while the portal is running)
+    backup_db = subparsers.add_parser("backup-db", help="Write a consistent copy of the database to a 0600 file")
+    backup_db.add_argument("--out", default=None, metavar="PATH",
+                           help="Output file (default: backups/portal-db-<timestamp>.db)")
+
     # Update component
     update_cmd = subparsers.add_parser("update", help="Apply an update to a component")
     update_cmd.add_argument("--component", required=True,
@@ -17886,6 +17891,16 @@ def main():
             snap = await update_manager.create_snapshot(reason="manual-cli")
             print(f"Snapshot created: {snap['id']} (version: {snap['version']}, size: {snap['size_human']})")
         asyncio.run(_create_snap())
+    elif args.command == "backup-db":
+        try:
+            _path, _size, _result = update_manager.backup_database(args.out)
+        except Exception as e:
+            print(f"backup-db failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        if _result != "ok":
+            print(f"WARNING: integrity_check returned: {_result}", file=sys.stderr)
+        print(_path)
+        sys.exit(0 if _result == "ok" else 1)
     elif args.command == "update":
         async def _run_update():
             print(f"Starting update: {args.component}" + (f" version {args.version}" if args.version else ""))
