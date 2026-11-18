@@ -979,6 +979,38 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     return None
 
 
+# What a signed-in non-admin user's browser session carries (see http_login):
+# the "full" scope of a user who is not an administrator.
+_FULL_USER_SCOPES = ("services:read", "access:*")
+
+
+def has_full_user_scope(token: Optional[TokenPayload]) -> bool:
+    """True for a credential that carries its user's whole authority: a browser
+    session, or a token or API key made with the all-scope "*".
+
+    Stream keys, narrowly scoped API keys and tokens limited to a few scopes
+    (for example only "admin", or only "services:read") are not. A non-admin
+    user's own session counts through its two standard scopes; an API key
+    counts only when it carries "*".
+    """
+    if token is None:
+        return False
+    jti = str(token.token_id or "")
+    if jti.startswith("streamkey-"):
+        return False
+    if "*" in token.scopes:
+        return True
+    if jti.startswith("apikey-"):
+        return False
+    return all(scope in token.scopes for scope in _FULL_USER_SCOPES)
+
+
+def full_scope_required_response() -> web.Response:
+    return web.json_response(
+        {"error": "A browser session or a full-access token is required; "
+                  "stream keys and scoped API keys cannot do this"}, status=403)
+
+
 # Argon2 is deliberately expensive (CPU and 64 MiB each). API key checks run it
 # in a worker thread so they cannot stall the event loop, and the semaphore
 # bounds how many run at once. Two further limits keep a flood of forged keys
@@ -3490,6 +3522,8 @@ async def http_accept_connection_host_key(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     connection = await db.get_user_connection_by_uuid(request.match_info.get("id", ""), token.user_id)
     if not connection or connection.get("user_id") != token.user_id:
         return web.json_response({"error": "Connection not found"}, status=404)
@@ -3518,12 +3552,14 @@ async def http_accept_connection_host_key(request: web.Request) -> web.Response:
 
 async def http_accept_service_host_key(request: web.Request) -> web.Response:
     """POST /api/services/{id}/host-key/accept - pin (or replace) the host key
-    of an admin-defined SSH service. Admin only."""
+    of an admin-defined SSH service. Admin only, with a full-scope credential."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     service_id = request.match_info.get("id", "")
     if not service_id.isdigit():
         return web.json_response({"error": "Invalid service ID"}, status=400)
@@ -7421,6 +7457,8 @@ async def http_accept_vod_host_key(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     fp, err = await _accepted_fingerprint(request)
     if err:
         return err
@@ -9440,7 +9478,7 @@ async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     except hostkeys.HostKeyRefused as refused:
         # 409 with the fingerprint; only the owner is told they may accept
         payload = hostkeys.refusal_payload(
-            refused, can_accept=connection.get("user_id") == token.user_id)
+            refused, can_accept=connection.get("user_id") == token.user_id and has_full_user_scope(token))
         if payload["can_accept"]:
             payload["accept_url"] = f"/api/connections/{conn_uuid}/host-key/accept"
             _present_host_key(payload, "connection", connection["id"], token.user_id,
@@ -11435,7 +11473,7 @@ async def handle_user_connection_ws(
         # Only the owner may accept a key; a grantee of a shared connection never can.
         await _refuse_host_key(
             ws, refused,
-            can_accept=connection.get("user_id") == token.user_id,
+            can_accept=connection.get("user_id") == token.user_id and has_full_user_scope(token),
             accept_url=f"/api/connections/{conn_uuid}/host-key/accept",
             label=f"connection {conn_id}", user_id=token.user_id,
             scope="connection", ident=conn_id, target=_user_connection_ssh_target(connection))
@@ -11540,7 +11578,7 @@ async def handle_relay_ws(
     except hostkeys.HostKeyRefused as refused:
         await _refuse_host_key(
             ws, refused,
-            can_accept=token.has_scope("admin") or token.has_scope("*"),
+            can_accept=(token.has_scope("admin") or token.has_scope("*")) and has_full_user_scope(token),
             accept_url=f"/api/services/{service['id']}/host-key/accept",
             label=f"service {service['id']}", user_id=token.user_id,
             scope="service", ident=service["id"], target=_service_ssh_target(service))

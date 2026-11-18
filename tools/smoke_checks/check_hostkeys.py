@@ -177,7 +177,7 @@ class FakeRequest:
         self.match_info = {"conn_id": conn_id}
 
 
-def token(uid, scopes=()):
+def token(uid, scopes=("services:read", "access:*")):
     return TokenPayload({"sub": str(uid), "scopes": list(scopes)})
 
 
@@ -432,6 +432,24 @@ async def _run(ctx, state, port, root, key_b, fp_a, fp_b):
             async with anon.post(f"{url}/api/connections/{api_id}/host-key/accept",
                                  json={"fingerprint": fp_a}) as r:
                 ctx.ok("hostkeys: accept needs authentication", r.status in (401, 403), str(r.status))
+
+        # A scoped credential of the owner cannot accept a key, whatever it presents.
+        async with owner.post(f"{url}/api/api-keys", json={"name": "hk-scoped", "scopes": "services:read"}) as r:
+            kbody = await r.json()
+            api_key = kbody.get("key")
+            ctx.ok("hostkeys: owner creates an API key", r.status == 201 and bool(api_key), str(r.status))
+        if api_key:
+            prompt = await drive(ctx, {"kind": "mint", "uuid": api_id, "uid": oid, "fp": fp_a})
+            async with ctx.http() as keyed:
+                for label, route in (("connection", f"/api/connections/{api_id}/host-key/accept"),
+                                     ("service", "/api/services/1/host-key/accept"),
+                                     ("vod storage", "/api/vods/storage/host-key/accept")):
+                    async with keyed.post(url + route, json=accept_body(prompt),
+                                          headers={"X-API-Key": api_key}) as r:
+                        ctx.ok(f"hostkeys: a scoped API key cannot accept a {label} host key",
+                               r.status == 403, str(r.status))
+            ctx.ok("hostkeys: the scoped API key's refused accepts pinned nothing",
+                   "host_key_fingerprint" not in await get_cfg(), "")
 
         # ---------------- terminal: first connect, accept, regenerated key ----------------
         shared = ids["shared"]
