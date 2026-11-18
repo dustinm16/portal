@@ -736,6 +736,18 @@
                     </div>
                 </div>
 
+                <div class="admin-card" id="network-trust-card">
+                    <h3>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                        </svg>
+                        Proxy Trust
+                    </h3>
+                    <div id="network-trust-body">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
                 <div class="admin-card">
                     <h3>
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1782,6 +1794,32 @@
                             <div class="loading"><div class="spinner"></div> Loading...</div>
                         </div>
                     </div>
+
+                    <!-- Never-ban list Card -->
+                    <div class="admin-card" style="grid-column: span 2;" id="neverban-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                            Never-ban list
+                        </h3>
+                        <div id="neverban-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+
+                    <!-- Cloudflare ranges Card -->
+                    <div class="admin-card" id="cfranges-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+                            </svg>
+                            Cloudflare ranges
+                        </h3>
+                        <div id="cfranges-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -2396,6 +2434,7 @@
             } catch (error) {
                 console.error('Failed to load overview:', error);
             }
+            loadNetworkTrust();
         }
 
         // Load metrics
@@ -5164,7 +5203,7 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadCfRanges()]);
         }
 
         async function loadCertInfo() {
@@ -5963,6 +6002,166 @@
             if (!act) return;
             if (act.getAttribute('data-backup-action') === 'save') saveBackupSettings();
             else if (act.getAttribute('data-backup-action') === 'run') runBackupNow();
+        });
+
+        // ===== NEVER-BAN LIST, PROXY TRUST, CLOUDFLARE RANGES =====
+
+        const NB_FIELD_STYLE = 'width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;';
+
+        async function loadNetworkTrust() {
+            const el = document.getElementById('network-trust-body');
+            if (!el) return;
+            try {
+                const [trustRes, cfRes] = await Promise.all([
+                    Portal.fetch('/api/admin/proxy-trust'), Portal.fetch('/api/admin/cf-ranges')
+                ]);
+                let html = '';
+                if (trustRes.ok) {
+                    const t = await trustRes.json();
+                    if (t.suspect) {
+                        html += `<p style="color:var(--accent-red);margin:0 0 0.5rem 0;"><strong>Proxy trust looks wrong.</strong> ${escapeHtml(t.message || '')}</p>
+                            <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.5rem 0;">Seen: ${parseInt(t.suspicious) || 0} of the last ${parseInt(t.samples) || 0} requests, from ${escapeHtml((t.peers || []).join(', '))}.</p>`;
+                    } else {
+                        html += '<div class="stat-row"><span class="stat-label">Proxy trust check</span><span class="stat-value" style="color:var(--accent-green);">No problem seen</span></div>';
+                    }
+                }
+                if (cfRes.ok) {
+                    const c = await cfRes.json();
+                    const last = c.last;
+                    let line;
+                    if (last && last.ok === false) {
+                        line = `<span style="color:var(--accent-yellow, #eab308);">Last refresh failed (${escapeHtml(last.at)}): ${escapeHtml(last.message || '')}. The ${escapeHtml(c.source)} list is in use.</span>`;
+                    } else if (last && last.ok) {
+                        line = `<span style="color:var(--accent-green);">Refreshed ${escapeHtml(last.at)}</span>`;
+                    } else {
+                        line = '<span style="color:var(--text-muted);">Built-in list in use; no refresh yet' + (c.stage_mode ? ' (off in staged mode)' : '') + '</span>';
+                    }
+                    html += `<div class="stat-row"><span class="stat-label">Cloudflare ranges</span><span class="stat-value">${c.v4} IPv4, ${c.v6} IPv6</span></div><p style="margin:0.25rem 0 0 0;font-size:0.85rem;">${line}</p>`;
+                }
+                el.innerHTML = html || '<p style="color:var(--text-muted);">Unavailable</p>';
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
+            }
+        }
+
+        let neverBanState = null;
+
+        async function loadNeverBan() {
+            const el = document.getElementById('neverban-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/never-ban');
+                if (res.status === 403) {
+                    el.innerHTML = '<p style="color:var(--text-muted);">The never-ban list is managed by a superadmin.</p>';
+                    return;
+                }
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Failed to load the never-ban list</p>'; return; }
+                neverBanState = await res.json();
+                renderNeverBan();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Failed to load the never-ban list</p>';
+            }
+        }
+
+        function renderNeverBan(note) {
+            const el = document.getElementById('neverban-body');
+            const d = neverBanState;
+            const groups = (d.effective || []).map(g => {
+                const entries = g.entries || [];
+                const shown = entries.length > 12 ? entries.slice(0, 12).map(escapeHtml).join(', ') + ` and ${entries.length - 12} more` : entries.map(escapeHtml).join(', ');
+                return `<tr><td style="white-space:nowrap;">${escapeHtml(g.label)}</td><td style="font-family:monospace;font-size:0.8rem;">${shown || '<span style="color:var(--text-muted);">none</span>'}</td></tr>`;
+            }).join('');
+            const warn = (d.env_warnings || []).map(w => `<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0 0 0.5rem 0;">${escapeHtml(w)}</p>`).join('');
+            const mine = d.your_ip_covered
+                ? `Your address ${escapeHtml(d.your_ip)} is covered (${escapeHtml(d.your_ip_source || '')}).`
+                : `Your address ${escapeHtml(d.your_ip)} is not covered by any of these. Add it if you want it to be safe from automatic blocks.`;
+            el.innerHTML = `
+                <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                    Addresses here are never blocked automatically (scanner blocking and any other automatic block).
+                    They can still be blocked by hand. Anything broader than /${d.limits.min_prefix_ipv4} (IPv4) or /${d.limits.min_prefix_ipv6} (IPv6) is refused, at most ${d.limits.max_entries} entries.
+                    To lift a block while locked out, stop the portal and run <code>sudo venv/bin/python server.py unblock &lt;ip&gt;</code> or <code>sudo venv/bin/python server.py clear-bans</code>.
+                </p>
+                ${warn}
+                <label style="font-size:0.8rem;color:var(--text-muted);">Never-ban entries (one IP or CIDR per line)</label>
+                <textarea id="nb-entries" rows="5" spellcheck="false" style="${NB_FIELD_STYLE}font-family:monospace;">${escapeHtml((d.entries || []).join('\n'))}</textarea>
+                <p id="nb-mine" style="font-size:0.8rem;margin:0.5rem 0;color:${d.your_ip_covered ? 'var(--accent-green)' : 'var(--text-muted)'};">${note ? escapeHtml(note) : mine}</p>
+                <div style="margin:0.5rem 0 1rem 0;"><button class="btn btn-primary" data-neverban-action="save">Save List</button></div>
+                <h4 style="margin:0 0 0.5rem 0;font-size:0.9rem;">Effective list (what is actually exempt)</h4>
+                <div class="sys-table-scroll"><table class="sysmon-table"><thead><tr><th>Source</th><th>Addresses</th></tr></thead><tbody>${groups}</tbody></table></div>`;
+        }
+
+        async function saveNeverBan() {
+            const entries = document.getElementById('nb-entries').value.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+            try {
+                const res = await Portal.fetch('/api/admin/never-ban', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entries })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { Portal.toast(data.error || 'Failed to save', 'error'); return; }
+                neverBanState = data;
+                Portal.toast('Never-ban list saved', 'success');
+                renderNeverBan();
+            } catch (e) {
+                Portal.toast('Failed to save the never-ban list', 'error');
+            }
+        }
+
+        async function loadCfRanges() {
+            const el = document.getElementById('cfranges-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/cf-ranges');
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>'; return; }
+                const c = await res.json();
+                const last = c.last;
+                let result = '<span style="color:var(--text-muted);">No refresh has run yet.</span>';
+                if (last && last.ok) {
+                    result = `<span style="color:var(--accent-green);">Last refresh: ${escapeHtml(last.at)} (${parseInt(last.v4) || 0} IPv4, ${parseInt(last.v6) || 0} IPv6)</span>`;
+                } else if (last) {
+                    result = `<span style="color:var(--accent-yellow, #eab308);">Last refresh failed (${escapeHtml(last.at)}): ${escapeHtml(last.message || '')}.${last.last_ok_at ? ' Last good: ' + escapeHtml(last.last_ok_at) + '.' : ''}</span>`;
+                }
+                el.innerHTML = `
+                    <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                        Once a week the portal fetches Cloudflare's two published address lists (two GET requests over HTTPS to cloudflare.com; nothing about this portal or its users is sent).
+                        A list that is empty, malformed, too small, too broad or that drops most known ranges is ignored and the current list stays.
+                    </p>
+                    <div class="stat-row"><span class="stat-label">In use</span><span class="stat-value">${escapeHtml(c.source)}${c.fetched_at ? ' (fetched ' + escapeHtml(c.fetched_at) + ')' : ''}: ${c.v4} IPv4, ${c.v6} IPv6</span></div>
+                    <p style="margin:0.5rem 0;font-size:0.85rem;">${result}</p>
+                    ${c.stage_mode ? '<p style="color:var(--text-muted);font-size:0.8rem;">The refresh is off in staged mode.</p>' : ''}
+                    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);margin-top:0.75rem;">
+                        <input type="checkbox" id="cf-enabled" data-cfranges-toggle="1" ${c.enabled ? 'checked' : ''}>
+                        Refresh weekly
+                    </label>`;
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
+            }
+        }
+
+        async function saveCfRangesEnabled(enabled) {
+            try {
+                const res = await Portal.fetch('/api/admin/cf-ranges', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) Portal.toast(enabled ? 'Weekly refresh on' : 'Weekly refresh off', 'success');
+                else Portal.toast(data.error || 'Failed to save', 'error');
+            } catch (e) {
+                Portal.toast('Failed to save', 'error');
+            }
+            loadCfRanges();
+        }
+
+        document.addEventListener('click', function(e) {
+            const act = e.target.closest('[data-neverban-action]');
+            if (act && act.getAttribute('data-neverban-action') === 'save') saveNeverBan();
+        });
+        document.addEventListener('change', function(e) {
+            const t = e.target.closest('[data-cfranges-toggle]');
+            if (t) saveCfRangesEnabled(t.checked);
         });
 
         // ===== DATA RETENTION =====

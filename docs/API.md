@@ -3613,6 +3613,88 @@ Delete one archive.
 
 ---
 
+### IP Blocking, Never-Ban List and Proxy Trust (Admin)
+
+Blocked IPs are rejected app-wide (every page and API call) before authentication. Admin routes need a credential with admin power. The never-ban list and the Cloudflare setting are changed by a superadmin only.
+
+#### GET /api/admin/blocked-ips
+List every block, including expired ones. Rows have `ip_address`, `reason`, `blocked_by`, `blocked_by_username`, `created_at`, `expires_at` (`null` is permanent) and `source` (`manual` or `auto`).
+
+**Auth**: Admin
+
+#### POST /api/admin/blocked-ips
+Block an address by hand: `{"ip_address": "203.0.113.7", "reason": "...", "duration_hours": 24}` (`reason` and `duration_hours` optional; without a duration the block is permanent). A manual block replaces any existing row for that address. Refuses the caller's own current address. Response `201`: `{"success": true, "ip_address", "expires_at"}`.
+
+**Auth**: Admin
+
+#### DELETE /api/admin/blocked-ips/{ip}
+Remove the block for an address (and any temporary scanner block held in memory for it).
+
+**Auth**: Admin
+
+An automatic block never overwrites or shortens a manual block, never shortens an automatic one and never turns a permanent block into a timed one; it only replaces a row whose own expiry has passed. Nothing in 1.13.0 writes an automatic block to the database yet; the optional scanner-probe block (`PROBE_BLOCK_STRIKES`) is held in memory.
+
+To lift a block while locked out, stop the portal and run `sudo venv/bin/python server.py unblock <ip>` or `sudo venv/bin/python server.py clear-bans` (no migration is run; the output lists what was removed).
+
+#### GET /api/admin/never-ban
+The admin-edited never-ban list and the effective list that no automatic block may cover.
+
+**Auth**: Superadmin (any full-power credential)
+
+**Response (200)**:
+```json
+{
+  "entries": ["203.0.113.0/24"],
+  "env_warnings": [],
+  "effective": [
+    {"source": "loopback", "label": "Loopback (always)", "entries": ["127.0.0.0/8", "::1"]},
+    {"source": "private", "label": "Private and link-local networks, and the other ranges Python treats as private (always)", "entries": ["10.0.0.0/8", "..."]},
+    {"source": "host", "label": "This host's own addresses (always)", "entries": ["198.51.100.4"]},
+    {"source": "cloudflare", "label": "Cloudflare ranges (built-in) (always)", "entries": ["173.245.48.0/20", "..."]},
+    {"source": "trusted_proxies", "label": "TRUSTED_PROXIES in .env (always)", "entries": []},
+    {"source": "env", "label": "NEVER_BAN_CIDRS in .env", "entries": []},
+    {"source": "admin", "label": "Never-ban list set on this page", "entries": ["203.0.113.0/24"]}
+  ],
+  "limits": {"max_entries": 100, "min_prefix_ipv4": 8, "min_prefix_ipv6": 16},
+  "your_ip": "198.51.100.77",
+  "your_ip_covered": false,
+  "your_ip_source": null
+}
+```
+`your_ip_covered` says whether the caller's own current address is exempt (and `your_ip_source` why). It is informational only.
+
+#### PUT /api/admin/never-ban
+Replace the admin list: `{"entries": ["203.0.113.0/24", "198.51.100.7"]}`. A bare address becomes /32 or /128; duplicates are collapsed. Entries must be strict CIDR (no host bits set), at most 100. Refused with `400`: `0.0.0.0/0`, `::/0`, an IPv4 prefix shorter than /8, an IPv6 prefix shorter than /16, anything overlapping the IPv4-mapped range, host bits, anything that is not an address or network, more than 100 entries, a non-list. Saving also drops scanner strikes and blocks already held in memory for covered addresses.
+
+**Auth**: Superadmin. Audited `never_ban.update`.
+
+**Response (200)**: the same object as GET plus `"saved": true` and `"scanner_blocks_cleared": <n>`.
+
+#### GET /api/admin/proxy-trust
+The proxy-trust self-check. `suspect` is true when at least 30 of the last 100 requests were seen and more than half came from a loopback or private address that carries `CF-Connecting-IP` or `CF-Ray` while that address is not a trusted proxy (usually `TRUSTED_PROXIES` is missing `127.0.0.1,::1`). The warning is logged once per episode and logged again only after the share has fallen to a quarter or less. It only reports and never changes trust.
+
+**Auth**: Admin
+
+**Response (200)**:
+```json
+{"suspect": true, "samples": 100, "suspicious": 100, "peers": ["127.0.0.1"], "loopback_trusted": false, "message": "Most recent requests arrive from ..."}
+```
+`message` is `null` when `suspect` is false. The same condition logs one warning. A warning is also logged at start when the portal listens on loopback only but loopback is not trusted.
+
+#### GET /api/admin/cf-ranges
+The Cloudflare range refresh: `{"enabled": true, "source": "built-in"|"fetched", "fetched_at": "2026-11-18 03:00:00"|null, "v4": 15, "v6": 7, "last": {"ok": true, "at": "...", "message": "...", "v4": 15, "v6": 7, "added": [], "removed": [], "last_ok_at": "..."}|null, "stage_mode": false}`. A failed refresh has `"ok": false`, a `message` and the time of the last good refresh in `last_ok_at`; the list in use is then unchanged.
+
+**Auth**: Admin
+
+#### PUT /api/admin/cf-ranges
+`{"enabled": true|false}` turns the weekly refresh on or off (setting `cf_ranges_refresh`, default on). Turning it off keeps the list now in use. Returns the same object as GET. `400` unless `enabled` is a boolean.
+
+**Auth**: Superadmin. Audited `cf_ranges.settings`.
+
+The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.cloudflare.com/ips-v6` (certificate verified, 10 s timeout, 64 KB cap, no cookies, no redirect to another host, nothing sent about the portal). It accepts a list only if every line is a network, there are at least 10 IPv4 and 5 IPv6 ranges, no range is broader than /8 (IPv4) or /16 (IPv6) or is private, loopback or reserved, and the list still covers more than half of the current Cloudflare ranges. It then swaps the trusted list at once (no restart), clears the trusted-peer cache and saves the list and the result in settings. It does not run in a staged instance.
+
+---
+
 ### Audit Log (Moderator+)
 
 View log of all moderation actions. Entries are automatically created for: message_delete, pin/unpin_message, timeout/mute/unmute/ban/unban, channel CRUD, role changes, automod triggers, channel member management.

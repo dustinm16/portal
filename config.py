@@ -48,6 +48,13 @@ class Config:
     # client connecting straight to the origin cannot spoof its IP.
     TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")
 
+    # Addresses and CIDR networks that no automatic block may ever cover
+    # (comma separated). Works without the database, so it still protects an
+    # admin who is locked out. Nothing broader than /8 (IPv4) or /16 (IPv6)
+    # is accepted. Loopback, this host's own addresses, trusted proxies and
+    # Cloudflare are always exempt without being listed.
+    NEVER_BAN_CIDRS: str = os.getenv("NEVER_BAN_CIDRS", "")
+
     # Opt-in: temporarily block clients that probe for files the portal never
     # serves (.env, .git/config, *.php, ...) after this many hits. 0 (the
     # default) leaves it off. Blocks are per IP, so a shared NAT is blocked

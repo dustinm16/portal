@@ -31,7 +31,7 @@ import ssl
 import sys
 import uuid
 import weakref
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -128,6 +128,7 @@ from host_check import (
     _SSRFSafeResolver, _SSRFSafeConnector,
 )
 import backup_manager
+import ipguard
 import update_manager
 import vod_staging
 import automod
@@ -221,16 +222,12 @@ def _is_probe_blocked(ip: str) -> bool:
 def _record_probe(ip: str, path: str) -> None:
     """Count a scanner-style request; block the client once it repeats."""
     global _probe_last_prune
-    # Never block the proxies themselves, local callers, or this server's own
-    # public address: media-server hooks, link previews and tunnelled
-    # connections reach the portal from those, and users can aim them at
-    # probe-like paths.
-    if (
-        Config.PROBE_BLOCK_STRIKES <= 0
-        or _is_trusted_proxy(ip)
-        or _is_local_address(ip)
-        or ip in _get_server_own_ips()
-    ):
+    # Never block the proxies themselves, local callers, this server's own
+    # addresses or anything on a never-ban list: media-server hooks, link
+    # previews and tunnelled connections reach the portal from those, and users
+    # can aim them at probe-like paths. Every automatic block asks the same
+    # helper, _never_ban_reason.
+    if Config.PROBE_BLOCK_STRIKES <= 0 or _never_ban_reason(ip) is not None:
         return
     now = monotonic()
     # Sweep expired entries at most once a minute, and cap both tables, so a
@@ -790,12 +787,9 @@ _CLOUDFLARE_NETWORKS = (
 )
 
 
-def _build_trusted_proxies() -> list:
-    # Loopback is deliberately NOT trusted by default: a user connection that
-    # tunnels back into the portal arrives from 127.0.0.1 and could otherwise
-    # supply any client address. Hosts with a local reverse proxy or
-    # cloudflared add 127.0.0.1 / ::1 through TRUSTED_PROXIES.
-    nets = [ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS]
+def _parse_extra_trusted() -> list:
+    """Networks from TRUSTED_PROXIES (the operator's own list)."""
+    nets = []
     for item in Config.TRUSTED_PROXIES.split(","):
         item = item.strip()
         if not item:
@@ -805,6 +799,23 @@ def _build_trusted_proxies() -> list:
         except ValueError:
             logger.warning(f"Ignoring invalid TRUSTED_PROXIES entry: {item!r}")
     return nets
+
+
+# The Cloudflare part of the trusted list, kept apart from TRUSTED_PROXIES so a
+# refresh can replace it. Starts as the built-in list above; a validated fetch
+# (or the last good one saved in settings) replaces it.
+_cf_networks: list = [ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS]
+_cf_source: str = "built-in"
+_cf_fetched_at: Optional[str] = None
+_extra_trusted_networks: list = _parse_extra_trusted()
+
+
+def _build_trusted_proxies() -> list:
+    # Loopback is deliberately NOT trusted by default: a user connection that
+    # tunnels back into the portal arrives from 127.0.0.1 and could otherwise
+    # supply any client address. Hosts with a local reverse proxy or
+    # cloudflared add 127.0.0.1 / ::1 through TRUSTED_PROXIES.
+    return list(_cf_networks) + list(_extra_trusted_networks)
 
 
 _trusted_proxy_networks: list = _build_trusted_proxies()
@@ -827,6 +838,356 @@ def _is_trusted_proxy(peer_ip: str) -> bool:
         _trusted_peer_cache.clear()
     _trusted_peer_cache[peer_ip] = trusted
     return trusted
+
+
+# ---------------------------------------------------------------------------
+# Lockout-safe blocking: the one exemption every automatic block asks
+# ---------------------------------------------------------------------------
+
+_never_ban_env_nets, _never_ban_env_warnings = ipguard.parse_env_cidrs(Config.NEVER_BAN_CIDRS)
+for _w in _never_ban_env_warnings:
+    logger.warning(_w)
+# The admin-editable list (settings key never_ban_cidrs), loaded at startup.
+_never_ban_admin_nets: list = []
+NEVER_BAN_SETTING = "never_ban_cidrs"
+
+_host_addr_cache: tuple = (0.0, frozenset())
+
+
+def _canon_addr(ip: str):
+    """ipaddress object for `ip` (IPv4-mapped IPv6 folded to IPv4), or None if unparseable."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        return None
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr
+
+
+def _host_addresses() -> frozenset:
+    """This host's own addresses: those the configured hostnames resolve to plus every
+    interface address. Cached for five minutes."""
+    global _host_addr_cache
+    now = monotonic()
+    ts, cached = _host_addr_cache
+    if cached and now - ts < 300:
+        return cached
+    found = set()
+    for raw in _get_server_own_ips():
+        addr = _canon_addr(raw.split("%", 1)[0])
+        if addr:
+            found.add(str(addr))
+    try:
+        for addrs in psutil.net_if_addrs().values():
+            for a in addrs:
+                if a.family in (socket.AF_INET, socket.AF_INET6):
+                    addr = _canon_addr(a.address.split("%", 1)[0])
+                    if addr:
+                        found.add(str(addr))
+    except Exception:
+        pass
+    _host_addr_cache = (now, frozenset(found))
+    return _host_addr_cache[1]
+
+
+def _never_ban_reason(ip: str, admin_nets=None) -> Optional[str]:
+    """Why `ip` must never be blocked automatically, or None when it may be.
+
+    The single exemption used by every automatic block. An address that does
+    not parse is exempt (nothing sensible can be blocked by it). `admin_nets`
+    substitutes a candidate admin list, to tell an admin whether their own
+    address would be covered by what they are about to save.
+    """
+    addr = _canon_addr(ip)
+    if addr is None:
+        return "not a valid address"
+    if addr.is_loopback:
+        return "loopback"
+    if addr.is_private or addr.is_link_local:
+        return "private network"
+    if _is_trusted_proxy(str(addr)):
+        return "trusted proxy or Cloudflare"
+    if ipguard.addr_in_networks(addr, _never_ban_env_nets):
+        return "NEVER_BAN_CIDRS"
+    if ipguard.addr_in_networks(addr, _never_ban_admin_nets if admin_nets is None else admin_nets):
+        return "never-ban list"
+    if str(addr) in _host_addresses():
+        return "this host's own address"
+    return None
+
+
+def _never_ban_effective() -> list:
+    """The effective never-ban set grouped by source, for the admin page."""
+    host = sorted(_host_addresses())
+    cf_label = "Cloudflare ranges (" + _cf_source + (f", fetched {_cf_fetched_at}" if _cf_fetched_at else "") + ")"
+    return [
+        {"source": "loopback", "label": "Loopback (always)", "entries": ["127.0.0.0/8", "::1"]},
+        {"source": "private", "label": "Private and link-local networks, and the other ranges Python treats as private (always)",
+         "entries": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"]},
+        {"source": "host", "label": "This host's own addresses (always)", "entries": host},
+        {"source": "cloudflare", "label": cf_label + " (always)", "entries": [str(n) for n in _cf_networks]},
+        {"source": "trusted_proxies", "label": "TRUSTED_PROXIES in .env (always)",
+         "entries": [str(n) for n in _extra_trusted_networks]},
+        {"source": "env", "label": "NEVER_BAN_CIDRS in .env",
+         "entries": [str(n) for n in _never_ban_env_nets]},
+        {"source": "admin", "label": "Never-ban list set on this page",
+         "entries": [str(n) for n in _never_ban_admin_nets]},
+    ]
+
+
+async def _auto_block_ip(ip: str, reason: str, duration_seconds: Optional[int]) -> Optional[str]:
+    """The entry point for any automatic block that is stored in the database.
+
+    Returns the exemption reason when `ip` is exempt (nothing is blocked), or
+    None. Whether an existing manual or longer block survives is decided by
+    Database.block_ip(source='auto'). Nothing in this release calls it: the
+    scanner-probe block is in memory and goes through _record_probe, which asks
+    the same _never_ban_reason.
+    """
+    exempt = _never_ban_reason(ip)
+    if exempt:
+        logger.info(f"Not blocking {ip}: exempt ({exempt})")
+        return exempt
+    canon = str(_canon_addr(ip))
+    expires_at = None
+    if duration_seconds:
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    if await db.block_ip(canon, reason=(reason or "")[:200] or None, expires_at=expires_at, source="auto"):
+        _blocked_ips[canon] = expires_at
+    return None
+
+
+def _forget_probe_state(nets) -> int:
+    """Drop in-memory scanner strikes and blocks for addresses now covered by `nets`."""
+    dropped = 0
+    for table in (_probe_blocks, _probe_strikes):
+        for key in list(table):
+            addr = _canon_addr(key)
+            if addr is not None and ipguard.addr_in_networks(addr, nets):
+                del table[key]
+                dropped += 1
+    return dropped
+
+
+# ---------------------------------------------------------------------------
+# Proxy-trust self-check: most requests from a loopback or private peer that
+# carries Cloudflare headers, while that peer is not trusted, means
+# TRUSTED_PROXIES is wrong. It only reports; it never changes trust.
+# ---------------------------------------------------------------------------
+
+_PEER_WINDOW = 100
+_PEER_MIN_SAMPLES = 30
+_peer_marks: deque = deque(maxlen=_PEER_WINDOW)   # None, or the untrusted internal peer of a CF-header request
+_peer_suspect_count = 0
+_peer_trust_warned = False
+
+
+def _peer_is_internal(ip: str) -> bool:
+    addr = _canon_addr(ip)
+    return addr is not None and (addr.is_loopback or addr.is_private or addr.is_link_local)
+
+
+def _peer_trust_tripped() -> bool:
+    return len(_peer_marks) >= _PEER_MIN_SAMPLES and _peer_suspect_count * 2 > len(_peer_marks)
+
+
+def _note_request_peer(request: web.Request) -> None:
+    """Record one request for the self-check. O(1); no work without Cloudflare headers."""
+    global _peer_suspect_count, _peer_trust_warned
+    mark = None
+    h = request.headers
+    if "CF-Connecting-IP" in h or "CF-Ray" in h:
+        peername = request.transport.get_extra_info("peername") if request.transport else None
+        peer_ip = peername[0] if peername else None
+        if peer_ip and _peer_is_internal(peer_ip) and not _is_trusted_proxy(peer_ip):
+            mark = peer_ip
+    if len(_peer_marks) == _peer_marks.maxlen and _peer_marks[0] is not None:
+        _peer_suspect_count -= 1
+    _peer_marks.append(mark)
+    if mark is not None:
+        _peer_suspect_count += 1
+    if _peer_trust_tripped():
+        if not _peer_trust_warned:
+            _peer_trust_warned = True
+            logger.warning(
+                "Most recent requests arrive from a loopback or private address that carries Cloudflare "
+                "headers, but that address is not a trusted proxy. Every visitor is being attributed to it. "
+                "If cloudflared or a reverse proxy runs on this host, set TRUSTED_PROXIES in .env "
+                "(for example 127.0.0.1,::1) and restart. Trust is not changed automatically."
+            )
+    elif _peer_suspect_count * 4 <= len(_peer_marks):
+        # Re-arm only once the share is clearly below the trip point, so traffic hovering around half
+        # does not log the full warning again on every crossing.
+        _peer_trust_warned = False
+
+
+def _proxy_trust_status() -> dict:
+    peers: dict = {}
+    for m in _peer_marks:
+        if m is not None:
+            peers[m] = peers.get(m, 0) + 1
+    tripped = _peer_trust_tripped()
+    return {
+        "suspect": tripped,
+        "samples": len(_peer_marks),
+        "suspicious": _peer_suspect_count,
+        "peers": [p for p, _ in sorted(peers.items(), key=lambda kv: -kv[1])[:3]],
+        "loopback_trusted": _is_trusted_proxy("127.0.0.1"),
+        "message": (
+            "Most recent requests arrive from a loopback or private address that carries Cloudflare headers, "
+            "but that address is not a trusted proxy, so every visitor is attributed to it and IP blocks and "
+            "rate limits apply to everyone at once. If cloudflared or a reverse proxy runs on this host, add "
+            "its address to TRUSTED_PROXIES in .env (for example 127.0.0.1,::1) and restart. "
+            "Trust is never changed automatically."
+        ) if tripped else None,
+    }
+
+
+def _log_proxy_trust_at_startup() -> None:
+    logger.info(
+        f"Trusted proxies: {len(_cf_networks)} Cloudflare range(s) ({_cf_source}), "
+        f"{len(_extra_trusted_networks)} from TRUSTED_PROXIES; loopback trusted: {_is_trusted_proxy('127.0.0.1')}"
+    )
+    loopback_bind = Config.HOST in ("127.0.0.1", "::1", "localhost")
+    if loopback_bind and not _is_trusted_proxy("127.0.0.1"):
+        logger.warning(
+            f"Listening on {Config.HOST} only, so visitors can only arrive through a proxy on this host, "
+            "but loopback is not a trusted proxy: every visitor would be attributed to 127.0.0.1. "
+            "Set TRUSTED_PROXIES=127.0.0.1,::1 in .env if that is your setup. Trust is not changed automatically."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare range refresh
+# ---------------------------------------------------------------------------
+
+CF_SETTING_ENABLED = "cf_ranges_refresh"     # "false" turns the weekly job off; anything else is on
+CF_SETTING_LIST = "cf_ranges_list"           # last good fetched list (JSON)
+CF_SETTING_LAST = "cf_ranges_last"           # result of the last attempt (JSON)
+CF_REFRESH_INTERVAL = 7 * 86400
+CF_RETRY_INTERVAL = 86400
+CF_STARTUP_DELAY = 300
+CF_CHECK_EVERY = 6 * 3600
+
+
+def _apply_cloudflare_networks(nets, source: str, fetched_at: Optional[str] = None) -> None:
+    """Replace the Cloudflare part of the trusted list in one step and drop the peer cache."""
+    global _cf_networks, _cf_source, _cf_fetched_at
+    _cf_networks = list(nets)
+    _cf_source = source
+    _cf_fetched_at = fetched_at
+    _trusted_proxy_networks[:] = _build_trusted_proxies()
+    _trusted_peer_cache.clear()
+
+
+async def _cf_load_last() -> dict:
+    raw = await db.get_setting(CF_SETTING_LAST)
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _cf_refresh_due(last: dict, now: datetime) -> bool:
+    """A weekly refresh counted from the last attempt; a failed one is retried after a day."""
+    try:
+        at = datetime.strptime(last["at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError, TypeError):
+        return True
+    wait = CF_REFRESH_INTERVAL if last.get("ok") else CF_RETRY_INTERVAL
+    return (now - at).total_seconds() >= wait
+
+
+async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> dict:
+    """Fetch (or take injected) Cloudflare lists, validate, swap, persist. Never raises.
+
+    `texts` is a (v4_text, v6_text) pair that replaces the fetch; `urls` and
+    `ssl_context` let a test point the fetch at a local server. Without any of
+    them a staged instance refuses to go out at all.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    prev = await _cf_load_last()
+    status = {"ok": False, "at": now, "last_ok_at": prev.get("last_ok_at")}
+    try:
+        if texts is None:
+            if Config.STAGE_MODE and urls is None:
+                raise ipguard.FetchError("the refresh does not run in staged mode")
+            u4, u6 = urls or ipguard.CF_URLS
+            v4_text = await ipguard.fetch_text(u4, ssl_context)
+            v6_text = await ipguard.fetch_text(u6, ssl_context)
+        else:
+            v4_text, v6_text = texts
+        new = ipguard.validate_cf_lists(v4_text, v6_text, _cf_networks)
+        old_set, new_set = set(_cf_networks), set(new)
+        payload = {
+            "v4": [str(n) for n in new if n.version == 4],
+            "v6": [str(n) for n in new if n.version == 6],
+            "fetched_at": now,
+        }
+        await db.set_setting(CF_SETTING_LIST, json.dumps(payload))     # persist first, then swap
+        _apply_cloudflare_networks(new, "fetched", now)
+        status.update({
+            "ok": True, "last_ok_at": now,
+            "message": "Cloudflare ranges refreshed",
+            "v4": len(payload["v4"]), "v6": len(payload["v6"]),
+            "added": sorted(str(n) for n in new_set - old_set)[:20],
+            "removed": sorted(str(n) for n in old_set - new_set)[:20],
+        })
+        logger.info(f"Cloudflare ranges refreshed: {len(payload['v4'])} IPv4, {len(payload['v6'])} IPv6")
+    except (ipguard.ListError, ipguard.FetchError) as e:
+        status["message"] = str(e)
+        logger.warning(f"Cloudflare range refresh failed, keeping the current list: {e}")
+    except Exception as e:
+        status["message"] = f"unexpected error ({type(e).__name__})"
+        logger.exception("Cloudflare range refresh failed, keeping the current list")
+    try:
+        await db.set_setting(CF_SETTING_LAST, json.dumps(status))
+    except Exception as e:
+        logger.warning(f"Could not save the Cloudflare refresh result: {e}")
+    return status
+
+
+async def _load_cloudflare_state() -> None:
+    """At startup: use the last good fetched list if it still validates, else keep the built-in one."""
+    raw = await db.get_setting(CF_SETTING_LIST)
+    if not raw:
+        return
+    try:
+        data = json.loads(raw)
+        nets = ipguard.validate_cf_lists("\n".join(data["v4"]), "\n".join(data["v6"]))
+        _apply_cloudflare_networks(nets, "fetched", data.get("fetched_at"))
+        logger.info(f"Using the saved Cloudflare ranges from {data.get('fetched_at')}")
+    except Exception as e:
+        logger.warning(f"Ignoring the saved Cloudflare ranges, using the built-in list: {e}")
+
+
+async def _cf_refresh_loop() -> None:
+    """Weekly refresh job. Not started in staged mode."""
+    await asyncio.sleep(CF_STARTUP_DELAY)
+    while True:
+        try:
+            if (await db.get_setting(CF_SETTING_ENABLED)) != "false":
+                if _cf_refresh_due(await _cf_load_last(), datetime.now(timezone.utc)):
+                    await refresh_cloudflare_ranges()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Cloudflare range refresh loop error: {e}")
+        await asyncio.sleep(CF_CHECK_EVERY)
+
+
+async def _load_never_ban_state() -> None:
+    global _never_ban_admin_nets
+    raw = await db.get_setting(NEVER_BAN_SETTING)
+    if not raw:
+        return
+    try:
+        _never_ban_admin_nets = ipguard.validate_cidr_list(json.loads(raw))
+        logger.info(f"Loaded {len(_never_ban_admin_nets)} never-ban entr(ies)")
+    except Exception as e:
+        logger.warning(f"Ignoring the saved never-ban list: {e}")
 
 
 def _valid_ip(value: str) -> Optional[str]:
@@ -19409,6 +19770,121 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
 
 
 # =============================================================================
+# Never-ban list, proxy-trust self-check, Cloudflare range refresh (admin)
+# =============================================================================
+
+async def _admin_only(request: web.Request):
+    """(token, error_response) for any credential with admin power."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return None, forbidden_response(request)
+    return token, None
+
+
+def _never_ban_view(request: web.Request, admin_nets=None) -> dict:
+    """The never-ban state as the admin page shows it, with a note on the caller's own address."""
+    nets = _never_ban_admin_nets if admin_nets is None else admin_nets
+    my_ip = get_client_ip(request)
+    source = _never_ban_reason(my_ip, admin_nets=nets)
+    return {
+        "entries": [str(n) for n in nets],
+        "env_warnings": list(_never_ban_env_warnings),
+        "effective": _never_ban_effective(),
+        "limits": {
+            "max_entries": ipguard.MAX_NEVER_BAN_ENTRIES,
+            "min_prefix_ipv4": ipguard.MIN_PREFIX_V4,
+            "min_prefix_ipv6": ipguard.MIN_PREFIX_V6,
+        },
+        "your_ip": my_ip,
+        "your_ip_covered": source is not None,
+        "your_ip_source": source,
+    }
+
+
+async def http_get_never_ban(request: web.Request) -> web.Response:
+    """GET /api/admin/never-ban - the admin list and the effective list with its sources (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    return web.json_response(_never_ban_view(request))
+
+
+async def http_put_never_ban(request: web.Request) -> web.Response:
+    """PUT /api/admin/never-ban - replace the admin list: {"entries": ["203.0.113.0/24", ...]} (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object with an entries list"}, status=400)
+    try:
+        nets = ipguard.validate_cidr_list(data.get("entries"))
+    except ipguard.ListError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    global _never_ban_admin_nets
+    await db.set_setting(NEVER_BAN_SETTING, json.dumps([str(n) for n in nets]))
+    _never_ban_admin_nets = nets
+    cleared = _forget_probe_state(nets)
+    await audit_log("never_ban.update", user["id"], user.get("username", "unknown"),
+                    details={"entries": len(nets), "scanner_blocks_cleared": cleared})
+    logger.info(f"Never-ban list set to {len(nets)} entr(ies) by user {user['id']}")
+    view = _never_ban_view(request)
+    view["saved"] = True
+    view["scanner_blocks_cleared"] = cleared
+    return web.json_response(view)
+
+
+async def http_get_proxy_trust(request: web.Request) -> web.Response:
+    """GET /api/admin/proxy-trust - the proxy-trust self-check (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(_proxy_trust_status())
+
+
+async def _cf_ranges_view() -> dict:
+    return {
+        "enabled": (await db.get_setting(CF_SETTING_ENABLED)) != "false",
+        "source": _cf_source,
+        "fetched_at": _cf_fetched_at,
+        "v4": sum(1 for n in _cf_networks if n.version == 4),
+        "v6": sum(1 for n in _cf_networks if n.version == 6),
+        "last": await _cf_load_last() or None,
+        "stage_mode": bool(Config.STAGE_MODE),
+    }
+
+
+async def http_get_cf_ranges(request: web.Request) -> web.Response:
+    """GET /api/admin/cf-ranges - the Cloudflare range refresh setting and last result (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(await _cf_ranges_view())
+
+
+async def http_put_cf_ranges(request: web.Request) -> web.Response:
+    """PUT /api/admin/cf-ranges - {"enabled": true|false} turns the weekly refresh on or off (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict) or not isinstance(data.get("enabled"), bool):
+        return web.json_response({"error": "enabled must be true or false"}, status=400)
+    await db.set_setting(CF_SETTING_ENABLED, "true" if data["enabled"] else "false")
+    await audit_log("cf_ranges.settings", user["id"], user.get("username", "unknown"),
+                    details={"enabled": data["enabled"]})
+    return web.json_response(await _cf_ranges_view())
+
+
+# =============================================================================
 # Application Setup
 # =============================================================================
 
@@ -19416,6 +19892,7 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
 async def security_headers_middleware(request: web.Request, handler):
     """Block banned IPs app-wide, then add security headers to all responses."""
     client_ip = get_client_ip(request)
+    _note_request_peer(request)
     if _is_ip_blocked(client_ip) or _is_probe_blocked(client_ip):
         response = web.json_response({"error": "Access denied"}, status=403)
     else:
@@ -20123,6 +20600,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/blocked-ips", http_list_blocked_ips)
     app.router.add_post("/api/admin/blocked-ips", http_block_ip)
     app.router.add_delete("/api/admin/blocked-ips/{ip}", http_unblock_ip)
+    app.router.add_get("/api/admin/never-ban", http_get_never_ban)
+    app.router.add_put("/api/admin/never-ban", http_put_never_ban)
+    app.router.add_get("/api/admin/proxy-trust", http_get_proxy_trust)
+    app.router.add_get("/api/admin/cf-ranges", http_get_cf_ranges)
+    app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
 
     # File Manager (admin only)
     app.router.add_get("/api/files/list", http_list_files)
@@ -20375,6 +20857,11 @@ class PortalServer:
         if _blocked_ips:
             logger.info(f"Loaded {len(_blocked_ips)} active IP block(s)")
 
+        # Never-ban list, the last good Cloudflare ranges, and the proxy-trust notice
+        await _load_never_ban_state()
+        await _load_cloudflare_state()
+        _log_proxy_trust_at_startup()
+
         # Start traffic metrics recorder
         if Config.METRICS_ENABLED:
             await start_metrics_recorder()
@@ -20394,6 +20881,11 @@ class PortalServer:
         # often than the cleanup interval still gets its backups (skipped in staged mode)
         if not Config.STAGE_MODE:
             asyncio.create_task(backup_manager.run_startup_check())
+
+        # Weekly Cloudflare range refresh (the only outbound call is two GETs of the published lists;
+        # never in staged mode)
+        if not Config.STAGE_MODE:
+            asyncio.create_task(_cf_refresh_loop())
 
         # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
         # (skipped in staged test mode: it would poll the host's real MediaMTX)
@@ -21173,6 +21665,11 @@ def main():
     restore_cmd.add_argument("archive", help="Path of the .tar.gz archive")
     restore_cmd.add_argument("--into", required=True, metavar="DIR", help="Empty target directory (created if missing)")
 
+    # Lift IP blocks without the web UI (server stopped; no migrations are run)
+    unblock_cmd = subparsers.add_parser("unblock", help="Remove the IP block(s) for one address from the database (run with the server stopped)")
+    unblock_cmd.add_argument("ip", help="IPv4 or IPv6 address")
+    subparsers.add_parser("clear-bans", help="Remove every IP block from the database (run with the server stopped)")
+
     # Update component
     update_cmd = subparsers.add_parser("update", help="Apply an update to a component")
     update_cmd.add_argument("--component", required=True,
@@ -21265,6 +21762,12 @@ def main():
         print("Nothing in the live installation was changed. To use the restored data, put the same portal")
         print("release in a fresh directory, copy these files into it, fix the paths and port listed above in")
         print(".env, and start it there. See 'Backups and Rollback' in the README.")
+    elif args.command == "unblock":
+        import ban_cli
+        sys.exit(ban_cli.unblock(args.ip, Config.DATABASE_PATH))
+    elif args.command == "clear-bans":
+        import ban_cli
+        sys.exit(ban_cli.clear_bans(Config.DATABASE_PATH))
     elif args.command == "update":
         async def _run_update():
             print(f"Starting update: {args.component}" + (f" version {args.version}" if args.version else ""))

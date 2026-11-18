@@ -21,6 +21,10 @@ Check module interface (tools/smoke_checks/check_<name>.py):
     ctx.http()                    aiohttp.ClientSession (TLS verify off, unsafe cookie jar)
     await ctx.login(session, username, password, totp_code=None)
     await ctx.run_py(code)        -> (returncode, output), cwd = stage dir
+    await ctx.stop_server()       stop the staged server (a check that does so must start it again)
+    await ctx.start_server(wait_healthy=True)
+                                  start it on the same database; False returns without waiting for /health
+    ctx.server_log()              the whole staged server log so far
     ctx.ok(name, passed, detail)  record one result
     ctx.skip(name, reason)        record a check that could not run (not a failure)
 """
@@ -93,6 +97,7 @@ class Ctx:
         self.admin_user = admin_user
         self.admin_password = admin_password
         self._env = env
+        self.server: "StagedServer | None" = None
         self.results: list[tuple[str, str, str, str]] = []   # (status, module, name, detail)
         self.module = "runner"
 
@@ -124,6 +129,26 @@ class Ctx:
             await proc.wait()
             return 124, "run_py timed out"
         return proc.returncode, out.decode("utf-8", "replace")
+
+    async def stop_server(self) -> None:
+        if self.server is None:
+            raise RunnerError("no staged server is attached to this context")
+        await asyncio.to_thread(self.server.stop)
+
+    async def start_server(self, wait_healthy: bool = True) -> None:
+        if self.server is None:
+            raise RunnerError("no staged server is attached to this context")
+        await asyncio.to_thread(self.server.start)
+        if wait_healthy:
+            await asyncio.to_thread(self.server.wait_healthy)
+
+    def server_log(self) -> str:
+        if self.server is None:
+            return ""
+        try:
+            return self.server.log_path.read_text(errors="replace")
+        except OSError:
+            return ""
 
     def ok(self, name: str, passed: bool, detail: str = "") -> None:
         self.results.append(("PASS" if passed else "FAIL", self.module, name, detail))
@@ -584,6 +609,7 @@ def _run(args, source: Path, stage: Path, prod_files: list) -> int:
     server = StagedServer(stage, env, args.port, cert)
     _STATE["server"] = server
     ctx = Ctx(stage, args.port, env, admin_user, admin_password)
+    ctx.server = server
 
     try:
         if not args.from_db:

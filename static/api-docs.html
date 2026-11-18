@@ -426,6 +426,7 @@
                         <li><a href="#file-manager">File Manager</a></li>
                         <li><a href="#data-retention">Data Retention</a></li>
                         <li><a href="#backups">Backups</a></li>
+                        <li><a href="#ip-blocking">IP Blocking</a></li>
                         <li><a href="#audit-log">Audit Log</a></li>
                         <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
@@ -5656,6 +5657,133 @@ Headers:
                     </div>
                     <div class="endpoint-body">
                         <p>Deletes the archive. Auth: superadmin, browser login session only. Audited as <code>backup.delete</code>. Response (200): <code>{"deleted": true}</code>. Errors: <code>400</code> invalid archive name; <code>403</code> not a browser session; <code>404</code> no such archive.</p>
+                    </div>
+                </div>
+
+                <h2 id="ip-blocking">IP Blocking and Never-Ban List <span class="badge-admin">ADMIN</span></h2>
+                <p>Blocked IPs are rejected app-wide (every page and API call) before authentication. Admin routes need a credential with admin power; the never-ban list and the Cloudflare setting are changed by a superadmin only. An automatic block never overwrites or shortens a manual block, never shortens an automatic one and never turns a permanent block into a timed one; it only replaces a row whose own expiry has passed. Nothing in 1.13.0 writes an automatic block to the database yet: the optional scanner-probe block (<code>PROBE_BLOCK_STRIKES</code>) is held in memory. To lift a block while locked out, stop the portal and run <code>sudo venv/bin/python server.py unblock &lt;ip&gt;</code> or <code>sudo venv/bin/python server.py clear-bans</code> (no migration is run; the output lists what was removed).</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/blocked-ips</span>
+                        <span class="endpoint-desc">List blocks</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Lists every block, including expired ones. Rows have <code>ip_address</code>, <code>reason</code>, <code>blocked_by</code>, <code>blocked_by_username</code>, <code>created_at</code>, <code>expires_at</code> (<code>null</code> is permanent) and <code>source</code> (<code>manual</code> or <code>auto</code>).</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/admin/blocked-ips</span>
+                        <span class="endpoint-desc">Block an address by hand</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>{"ip_address": "203.0.113.7", "reason": "...", "duration_hours": 24}</code> (<code>reason</code> and <code>duration_hours</code> optional; no duration means permanent). A manual block replaces any existing row for that address. Refuses the caller's own current address. Response (201): <code>{"success": true, "ip_address", "expires_at"}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/admin/blocked-ips/{ip}</span>
+                        <span class="endpoint-desc">Remove a block</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Removes the block for the address and any temporary scanner block held in memory for it.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/never-ban</span>
+                        <span class="endpoint-desc">Never-ban list and effective list</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>The admin-edited never-ban list and the effective list that no automatic block may cover, grouped by source. Auth: superadmin, any full-power credential.</p>
+                        <h4>Response Example</h4>
+                        <div class="code-block">
+<pre>{
+  "entries": ["203.0.113.0/24"],
+  "env_warnings": [],
+  "effective": [
+    {"source": "loopback", "label": "Loopback (always)", "entries": ["127.0.0.0/8", "::1"]},
+    {"source": "private", "label": "Private and link-local networks, and the other ranges Python treats as private (always)", "entries": ["10.0.0.0/8", "..."]},
+    {"source": "host", "label": "This host's own addresses (always)", "entries": ["198.51.100.4"]},
+    {"source": "cloudflare", "label": "Cloudflare ranges (built-in) (always)", "entries": ["173.245.48.0/20", "..."]},
+    {"source": "trusted_proxies", "label": "TRUSTED_PROXIES in .env (always)", "entries": []},
+    {"source": "env", "label": "NEVER_BAN_CIDRS in .env", "entries": []},
+    {"source": "admin", "label": "Never-ban list set on this page", "entries": ["203.0.113.0/24"]}
+  ],
+  "limits": {"max_entries": 100, "min_prefix_ipv4": 8, "min_prefix_ipv6": 16},
+  "your_ip": "198.51.100.77",
+  "your_ip_covered": false,
+  "your_ip_source": null
+}</pre>
+                        </div>
+                        <p><code>your_ip_covered</code> says whether the caller's own current address is exempt (and <code>your_ip_source</code> why). It is informational only.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/never-ban</span>
+                        <span class="endpoint-desc">Replace the never-ban list</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>{"entries": ["203.0.113.0/24", "198.51.100.7"]}</code>. A bare address becomes /32 or /128; duplicates are collapsed. Entries must be strict CIDR (no host bits set), at most 100. Refused with <code>400</code>: <code>0.0.0.0/0</code>, <code>::/0</code>, an IPv4 prefix shorter than /8, an IPv6 prefix shorter than /16, anything overlapping the IPv4-mapped range, host bits, anything that is not an address or network, more than 100 entries, a non-list. Saving also drops scanner strikes and blocks already held in memory for covered addresses. Auth: superadmin. Audited as <code>never_ban.update</code>. Response (200): the same object as GET plus <code>"saved": true</code> and <code>"scanner_blocks_cleared"</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/proxy-trust</span>
+                        <span class="endpoint-desc">Proxy-trust self-check</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Reports a likely <code>TRUSTED_PROXIES</code> mistake: <code>suspect</code> is true when at least 30 of the last 100 requests were seen and more than half came from a loopback or private address that carries <code>CF-Connecting-IP</code> or <code>CF-Ray</code> while that address is not a trusted proxy. It only reports and never changes trust. The same condition logs one warning; a warning is also logged at start when the portal listens on loopback only but loopback is not trusted.</p>
+                        <h4>Response Example</h4>
+                        <div class="code-block">
+<pre>{"suspect": true, "samples": 100, "suspicious": 100, "peers": ["127.0.0.1"],
+ "loopback_trusted": false, "message": "Most recent requests arrive from ..."}</pre>
+                        </div>
+                        <p><code>message</code> is <code>null</code> when <code>suspect</code> is false.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/cf-ranges</span>
+                        <span class="endpoint-desc">Cloudflare range refresh status</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"enabled": true, "source": "built-in"|"fetched", "fetched_at": "..."|null, "v4": 15, "v6": 7, "last": {"ok": true, "at": "...", "message": "...", "v4": 15, "v6": 7, "added": [], "removed": [], "last_ok_at": "..."}|null, "stage_mode": false}</code>. A failed refresh has <code>"ok": false</code>, a <code>message</code> and the time of the last good refresh in <code>last_ok_at</code>; the list in use is then unchanged.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/cf-ranges</span>
+                        <span class="endpoint-desc">Turn the weekly Cloudflare refresh on or off</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>{"enabled": true}</code> or <code>false</code> (setting <code>cf_ranges_refresh</code>, default on). Turning it off keeps the list now in use. Returns the same object as GET; <code>400</code> unless <code>enabled</code> is a boolean. Auth: superadmin. Audited as <code>cf_ranges.settings</code>.</p>
+                        <p>The weekly job fetches <code>https://www.cloudflare.com/ips-v4</code> and <code>https://www.cloudflare.com/ips-v6</code> (certificate verified, 10 s timeout, 64 KB cap, no cookies, no redirect to another host, nothing sent about the portal). It accepts a list only if every line is a network, there are at least 10 IPv4 and 5 IPv6 ranges, no range is broader than /8 (IPv4) or /16 (IPv6) or is private, loopback or reserved, and the list still covers more than half of the current Cloudflare ranges. It then swaps the trusted list at once (no restart), clears the trusted-peer cache and saves the list and the result in settings. It does not run in a staged instance.</p>
                     </div>
                 </div>
 

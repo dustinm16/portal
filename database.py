@@ -1008,6 +1008,8 @@ MIGRATIONS = [
         FOREIGN KEY (blocked_by) REFERENCES users(id) ON DELETE SET NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip_address)",
+    # Who made the block: 'manual' (an admin) or 'auto' (the server). Existing rows are manual.
+    "ALTER TABLE blocked_ips ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
     # Device-wide metrics: one JSON blob row per category per sample tick
     # (category in 'process' | 'port' | 'ip'). Written by device_metrics.py.
     """CREATE TABLE IF NOT EXISTS device_metric_samples (
@@ -5778,20 +5780,52 @@ class Database:
     # IP blocking (app-wide, enforced in the security middleware)
 
     async def block_ip(self, ip_address: str, reason: str = None,
-                        blocked_by: int = None, expires_at: str = None) -> bool:
-        """Block an IP address. Overwrites an existing block for the same IP."""
-        await self.conn.execute(
-            """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(ip_address) DO UPDATE SET
-                   reason = excluded.reason,
-                   blocked_by = excluded.blocked_by,
-                   created_at = CURRENT_TIMESTAMP,
-                   expires_at = excluded.expires_at""",
-            (ip_address, reason, blocked_by, expires_at)
-        )
+                        blocked_by: int = None, expires_at: str = None,
+                        source: str = "manual") -> bool:
+        """Block an IP address. Returns True when a row was written.
+
+        A manual block (an admin's own action) overwrites an existing row for
+        the same IP, as before. An automatic block (source='auto') is
+        cautious: it never overwrites or shortens a manual block, never
+        shortens an automatic one and never turns a permanent block into a
+        timed one. It only replaces a row whose own expiry has passed, or
+        extends an automatic timed block. It returns False when it left the
+        existing row as it was.
+        """
+        if source not in ("manual", "auto"):
+            raise ValueError("source must be 'manual' or 'auto'")
+        if source == "manual":
+            cursor = await self.conn.execute(
+                """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at, source)
+                   VALUES (?, ?, ?, ?, 'manual')
+                   ON CONFLICT(ip_address) DO UPDATE SET
+                       reason = excluded.reason,
+                       blocked_by = excluded.blocked_by,
+                       created_at = CURRENT_TIMESTAMP,
+                       expires_at = excluded.expires_at,
+                       source = 'manual'""",
+                (ip_address, reason, blocked_by, expires_at)
+            )
+        else:
+            cursor = await self.conn.execute(
+                """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at, source)
+                   VALUES (?, ?, NULL, ?, 'auto')
+                   ON CONFLICT(ip_address) DO UPDATE SET
+                       reason = excluded.reason,
+                       blocked_by = NULL,
+                       created_at = CURRENT_TIMESTAMP,
+                       expires_at = excluded.expires_at,
+                       source = 'auto'
+                   WHERE (blocked_ips.expires_at IS NOT NULL
+                          AND blocked_ips.expires_at <= datetime('now'))
+                      OR (blocked_ips.source = 'auto'
+                          AND blocked_ips.expires_at IS NOT NULL
+                          AND (excluded.expires_at IS NULL
+                               OR excluded.expires_at > blocked_ips.expires_at))""",
+                (ip_address, reason, expires_at)
+            )
         await self.conn.commit()
-        return True
+        return cursor.rowcount > 0
 
     async def unblock_ip(self, ip_address: str) -> bool:
         """Remove an IP block."""
