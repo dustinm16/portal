@@ -313,6 +313,12 @@ async def run(ctx):
             others = [r for rid, r in rules.items() if rid != stale["id"] and r.get("not_enforced_reason")
                       and str(r.get("name", "")).endswith(rnd)]
             ctx.ok("automod: this check's own enforced rules carry no reason", not others, str([r["name"] for r in others]))
+            status, body = await api("PUT", f"/api/admin/automod/{stale['id']}", {"enabled": False})
+            status, body = await api("GET", "/api/admin/automod")
+            off = next((r for r in body.get("rules", []) if r["id"] == stale["id"]), {})
+            ctx.ok("automod: a disabled rule is not marked as not enforced",
+                   status == 200 and off.get("enabled") in (0, False) and off.get("not_enforced_reason") is None,
+                   json.dumps(off)[:300])
             await api("DELETE", f"/api/admin/automod/{stale['id']}")
 
         # ---- a slow regex rule cannot stall other users ----

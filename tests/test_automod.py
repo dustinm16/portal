@@ -324,6 +324,37 @@ def test_rejected_edit_keeps_old_text_in_database():
     asyncio.run(go())
 
 
+def test_list_flags_only_enabled_rules_as_not_enforced():
+    import server
+    bad = json.dumps({"words": ["(a+)+$"], "match_mode": "regex"})
+    good = json.dumps({"words": ["fine"], "match_mode": "regex"})
+    rows = [
+        {"id": 1, "type": "word_filter", "name": "enabled bad", "config": bad, "enabled": 1},
+        {"id": 2, "type": "word_filter", "name": "disabled bad", "config": bad, "enabled": 0},
+        {"id": 3, "type": "word_filter", "name": "enabled good", "config": good, "enabled": 1},
+    ]
+
+    async def go():
+        async def auth(request):
+            return type("T", (), {"user_id": 1, "has_scope": lambda self, s: True})()
+
+        async def get_rules(enabled_only=False):
+            return [dict(r) for r in rows]
+
+        saved = (server.authenticate_request, server.db.get_automod_rules)
+        server.authenticate_request, server.db.get_automod_rules = auth, get_rules
+        try:
+            resp = await server.http_get_automod_rules(object())
+            return {r["id"]: r["not_enforced_reason"] for r in json.loads(resp.body)["rules"]}
+        finally:
+            server.authenticate_request, server.db.get_automod_rules = saved
+
+    reasons = asyncio.run(go())
+    assert reasons[1] and "nested quantifier" in reasons[1], reasons
+    assert reasons[2] is None, reasons
+    assert reasons[3] is None, reasons
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -15356,7 +15356,10 @@ async def http_get_automod_rules(request: web.Request) -> web.Response:
             cfg = json.loads(rule["config"]) if isinstance(rule["config"], str) else rule["config"]
         except (json.JSONDecodeError, TypeError):
             cfg = None
-        rule["not_enforced_reason"] = automod.unenforced_reason(rule["type"], cfg)
+        # The flag is for enabled rules that fail validation; a disabled rule is
+        # off on purpose and is not reported as "not enforced".
+        rule["not_enforced_reason"] = (
+            automod.unenforced_reason(rule["type"], cfg) if rule.get("enabled") else None)
     return web.json_response({"rules": rules})
 
 
