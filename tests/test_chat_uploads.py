@@ -7,12 +7,14 @@ Everything happens in a temporary directory tree; nothing outside it is touched.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
 import sys
 import tempfile
 import time
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1004,6 +1006,48 @@ def test_single_message_delete_reads_text_off_the_event_loop():
         assert seen and threading.get_ident() not in seen, seen
         assert len(ticks) > 5, f"the event loop was blocked ({len(ticks)} ticks)"
     run_with_db(body)
+
+
+def test_clear_channel_answer_names_why_files_were_skipped():
+    import server
+
+    class Req:
+        match_info = {"id": "7"}
+
+    async def go(skipped):
+        async def auth(request):
+            return types.SimpleNamespace(user_id=1)
+
+        async def get_user(uid):
+            return {"id": 1, "username": "root", "role": "superadmin"}
+
+        async def get_channel(cid):
+            return {"id": cid, "name": "nowhere-room"}
+
+        async def clear(cid, stats=None):
+            if skipped:
+                stats["skipped"] = skipped
+            return 4
+
+        async def audit(*a, **k):
+            return None
+
+        saved = (server.authenticate_request, server.db.get_user_by_id, server.db.get_chat_channel,
+                 server.db.clear_channel_messages, server.audit_log)
+        server.authenticate_request, server.db.get_user_by_id, server.db.get_chat_channel = auth, get_user, get_channel
+        server.db.clear_channel_messages, server.audit_log = clear, audit
+        try:
+            r = await server.http_clear_chat_channel(Req())
+            return json.loads(r.body)
+        finally:
+            (server.authenticate_request, server.db.get_user_by_id, server.db.get_chat_channel,
+             server.db.clear_channel_messages, server.audit_log) = saved
+
+    reason = "a message could not be decrypted, so its upload links are unknown"
+    body = asyncio.run(go(reason))
+    assert body == {"success": True, "deleted_count": 4, "chat_files_skipped": reason}, body
+    body = asyncio.run(go(None))
+    assert body == {"success": True, "deleted_count": 4}, body
 
 
 def test_dead_helper_is_gone():

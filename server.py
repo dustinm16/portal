@@ -14364,10 +14364,14 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
                     target_id=channel_id, target_type="channel", target_name=channel_name,
                     details=json.dumps({"deleted_count": deleted_count}))
 
-    return web.json_response({
+    result = {
         "success": True,
         "deleted_count": deleted_count
-    })
+    }
+    if clear_stats.get("skipped"):
+        # The messages are gone but their upload files were not looked at.
+        result["chat_files_skipped"] = clear_stats["skipped"]
+    return web.json_response(result)
 
 
 async def http_upload_chat_image(request: web.Request) -> web.Response:

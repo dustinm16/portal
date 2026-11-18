@@ -1588,6 +1588,8 @@ Clear channel history (superadmin only).
 }
 ```
 
+The messages' upload files are removed with them unless another message still names them. When that check could not be made (for example a message could not be decrypted), no file is removed and the answer also carries `"chat_files_skipped": "<reason>"`.
+
 ---
 
 #### POST /api/chat/upload
