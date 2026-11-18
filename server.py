@@ -21154,7 +21154,8 @@ def create_app() -> web.Application:
     # Audit Log
     app.router.add_get("/api/admin/audit-log", http_get_audit_log)
     app.router.add_get("/api/admin/security-events", http_get_security_events)
-    app.router.add_get("/api/admin/security-events/export", http_export_security_events)
+    app.router.add_get("/api/admin/security-events/export", http_export_security_events,
+                       allow_head=False)
 
     # Auto-Moderation
     app.router.add_get("/api/admin/automod", http_get_automod_rules)

@@ -74,6 +74,34 @@ def unit_tests():
     check("long detail values are cut", len(json.loads(secevents.clean_details({"a": "z" * 900}))["a"]) == 200)
     check("bidi overrides, isolates and zero-width characters are removed",
           secevents.clean_text("\u202enimda\u200b\u2066x\u2069\ufeff\u200f\u202a", 64) == "nimdax")
+    # clean_text bounds the input before the regex pass
+    seen = []
+
+    class _SpyRe:
+        def __init__(self, real):
+            self.real = real
+
+        def sub(self, repl, text):
+            seen.append(len(text))
+            return self.real.sub(repl, text)
+
+    real_re = secevents._CONTROL_RE
+    secevents._CONTROL_RE = _SpyRe(real_re)
+    try:
+        out = secevents.clean_text("a\x00" * 2_000_000, 64)
+        small = secevents.clean_text("abc\x00d", 64)
+    finally:
+        secevents._CONTROL_RE = real_re
+    check("clean_text scans only a few times the limit, not a multi-megabyte value",
+          seen and seen[0] <= 64 * 8 and out == "a" * 64 and small == "abcd", str(seen))
+    # the ip filter
+    f = secevents.ip_filter_values
+    check("a full IPv6 address also matches its /64 row, in canonical form",
+          f("2001:DB8:1:2:aaaa::9") == ["2001:DB8:1:2:aaaa::9", "2001:db8:1:2:aaaa::9", "2001:db8:1:2::/64"], str(f("2001:DB8:1:2:aaaa::9")))
+    check("a typed /64 matches the stored /64 text",
+          "2001:db8:1:2::/64" in f("2001:DB8:1:2::/64") and "2001:db8:1:2::/64" in f("2001:db8:1:2:5::1/64"))
+    check("IPv4 and non-addresses match as typed",
+          f("203.0.113.9") == ["203.0.113.9"] and f("unknown") == ["unknown"] and f("*") == ["*"])
     # csv
     check("csv formula prefixes get an apostrophe",
           [secevents.csv_cell(c) for c in ("=1+1", "+1", "-1", "@SUM(A1)", "\tx", "plain", 5, None)]
@@ -211,6 +239,75 @@ async def probe_and_rate_unit():
         secevents.log._agg.clear()
 
 
+async def filter_and_upsert_db_tests():
+    db = server.db
+    base_rows = {"category": "auth", "count": 1, "user_id": None, "username_tried": None,
+                 "user_agent": None, "result": None, "details": None}
+    ts = "2026-01-01 00:00:00"
+    await db.insert_security_event({**base_rows, "ts": ts, "event": "login_failed",
+                                    "ip": "2001:db8:aa:bb::/64", "agg_key": "2001:db8:aa:bb::/64|login_failed||x"})
+    await db.insert_security_event({**base_rows, "ts": ts, "event": "login_success",
+                                    "ip": "2001:db8:aa:bb::9", "agg_key": None})
+    await db.insert_security_event({**base_rows, "ts": ts, "event": "login_success",
+                                    "ip": "2001:db8:aa:cc::9", "agg_key": None})
+    full = await db.get_security_events(ip="2001:DB8:AA:BB::9", limit=50)
+    check("ip filter: a full IPv6 address finds its immediate row and its aggregated /64 row",
+          sorted(e["event"] for e in full) == ["login_failed", "login_success"], str(full))
+    typed = await db.get_security_events(ip="2001:db8:aa:bb::/64", limit=50)
+    check("ip filter: a typed /64 finds the aggregated row",
+          [e["event"] for e in typed] == ["login_failed"], str(typed))
+    other = await db.get_security_events(ip="2001:db8:aa:cc::9", limit=50)
+    check("ip filter: an address in another /64 does not match the first",
+          [e["ip"] for e in other] == ["2001:db8:aa:cc::9"], str(other))
+    check("ip filter: the count agrees with the list",
+          await db.count_security_events(ip="2001:db8:aa:bb::9") == 2)
+
+    # an upsert that fails partway leaves nothing behind and does not double counts
+    key = lambda n: f"203.0.113.{n}|login_failed|bad|2026-01-01 00:00"
+    def agg(n):
+        return {**base_rows, "ts": ts, "event": "login_failed", "ip": f"203.0.113.{n}",
+                "result": "bad", "count": 1, "agg_key": key(n)}
+    good = [agg(1), agg(2), agg(3)]
+    broken = [dict(good[0]), {**good[1], "ts": None}, dict(good[2])]
+    try:
+        await db.upsert_security_events(broken)
+        failed = False
+    except Exception:
+        failed = True
+    await db.conn.commit()          # an unrelated commit, as another request would do
+    cur = await db.conn.execute("SELECT COUNT(*) AS n FROM security_events WHERE ip LIKE '203.0.113.%'")
+    left = (await cur.fetchone())["n"]
+    check("upsert: a failure partway applies none of the batch, even after an unrelated commit",
+          failed and left == 0, f"failed={failed} left={left}")
+    buf = secevents.SecurityEventLog(db)
+    for n in (1, 2, 3):
+        buf.note("login_failed", ip=f"203.0.113.{n}", result="bad", now=1_767_225_600.0)
+    real_up = db.upsert_security_events
+    calls = []
+
+    async def flaky(rows):
+        calls.append(len(rows))
+        if len(calls) == 1:
+            rows = [dict(rows[0]), {**rows[1], "ts": None}] + [dict(r) for r in rows[2:]]
+        await real_up(rows)
+
+    db.upsert_security_events = flaky
+    try:
+        first = await buf.flush()
+        await db.conn.commit()
+        second = await buf.flush()
+    finally:
+        db.upsert_security_events = real_up
+    cur = await db.conn.execute(
+        "SELECT ip, count FROM security_events WHERE ip LIKE '203.0.113.%' ORDER BY ip")
+    got = [tuple(r) for r in await cur.fetchall()]
+    check("upsert: a failed flush is re-queued and each source is counted once",
+          first == 0 and second == 3 and got == [("203.0.113.1", 1), ("203.0.113.2", 1), ("203.0.113.3", 1)],
+          f"{first} {second} {got}")
+    await db.conn.execute("DELETE FROM security_events WHERE ip LIKE '203.0.113.%' OR ip LIKE '2001:db8:aa:%'")
+    await db.conn.commit()
+
+
 async def main_async(tmp):
     await rows_per_minute_unit()
     server.db.db_path = str(Path(tmp) / "t.db")
@@ -231,6 +328,7 @@ async def main_async(tmp):
     await server.db.set_retention_config({"retention_security_events_days": 180})
 
     await probe_and_rate_unit()
+    await filter_and_upsert_db_tests()
 
     ids = {}
     for name, role in (("sa", "superadmin"), ("adm", "admin"), ("u1", None), ("tfa", None), ("victim", None)):
@@ -536,6 +634,11 @@ async def main_async(tmp):
         exp = (await rows("event = 'security_log_export'"))[-1]
         check("export event names the superadmin and the ip",
               exp["user_id"] == ids["sa"] and exp["ip"] == "127.0.0.1")
+        n_now = len(await rows("event = 'security_log_export'"))
+        async with sa.head(base + "/api/admin/security-events/export?format=csv") as r:
+            head_status = r.status
+        check("export answers only GET: a HEAD is refused and records no export event",
+              head_status == 405 and len(await rows("event = 'security_log_export'")) == n_now, str(head_status))
 
         # export cap
         saved_cap, saved_page = secevents.EXPORT_MAX_ROWS, secevents.EXPORT_PAGE

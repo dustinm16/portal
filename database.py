@@ -17,6 +17,7 @@ from typing import Optional
 from config import Config
 import recording_paths
 import chat_uploads
+import secevents
 
 logger = logging.getLogger("portal.database")
 
@@ -4623,14 +4624,25 @@ class Database:
         return cursor.lastrowid
 
     async def upsert_security_events(self, rows: list[dict]) -> None:
-        """Write aggregated rows in one transaction; a repeated agg_key adds to its count."""
+        """Write aggregated rows; a repeated agg_key adds to its count.
+
+        One INSERT ... SELECT statement, so SQLite applies it all or not at all.
+        Row by row (executemany) a failure partway would leave the earlier rows
+        in the shared connection's open transaction, for the next unrelated
+        commit to write, while the caller re-queues the whole batch and counts
+        them twice. A rollback is no answer either: the connection is shared
+        with other callers' uncommitted work.
+        """
         if not rows:
             return
-        await self.conn.executemany(
-            f"INSERT INTO security_events ({', '.join(self._SEC_COLS)}) "
-            f"VALUES ({', '.join('?' for _ in self._SEC_COLS)}) "
+        cols = self._SEC_COLS
+        payload = json.dumps([{c: r.get(c) for c in cols} for r in rows])
+        selected = ", ".join(f"json_extract(value, '$.{c}')" for c in cols)
+        await self.conn.execute(
+            f"INSERT INTO security_events ({', '.join(cols)}) "
+            f"SELECT {selected} FROM json_each(?) WHERE true "
             "ON CONFLICT(agg_key) DO UPDATE SET count = count + excluded.count",
-            [tuple(r.get(c) for c in self._SEC_COLS) for r in rows],
+            (payload,),
         )
         await self.conn.commit()
 
@@ -4643,7 +4655,8 @@ class Database:
         if event:
             conds.append("event = ?"); params.append(event)
         if ip:
-            conds.append("ip = ?"); params.append(ip)
+            ips = secevents.ip_filter_values(ip)
+            conds.append(f"ip IN ({', '.join('?' for _ in ips)})"); params.extend(ips)
         if user_id:
             conds.append("user_id = ?"); params.append(user_id)
         if username:

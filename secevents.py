@@ -100,6 +100,7 @@ OVERFLOW_IP = "*"
 _CONTROL_RE = re.compile(
     r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 # Detail keys that must never carry a value, whatever a caller passes.
+_CLEAN_SLICE_FACTOR = 4
 _SECRET_KEY_RE = re.compile(
     r"pass|secret|totp|code|jwt|bearer|hash|credential|authorization|cookie|^token$|^key$|api_?key$|private",
     re.IGNORECASE,
@@ -112,6 +113,9 @@ def clean_text(value, limit: int) -> Optional[str]:
         return None
     if not isinstance(value, str):
         value = str(value)
+    # Cut before the regex pass: a multi-megabyte value must not cost a full
+    # scan. A few times the limit leaves room for the characters removed.
+    value = value[:limit * _CLEAN_SLICE_FACTOR]
     value = _CONTROL_RE.sub("", value)
     return value[:limit]
 
@@ -156,6 +160,29 @@ def aggregate_ip(ip: str) -> str:
             return str(addr.ipv4_mapped)
         return str(ipaddress.ip_network((addr, 64), strict=False))
     return str(addr)
+
+
+def ip_filter_values(text: str) -> list:
+    """The ``ip`` column values an admin's typed address or network should match.
+
+    An aggregated row from an IPv6 source is stored as its /64 (``aggregate_ip``),
+    so a full IPv6 address also matches that /64, next to its own immediate rows.
+    A typed network is matched in its canonical written form (a typed /64 finds
+    the aggregated row). Anything else (``unknown``, ``*``) is matched as typed.
+    """
+    text = (text or "").strip()
+    values = [text]
+    try:
+        addr = ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        try:
+            values.append(str(ipaddress.ip_network(text, strict=False)))
+        except ValueError:
+            pass
+    else:
+        values.append(str(addr))
+        values.append(aggregate_ip(text))
+    return list(dict.fromkeys(values))
 
 
 def now_ts(now: Optional[float] = None) -> str:
