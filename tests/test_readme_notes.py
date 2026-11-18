@@ -39,7 +39,9 @@ says("retention defaults to 180 days and how to change it", "180 days", "retenti
 says("only a superadmin reads it", "only a superadmin can read the log")
 says("sessions store IP and user agent", "sessions now store the ip address and user agent")
 says("the Cloudflare refresh is the only scheduled outbound request this release adds (two named older exceptions)",
-     "only scheduled outbound request", "game servers", "portal-update.timer")
+     "only scheduled outbound request this release adds", "game servers", "portal-update.timer")
+check("the old claim that the refresh is the only request the portal makes by itself is gone",
+      "the portal makes by itself" not in low)
 says("what the refresh fetches", "https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6")
 says("the refresh sends no portal data", "sends no portal data")
 says("how to turn the refresh off", "cf_ranges_refresh", "turn it off")
@@ -48,6 +50,9 @@ says("NEVER_BAN_CIDRS", "NEVER_BAN_CIDRS")
 says("the unblock and clear-bans commands", "server.py unblock", "server.py clear-bans")
 says("canonical block addresses", "canonical address form")
 says("the caution before trusting a proxy", "really is your own proxy")
+env_example = (ROOT / "." / ".env.example").read_text(encoding="utf-8")
+check(".env.example has a commented NEVER_BAN_CIDRS example in a documentation range",
+      re.search(r"^# NEVER_BAN_CIDRS=(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)\d+/\d+\s*$", env_example, re.M) is not None)
 check("it does not claim the sessions values are shown to nobody else", "nobody else" not in low)
 check("the scanner-blocking default is stated once as off, never as on",
       low.count("still off by default") == 1 and "scanner blocking is on" not in low)
