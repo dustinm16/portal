@@ -19028,11 +19028,13 @@ class PortalServer:
         # Terminal recordings are private: tighten an existing directory now,
         # not only when the next recording starts.
         try:
-            from plugins.terminal import prepare_recordings_dir, tighten_recording_files
+            from plugins.terminal import prepare_recordings_dir, tighten_recording_files, RecordingsDirRefused
             prepare_recordings_dir(Config.RECORDINGS_DIR)
             tightened = tighten_recording_files(Config.RECORDINGS_DIR)
             if tightened:
                 logger.info(f"Set mode 0600 on {tightened} existing recording file(s)")
+        except RecordingsDirRefused:
+            pass  # recording_paths already logged why; recording stays off for this run
         except OSError as e:
             logger.warning(f"Could not prepare the recordings directory {Config.RECORDINGS_DIR}: {e}")
 

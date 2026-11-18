@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from config import Config
+import recording_paths
 
 logger = logging.getLogger("portal.database")
 
@@ -3014,6 +3015,8 @@ class Database:
         subdirectories are never followed, files of a running session and files
         younger than `min_age_seconds` are left alone. Returns the number removed.
         """
+        if recording_paths.check(recordings_dir or Config.RECORDINGS_DIR):
+            return 0  # refused folder: not swept (the reason is logged once)
         directory = os.path.realpath(recordings_dir or Config.RECORDINGS_DIR)
         try:
             dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)

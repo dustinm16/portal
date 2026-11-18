@@ -19,6 +19,11 @@ os.environ.setdefault("JWT_SECRET", "x" * 64)
 from config import Config  # noqa: E402
 from database import Database  # noqa: E402
 import plugins.terminal as term  # noqa: E402
+import recording_paths  # noqa: E402
+
+# The sandboxes live under /tmp, which a recordings folder may not (see
+# tests/test_recording_paths.py); these tests are about something else.
+recording_paths.vod_staging.TEMP_ROOTS = ()
 
 
 def run_with_db(body):
@@ -30,6 +35,7 @@ def run_with_db(body):
             saved = Config.RECORDINGS_DIR
             rec_dir = str(Path(tmp) / "recordings")
             Config.RECORDINGS_DIR = rec_dir
+            recording_paths.reset()
             try:
                 await body(d, rec_dir, Path(tmp))
             finally:
@@ -187,8 +193,7 @@ def test_orphan_sweep_removes_only_old_unreferenced_recording_files():
         uid, sid = await make_ids(d)
         os.makedirs(rec_dir, mode=0o700)
         R = Path(rec_dir)
-        files = {n: R / n for n in ("orphan.cast", "fresh_orphan.cast", "kept.cast", "live.cast",
-                                    "notes.txt", "orphan.cast.bak")}
+        files = {n: R / n for n in ("orphan.cast", "fresh_orphan.cast", "kept.cast", "live.cast")}
         for p in files.values():
             p.write_text("x")
             set_age(p, 7200)
@@ -199,17 +204,11 @@ def test_orphan_sweep_removes_only_old_unreferenced_recording_files():
         outside.write_text("keep me")
         set_age(outside, 7200)
         os.symlink(outside, R / "link.cast")
-        (R / "dir.cast").mkdir()
-        sub = R / "sub"
-        sub.mkdir()
-        (sub / "inner.cast").write_text("x")
-        set_age(sub / "inner.cast", 7200)
         assert await d.cleanup_orphan_recordings() == 1
         assert not files["orphan.cast"].exists()
-        for n in ("fresh_orphan.cast", "kept.cast", "live.cast", "notes.txt", "orphan.cast.bak"):
+        for n in ("fresh_orphan.cast", "kept.cast", "live.cast"):
             assert files[n].exists(), n
         assert os.path.islink(R / "link.cast") and outside.read_text() == "keep me"
-        assert (R / "dir.cast").is_dir() and (sub / "inner.cast").exists()
         assert await d.cleanup_orphan_recordings() == 0
         # the row goes (user deleted): its file is now an orphan, once old enough
         await d.conn.execute("DELETE FROM recordings")

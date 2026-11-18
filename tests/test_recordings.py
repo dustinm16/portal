@@ -21,6 +21,11 @@ os.environ.setdefault("JWT_SECRET", "x" * 64)
 from config import Config  # noqa: E402
 from database import Database  # noqa: E402
 import plugins.terminal as term  # noqa: E402
+import recording_paths  # noqa: E402
+
+# The sandboxes live under /tmp, which a recordings folder may not (see
+# tests/test_recording_paths.py); these tests are about something else.
+recording_paths.vod_staging.TEMP_ROOTS = ()
 
 
 def mode(p) -> int:
@@ -36,6 +41,7 @@ def run_with_db(body):
             saved = (Config.RECORDINGS_DIR, term.db)
             rec_dir = str(Path(tmp) / "recordings")
             Config.RECORDINGS_DIR = rec_dir
+            recording_paths.reset()
             term.db = d
             try:
                 await body(d, rec_dir, Path(tmp))
@@ -104,30 +110,25 @@ def test_prepare_tightens_an_existing_directory():
 
 def test_startup_tightens_existing_files_without_following_symlinks():
     with tempfile.TemporaryDirectory() as tmp:
+        recording_paths.reset()
         root = Path(tmp)
         d = root / "recordings"
         d.mkdir(mode=0o700)
         old = d / "rec_old.cast"
         old.write_text("{}\n")
         os.chmod(old, 0o644)
-        other = d / "notes.txt"
-        other.write_text("x")
+        other = d / "rec_old2.cast"
+        other.write_text("{}\n")
         os.chmod(other, 0o664)
         outside = root / "outside.cast"
         outside.write_text("keep")
         os.chmod(outside, 0o644)
         os.symlink(outside, d / "link.cast")
-        sub = d / "sub"
-        sub.mkdir()
-        inner = sub / "inner.cast"
-        inner.write_text("keep")
-        os.chmod(inner, 0o644)
         fifo = d / "pipe.cast"
         os.mkfifo(fifo, 0o644)
         assert term.tighten_recording_files(str(d)) == 2
         assert mode(old) == 0o600 and mode(other) == 0o600
         assert mode(outside) == 0o644, "the target of a symlink is not touched"
-        assert mode(inner) == 0o644, "subdirectories are not entered"
         assert mode(fifo) == 0o644, "only regular files"
         assert term.tighten_recording_files(str(d)) == 0
         assert term.tighten_recording_files(str(root / "missing")) == 0

@@ -37,6 +37,7 @@ from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 from config import Config
 from database import db, RECORDING_FILE_EXTENSION
+import recording_paths
 
 logger = logging.getLogger("portal.plugins.terminal")
 
@@ -138,8 +139,19 @@ RECORDING_TRUNCATED_NOTE = "recording truncated: size limit reached"
 _TRUNCATION_RESERVE = 128  # room kept free below the cap for the closing marker line
 
 
+class RecordingsDirRefused(OSError):
+    """The recordings folder failed the safety check (recording_paths)."""
+
+
 def prepare_recordings_dir(path: str) -> Path:
-    """Create the recordings directory (owner only) and tighten an existing one."""
+    """Create the recordings directory (owner only) and tighten an existing one.
+
+    Raises RecordingsDirRefused, without touching the folder, when it is a
+    dangerous location or holds anything besides recordings.
+    """
+    reason = recording_paths.check(path)
+    if reason:
+        raise RecordingsDirRefused(f"{path} cannot be used for recordings: {reason}")
     directory = Path(path)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
@@ -152,8 +164,11 @@ def tighten_recording_files(path: str) -> int:
     Recordings written by older versions are 0644. A symlink is never followed
     (it is not a regular file, and the open refuses it), nothing outside the
     directory is touched and subdirectories are not entered. Returns the number
-    of files whose mode was changed.
+    of files whose mode was changed. A folder that fails the safety check
+    (recording_paths) is left alone.
     """
+    if recording_paths.check(path):
+        return 0
     try:
         dir_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     except OSError:
@@ -245,6 +260,8 @@ class AsciicastRecorder:
             header = self._header_line()
             os.write(self._fd, header)
             self.size = len(header)
+        except RecordingsDirRefused:
+            return None  # already logged once by recording_paths
         except OSError as e:
             logger.error(f"Cannot start recording: {e}")
             self._close_fd()
