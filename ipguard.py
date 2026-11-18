@@ -15,7 +15,20 @@ MIN_PREFIX_V4 = 8
 MIN_PREFIX_V6 = 16
 MAX_NEVER_BAN_ENTRIES = 100
 
+# Cloudflare's published edge ranges (https://www.cloudflare.com/ips/), shipped with
+# the release. A fetched list is judged against this one: it sets the broadest range
+# a fetched list may hold and the part of it that must still be present.
+CF_BUILTIN = (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+)
+
 # Cloudflare list sanity limits.
+CF_MAX_NEW_PER_REFRESH = 5      # ranges per family that may be new compared with the trusted list
 CF_MIN_V4 = 10
 CF_MIN_V6 = 5
 CF_MAX_PER_FAMILY = 100
@@ -155,13 +168,34 @@ def parse_cf_list(text: str, version: int) -> list:
     return nets
 
 
-def validate_cf_lists(v4_text: str, v6_text: str, current: Optional[Iterable] = None) -> list:
-    """Parse both lists, enforce the size and shrink rules, return the combined networks.
+def cf_builtin_networks() -> list:
+    return [ipaddress.ip_network(n) for n in CF_BUILTIN]
 
-    `current` is the set of Cloudflare ranges trusted now. A new list that no
-    longer covers more than half of them is refused: that is a damaged or
-    poisoned answer, not an update.
+
+def _cf_family(nets, version: int) -> list:
+    return [n for n in nets if n.version == version]
+
+
+def _covers(new_nets, old) -> bool:
+    """True if one of `new_nets` equals `old` or contains it."""
+    return any(n.version == old.version and old.subnet_of(n) for n in new_nets)
+
+
+def validate_cf_lists(v4_text: str, v6_text: str, current: Optional[Iterable] = None,
+                      compare_new: bool = True) -> list:
+    """Parse both lists, enforce the size, breadth and shrink rules, return the combined networks.
+
+    * No range may be broader than the broadest built-in range of its family
+      (/13 IPv4, /29 IPv6 today): the list may not widen what is trusted.
+    * Per family, at most CF_MAX_NEW_PER_REFRESH ranges may be new compared with
+      `current`, the list trusted now (the built-in list until a refresh has
+      worked). A range that is inside a current range is not new. Skipped with
+      compare_new=False, for a list saved earlier that is checked again at start.
+    * Per family, the list must still cover at least half of the built-in
+      ranges, and (when `current` is given) at least half of the current ones.
+      A range that equals or contains one counts as covering it.
     """
+    builtin = cf_builtin_networks()
     v4 = parse_cf_list(v4_text, 4)
     v6 = parse_cf_list(v6_text, 6)
     if len(v4) < CF_MIN_V4:
@@ -170,15 +204,29 @@ def validate_cf_lists(v4_text: str, v6_text: str, current: Optional[Iterable] = 
         raise ListError(f"IPv6 list has {len(v6)} ranges, at least {CF_MIN_V6} are required")
     if len(v4) > CF_MAX_PER_FAMILY or len(v6) > CF_MAX_PER_FAMILY:
         raise ListError(f"a list has more than {CF_MAX_PER_FAMILY} ranges")
-    new = v4 + v6
-    current = list(current or [])
-    if current:
-        dropped = [c for c in current if not any(c.version == n.version and c.subnet_of(n) for n in new)]
-        if len(dropped) * 2 > len(current):
-            raise ListError(
-                f"the new list drops {len(dropped)} of {len(current)} trusted ranges; refusing it"
-            )
-    return new
+    current = list(current or []) or builtin
+    for version, nets in ((4, v4), (6, v6)):
+        base = _cf_family(builtin, version)
+        floor = min(n.prefixlen for n in base)
+        for n in nets:
+            if n.prefixlen < floor:
+                raise ListError(
+                    f"{n} is broader than any range Cloudflare publishes today: "
+                    f"IPv{version} ranges must be /{floor} or narrower")
+        if compare_new:
+            have = _cf_family(current, version)
+            new = [n for n in nets if not any(n.subnet_of(c) for c in have)]
+            if len(new) > CF_MAX_NEW_PER_REFRESH:
+                raise ListError(
+                    f"{len(new)} new IPv{version} ranges in one refresh; at most "
+                    f"{CF_MAX_NEW_PER_REFRESH} are accepted")
+        for label, ref in (("built-in", base), ("current", _cf_family(current, version))):
+            dropped = [r for r in ref if not _covers(nets, r)]
+            if len(dropped) * 2 > len(ref):
+                raise ListError(
+                    f"the new IPv{version} list drops {len(dropped)} of {len(ref)} {label} ranges; "
+                    f"refusing it")
+    return v4 + v6
 
 
 class FetchError(Exception):

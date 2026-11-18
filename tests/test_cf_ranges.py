@@ -104,20 +104,74 @@ check("too few IPv4 ranges are refused", "at least 10" in (refused("\n".join(V4[
 check("exactly 10 IPv4 ranges are accepted", refused("\n".join(V4[:10]), TEXT6) is None)
 check("too few IPv6 ranges are refused", "at least 5" in (refused(TEXT4, "\n".join(V6[:4])) or ""))
 check("exactly 5 IPv6 ranges are accepted", refused(TEXT4, "\n".join(V6[:5])) is None)
-check("a /8 is accepted, the broadest allowed", refused(TEXT4 + "45.0.0.0/8\n", TEXT6) is None)
-cur = [ipaddress.ip_network(n) for n in BUILTIN]
-unrelated4 = "\n".join(f"60.{i}.0.0/16" for i in range(10))
-check("a list that keeps only 5 of 22 current ranges is refused",
-      "drops 17 of 22" in (refused(unrelated4, "\n".join(V6[:5]), cur) or ""))
-check("a list that keeps 15 of 22 current ranges is accepted", refused("\n".join(V4[:10]), "\n".join(V6[:5]), cur) is None)
-many = [ipaddress.ip_network(f"60.{i}.0.0/16") for i in range(22)]
-keep11 = "\n".join(str(n) for n in many[:11])
-keep10 = "\n".join(str(n) for n in many[:10])
-check("dropping exactly half (11 of 22) is allowed: only MORE than half is refused", refused(keep11, TEXT6, many) is None)
-check("dropping 12 of 22 is refused", refused(keep10, TEXT6, many) is not None)
-agg4 = "\n".join(V4[:10]) + "\n162.0.0.0/8\n104.0.0.0/8\n"
-check("a supernet that covers current ranges is not counted as dropping them",
-      refused(agg4, TEXT6, [ipaddress.ip_network(n) for n in ("162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14")]) is None)
+B4 = [ipaddress.ip_network(n) for n in V4]
+B6 = [ipaddress.ip_network(n) for n in V6]
+check("the broadest built-in range sets the floor: /13 IPv4 and /29 IPv6",
+      min(n.prefixlen for n in B4) == 13 and min(n.prefixlen for n in B6) == 29)
+check("a /13 (the broadest built-in IPv4 range) is accepted: it is already in the list", refused(TEXT4, TEXT6) is None)
+check("a /12 in the IPv4 list is refused", "broader" in (refused(TEXT4 + "45.0.0.0/12\n", TEXT6) or ""))
+check("a /8 in the IPv4 list is refused", refused(TEXT4 + "45.0.0.0/8\n", TEXT6) is not None)
+check("a /28 in the IPv6 list is refused", "broader" in (refused(TEXT4, TEXT6 + "2a00::/28\n") or ""))
+check("a /29 in the IPv6 list is accepted", refused(TEXT4, TEXT6 + "2a07::/29\n") is None)
+check("a /16 IPv6 range, which the old rule allowed, is refused", refused(TEXT4, TEXT6 + "2a00::/16\n") is not None)
+
+# Probe 1: three extra /8s (the old rule accepted them)
+probe1 = TEXT4 + "1.0.0.0/8\n2.0.0.0/8\n3.0.0.0/8\n"
+check("probe: three extra /8 ranges are refused", refused(probe1, TEXT6) is not None)
+check("probe: three extra /8 ranges are refused against a fetched current list too", refused(probe1, TEXT6, B4 + B6) is not None)
+# Probe 2: every IPv6 range replaced by unrelated /32s
+probe2 = "\n".join(f"2a0{i}:1::/32" for i in range(1, 6)) + "\n"
+check("probe: all IPv6 ranges replaced by five unrelated /32s are refused", "built-in" in (refused(TEXT4, probe2) or ""),
+      str(refused(TEXT4, probe2)))
+check("probe: the same replacement is refused when the current list is a fetched one", refused(TEXT4, probe2, B4 + B6) is not None)
+
+# At most 5 new ranges per family in one refresh
+new4 = lambda n: "".join(f"45.{i}.0.0/16\n" for i in range(n))  # noqa: E731
+new6 = lambda n: "".join(f"2a0{i}::/32\n" for i in range(n))  # noqa: E731
+check("5 new IPv4 ranges are accepted", refused(TEXT4 + new4(5), TEXT6) is None)
+check("6 new IPv4 ranges are refused", "6 new IPv4" in (refused(TEXT4 + new4(6), TEXT6) or ""))
+check("5 new IPv6 ranges are accepted", refused(TEXT4, TEXT6 + new6(5)) is None)
+check("6 new IPv6 ranges are refused", "6 new IPv6" in (refused(TEXT4, TEXT6 + new6(6)) or ""))
+check("5 new in each family at once are accepted", refused(TEXT4 + new4(5), TEXT6 + new6(5)) is None)
+cur_plus = B4 + B6 + [ipaddress.ip_network(f"45.{i}.0.0/16") for i in range(6)]
+check("ranges already trusted do not count as new: six more are fine when the current list holds them",
+      refused(TEXT4 + new4(6), TEXT6, cur_plus) is None)
+check("a range inside a current range is not new",
+      refused(TEXT4 + "".join(f"104.16.{i}.0/24\n" for i in range(8)), TEXT6) is None)
+cur_small = [ipaddress.ip_network(n) for n in V4[:10] + ["162.158.0.0/15"]] + B6
+check("a range that contains a current range is new (a broadened range)",
+      "6 new IPv4" in (refused("\n".join(V4[:10]) + "\n162.152.0.0/13\n" + new4(5), TEXT6, cur_small) or "")
+      and refused("\n".join(V4[:10]) + "\n162.158.0.0/15\n" + new4(5), TEXT6, cur_small) is None)
+check("a load of a saved list skips the new-range count, not the other rules",
+      ipguard.validate_cf_lists(TEXT4 + new4(9), TEXT6, compare_new=False) is not None)
+try:
+    ipguard.validate_cf_lists(TEXT4 + "45.0.0.0/8\n", TEXT6, compare_new=False)
+    loaded_broad = False
+except ipguard.ListError:
+    loaded_broad = True
+check("a saved list with a too-broad range is refused at load as well", loaded_broad)
+try:
+    ipguard.validate_cf_lists(TEXT4, probe2, compare_new=False)
+    loaded_swapped = False
+except ipguard.ListError:
+    loaded_swapped = True
+check("a saved list with the IPv6 ranges replaced is refused at load as well", loaded_swapped)
+
+# Shrink rule: per family, against the built-in list (a range that equals or contains one still counts)
+check("IPv4: keeping 8 of 15 built-in ranges is enough",
+      refused("\n".join(V4[:8]) + "\n" + new4(3), TEXT6) is None)
+check("IPv4: keeping 7 of 15 built-in ranges is refused (CF_MIN_V4 alone would pass 10)",
+      "drops 8 of 15 built-in" in (refused("\n".join(V4[:7]) + "\n" + new4(3), TEXT6) or ""))
+check("IPv6: keeping 4 of 7 built-in ranges is enough, with one new range",
+      refused(TEXT4, "\n".join(V6[:4]) + "\n" + new6(1)) is None)
+check("IPv6: keeping 3 of 7 built-in ranges is refused",
+      "drops 4 of 7 built-in" in (refused(TEXT4, "\n".join(V6[:3]) + "\n" + new6(2)) or ""))
+check("a fetched range that contains a built-in range counts as keeping it",
+      refused("\n".join(V4[:10]) + "\n162.0.0.0/13\n104.0.0.0/13\n", TEXT6) is None)
+check("the shrink rule is per family: a good IPv4 list does not excuse a bad IPv6 list",
+      refused(TEXT4, "\n".join(V6[:3]) + "\n" + new6(2)) is not None)
+check("the shrink rule also applies against the current list, per family",
+      "current" in (refused(TEXT4, TEXT6, B4 + B6 + [ipaddress.ip_network(f"2a0{i}::/32") for i in range(1, 9)]) or ""))
 
 # ---------------------------------------------------------------------------
 # The swap, persistence and the settings keys (real database)

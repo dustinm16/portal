@@ -3755,7 +3755,7 @@ The Cloudflare range refresh: `{"enabled": true, "source": "built-in"|"fetched",
 
 **Auth**: Superadmin. Audited `cf_ranges.settings`.
 
-The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.cloudflare.com/ips-v6` (certificate verified, 10 s timeout, 64 KB cap, no cookies, no redirect to another host, nothing sent about the portal). It accepts a list only if every line is a network, there are at least 10 IPv4 and 5 IPv6 ranges, no range is broader than /8 (IPv4) or /16 (IPv6) or is private, loopback or reserved, and the list still covers more than half of the current Cloudflare ranges. It then swaps the trusted list at once (no restart), clears the trusted-peer cache and saves the list and the result in settings. It does not run in a staged instance.
+The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.cloudflare.com/ips-v6` (certificate verified, 10 s timeout, 64 KB cap, no cookies, no redirect to another host, nothing sent about the portal). It accepts a list only if every line is a network, there are at least 10 IPv4 and 5 IPv6 ranges, no range is private, loopback or reserved, no range is broader than the broadest built-in range of its family (/13 IPv4, /29 IPv6), at most 5 ranges per family are new compared with the list trusted now (the built-in list at the first refresh), and for each family the list still covers at least half of the built-in ranges and more than half of the current ones. The same checks run when the saved list is loaded at start (except the count of new ranges). It then swaps the trusted list at once (no restart), clears the trusted-peer cache and saves the list and the result in settings. It does not run in a staged instance.
 
 ---
 
