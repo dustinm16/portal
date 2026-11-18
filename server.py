@@ -418,7 +418,7 @@ def _get_server_own_ips() -> set[str]:
         try:
             for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
                 ips.add(info[4][0])
-        except socket.gaierror:
+        except (socket.gaierror, UnicodeError, OSError):
             pass
     _server_own_ips = ips
     logger.info(f"Server own IPs resolved: {ips}")
@@ -7603,10 +7603,12 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     removed = await db.unblock_ip(ip_address)
     _blocked_ips.pop(ip_address, None)
     # Unblocking also lifts a temporary scanner-probe block on that address.
-    _probe_blocks.pop(ip_address, None)
-    _probe_strikes.pop(ip_address, None)
+    # Those are held in memory only, keyed by the canonical address form.
+    probe_key = _valid_ip(ip_address) or ip_address
+    lifted = _probe_blocks.pop(probe_key, None) is not None
+    _probe_strikes.pop(probe_key, None)
 
-    if removed:
+    if removed or lifted:
         admin_user = await db.get_user_by_id(token.user_id)
         await db.log_activity(
             token.user_id, get_display_name(admin_user) if admin_user else "admin",

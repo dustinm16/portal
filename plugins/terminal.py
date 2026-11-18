@@ -360,6 +360,10 @@ class TerminalPlugin(PluginBase):
                     signal.set_wakeup_fd(-1)
                     signal.signal(signal.SIGTERM, signal.SIG_DFL)
                     signal.signal(signal.SIGINT, signal.SIG_DFL)
+                    # Python ignores these at startup and "ignored" survives
+                    # exec; give the shell normal pipe behaviour.
+                    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+                    signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
 
                     # Create new session and set controlling terminal
                     os.setsid()
