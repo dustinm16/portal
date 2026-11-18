@@ -969,7 +969,7 @@ GET  /api/streams/open          - List currently live public streams
 POST /api/streams/:id/thumbnail - Upload custom thumbnail
 DELETE /api/streams/:id/thumbnail - Delete custom thumbnail
 POST /api/streams/:id/rtmp-token - Generate temporary RTMP publish token
-GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
+GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg; one capture per stream, two at once, 503 + Retry-After when busy)
 GET  /api/stream/:key/hls/...   - HLS playback proxy
 POST /api/stream/event          - MediaMTX webhook (live/encoding/offline)
 ```

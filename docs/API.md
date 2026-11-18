@@ -1228,11 +1228,11 @@ Remove custom thumbnail for a stream (owner only).
 ---
 
 #### GET /api/stream/{key}/thumbnail
-Get a dynamic thumbnail for a live stream. Returns a JPEG image captured from the stream via ffmpeg. Thumbnails are cached for 15 seconds.
+Get a dynamic thumbnail for a live stream. Returns a JPEG image captured from the stream via ffmpeg. Thumbnails are cached for 15 seconds. Only one capture runs per stream at a time (requests for the same stream wait for it) and at most two captures run at once on the server. A capture that takes longer than 10 seconds is stopped. When all capture slots are busy the last good frame is returned if it is at most 5 minutes old, otherwise 503 with `Retry-After: 3`.
 
 **Key Types:** Accepts either `live_xxx` or `pub_xxx` key.
 
-**Response:** `image/jpeg` binary data, or 404 if stream is not live.
+**Response:** `image/jpeg` binary data, or 404 if stream is not live. When a new frame cannot be made (capture failed or timed out, or all capture slots are busy) the last good frame is returned with `Cache-Control: public, max-age=5` if there is one. Without a last frame: `503` with a `Retry-After` header when all capture slots are busy, `504` after a timeout, `500` after a failed capture. If MediaMTX is not configured the answer is `503` without `Retry-After` and no frame is served.
 
 ---
 

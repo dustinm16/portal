@@ -19,11 +19,13 @@ import html as _html
 import ipaddress
 import json
 import socket
+import subprocess
 import logging
 import mimetypes
 import os
 import secrets
 import shutil
+import threading
 import signal
 import ssl
 import sys
@@ -427,6 +429,94 @@ async def _validate_relay_url(rtmp_url: str) -> str | None:
     except HostResolveError:
         return "Could not resolve RTMP hostname"
     return None
+
+
+# Media processes the portal starts itself (ffmpeg for thumbnails, relays and
+# recordings) run at a lower CPU priority so a burst of them cannot starve the
+# web server. MediaMTX is not started through here and keeps normal priority.
+_MEDIA_NICE = 10
+_media_prefix_ok: dict[tuple, bool] = {}
+# shutil.which answers for the tools that wrap a media program (nice, ionice, true),
+# a missing one included. The media program itself is looked up on every spawn, so
+# an ffmpeg installed or removed later is noticed without a restart.
+_media_which_cache: dict[str, Optional[str]] = {}
+_media_warm_lock = threading.Lock()
+_media_warmed = False
+
+
+def _media_which(name: str) -> Optional[str]:
+    if name not in _media_which_cache:
+        _media_which_cache[name] = shutil.which(name)
+    return _media_which_cache[name]
+
+
+def _media_prefix_works(prefix: list[str]) -> bool:
+    """True if the wrapper runs a harmless command (ionice fails in some containers).
+
+    Runs subprocess.run once per prefix: call it from a thread, never on the event
+    loop (see _media_warm)."""
+    key = tuple(prefix)
+    if key not in _media_prefix_ok:
+        probe = _media_which("true")
+        ok = True
+        if probe:
+            try:
+                ok = subprocess.run([*prefix, probe], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=5).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+        _media_prefix_ok[key] = ok
+    return _media_prefix_ok[key]
+
+
+def _media_exec_argv(cmd: list[str], io_class: str = "idle") -> list[str]:
+    """Return cmd with `nice -n 10` and `ionice` in front, when those programs exist.
+
+    io_class "idle" (thumbnails, relays) is `ionice -c3`; "best_effort" (recordings,
+    which must keep writing) is `ionice -c2 -n7`. The command itself is appended
+    unchanged, so argument order is the caller's. If the program is not found the
+    command is returned bare, so the caller still gets FileNotFoundError from the
+    spawn instead of a wrapper exiting with 127. nice and ionice exec in place, so
+    the process id is the program's own.
+
+    The first call for a wrapper runs a probe subprocess, so on the event loop go
+    through _media_exec, which warms the probes in a thread first.
+    """
+    if not cmd or shutil.which(cmd[0]) is None:
+        return list(cmd)
+    prefix: list[str] = []
+    nice = _media_which("nice")
+    if nice and _media_prefix_works([nice, "-n", str(_MEDIA_NICE)]):
+        prefix += [nice, "-n", str(_MEDIA_NICE)]
+    ionice = _media_which("ionice")
+    if ionice:
+        io_args = ["-c2", "-n7"] if io_class == "best_effort" else ["-c3"]
+        if _media_prefix_works([ionice, *io_args]):
+            prefix += [ionice, *io_args]
+    return prefix + list(cmd)
+
+
+def _media_warm() -> None:
+    """Probe nice and ionice (both io classes) once, so no spawn probes on the event loop.
+
+    Blocking (up to 5 s per probe if a wrapper hangs): run it in a thread."""
+    global _media_warmed
+    with _media_warm_lock:
+        for io_class in ("idle", "best_effort"):
+            nice = _media_which("nice")
+            if nice:
+                _media_prefix_works([nice, "-n", str(_MEDIA_NICE)])
+            ionice = _media_which("ionice")
+            if ionice:
+                _media_prefix_works([ionice, *(["-c2", "-n7"] if io_class == "best_effort" else ["-c3"])])
+        _media_warmed = True
+
+
+async def _media_exec(cmd: list[str], io_class: str = "idle", **kwargs):
+    """asyncio.create_subprocess_exec for a media program at lowered priority."""
+    if not _media_warmed:
+        await asyncio.to_thread(_media_warm)
+    return await asyncio.create_subprocess_exec(*_media_exec_argv(cmd, io_class), **kwargs)
 
 
 async def _checked_relay_target(rtmp_url: str, relay_key: str) -> tuple[list[str], str]:
@@ -4488,8 +4578,8 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
         ]
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
+            process = await _media_exec(
+                cmd, "best_effort",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -5186,8 +5276,8 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
                     *out_opts,
                     target
                 ]
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
+                process = await _media_exec(
+                    cmd, "idle",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE
                 )
@@ -5302,8 +5392,8 @@ async def _restart_single_relay(stream_id: int, relay_id: int, dest: dict) -> No
                 *out_opts,
                 target
             ]
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
+            process = await _media_exec(
+                cmd, "idle",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -6365,6 +6455,108 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
 # Cache for stream thumbnails (key -> (timestamp, image_bytes))
 _thumbnail_cache: dict[str, tuple[float, bytes]] = {}
 _THUMBNAIL_CACHE_TTL = 15  # seconds
+_THUMBNAIL_STALE_MAX = 300  # seconds; an older last frame is never served in place of a fresh one
+_THUMBNAIL_TIMEOUT = 10  # seconds a capture may take before ffmpeg is killed
+_THUMBNAIL_MAX_CAPTURES = 2  # ffmpeg thumbnail processes running at once
+_THUMBNAIL_RETRY_AFTER = 3  # seconds, sent with the 503 when all slots are busy
+_thumbnail_sem = asyncio.Semaphore(_THUMBNAIL_MAX_CAPTURES)
+# One capture per stream at a time: cache_key -> task whose result every waiting
+# request shares (single-flight).
+_thumbnail_inflight: dict[str, "asyncio.Task"] = {}
+
+
+def _thumbnail_response(body: bytes, max_age: int) -> web.Response:
+    return web.Response(
+        body=body,
+        content_type="image/jpeg",
+        headers={
+            "Cache-Control": f"public, max-age={max_age}",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+
+def _stale_thumbnail_response(cache_key: str) -> Optional[web.Response]:
+    """The last good frame for a stream if it is at most _THUMBNAIL_STALE_MAX seconds old
+    (served when a fresh one cannot be made). An older frame is dropped, not served."""
+    cached = _thumbnail_cache.get(cache_key)
+    if cached is None:
+        return None
+    if time() - cached[0] > _THUMBNAIL_STALE_MAX:
+        _thumbnail_cache.pop(cache_key, None)
+        return None
+    return _thumbnail_response(cached[1], 5)
+
+
+async def _run_thumbnail_ffmpeg(hls_url: str) -> tuple[Optional[int], bytes, bytes]:
+    """Run one ffmpeg frame grab. On timeout, error or cancellation the process is
+    killed and reaped before this returns, so none is left running or as a zombie."""
+    # -i: input URL; -vframes 1: one frame; -f image2 / -vcodec mjpeg: JPEG;
+    # -q:v 3: quality (2-5 is good, lower is better); scale to 640px wide;
+    # pipe:1: output to stdout
+    proc = await _media_exec(
+        ["ffmpeg",
+         "-y",  # Overwrite without asking
+         "-i", hls_url,
+         "-vframes", "1",
+         "-f", "image2",
+         "-vcodec", "mjpeg",
+         "-q:v", "3",
+         "-vf", "scale=640:-1",  # Scale to 640px width, maintain aspect ratio
+         "pipe:1"],
+        "idle",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "AV_LOG_FORCE_NOCOLOR": "1"}
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_THUMBNAIL_TIMEOUT)
+        return proc.returncode, stdout, stderr
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except Exception as e:
+                logger.warning(f"ffmpeg thumbnail process did not exit after kill: {e}")
+
+
+async def _capture_thumbnail(cache_key: str, stream_id: int, stream_key: str) -> tuple[str, Optional[bytes]]:
+    """Capture one thumbnail and cache it. Runs as the shared task of the single-flight
+    registry and owns one slot of _thumbnail_sem (taken by the caller). Never raises;
+    returns (outcome, jpeg): outcome is "ok", "noconfig", "timeout" or "failed"."""
+    try:
+        mtx_config = await _get_mediamtx_config()
+        if not mtx_config:
+            return "noconfig", None
+        hls_port = mtx_config.get("hls_port", 8888)
+        # When publishing via rtmp_ token, MediaMTX path is the token, not the live_ key
+        async with _stream_state_lock:
+            private_key = _rtmp_stream_paths.get(stream_id, stream_key)
+        hls_url = f"https://127.0.0.1:{hls_port}/live/{private_key}/index.m3u8"
+        returncode, stdout, stderr = await _run_thumbnail_ffmpeg(hls_url)
+        if returncode != 0 or not stdout:
+            logger.warning(f"ffmpeg thumbnail capture failed for {cache_key}: {stderr.decode(errors='replace')[:200]}")
+            return "failed", None
+        now = time()
+        _thumbnail_cache[cache_key] = (now, stdout)
+        # Clean old cache entries
+        for k in list(_thumbnail_cache.keys()):
+            if now - _thumbnail_cache[k][0] > _THUMBNAIL_CACHE_TTL * 2:
+                del _thumbnail_cache[k]
+        return "ok", stdout
+    except asyncio.TimeoutError:
+        logger.warning(f"ffmpeg thumbnail capture timed out for {cache_key}")
+        return "timeout", None
+    except Exception as e:
+        logger.error(f"Thumbnail capture error: {e}")
+        return "failed", None
+    finally:
+        _thumbnail_inflight.pop(cache_key, None)
+        _thumbnail_sem.release()
 
 
 async def http_stream_thumbnail(request: web.Request) -> web.Response:
@@ -6373,7 +6565,11 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     Route: GET /api/stream/{key}/thumbnail
 
     Captures a frame from the HLS stream using ffmpeg.
-    Thumbnails are cached for 15 seconds to reduce load.
+    Thumbnails are cached for 15 seconds to reduce load; a frame up to 5 minutes old
+    is still served when a fresh one cannot be made. Requests for a stream
+    whose frame is being captured wait for that one capture instead of starting
+    another. At most two captures run at once; beyond that the last good frame is
+    served, or 503 with Retry-After if there is none.
     """
     key = request.match_info.get("stream_key", "")
 
@@ -6391,91 +6587,39 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
 
     # Check cache
     cache_key = stream["stream_key"]
-    now = time()
-    if cache_key in _thumbnail_cache:
-        cached_time, cached_bytes = _thumbnail_cache[cache_key]
-        if now - cached_time < _THUMBNAIL_CACHE_TTL:
-            return web.Response(
-                body=cached_bytes,
-                content_type="image/jpeg",
-                headers={
-                    "Cache-Control": f"public, max-age={_THUMBNAIL_CACHE_TTL}",
-                    "Access-Control-Allow-Origin": "*",
-                }
-            )
+    cached = _thumbnail_cache.get(cache_key)
+    if cached and time() - cached[0] < _THUMBNAIL_CACHE_TTL:
+        return _thumbnail_response(cached[1], _THUMBNAIL_CACHE_TTL)
 
-    # Get MediaMTX configuration
-    mtx_config = await _get_mediamtx_config()
-    if not mtx_config:
+    # Single-flight. Nothing below may await between the in-flight lookup and the
+    # registration of the new task, or concurrent requests would each start one.
+    task = _thumbnail_inflight.get(cache_key)
+    if task is None:
+        if _thumbnail_sem.locked():
+            stale = _stale_thumbnail_response(cache_key)
+            if stale is not None:
+                return stale
+            return web.json_response(
+                {"error": "Thumbnail capacity reached, try again shortly"},
+                status=503, headers={"Retry-After": str(_THUMBNAIL_RETRY_AFTER)})
+        # Not locked, so this takes a slot without suspending; the task releases it.
+        await _thumbnail_sem.acquire()
+        task = asyncio.ensure_future(_capture_thumbnail(cache_key, stream["id"], stream["stream_key"]))
+        _thumbnail_inflight[cache_key] = task
+
+    # shield: a client that goes away must not cancel the capture others wait for
+    outcome, data = await asyncio.shield(task)
+    if outcome == "ok":
+        return _thumbnail_response(data, _THUMBNAIL_CACHE_TTL)
+    if outcome == "noconfig":
         return web.json_response({"error": "MediaMTX not configured"}, status=503)
-
-    hls_port = mtx_config.get("hls_port", 8888)
-    # When publishing via rtmp_ token, MediaMTX path is the token, not the live_ key
-    async with _stream_state_lock:
-        private_key = _rtmp_stream_paths.get(stream["id"], stream["stream_key"])
-    hls_url = f"https://127.0.0.1:{hls_port}/live/{private_key}/index.m3u8"
-
-    try:
-        # Use ffmpeg to capture a frame from the HLS stream
-        # -i: input URL
-        # -vframes 1: capture only 1 frame
-        # -f image2: output format
-        # -q:v 2: quality (2-5 is good, lower is better)
-        # pipe:1: output to stdout
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",  # Overwrite without asking
-            "-i", hls_url,
-            "-vframes", "1",
-            "-f", "image2",
-            "-vcodec", "mjpeg",
-            "-q:v", "3",
-            "-vf", "scale=640:-1",  # Scale to 640px width, maintain aspect ratio
-            "pipe:1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "AV_LOG_FORCE_NOCOLOR": "1"}
-        )
-
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-
-        if proc.returncode != 0 or not stdout:
-            logger.warning(f"ffmpeg thumbnail capture failed for {cache_key}: {stderr.decode()[:200]}")
-            # Serve last known good frame rather than a 500 during transient HLS hiccups
-            if cache_key in _thumbnail_cache:
-                _, stale_bytes = _thumbnail_cache[cache_key]
-                return web.Response(
-                    body=stale_bytes,
-                    content_type="image/jpeg",
-                    headers={
-                        "Cache-Control": "public, max-age=5",
-                        "Access-Control-Allow-Origin": "*",
-                    }
-                )
-            return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
-
-        # Cache the thumbnail
-        _thumbnail_cache[cache_key] = (now, stdout)
-
-        # Clean old cache entries
-        for k in list(_thumbnail_cache.keys()):
-            if now - _thumbnail_cache[k][0] > _THUMBNAIL_CACHE_TTL * 2:
-                del _thumbnail_cache[k]
-
-        return web.Response(
-            body=stdout,
-            content_type="image/jpeg",
-            headers={
-                "Cache-Control": f"public, max-age={_THUMBNAIL_CACHE_TTL}",
-                "Access-Control-Allow-Origin": "*",
-            }
-        )
-
-    except asyncio.TimeoutError:
+    # Serve last known good frame rather than an error during transient HLS hiccups
+    stale = _stale_thumbnail_response(cache_key)
+    if stale is not None:
+        return stale
+    if outcome == "timeout":
         return web.json_response({"error": "Thumbnail capture timeout"}, status=504)
-    except Exception as e:
-        logger.error(f"Thumbnail capture error: {e}")
-        return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
+    return web.json_response({"error": "Failed to capture thumbnail"}, status=500)
 
 
 # Server-side record of WebRTC sessions opened through the WHIP/WHEP proxies:
@@ -19080,6 +19224,9 @@ class PortalServer:
         # Initialize database
         await db.connect()
         logger.info(f"Database connected: {Config.DATABASE_PATH}")
+
+        # Probe nice/ionice once, off the event loop, so no later spawn has to.
+        await asyncio.to_thread(_media_warm)
 
         # Terminal recordings are private: tighten an existing directory now,
         # not only when the next recording starts.

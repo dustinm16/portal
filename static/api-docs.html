@@ -1675,6 +1675,7 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns static thumbnail (or 404) if stream is offline or encoding. Accepts <code>live_xxx</code> or <code>pub_xxx</code> key.</p>
+                        <p>One capture runs per stream at a time and at most two run at once. When a new frame cannot be made (failure, timeout or all capture slots busy) the last good frame is returned; without one the answer is <code>503</code> with a <code>Retry-After</code> header (all slots busy), <code>504</code> (timeout) or <code>500</code> (failed capture). If MediaMTX is not configured the answer is <code>503</code> without <code>Retry-After</code>.</p>
                     </div>
                 </div>
 

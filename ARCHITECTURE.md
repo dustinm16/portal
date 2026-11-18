@@ -560,7 +560,7 @@ GET  /api/streams/:id/relays    - List relay destinations (owner only)
 POST /api/streams/:id/relays    - Add relay destination (owner only)
 PUT  /api/streams/:id/relays/:rid - Update relay destination
 DELETE /api/streams/:id/relays/:rid - Delete relay destination
-GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg)
+GET  /api/stream/:key/thumbnail - Dynamic stream thumbnail (ffmpeg; one capture per stream, two at once, 503 + Retry-After when busy)
 GET  /api/stream/:key/hls/...   - HLS playback proxy
 POST /api/stream/event          - MediaMTX webhook (live/encoding/offline)
 ```

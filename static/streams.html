@@ -7,6 +7,7 @@
     <title>Open Relay Portal - Community Streams</title>
     <link rel="stylesheet" href="/static/css/portal.css?v=54">
     <script src="/static/js/theme.js?v=3"></script>
+    <script src="/static/js/stream-thumb.js?v=1"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
     <style>
         .streams-container {
@@ -1325,7 +1326,7 @@
             }
 
             const thumbnailContent = thumbnailUrl
-                ? `<img src="${escapeHtml(thumbnailUrl)}" alt="${escapeHtml(stream.name)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                ? `<img src="${escapeHtml(thumbnailUrl)}" alt="${escapeHtml(stream.name)}" onerror="thumbError(this)">
                    <div class="thumbnail-placeholder" style="display: none;">
                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
