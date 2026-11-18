@@ -16058,7 +16058,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             # Broadcast updated users list to remaining users
             await broadcast_users_list(current_channel)
             # Remove empty rooms
-            if not chat_rooms[current_channel]:
+            if current_channel in chat_rooms and not chat_rooms[current_channel]:
                 del chat_rooms[current_channel]
 
         # Clean up mutable state (only if no other WS for this user)
@@ -16530,8 +16530,10 @@ async def broadcast_users_list(channel: str):
     users_info = await db.get_users_status(list(set(user_ids)))
     # One list per viewer: anonymous participants are shown without their id
     # to ordinary members.
+    # The room can empty out and be removed while the lookups above and the
+    # sends below are awaited.
     dead_connections = set()
-    for entry in list(chat_rooms[channel]):
+    for entry in list(chat_rooms.get(channel, ())):
         ws = entry[0]
         try:
             if not ws.closed:
@@ -16543,7 +16545,8 @@ async def broadcast_users_list(channel: str):
                 dead_connections.add(entry)
         except (ConnectionError, ConnectionResetError, TypeError):
             dead_connections.add(entry)
-    chat_rooms[channel] -= dead_connections
+    if dead_connections and channel in chat_rooms:
+        chat_rooms[channel] -= dead_connections
 
 
 async def broadcast_to_channel(channel: str, message: dict, exclude=None, anon_subject=None):
@@ -16558,7 +16561,7 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None, anon_s
 
     hidden = None
     dead_connections = set()
-    for entry in chat_rooms[channel]:
+    for entry in list(chat_rooms[channel]):
         # Handle both old (3-tuple) and new (5-tuple) formats during transition
         ws = entry[0]
         if ws == exclude:
@@ -16577,8 +16580,9 @@ async def broadcast_to_channel(channel: str, message: dict, exclude=None, anon_s
         except (ConnectionError, ConnectionResetError, TypeError):
             dead_connections.add(entry)
 
-    # Clean up dead connections
-    chat_rooms[channel] -= dead_connections
+    # Clean up dead connections (the room may have been removed meanwhile)
+    if dead_connections and channel in chat_rooms:
+        chat_rooms[channel] -= dead_connections
 
 
 ANON_VOICE_MESSAGE = "Voice chat in a channel is not available in anonymous mode"
