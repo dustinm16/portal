@@ -460,7 +460,7 @@ CREATE VIRTUAL TABLE dm_messages_fts USING fts5(message, content='', tokenize='p
 POST /login              - Session login (form)
 GET  /logout             - End session
 POST /api/register       - Register new account (requires invite code)
-POST /api/token          - Create JWT token
+POST /api/token          - Create JWT token (2FA accounts also send totp_code)
 GET  /api/tokens         - List active tokens
 POST /api/token/revoke   - Revoke a token
 POST /api/api-keys       - Create API key

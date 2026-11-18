@@ -496,14 +496,16 @@
                             <tr>
                                 <td><span class="param-name">totp_code</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>6-digit 2FA code (if 2FA enabled)</td>
+                                <td>Authenticator code or one-time backup code. <span class="param-required">required</span> if the account has 2FA enabled</td>
                             </tr>
                         </table>
+                        <h4>Two-factor accounts</h4>
+                        <p>For an account with 2FA enabled, a correct password alone does not issue a token. Without <code>totp_code</code> the endpoint returns <code>401</code> with <code>"totp_required": true</code> (only after the password has been verified); repeat the request with the code added. A wrong code returns <code>401</code>. After 5 wrong codes within 5 minutes from one address, further attempts for that account from that address return <code>429</code> with a <code>Retry-After</code> header for 5 minutes; a higher per-account limit across all addresses applies as well (20 wrong codes in 15 minutes refuse further codes, from any address, until the oldest of them is 15 minutes old; <code>Retry-After</code> states the exact wait; when that happens an entry is added to the account's activity feed). Correct codes are also refused during a cooldown. A backup code works once. Scripts that cannot supply a code should use an <a href="#api-keys">API key</a> instead.</p>
                         <h4>Example</h4>
                         <div class="code-block">
 <pre>curl -X POST https://portal.example.com/api/token \
   -H "Content-Type: application/json" \
-  -d '{"username": "user", "password": "pass"}'</pre>
+  -d '{"username": "user", "password": "pass", "totp_code": "123456"}'</pre>
                         </div>
                         <h4>Response</h4>
                         <div class="code-block">

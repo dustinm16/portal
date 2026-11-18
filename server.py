@@ -609,6 +609,190 @@ def check_rate_limit(client_ip: str) -> bool:
     return True
 
 
+# Wrong-second-factor limiter, shared by the web login and POST /api/token.
+# Only consulted after the password has been verified, so knowing a username
+# alone cannot trigger a cooldown for the real user. Two tiers:
+#   - per (user id, client IP): 5 wrong codes in 5 minutes -> 5-minute cooldown
+#   - per user id, all IPs:    20 wrong codes in 15 minutes -> refused until the
+#     oldest of those leaves the 15-minute window (at least 5 minutes)
+# When the per-user tier trips, an activity log entry is written for the
+# account. In memory only (a restart clears it). Each table is an LRU-ordered
+# dict kept in order of last activity, so expired entries are dropped from the
+# front in amortised O(1) and the table is capped. When a table is full the
+# oldest entry that is not in cooldown is evicted; if all are in cooldown, a
+# new key is refused (answered as throttled) instead of evicting one.
+import collections as _collections
+
+_TOTP_PAIR_LIMIT, _TOTP_PAIR_WINDOW = 5, 300.0
+_TOTP_USER_LIMIT, _TOTP_USER_WINDOW = 20, 900.0
+_TOTP_COOLDOWN = 300.0
+_TOTP_TABLE_MAX = 10000
+_totp_pair_state: "_collections.OrderedDict[tuple, dict]" = _collections.OrderedDict()
+_totp_user_state: "_collections.OrderedDict[int, dict]" = _collections.OrderedDict()
+
+
+def _totp_make_room(table: "_collections.OrderedDict", now: float):
+    """Make room for one new entry. Returns None on success, else a wait in seconds.
+
+    An entry that is still in cooldown is never evicted, or its cooldown could
+    be erased by flooding the table with new keys. The oldest entry that is not
+    in cooldown goes instead; if every entry is in cooldown the new key is
+    refused (the caller treats that as throttled).
+    """
+    if len(table) < _TOTP_TABLE_MAX:
+        return None
+    soonest = None
+    for key, entry in table.items():
+        if entry["until"] <= now:
+            del table[key]
+            return None
+        if soonest is None or entry["until"] < soonest:
+            soonest = entry["until"]
+    return int(soonest - now) + 1
+
+
+def _totp_entry(table: "_collections.OrderedDict", key, window: float, now: float):
+    """Return the (possibly new) state entry for key, most-recently-used last.
+
+    Returns an int (seconds to wait) instead when the table is full of entries
+    that are all in cooldown and key is new.
+    """
+    while table:
+        oldest = next(iter(table.values()))
+        if oldest["last"] + window >= now or oldest["until"] > now:
+            break
+        table.popitem(last=False)
+    entry = table.get(key)
+    if entry is None:
+        wait = _totp_make_room(table, now)
+        if wait is not None:
+            return wait
+        entry = {"hits": _collections.deque(), "until": 0.0, "last": now}
+        table[key] = entry
+    else:
+        table.move_to_end(key)
+        entry["last"] = now
+    hits = entry["hits"]
+    while hits and hits[0] <= now - window:
+        hits.popleft()
+    return entry
+
+
+def _totp_check(user_id: int, client_ip: str, now: float = None):
+    """Reserve one code attempt. Returns (allowed, retry_after, token, user_tripped).
+
+    user_tripped is True only on the call that starts a per-user cooldown.
+
+    The attempt is counted up front (so a burst of concurrent guesses cannot
+    overshoot the limit while earlier ones are still being verified) and given
+    back by _totp_end_attempt() when the code turns out to be correct.
+    """
+    now = monotonic() if now is None else now
+    pair = _totp_entry(_totp_pair_state, (user_id, client_ip), _TOTP_PAIR_WINDOW, now)
+    if isinstance(pair, int):
+        logger.warning(f"2FA code attempts refused for user id {user_id}: limiter table full of cooldowns")
+        return False, pair, None, False
+    user = _totp_entry(_totp_user_state, user_id, _TOTP_USER_WINDOW, now)
+    if isinstance(user, int):
+        logger.warning(f"2FA code attempts refused for user id {user_id}: limiter table full of cooldowns")
+        return False, user, None, False
+
+    # During a cooldown even a correct code is refused. This is deliberate:
+    # accepting correct codes would make the cooldown useless against guessing.
+    # Existing sessions and API keys are unaffected, and a throttle event is
+    # only reachable with the password, so it is logged as a warning below.
+    remaining = max(pair["until"], user["until"]) - now
+    if remaining > 0:
+        return False, int(remaining) + 1, None, False
+
+    for scope, entry, limit in (("user+ip", pair, _TOTP_PAIR_LIMIT), ("user", user, _TOTP_USER_LIMIT)):
+        if len(entry["hits"]) >= limit:
+            until = now + _TOTP_COOLDOWN
+            if scope == "user+ip":
+                entry["hits"].clear()
+            else:
+                # The per-user history is kept so the ceiling really is 20
+                # wrong codes per 15 minutes however often the cooldown
+                # restarts. The refusal therefore lasts until the oldest hit
+                # leaves the window (never less than the base cooldown); once
+                # it has, the history is below the limit and a correct code is
+                # accepted, so Retry-After is truthful and nothing re-arms.
+                until = max(until, entry["hits"][0] + _TOTP_USER_WINDOW)
+            entry["until"] = until
+            retry_after = int(until - now) + 1
+            logger.warning(
+                f"2FA code attempts throttled ({scope}) for user id {user_id} from {client_ip}; "
+                f"cooldown {retry_after}s"
+            )
+            return False, retry_after, None, scope == "user"
+
+    pair["hits"].append(now)
+    user["hits"].append(now)
+    return True, 0, now, False
+
+
+def _totp_begin_attempt(user_id: int, client_ip: str, now: float = None):
+    """Like _totp_check() without the trip flag: (allowed, retry_after, token)."""
+    return _totp_check(user_id, client_ip, now)[:3]
+
+
+def _totp_end_attempt(user_id: int, client_ip: str, token: float) -> None:
+    """Give back a reserved attempt after a correct code."""
+    for table, key in ((_totp_pair_state, (user_id, client_ip)), (_totp_user_state, user_id)):
+        entry = table.get(key)
+        if entry is not None:
+            try:
+                entry["hits"].remove(token)
+            except ValueError:
+                pass
+
+
+async def _totp_record_user_throttle(user: dict, client_ip: str) -> None:
+    """Leave a trace of a per-user throttle in the account's activity feed.
+
+    log_activity drops an identical entry made within five minutes, so calling
+    this from more than one place for the same event writes a single row.
+    """
+    logger.warning(f"2FA per-user code budget used up for user id {user['id']}; last wrong code from {client_ip}")
+    try:
+        await db.log_activity(
+            user["id"], get_display_name(user), "2fa_throttled",
+            "Too many incorrect 2FA codes; sign-in with a code is paused for a while",
+            client_ip,
+        )
+    except Exception as e:
+        logger.warning(f"Could not record 2FA throttle activity for user id {user['id']}: {e}")
+
+
+async def verify_second_factor(user: dict, code, client_ip: str):
+    """Check a TOTP or backup code for a password-verified user.
+
+    Returns (result, retry_after) with result one of "totp", "backup",
+    "invalid" or "throttled". A backup code is consumed atomically by
+    db.use_backup_code, so it succeeds at most once even under concurrency.
+    """
+    allowed, retry_after, token, user_tripped = _totp_check(user["id"], client_ip)
+    if not allowed:
+        # The trip itself is recorded below, by the request that spent the
+        # budget; a refused request must not be recorded as the cause.
+        return "throttled", retry_after
+    code = code if isinstance(code, str) else str(code)
+    if verify_totp(user.get("totp_secret"), code):
+        _totp_end_attempt(user["id"], client_ip, token)
+        return "totp", 0
+    if await db.use_backup_code(user["id"], code):
+        _totp_end_attempt(user["id"], client_ip, token)
+        return "backup", 0
+    # This wrong code may have used up the per-user budget. Record it now, with
+    # the address that spent it, rather than waiting for the next request (which
+    # is likely the account holder's) to trip the limit. Checked after the
+    # verification because a reserved attempt that proves correct is handed back.
+    state = _totp_user_state.get(user["id"])
+    if state is not None and len(state["hits"]) >= _TOTP_USER_LIMIT:
+        await _totp_record_user_throttle(user, client_ip)
+    return "invalid", 0
+
+
 def create_ssl_context() -> ssl.SSLContext:
     """Create SSL context with secure settings."""
     cert_path = Config.SSL_CERT
@@ -1035,6 +1219,31 @@ async def http_create_token(request: web.Request) -> web.Response:
     if not user:
         logger.warning(f"Failed login attempt for '{username}' from {client_ip}")
         return web.json_response({"error": "Invalid credentials"}, status=401)
+
+    # Second factor: same verification as the web login. Revealed only after
+    # the password checked out, so a wrong password cannot probe for 2FA.
+    if user.get("totp_enabled"):
+        totp_code = data.get("totp_code")
+        if not totp_code or (isinstance(totp_code, str) and not totp_code.strip()):
+            return web.json_response(
+                {"error": "Two-factor code required", "totp_required": True},
+                status=401
+            )
+        result, retry_after = await verify_second_factor(user, totp_code, client_ip)
+        if result == "throttled":
+            return web.json_response(
+                {"error": "Too many incorrect codes. Try again later."},
+                status=429,
+                headers={"Retry-After": str(retry_after)}
+            )
+        if result == "invalid":
+            logger.warning(f"Failed 2FA for user '{username}' from {client_ip} (token endpoint)")
+            return web.json_response(
+                {"error": "Invalid 2FA code", "totp_required": True},
+                status=401
+            )
+        if result == "backup":
+            logger.info(f"Backup code used for user '{username}' from {client_ip} (token endpoint)")
 
     # Enforce scope restrictions based on user role
     is_admin = user.get("is_admin") or user.get("role") in ("admin", "superadmin")
@@ -10275,7 +10484,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
     # Check if 2FA is enabled for this user
     if user.get("totp_enabled"):
-        if not totp_code:
+        if not totp_code or (isinstance(totp_code, str) and not totp_code.strip()):
             # 2FA required but not provided - request it
             logger.info(f"2FA required for user '{username}' from {client_ip}")
             return web.json_response({
@@ -10283,12 +10492,18 @@ async def http_login_submit(request: web.Request) -> web.Response:
                 "message": "Two-factor authentication required"
             }, status=200)
 
-        # Verify TOTP code
-        if not verify_totp(user.get("totp_secret"), totp_code):
-            # Try backup code
-            if not await db.use_backup_code(user["id"], totp_code):
-                logger.warning(f"Failed 2FA for user '{username}' from {client_ip}")
-                return web.json_response({"error": "Invalid 2FA code"}, status=401)
+        # Verify TOTP or backup code (shared wrong-code throttle)
+        result, retry_after = await verify_second_factor(user, totp_code, client_ip)
+        if result == "throttled":
+            return web.json_response(
+                {"error": "Too many incorrect codes. Try again later."},
+                status=429,
+                headers={"Retry-After": str(retry_after)}
+            )
+        if result == "invalid":
+            logger.warning(f"Failed 2FA for user '{username}' from {client_ip}")
+            return web.json_response({"error": "Invalid 2FA code"}, status=401)
+        if result == "backup":
             logger.info(f"Backup code used for user '{username}' from {client_ip}")
         else:
             logger.info(f"2FA verified for user '{username}' from {client_ip}")

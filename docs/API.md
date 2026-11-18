@@ -131,11 +131,14 @@ Register a new account (requires invite code).
 ---
 
 #### POST /api/token
-Create a JWT token.
+Create a JWT token with username and password. If the account has 2FA enabled, also send `totp_code` (authenticator code or a one-time backup code). Without it the response is `401` with `"totp_required": true` (sent only after the password verified). After 5 wrong codes in 5 minutes from one address the account gets a 5-minute cooldown for that address (`429` with `Retry-After`); a higher per-account limit across all addresses applies too (20 wrong codes in 15 minutes refuse further codes, from any address, until the oldest of them is 15 minutes old; `Retry-After` states the exact wait; when that happens an entry is added to the account's activity feed). Correct codes are also refused during a cooldown. Scripts that cannot supply a code should use an API key.
 
 **Request:**
 ```json
 {
+  "username": "user",
+  "password": "pass",
+  "totp_code": "123456",
   "scopes": ["*"],
   "expires_hours": 24
 }
