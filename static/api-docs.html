@@ -2508,6 +2508,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 <!-- Terminal WebSocket -->
                 <h3 id="ws-terminal">Terminal WebSocket Protocol</h3>
                 <p>Terminal sessions use JSON messages for communication:</p>
+                <p>Keys that are not text are ordinary <code>input</code> data: Ctrl+C is <code>"\u0003"</code>, Tab is <code>"\t"</code>, Esc is <code>"\u001b"</code>, and the arrow keys are <code>"\u001b[A"</code> to <code>"\u001b[D"</code> (<code>"\u001bOA"</code> to <code>"\u001bOD"</code> while an application has switched on application cursor keys). The touch key bar in the web terminal sends exactly these, so API clients can do the same.</p>
 
                 <h4>Client Messages</h4>
                 <div class="code-block">

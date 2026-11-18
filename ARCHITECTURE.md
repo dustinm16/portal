@@ -212,7 +212,8 @@ Permission Hierarchy:
 │       ├── ssh-keys.js    # SSH key management
 │       ├── streams.js     # Stream management
 │       ├── vods.js        # VOD file manager
-│       └── terminal.js    # Terminal WebSocket client
+│       ├── terminal-keybar.js # Terminal key bar helpers (pure functions)
+│       └── terminal.js    # Terminal WebSocket client and key bar
 │
 ├── docs/                  # Documentation
 │   ├── ARCHITECTURE.md    # This file

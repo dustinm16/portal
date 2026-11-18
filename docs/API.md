@@ -2278,7 +2278,7 @@ Terminal capability queries (DA1/DA2/DSR) pass through to xterm.js which respond
 #### WS /ws/terminal/:id
 Terminal session for a service.
 
-Text-based terminal I/O.
+Text-based terminal I/O. Keys that are not text are ordinary `input` data: Ctrl+C is `"\u0003"`, Tab is `"\t"`, Esc is `"\u001b"`, and the arrow keys are `"\u001b[A"` to `"\u001b[D"` (`"\u001bOA"` to `"\u001bOD"` while an application has switched on application cursor keys). The touch key bar in the web terminal sends exactly these.
 
 ---
 
@@ -3928,7 +3928,7 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/guides` | Connection setup guides for 75+ types (public) |
 | `/docs` | API documentation (public; admin endpoints stripped server-side for non-admins) |
 | `/api-docs` | API documentation (alias for `/docs`) |
-| `/terminal/{id}` | Terminal UI (shell selector for local terminal and SSH user connections) |
+| `/terminal/{id}` | Terminal UI (shell selector for local terminal and SSH user connections; touch key bar with Esc, Tab, sticky Ctrl and Alt, arrows, Paste and text size, shown by default on touch devices only) |
 | `/vnc/{id}` | VNC viewer |
 | `/spice/{id}` | SPICE viewer |
 | `/proxmox/{id}` | Proxmox management |

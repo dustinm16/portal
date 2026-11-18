@@ -12,9 +12,97 @@
         html, body {
             height: 100%;
             overflow: hidden;
+            overscroll-behavior: none;
+        }
+        /* The page is as tall as what is visible: terminal.js sets --vv-* from
+           visualViewport so the key bar sits above the on-screen keyboard. */
+        body.terminal-page {
+            position: fixed;
+            left: 0;
+            right: 0;
+            top: var(--vv-top, 0px);
+            height: var(--vv-height, 100vh);
+        }
+        @supports (height: 100dvh) {
+            body.terminal-page { height: var(--vv-height, 100dvh); }
         }
         #terminal-container {
-            height: calc(100vh - 50px);
+            flex: 1 1 auto;
+            min-height: 0;
+            height: auto;
+            overflow: hidden;
+        }
+        .terminal-controls { align-items: center; }
+        #keybar-toggle[aria-pressed="true"] {
+            border-color: var(--accent-blue, #58a6ff);
+            color: var(--accent-blue, #58a6ff);
+        }
+        .keybar {
+            display: none;
+            flex: 0 0 auto;
+            gap: 0.35rem;
+            padding: 0.35rem 0.5rem;
+            overflow-x: auto;
+            background: rgba(0, 0, 0, 0.45);
+            border-top: 1px solid var(--card-border, #30363d);
+            -webkit-overflow-scrolling: touch;
+        }
+        body.keybar-on .keybar { display: flex; }
+        .keybar button {
+            flex: 0 0 auto;
+            min-width: 2.75rem;
+            min-height: 2.75rem;
+            padding: 0 0.7rem;
+            font: inherit;
+            font-size: 0.9rem;
+            color: var(--text-primary, #c9d1d9);
+            background: var(--card-bg, #161b22);
+            border: 1px solid var(--card-border, #30363d);
+            border-radius: 6px;
+            touch-action: manipulation;
+            cursor: pointer;
+        }
+        .keybar button[aria-pressed="true"] {
+            color: #fff;
+            background: var(--accent-blue, #58a6ff);
+            border-color: var(--accent-blue, #58a6ff);
+        }
+        .paste-dialog {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.6);
+        }
+        .paste-dialog[hidden] { display: none; }
+        .paste-box {
+            width: min(32rem, 100%);
+            padding: 1rem;
+            background: var(--card-bg, #161b22);
+            color: var(--text-primary, #c9d1d9);
+            border: 1px solid var(--card-border, #30363d);
+            border-radius: 8px;
+        }
+        .paste-box p { margin: 0 0 0.5rem; font-size: 0.85rem; }
+        .paste-box textarea {
+            width: 100%;
+            box-sizing: border-box;
+            height: 8rem;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: inherit;
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid var(--card-border, #30363d);
+            border-radius: 6px;
+        }
+        .paste-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
         }
         .xterm {
             height: 100%;
@@ -49,6 +137,11 @@
                 <span class="status-dot"></span>
                 <span id="status-text">Connecting...</span>
             </div>
+            <button type="button" class="btn btn-secondary" id="keybar-toggle" aria-pressed="false" title="Show or hide the key bar">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18a1 1 0 011 1v8a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1zm4 7h10M6 10h.01M10 10h.01M14 10h.01M18 10h.01" />
+                </svg>
+            </button>
             <button class="btn btn-secondary" onclick="reconnect()" title="Reconnect">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -64,11 +157,41 @@
 
     <div id="terminal-container"></div>
 
+    <div class="keybar" id="keybar" role="toolbar" aria-label="Terminal keys">
+        <button type="button" tabindex="-1" data-key="esc">Esc</button>
+        <button type="button" tabindex="-1" data-key="tab">Tab</button>
+        <button type="button" tabindex="-1" data-mod="ctrl" aria-pressed="false">Ctrl</button>
+        <button type="button" tabindex="-1" data-mod="alt" aria-pressed="false">Alt</button>
+        <button type="button" tabindex="-1" data-key="left" aria-label="Left">&larr;</button>
+        <button type="button" tabindex="-1" data-key="down" aria-label="Down">&darr;</button>
+        <button type="button" tabindex="-1" data-key="up" aria-label="Up">&uarr;</button>
+        <button type="button" tabindex="-1" data-key="right" aria-label="Right">&rarr;</button>
+        <button type="button" tabindex="-1" data-text="|">|</button>
+        <button type="button" tabindex="-1" data-text="~">~</button>
+        <button type="button" tabindex="-1" data-text="/">/</button>
+        <button type="button" tabindex="-1" data-action="paste">Paste</button>
+        <button type="button" tabindex="-1" data-action="font-smaller" aria-label="Smaller text">A-</button>
+        <button type="button" tabindex="-1" data-action="font-larger" aria-label="Larger text">A+</button>
+    </div>
+
+    <div class="paste-dialog" id="paste-dialog" role="dialog" aria-modal="true" aria-labelledby="paste-title" hidden>
+        <div class="paste-box">
+            <h3 id="paste-title" style="margin:0 0 0.5rem;font-size:1rem;">Paste into terminal</h3>
+            <p id="paste-hint"></p>
+            <textarea id="paste-text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+            <div class="paste-actions">
+                <button type="button" class="btn btn-secondary" id="paste-cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" id="paste-send" disabled>Paste</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
     <script src="/static/js/portal.js?v=44"></script>
     <script src="/static/js/hostkey.js?v=1"></script>
-    <script src="/static/js/terminal.js?v=2"></script>
+    <script src="/static/js/terminal-keybar.js?v=2"></script>
+    <script src="/static/js/terminal.js?v=4"></script>
     <script>
         // Initialize terminal with service ID and WS path from server
         const serviceId = '{{SERVICE_ID}}';
