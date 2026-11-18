@@ -1,5 +1,6 @@
 """Database layer for Open Relay Portal using SQLite."""
 
+import asyncio
 import json
 import logging
 import secrets as _secrets
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 from config import Config
 import recording_paths
+import chat_uploads
 
 logger = logging.getLogger("portal.database")
 
@@ -86,21 +88,31 @@ def _generate_encryption_salt() -> bytes:
 # --- Key derivation caches (avoid repeated PBKDF2 computations) ---
 _chat_key_cache: bytes | None = None
 _config_key_cache: bytes | None = None
+_legacy_chat_key_cache: tuple | None = None    # (JWT_SECRET it was derived from, key)
 
 # --- Legacy key functions (hardcoded salts, pre-machine-binding) ---
 
 def _get_legacy_chat_key() -> bytes:
-    """Legacy chat encryption key using hardcoded salt."""
+    """Legacy chat encryption key using hardcoded salt. Derived once per process
+    (and per JWT_SECRET): PBKDF2 at 100k iterations is far too slow to repeat for
+    every legacy row."""
+    global _legacy_chat_key_cache
     if not Config.JWT_SECRET:
         raise RuntimeError("JWT_SECRET is required for encryption")
+    cached = _legacy_chat_key_cache
+    if cached is not None and cached[0] == Config.JWT_SECRET:
+        return cached[1]
     secret = Config.JWT_SECRET.encode()
     if CRYPTO_AVAILABLE:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(), length=32,
             salt=b"portal-chat-salt", iterations=100000,
         )
-        return base64.urlsafe_b64encode(kdf.derive(secret))
-    return base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+        key = base64.urlsafe_b64encode(kdf.derive(secret))
+    else:
+        key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+    _legacy_chat_key_cache = (Config.JWT_SECRET, key)
+    return key
 
 
 def _get_legacy_config_key() -> bytes:
@@ -171,12 +183,14 @@ def encrypt_message(plaintext: str) -> str:
     return f.encrypt(plaintext.encode()).decode()
 
 
-def decrypt_message(ciphertext: str) -> str:
-    """Decrypt a chat message. Falls back to legacy key for pre-migration data.
+class MessageDecryptError(Exception):
+    """A stored chat message looks encrypted but neither key opens it."""
 
-    Plaintext (pre-encryption era data) is detected by checking for the Fernet
-    token prefix and returned as-is to avoid false "decryption failed" errors.
-    """
+
+def decrypt_message_strict(ciphertext: str) -> str:
+    """Like decrypt_message, but raises MessageDecryptError instead of returning
+    the placeholder, so a caller can tell an unreadable row from a message whose
+    text happens to be the placeholder."""
     if not CRYPTO_AVAILABLE or not ciphertext:
         return ciphertext
     # Fernet tokens always start with gAAAAAB — if it doesn't, it's plaintext
@@ -191,8 +205,20 @@ def decrypt_message(ciphertext: str) -> str:
             f = Fernet(_get_legacy_chat_key())
             return f.decrypt(ciphertext.encode()).decode()
         except Exception as e:
-            logger.warning(f"Message decryption failed (both keys): {type(e).__name__}")
-            return "[Message could not be decrypted]"
+            raise MessageDecryptError(type(e).__name__) from None
+
+
+def decrypt_message(ciphertext: str) -> str:
+    """Decrypt a chat message. Falls back to legacy key for pre-migration data.
+
+    Plaintext (pre-encryption era data) is detected by checking for the Fernet
+    token prefix and returned as-is to avoid false "decryption failed" errors.
+    """
+    try:
+        return decrypt_message_strict(ciphertext)
+    except MessageDecryptError as e:
+        logger.warning(f"Message decryption failed (both keys): {e}")
+        return "[Message could not be decrypted]"
 
 
 # --- Connection config encryption (separate key from chat) ---
@@ -1146,6 +1172,8 @@ class Database:
         # names), kept by the recorder; retention must not touch these.
         self.live_recording_ids: set[int] = set()
         self.live_recording_files: set[str] = set()
+        # Folder holding chat uploads (a test points this at a temporary folder).
+        self.chat_upload_dir: str = str(chat_uploads.DEFAULT_DIR)
 
     async def connect(self) -> None:
         """Initialize database connection and schema."""
@@ -4931,93 +4959,201 @@ class Database:
 
     async def delete_chat_message(self, message_id: int, user_id: int = None) -> bool:
         """Delete a chat message (optionally verify ownership)."""
-        # Fetch file URLs before deleting so we can clean up uploaded files
-        file_cursor = await self.conn.execute(
-            "SELECT image_url, attachment_url FROM chat_messages WHERE id = ?",
-            (message_id,)
-        )
-        file_row = await file_cursor.fetchone()
+        return await self._delete_one_message("chat_messages", "channel", message_id, user_id)
 
-        if user_id:
-            cursor = await self.conn.execute(
-                "DELETE FROM chat_messages WHERE id = ? AND user_id = ?",
-                (message_id, user_id)
-            )
-        else:
-            cursor = await self.conn.execute(
-                "DELETE FROM chat_messages WHERE id = ?",
-                (message_id,)
-            )
-        await self.conn.commit()
-        if cursor.rowcount > 0:
-            await self.remove_message_from_search(message_id, "channel")
-            # Clean up uploaded files from disk (with path traversal protection)
-            if file_row:
-                uploads_dir = (Path(__file__).parent / 'static' / 'uploads' / 'chat').resolve()
-                for field in ('image_url', 'attachment_url'):
-                    url = file_row[field]
-                    if url and url.startswith('/static/uploads/chat/'):
-                        file_path = (Path(__file__).parent / url.lstrip('/')).resolve()
-                        try:
-                            if str(file_path).startswith(str(uploads_dir)) and file_path.exists():
-                                file_path.unlink()
-                        except OSError:
-                            pass
-            return True
-        return False
-
-    async def cleanup_old_chat_messages(self, days: int = 7) -> int:
-        """Delete chat messages older than specified days. Returns count deleted."""
+    async def cleanup_old_chat_messages(self, days: int = 7, stats: dict = None) -> int:
+        """Delete chat messages older than specified days (pinned ones stay), and
+        their upload files unless another row still refers to them. Returns the
+        count of messages deleted; `stats`, when given, receives the files and
+        bytes removed."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        total_deleted = 0
-        batch_size = 500
+        return await self._purge_messages(
+            "chat_messages", "channel", "chat_reactions",
+            "created_at < ? AND is_pinned = 0", (cutoff,), stats)
+
+    async def clear_channel_messages(self, channel_id: int, stats: dict = None) -> int:
+        """Delete all messages in a channel (pinned ones too) and their upload
+        files unless another row still refers to them. Returns count deleted."""
+        return await self._purge_messages(
+            "chat_messages", "channel", "chat_reactions",
+            "channel_id = ?", (channel_id,), stats)
+
+    # -------------------------------------------------------------------------
+    # Chat upload files: removed with the rows that refer to them
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _new_file_stats(stats: Optional[dict]) -> dict:
+        stats = stats if stats is not None else {}
+        stats.setdefault("files", 0)
+        stats.setdefault("bytes", 0)
+        return stats
+
+    @staticmethod
+    def _upload_names(rows, names: Optional[set] = None) -> set:
+        """Add the upload file names that (image_url, attachment_url) pairs name."""
+        names = names if names is not None else set()
+        for row in rows:
+            for url in (row[0], row[1]):
+                name = chat_uploads.name_from_url(url)
+                if name:
+                    names.add(name)
+        return names
+
+    async def _remove_unreferenced_uploads(self, names, stats: dict) -> None:
+        """Unlink the named upload files of already-deleted rows, except those any
+        surviving row still names (see chat_uploads for where). Call only after
+        the deletion was committed. The text of all messages is read in a worker
+        thread; the last check and the unlinks then happen together under the
+        database write lock (chat_uploads.finalize_sync). If any message cannot be
+        decrypted, or the check cannot complete, nothing is removed and
+        stats["skipped"] says why."""
+        if not names:
+            return
+        try:
+            stems = {chat_uploads.stem_of(n) for n in names}
+            used = await asyncio.to_thread(chat_uploads.references_sync, self.db_path, stems)
+            left = [n for n in sorted(names) if chat_uploads.stem_of(n) not in used]
+            if not left:
+                return
+            scan = await asyncio.to_thread(chat_uploads.scan_text_sync, self.db_path, decrypt_message_strict)
+            left = [n for n in left if chat_uploads.stem_of(n) not in scan.stems]
+            if not left:
+                return
+            _, files, size = await asyncio.to_thread(
+                chat_uploads.finalize_sync, self.db_path, self.chat_upload_dir, left,
+                decrypt_message_strict, scan, True)
+        except chat_uploads.Undecryptable as e:
+            logger.warning(f"Chat upload cleanup skipped: a message could not be decrypted ({e})")
+            stats.setdefault("skipped", "a message could not be decrypted, so its upload links are unknown")
+            return
+        except Exception as e:
+            logger.warning(f"Chat upload cleanup skipped: {type(e).__name__}: {e}")
+            stats.setdefault("skipped", f"{type(e).__name__}: {e}")
+            return
+        stats["files"] += files
+        stats["bytes"] += size
+
+    async def _purge_messages(self, table: str, source: str, reaction_table: str,
+                              where: str, params: tuple, stats: Optional[dict]) -> int:
+        """Delete the rows of `table` matching `where` in batches of 500, each
+        batch in one transaction. After the last commit, the upload files of the
+        deleted rows that no surviving row refers to are removed (one reference
+        check for the whole purge, so the text of the surviving rows is decrypted
+        once, not once per batch)."""
+        stats = self._new_file_stats(stats)
+        total = 0
+        last_id = 0
+        names: set = set()
         while True:
             cursor = await self.conn.execute(
-                "SELECT id FROM chat_messages WHERE created_at < ? AND is_pinned = 0 LIMIT ?",
-                (cutoff, batch_size)
-            )
-            batch = [row["id"] for row in await cursor.fetchall()]
-            if not batch:
+                f"SELECT id, image_url, attachment_url FROM {table} "
+                f"WHERE ({where}) AND id > ? ORDER BY id LIMIT 500", (*params, last_id))
+            rows = await cursor.fetchall()
+            if not rows:
                 break
+            batch = [r["id"] for r in rows]
+            last_id = batch[-1]
             for msg_id in batch:
                 try:
-                    await self.remove_message_from_search(msg_id, "channel")
+                    await self.remove_message_from_search(msg_id, source)
                 except Exception:
                     pass
             placeholders = ",".join("?" * len(batch))
             await self.conn.execute(
-                f"DELETE FROM chat_reactions WHERE message_id IN ({placeholders})", batch
-            )
+                f"DELETE FROM {reaction_table} WHERE message_id IN ({placeholders})", batch)
             await self.conn.execute(
-                f"DELETE FROM chat_messages WHERE id IN ({placeholders})", batch
-            )
+                f"DELETE FROM {table} WHERE id IN ({placeholders})", batch)
             await self.conn.commit()
-            total_deleted += len(batch)
-        return total_deleted
+            total += len(batch)
+            self._upload_names([(r["image_url"], r["attachment_url"]) for r in rows], names)
+        await self._remove_unreferenced_uploads(names, stats)
+        return total
 
-    async def clear_channel_messages(self, channel_id: int) -> int:
-        """Delete all messages in a channel. Returns count deleted."""
-        # Get IDs for FTS and reaction cleanup
-        cursor = await self.conn.execute(
-            "SELECT id FROM chat_messages WHERE channel_id = ?", (channel_id,)
-        )
-        msg_ids = [row["id"] for row in await cursor.fetchall()]
-        if msg_ids:
-            for msg_id in msg_ids:
-                try:
-                    await self.remove_message_from_search(msg_id, "channel")
-                except Exception:
-                    pass
-            placeholders = ",".join("?" * len(msg_ids))
-            await self.conn.execute(
-                f"DELETE FROM chat_reactions WHERE message_id IN ({placeholders})", msg_ids
-            )
-        cursor = await self.conn.execute(
-            "DELETE FROM chat_messages WHERE channel_id = ?",
-            (channel_id,)
-        )
+    async def _delete_one_message(self, table: str, source: str, message_id: int,
+                                  user_id: Optional[int]) -> bool:
+        """Delete one message row (optionally only if `user_id` owns it) and, after
+        the commit, its upload files unless another row still refers to them."""
+        file_cursor = await self.conn.execute(
+            f"SELECT image_url, attachment_url FROM {table} WHERE id = ?", (message_id,))
+        file_row = await file_cursor.fetchone()
+        if user_id:
+            cursor = await self.conn.execute(
+                f"DELETE FROM {table} WHERE id = ? AND user_id = ?", (message_id, user_id))
+        else:
+            cursor = await self.conn.execute(f"DELETE FROM {table} WHERE id = ?", (message_id,))
         await self.conn.commit()
-        return cursor.rowcount
+        if cursor.rowcount <= 0:
+            return False
+        await self.remove_message_from_search(message_id, source)
+        if file_row:
+            await self._remove_unreferenced_uploads(
+                self._upload_names([(file_row["image_url"], file_row["attachment_url"])]),
+                self._new_file_stats(None))
+        return True
+
+    async def sweep_orphan_chat_uploads(self, delete: Optional[bool] = None) -> dict:
+        """Find chat upload files that no row refers to.
+
+        Looks only at generated-name regular files directly inside the chat
+        upload folder that are older than the 24 hour grace (the grace cannot be
+        changed by a caller). A file counts as referenced if any row names it
+        where chat_uploads says (URL columns, status messages, channel topics and
+        descriptions, stream names and descriptions, and the decrypted text of
+        messages, replies and polls, read in a worker thread). If any message
+        cannot be decrypted, or the check cannot complete, nothing is reported as
+        orphaned and report["skipped"] says why. Unless deletion is
+        switched on (`delete`, or the setting chat_orphan_sweep_delete = "true")
+        this only reports. Returns the report dict."""
+        if delete is None:
+            delete = (await self.get_setting("chat_orphan_sweep_delete")) == "true"
+        report = {"report_only": not delete, "scanned": 0, "orphans": 0, "bytes": 0,
+                  "names": [], "deleted": 0, "deleted_bytes": 0}
+        found = chat_uploads.scan_candidates(self.chat_upload_dir, chat_uploads.cutoff())
+        if found is None and not os.path.lexists(self.chat_upload_dir):
+            found = ([], 0)        # nothing was ever uploaded: not a problem, nothing to sweep
+        if found is None:
+            report["skipped"] = "upload folder missing or not a plain folder"
+            logger.warning("[Retention] Orphan chat upload sweep skipped: upload folder missing or a link")
+            return report
+        candidates, report["scanned"] = found
+        sizes = dict(candidates)
+        try:
+            if candidates:
+                used = await asyncio.to_thread(
+                    chat_uploads.references_sync, self.db_path, {chat_uploads.stem_of(n) for n, _ in candidates})
+                candidates = [(n, sz) for n, sz in candidates if chat_uploads.stem_of(n) not in used]
+            if candidates:
+                scan = await asyncio.to_thread(chat_uploads.scan_text_sync, self.db_path, decrypt_message_strict)
+                candidates = [(n, sz) for n, sz in candidates if chat_uploads.stem_of(n) not in scan.stems]
+            if candidates:
+                # The last check, covering rows written since the scan, and (when
+                # deletion is on) the unlinks, together under the write lock.
+                free, files, size = await asyncio.to_thread(
+                    chat_uploads.finalize_sync, self.db_path, self.chat_upload_dir, [n for n, _ in candidates],
+                    decrypt_message_strict, scan, bool(delete), chat_uploads.cutoff())
+                candidates = [(n, sizes[n]) for n in free]
+                report["deleted"], report["deleted_bytes"] = files, size
+        except chat_uploads.Undecryptable as e:
+            report["skipped"] = "a message could not be decrypted, so its links are unknown"
+            logger.warning(f"[Retention] Orphan chat upload sweep skipped: {report['skipped']} ({e})")
+            return report
+        except Exception as e:
+            report["skipped"] = f"the reference check could not complete ({type(e).__name__}: {e})"
+            logger.warning(f"[Retention] Orphan chat upload sweep skipped: {report['skipped']}")
+            return report
+        report["orphans"] = len(candidates)
+        report["bytes"] = sum(sz for _, sz in candidates)
+        report["names"] = [n for n, _ in candidates[:20]]
+        if report["orphans"]:
+            verb = f"removed {report['deleted']} ({report['deleted_bytes']} bytes)" if delete else "report only, nothing deleted"
+            logger.info(
+                f"[Retention] Orphan chat uploads: {report['orphans']} file(s), {report['bytes']} bytes "
+                f"({verb}); first {len(report['names'])}: {', '.join(report['names'])}")
+        else:
+            logger.info(f"[Retention] Orphan chat uploads: none ({report['scanned']} file(s) checked, "
+                        f"{'report only' if not delete else 'deletion on'})")
+        return report
 
     # =========================================================================
     # Chat Reactions
@@ -6056,39 +6192,7 @@ class Database:
 
     async def delete_dm_message(self, message_id: int, user_id: int = None) -> bool:
         """Delete a DM message (optionally verify ownership)."""
-        # Fetch file URLs before deleting so we can clean up uploaded files
-        file_cursor = await self.conn.execute(
-            "SELECT image_url, attachment_url FROM dm_messages WHERE id = ?",
-            (message_id,)
-        )
-        file_row = await file_cursor.fetchone()
-
-        if user_id:
-            cursor = await self.conn.execute(
-                "DELETE FROM dm_messages WHERE id = ? AND user_id = ?",
-                (message_id, user_id)
-            )
-        else:
-            cursor = await self.conn.execute(
-                "DELETE FROM dm_messages WHERE id = ?", (message_id,)
-            )
-        await self.conn.commit()
-        if cursor.rowcount > 0:
-            await self.remove_message_from_search(message_id, "dm")
-            # Clean up uploaded files from disk (with path traversal protection)
-            if file_row:
-                uploads_dir = (Path(__file__).parent / 'static' / 'uploads' / 'chat').resolve()
-                for field in ('image_url', 'attachment_url'):
-                    url = file_row[field] if file_row[field] else None
-                    if url and url.startswith('/static/uploads/chat/'):
-                        file_path = (Path(__file__).parent / url.lstrip('/')).resolve()
-                        try:
-                            if str(file_path).startswith(str(uploads_dir)) and file_path.exists():
-                                file_path.unlink()
-                        except OSError:
-                            pass
-            return True
-        return False
+        return await self._delete_one_message("dm_messages", "dm", message_id, user_id)
 
     # =========================================================================
     # Direct Messages — Reactions
@@ -6610,34 +6714,13 @@ class Database:
                     continue
             await self.set_setting(key, value)
 
-    async def cleanup_old_dm_messages(self, days: int = 30) -> int:
-        """Delete DM messages older than specified days. Returns count deleted."""
+    async def cleanup_old_dm_messages(self, days: int = 30, stats: dict = None) -> int:
+        """Delete DM messages older than specified days, and their upload files
+        unless another row still refers to them. Returns count deleted; `stats`,
+        when given, receives the files and bytes removed."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        total_deleted = 0
-        batch_size = 500
-        while True:
-            cursor = await self.conn.execute(
-                "SELECT id FROM dm_messages WHERE created_at < ? LIMIT ?",
-                (cutoff, batch_size)
-            )
-            batch = [row["id"] for row in await cursor.fetchall()]
-            if not batch:
-                break
-            for msg_id in batch:
-                try:
-                    await self.remove_message_from_search(msg_id, "dm")
-                except Exception:
-                    pass
-            placeholders = ",".join("?" * len(batch))
-            await self.conn.execute(
-                f"DELETE FROM dm_reactions WHERE message_id IN ({placeholders})", batch
-            )
-            await self.conn.execute(
-                f"DELETE FROM dm_messages WHERE id IN ({placeholders})", batch
-            )
-            await self.conn.commit()
-            total_deleted += len(batch)
-        return total_deleted
+        return await self._purge_messages(
+            "dm_messages", "dm", "dm_reactions", "created_at < ?", (cutoff,), stats)
 
     async def add_device_metric_sample(self, category: str, entries_json: str, ts: str = None) -> None:
         """Persist one device-wide metric sample row (see device_metrics.py)."""

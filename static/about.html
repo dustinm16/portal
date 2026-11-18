@@ -1260,6 +1260,7 @@
                     </tbody>
                 </table>
                 <p>Expired tokens and API keys are also cleaned up automatically during each run.</p>
+                <p>Image and file uploads in chat are deleted together with their messages (retention, clearing a channel, deleting a message), unless another message still uses the same file. A daily check lists upload files that no message refers to; it only reports them in the log and deletes nothing yet.</p>
                 <ul>
                     <li><strong>Automatic Cleanup</strong> &mdash; Task runs on the configurable interval (default: every 6 hours)</li>
                     <li><strong>Manual Trigger</strong> &mdash; Force cleanup immediately from the Settings tab</li>

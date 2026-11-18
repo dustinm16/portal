@@ -6092,9 +6092,18 @@
                     if (d.expired_api_keys) parts.push(`${d.expired_api_keys} API keys`);
                     if (d.service_logs) parts.push(`${d.service_logs} service logs`);
                     if (d.recordings) parts.push(`${d.recordings} recordings`);
+                    if (d.chat_files) parts.push(`${d.chat_files} chat upload files (${Math.round((d.chat_file_bytes || 0) / 1024)} KB)`);
+                    const warn = [];
+                    if (d.chat_files_skipped) warn.push(`chat upload files were NOT removed with their messages: ${d.chat_files_skipped}`);
+                    const sweep = d.chat_orphan_sweep;
+                    if (sweep && sweep.skipped) warn.push(`orphan chat upload sweep skipped: ${sweep.skipped}`);
+                    if (sweep && sweep.orphans) parts.push(sweep.report_only
+                        ? `${sweep.orphans} orphan chat uploads found (${Math.round(sweep.bytes / 1024)} KB, report only, see the log)`
+                        : `${sweep.deleted} orphan chat uploads (${Math.round(sweep.deleted_bytes / 1024)} KB)`);
                     if (d.recording_orphans) parts.push(`${d.recording_orphans} orphan recording files`);
                     const summary = parts.length ? parts.join(', ') : 'Nothing to clean up';
-                    status.innerHTML = `<span style="color:var(--accent-green);">Cleanup complete: ${summary}${d.vacuumed ? ' (DB vacuumed)' : ''}</span>`;
+                    const warnHtml = warn.map(w => `<br><span style="color:var(--accent-yellow);">Warning: ${escapeHtml(w)}</span>`).join('');
+                    status.innerHTML = `<span style="color:var(--accent-green);">Cleanup complete: ${summary}${d.vacuumed ? ' (DB vacuumed)' : ''}</span>${warnHtml}`;
                     Portal.toast('Cleanup complete');
                 } else {
                     const err = await res.json();

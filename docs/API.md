@@ -3499,10 +3499,18 @@ Trigger immediate data cleanup cycle.
     "expired_tokens": 59,
     "expired_api_keys": 0,
     "service_logs": 4998,
+    "chat_files": 12,
+    "chat_file_bytes": 3407872,
+    "chat_orphan_sweep": {
+      "report_only": true, "scanned": 140, "orphans": 3, "bytes": 52114,
+      "names": ["0123456789abcdef0123456789abcdef.png"], "deleted": 0, "deleted_bytes": 0
+    },
     "vacuumed": true
   }
 }
 ```
+
+`chat_files` and `chat_file_bytes` are the upload files removed together with the deleted chat and DM messages. A file that another row still names is kept: in a message image or attachment, in message or DM text, a reply preview, a poll question or option, a user status message, a channel topic or description, or a stream name or description. If a message cannot be decrypted, or the check cannot complete, no file is removed and `chat_files_skipped` (present only then) says why. `chat_orphan_sweep` reports upload files that no message refers to (older than 24 hours, `names` lists at most 20). `report_only` is `true` unless the server setting `chat_orphan_sweep_delete` is `"true"`; in that case `deleted` and `deleted_bytes` say what was removed. `skipped` appears instead of results when the upload folder is missing or a link, a message could not be decrypted, or the check could not complete.
 
 ---
 

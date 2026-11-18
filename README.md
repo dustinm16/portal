@@ -311,6 +311,10 @@ Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus
 - Desktop connections use the VNC protocol and default to port 5900. A Windows host needs a VNC server installed; RDP is not supported.
 - Chunks of a VOD recording that are waiting to upload are staged in `data/vod_tmp` (private, kept across restarts and rollbacks) instead of `/tmp/portal_vods`. Chunks left in the old folder are moved there at the first start.
 
+### Upgrade notes for 1.12.0
+
+- Chat uploads are removed with their messages. Retention, clearing a channel and deleting a message now delete the image or attachment file too, unless another message still uses it, either in its image or attachment or by pasting the upload link into its text, a poll, a status message, a channel topic or description or a stream name or description (message text is decrypted for this check; if any message cannot be decrypted, no file is removed and the manual cleanup result and the admin page say so). Uploaded files of messages deleted before the upgrade are not removed. A daily sweep lists upload files that no message refers to (log lines starting `[Retention] Orphan chat uploads`, and `chat_orphan_sweep` in the manual cleanup result) but deletes nothing in this release. Files of a deleted channel, user or DM conversation also stay until the sweep is switched on in a later release. Deleted uploads are not in backup archives.
+
 ## Streaming
 
 Publish from OBS or any RTMP client:

@@ -5533,12 +5533,19 @@ Headers:
     "direct_messages": 42,
     "notifications": 89,
     "activity": 150,
-    "service_logs": 2341
+    "service_logs": 2341,
+    "chat_files": 12,
+    "chat_file_bytes": 3407872,
+    "chat_orphan_sweep": {
+      "report_only": true, "scanned": 140, "orphans": 3, "bytes": 52114,
+      "names": ["0123456789abcdef0123456789abcdef.png"], "deleted": 0, "deleted_bytes": 0
+    }
   },
   "vacuum_run": true
 }</pre>
                         </div>
                         <p>The <code>deleted</code> object shows the count of records removed from each category. If <code>vacuum_run</code> is true, the database was optimized after cleanup to reclaim disk space.</p>
+                        <p><code>chat_files</code> and <code>chat_file_bytes</code> are the upload files (images and attachments) removed together with the deleted chat and DM messages; a file that another row still names (in a message image or attachment, in message or DM text, a reply preview, a poll question or option, a user status message, a channel topic or description, or a stream name or description) is kept; if a message cannot be decrypted, or the check cannot complete, no file is removed and <code>chat_files_skipped</code> (present only then) says why. <code>chat_orphan_sweep</code> reports upload files that no message refers to and that are older than 24 hours (<code>names</code> lists at most 20). It only reports unless the server setting <code>chat_orphan_sweep_delete</code> is <code>"true"</code>, which is off by default and not part of this API. <code>skipped</code> replaces the results when the upload folder is missing or a link, a message could not be decrypted, or the check could not complete.</p>
                     </div>
                 </div>
 

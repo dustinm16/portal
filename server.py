@@ -5148,9 +5148,10 @@ async def _handle_disconnect_grace(stream: dict) -> None:
 
             # Clear chat history for the stream's channel
             if stream.get("chat_channel_id"):
-                deleted = await db.clear_channel_messages(stream["chat_channel_id"])
+                clear_stats = {}
+                deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
                 if deleted > 0:
-                    logger.info(f"Cleared {deleted} chat messages for stream {stream_name}")
+                    logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
     except asyncio.CancelledError:
         logger.info(f"Stream {stream_name} disconnect grace period cancelled (reconnected)")
     except Exception as e:
@@ -5190,9 +5191,10 @@ async def _finalize_stream_offline(stream: dict) -> None:
 
         # Clear chat history for the stream's channel
         if stream.get("chat_channel_id"):
-            deleted = await db.clear_channel_messages(stream["chat_channel_id"])
+            clear_stats = {}
+            deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
             if deleted > 0:
-                logger.info(f"Cleared {deleted} chat messages for stream {stream_name}")
+                logger.info(f"Cleared {deleted} chat messages and {clear_stats.get('files', 0)} upload file(s) for stream {stream_name}")
     except Exception as e:
         logger.error(f"Error finalizing stream {stream_name} offline: {e}")
         # Ensure stream goes offline even if VOD finalization fails
@@ -13830,7 +13832,10 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
         return web.json_response({"error": "Channel not found"}, status=404)
 
     # Clear all messages
-    deleted_count = await db.clear_channel_messages(channel_id)
+    clear_stats = {}
+    deleted_count = await db.clear_channel_messages(channel_id, stats=clear_stats)
+    if clear_stats.get("files"):
+        logger.info(f"Cleared channel {channel_id}: removed {clear_stats['files']} upload file(s), {clear_stats['bytes']} bytes")
 
     # Broadcast to channel that history was cleared
     channel_name = channel["name"]
@@ -17394,18 +17399,28 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     config = await db.get_retention_config()
     results = {}
     errors = []
+    file_stats = {"files": 0, "bytes": 0}
     try:
         chat_days = int(config.get("retention_chat_days", 7))
         if chat_days > 0:
-            results["chat_messages"] = await db.cleanup_old_chat_messages(days=chat_days)
+            results["chat_messages"] = await db.cleanup_old_chat_messages(days=chat_days, stats=file_stats)
     except Exception as e:
         errors.append(f"chat: {e}")
     try:
         dm_days = int(config.get("retention_dm_days", 30))
         if dm_days > 0:
-            results["dm_messages"] = await db.cleanup_old_dm_messages(days=dm_days)
+            results["dm_messages"] = await db.cleanup_old_dm_messages(days=dm_days, stats=file_stats)
     except Exception as e:
         errors.append(f"dm: {e}")
+    results["chat_files"] = file_stats["files"]
+    results["chat_file_bytes"] = file_stats["bytes"]
+    if file_stats.get("skipped"):
+        results["chat_files_skipped"] = file_stats["skipped"]
+    try:
+        results["chat_orphan_sweep"] = await db.sweep_orphan_chat_uploads()
+        await db.set_setting("chat_orphan_sweep_last", str(time()))
+    except Exception as e:
+        errors.append(f"chat_orphan_sweep: {e}")
     try:
         notif_days = int(config.get("retention_notifications_days", 30))
         if notif_days > 0:
@@ -19553,11 +19568,12 @@ class PortalServer:
                 except Exception as e:
                     logger.error(f"[Retention] VOD recovery could not start: {e}")
 
-                # Chat messages
+                # Chat messages (and the upload files only they referred to)
+                file_stats = {"files": 0, "bytes": 0}
                 try:
                     chat_days = int(config.get("retention_chat_days", 7))
                     if chat_days > 0:
-                        d = await db.cleanup_old_chat_messages(days=chat_days)
+                        d = await db.cleanup_old_chat_messages(days=chat_days, stats=file_stats)
                         if d > 0:
                             logger.info(f"[Retention] Cleaned {d} chat messages older than {chat_days} days")
                         total += d
@@ -19568,12 +19584,25 @@ class PortalServer:
                 try:
                     dm_days = int(config.get("retention_dm_days", 30))
                     if dm_days > 0:
-                        d = await db.cleanup_old_dm_messages(days=dm_days)
+                        d = await db.cleanup_old_dm_messages(days=dm_days, stats=file_stats)
                         if d > 0:
                             logger.info(f"[Retention] Cleaned {d} DM messages older than {dm_days} days")
                         total += d
                 except Exception as e:
                     logger.error(f"[Retention] DM cleanup failed: {e}")
+                if file_stats["files"]:
+                    logger.info(f"[Retention] Removed {file_stats['files']} chat upload file(s), "
+                                f"{file_stats['bytes']} bytes, with their messages")
+
+                # Chat upload files no message refers to: once a day, report only
+                # unless chat_orphan_sweep_delete is "true"
+                try:
+                    last = float(await db.get_setting("chat_orphan_sweep_last") or 0)
+                    if time() - last >= 23 * 3600:
+                        await db.sweep_orphan_chat_uploads()
+                        await db.set_setting("chat_orphan_sweep_last", str(time()))
+                except Exception as e:
+                    logger.error(f"[Retention] Orphan chat upload sweep failed: {e}")
 
                 # Notifications
                 try:
