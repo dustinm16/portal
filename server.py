@@ -18931,8 +18931,14 @@ async def http_set_retention_config(request: web.Request) -> web.Response:
         data = await request.json()
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    before = (await db.get_retention_config()).get("retention_security_events_days")
     await db.set_retention_config(data)
     config = await db.get_retention_config()
+    after = config.get("retention_security_events_days")
+    if after != before:
+        # A shorter (or switched-off) event log weakens the record, so the change is itself an event.
+        await security_event("security_retention_changed", request=request, user=user,
+                             details={"old_days": before, "new_days": after})
     return web.json_response({"updated": True, "config": config})
 
 
@@ -19014,6 +19020,10 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
         sec_days = int(config.get("retention_security_events_days", 180))
         if sec_days > 0:
             results["security_events"] = await db.cleanup_old_security_events(days=sec_days)
+            if results["security_events"]:
+                await security_event("security_events_pruned", request=request, user=user,
+                                     details={"deleted": results["security_events"], "days": sec_days,
+                                              "via": "run_cleanup_now"})
     except Exception as e:
         errors.append(f"security_events: {e}")
     try:
@@ -20415,7 +20425,11 @@ async def http_put_cf_ranges(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid JSON"}, status=400)
     if not isinstance(data, dict) or not isinstance(data.get("enabled"), bool):
         return web.json_response({"error": "enabled must be true or false"}, status=400)
+    was_enabled = (await db.get_setting(CF_SETTING_ENABLED)) != "false"
     await db.set_setting(CF_SETTING_ENABLED, "true" if data["enabled"] else "false")
+    if was_enabled != data["enabled"]:
+        await security_event("cf_refresh_toggled", request=request, user=user,
+                             details={"was": was_enabled, "enabled": data["enabled"]})
     await audit_log("cf_ranges.settings", user["id"], user.get("username", "unknown"),
                     details={"enabled": data["enabled"]})
     return web.json_response(await _cf_ranges_view())

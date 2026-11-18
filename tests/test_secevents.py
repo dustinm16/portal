@@ -647,6 +647,48 @@ async def main_async(tmp):
             check("manual unblock works", r.status == 200)
         async with sa.delete(base + f"/api/users/{made['id']}") as r:
             check("user delete works", r.status == 200)
+
+        # changes that weaken the log are events themselves
+        async with sa.put(base + "/api/admin/retention", json={"retention_chat_days": 7}) as r:
+            await r.read()
+        check("an unrelated retention save is not an event",
+              not await rows("event = 'security_retention_changed'"))
+        async with sa.put(base + "/api/admin/retention", json={"retention_security_events_days": 30}) as r:
+            check("retention save works", r.status == 200, str(r.status))
+        async with sa.put(base + "/api/admin/retention", json={"retention_security_events_days": 30}) as r:
+            await r.read()
+        got = await rows("event = 'security_retention_changed'")
+        check("shortening the security log retention is an event with the old and new value and the actor",
+              len(got) == 1 and json.loads(got[0]["details"]) == {"old_days": "180", "new_days": "30"}
+              and got[0]["user_id"] == ids["sa"] and got[0]["category"] == "security", str(got))
+        await server.db.conn.execute(
+            "INSERT INTO security_events (ts, event, category, ip, count) VALUES ('2001-01-01 00:00:00', 'logout', 'auth', '203.0.113.77', 1)")
+        await server.db.conn.execute(
+            "INSERT INTO security_events (ts, event, category, ip, count) VALUES ('2001-01-02 00:00:00', 'logout', 'auth', '203.0.113.78', 1)")
+        await server.db.conn.commit()
+        async with sa.post(base + "/api/admin/retention/run") as r:
+            ran = await r.json()
+            check("run cleanup works", r.status == 200 and ran["deleted"].get("security_events") == 2, str(ran))
+        got = await rows("event = 'security_events_pruned'")
+        check("a manual cleanup that pruned security events records the count",
+              len(got) == 1 and json.loads(got[0]["details"]) == {"deleted": 2, "days": 30, "via": "run_cleanup_now"}
+              and got[0]["user_id"] == ids["sa"], str(got))
+        async with sa.post(base + "/api/admin/retention/run") as r:
+            await r.read()
+        check("a manual cleanup that pruned nothing records nothing",
+              len(await rows("event = 'security_events_pruned'")) == 1)
+        async with sa.put(base + "/api/admin/retention", json={"retention_security_events_days": 180}) as r:
+            await r.read()
+        async with sa.put(base + "/api/admin/cf-ranges", json={"enabled": False}) as r:
+            check("turning the Cloudflare refresh off works", r.status == 200, str(r.status))
+        async with sa.put(base + "/api/admin/cf-ranges", json={"enabled": False}) as r:
+            await r.read()
+        async with sa.put(base + "/api/admin/cf-ranges", json={"enabled": True}) as r:
+            await r.read()
+        got = await rows("event = 'cf_refresh_toggled'")
+        check("turning the Cloudflare refresh off and on are events (a save that changes nothing is not)",
+              [json.loads(g["details"]) for g in got] == [{"was": True, "enabled": False}, {"was": False, "enabled": True}]
+              and all(g["user_id"] == ids["sa"] for g in got), str(got))
         await secevents.log.flush()
         for ev in ("invite_created", "invite_deactivated", "user_created", "role_changed",
                    "password_reset", "ip_blocked", "ip_unblocked", "user_deleted"):
