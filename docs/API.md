@@ -18,7 +18,7 @@ All API endpoints require authentication via one of:
 3. **API Key** - `Authorization: Api-Key portal_xxx` or `X-API-Key: portal_xxx`
 4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx`
 
-An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Authorization: Bearer` accepts JWTs only, so a `portal_...` key sent as a Bearer token is rejected with `401`.
+An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Authorization: Bearer` accepts JWTs only, so a `portal_...` key sent as a Bearer token is rejected with `401`. Checking a key that has not been used since the server started is deliberately rate limited: when too many such checks are pending for one key, the request is answered with `503` and a `Retry-After` header instead of `401`. Retry after the given delay; the key itself is not affected.
 
 ### Stream Keys as API Keys
 
@@ -177,6 +177,8 @@ List active tokens for the current user.
 
 #### POST /api/token/revoke
 Revoke a token.
+
+Users can revoke only their own tokens. Admins can revoke tokens of users they are allowed to manage (the same hierarchy as password resets), and the credential used must carry the `admin` scope. A token that does not exist, or that the caller may not revoke, returns `404`.
 
 **Request:**
 ```json
@@ -423,6 +425,8 @@ Get current user information.
 
 #### POST /api/me/password
 Change password.
+
+Other browser sessions and tokens of the account are revoked and their WebSocket connections are closed; the session making the request stays signed in. API keys are **not** revoked: they are separately managed credentials (often used by scripts) and stay valid, together with any WebSocket opened with them, until you revoke them under `/api/api-keys`. If you suspect an account is compromised, revoke its API keys as well. An admin password reset (below) does revoke API keys.
 
 **Request:**
 ```json
@@ -703,10 +707,14 @@ Change user role.
 - Admin can set: moderator, user
 - Cannot change own role or equal/higher role
 
+Changing a role signs the user out: their sessions, tokens and API keys are revoked and their open WebSocket connections are closed, so credentials created under the old role do not keep its scopes.
+
 ---
 
 #### POST /api/users/:id/reset-password
 Reset user password (admin only).
+
+Signs the user out everywhere: all of their sessions, tokens and API keys are revoked and their open WebSocket connections are closed. When an admin resets their own password, the credential making the request is kept. The body must be a JSON object, otherwise `400` is returned.
 
 **Request:**
 ```json

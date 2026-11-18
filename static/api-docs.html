@@ -525,6 +525,7 @@
                 <!-- API Keys Section -->
                 <h2 id="api-keys">API Keys</h2>
                 <p>API keys provide long-lived authentication for scripts and integrations. Keys can be scoped to limit access. Send a key as <code>Authorization: Api-Key portal_...</code> or <code>X-API-Key: portal_...</code>; <code>Bearer</code> accepts JWTs only. Keys are stored as an Argon2id hash plus a 10-character prefix, so a lost key cannot be recovered. Each successful use updates <code>last_used_at</code>.</p>
+                <p>Checking a key that has not been used since the server started is rate limited: when too many such checks are pending for one key, the request is answered with <code>503</code> and a <code>Retry-After</code> header instead of <code>401</code>. Retry after the given delay; the key itself is not affected.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
@@ -623,13 +624,14 @@
                         <span class="endpoint-desc">Revoke a token</span>
                     </div>
                     <div class="endpoint-body">
+                        <p>Users can revoke only their own tokens. Admins can revoke tokens of users they are allowed to manage (the same hierarchy as password resets), and the credential used must carry the <code>admin</code> scope. A token that does not exist or that the caller may not revoke returns 404.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
                             <tr>
                                 <td><span class="param-name">token_id</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>Token ID to revoke <span class="param-required">required</span></td>
+                                <td>Full token ID to revoke <span class="param-required">required</span></td>
                             </tr>
                         </table>
                     </div>
@@ -1940,6 +1942,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="endpoint-desc">Change password</span>
                     </div>
                     <div class="endpoint-body">
+                        <p>Other browser sessions and tokens of the account are revoked and their WebSocket connections are closed; the session making the request stays signed in. API keys are <strong>not</strong> revoked: they are separately managed credentials (often used by scripts) and stay valid, together with any WebSocket opened with them, until you revoke them. If you suspect an account is compromised, revoke its API keys as well. An admin password reset does revoke API keys.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -2102,7 +2105,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Superadmin can set: admin, moderator, user. Admin can set: moderator, user. Cannot change own role.</p>
+                        <p>Superadmin can set: admin, moderator, user. Admin can set: moderator, user. Cannot change own role. Changing a role signs the user out: their sessions, tokens and API keys are revoked and their WebSocket connections are closed.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -2123,6 +2126,7 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
+                        <p>Signs the user out everywhere: all of their sessions, tokens and API keys are revoked and their open WebSocket connections are closed. The credential making the request is kept when an admin resets their own password. The body must be a JSON object, otherwise <code>400</code> is returned.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>

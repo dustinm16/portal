@@ -2268,14 +2268,61 @@ class Database:
             tokens.append(token)
         return tokens
 
-    async def revoke_token(self, token_id: str) -> bool:
-        """Revoke a token by token_id."""
-        cursor = await self.conn.execute(
-            "UPDATE tokens SET revoked = 1 WHERE token_id = ?",
-            (token_id,)
-        )
+    async def revoke_token(self, token_id: str, user_id: int = None) -> bool:
+        """Revoke a token by token_id.
+
+        When user_id is given, only a token owned by that user is revoked
+        (a token belonging to someone else behaves as if it did not exist).
+        """
+        if user_id is None:
+            cursor = await self.conn.execute(
+                "UPDATE tokens SET revoked = 1 WHERE token_id = ?",
+                (token_id,)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "UPDATE tokens SET revoked = 1 WHERE token_id = ? AND user_id = ?",
+                (token_id, user_id)
+            )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def revoke_user_tokens(self, user_id: int, except_token_id: str = None) -> int:
+        """Revoke every live token (API tokens and browser sessions) of a user.
+
+        except_token_id keeps one token, normally the caller's own session.
+        Returns the number of tokens revoked.
+        """
+        if except_token_id:
+            cursor = await self.conn.execute(
+                "UPDATE tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0 AND token_id != ?",
+                (user_id, except_token_id)
+            )
+        else:
+            cursor = await self.conn.execute(
+                "UPDATE tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0",
+                (user_id,)
+            )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def revoke_user_api_keys(self, user_id: int, except_token_id: str = None) -> int:
+        """Revoke every live API key of a user. Returns the number revoked.
+
+        except_token_id is the caller's credential id; when it is an API key
+        ("apikey-<id>") that key is kept.
+        """
+        sql = "UPDATE api_keys SET revoked = 1 WHERE user_id = ? AND revoked = 0"
+        params = [user_id]
+        if except_token_id and except_token_id.startswith("apikey-"):
+            try:
+                params.append(int(except_token_id[7:]))
+                sql += " AND id != ?"
+            except ValueError:
+                pass
+        cursor = await self.conn.execute(sql, params)
+        await self.conn.commit()
+        return cursor.rowcount
 
     async def update_token_last_used(self, token_id: str) -> None:
         """Update the last_used_at timestamp for a token."""

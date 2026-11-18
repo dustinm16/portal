@@ -299,6 +299,45 @@ active_connections: weakref.WeakSet = weakref.WeakSet()
 # Track online users globally (user_id -> active connection count)
 _online_users: dict[int, int] = {}
 
+# Open authenticated WebSockets per user: user_id -> {ws: token_id}. A socket is
+# authenticated once at upgrade, so revoking a user's sessions must also close
+# the sockets that were opened with them.
+_user_websockets: dict[int, dict] = {}
+
+
+def _register_user_ws(user_id: int, ws, token_id: str) -> None:
+    _user_websockets.setdefault(user_id, {})[ws] = token_id
+
+
+def _unregister_user_ws(user_id: int, ws) -> None:
+    conns = _user_websockets.get(user_id)
+    if conns is not None:
+        conns.pop(ws, None)
+        if not conns:
+            _user_websockets.pop(user_id, None)
+
+
+async def close_user_websockets(user_id: int, except_token_id: str = None,
+                                keep_prefixes: tuple = ()) -> int:
+    """Close a user's open WebSockets after their credentials were revoked.
+
+    except_token_id keeps the sockets opened with that token (the caller's own
+    session). keep_prefixes keeps the sockets opened with a kind of credential
+    that was not revoked (token ids "apikey-N" and "streamkey-N"). Returns the
+    number of sockets closed.
+    """
+    targets = [
+        ws for ws, tid in list(_user_websockets.get(user_id, {}).items())
+        if not (except_token_id and tid == except_token_id)
+        and not (keep_prefixes and str(tid).startswith(keep_prefixes))
+    ]
+    if targets:
+        await asyncio.gather(
+            *(ws.close(code=4001, message=b"session revoked") for ws in targets),
+            return_exceptions=True
+        )
+    return len(targets)
+
 # Server start time for uptime tracking
 _server_start_time: datetime = datetime.now(timezone.utc)
 
@@ -894,6 +933,85 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     return None
 
 
+# Argon2 is deliberately expensive (CPU and 64 MiB each). API key checks run it
+# in a worker thread so they cannot stall the event loop, and the semaphore
+# bounds how many run at once. Two further limits keep a flood of forged keys
+# from delaying real ones:
+#   - the lookup prefix is only 12 bits, so forged keys can share a real
+#     key's prefix; the number of waiting checks is therefore capped per key
+#     id (and, loosely, overall), so a flood on one prefix cannot turn away
+#     keys with other ids. A shed check answers 503 with Retry-After, never
+#     401, so a client does not mistake overload for a wrong key;
+#   - a key that already passed Argon2 is remembered by the SHA-256 of the
+#     full key (safe because the key is 256 random bits) and later requests
+#     skip the queue. Revocation and expiry are still read from the database
+#     on every request.
+_API_KEY_VERIFY_WORKERS = 2
+_API_KEY_VERIFY_MAX_PENDING_PER_KEY = 3
+_API_KEY_VERIFY_MAX_PENDING = 32
+_API_KEY_RETRY_AFTER_SECONDS = 2
+_api_key_verify_sem: Optional[asyncio.Semaphore] = None
+_api_key_verify_pending = 0
+_api_key_verify_pending_by_key: dict[int, int] = {}
+# key id -> (sha256 of full key, stored Argon2 hash it was verified against)
+_verified_api_keys: dict[int, tuple[bytes, str]] = {}
+_VERIFIED_API_KEYS_MAX = 4096
+
+
+def _api_key_cached_ok(key_id: int, api_key: str, stored_hash: str) -> bool:
+    entry = _verified_api_keys.get(key_id)
+    if not entry:
+        return False
+    digest = hashlib.sha256(api_key.encode("utf-8", "surrogatepass")).digest()
+    return hmac.compare_digest(entry[0], digest) and entry[1] == stored_hash
+
+
+def _api_key_remember(key_id: int, api_key: str, stored_hash: str) -> None:
+    if len(_verified_api_keys) >= _VERIFIED_API_KEYS_MAX:
+        _verified_api_keys.clear()
+    digest = hashlib.sha256(api_key.encode("utf-8", "surrogatepass")).digest()
+    _verified_api_keys[key_id] = (digest, stored_hash)
+
+
+class ApiKeyCheckBusy(web.HTTPServiceUnavailable):
+    """Too many API key checks are pending; the client should retry shortly."""
+
+    def __init__(self):
+        super().__init__(
+            text=json.dumps({"error": "Too many pending API key checks, retry shortly"}),
+            content_type="application/json",
+            headers={"Retry-After": str(_API_KEY_RETRY_AFTER_SECONDS)},
+        )
+
+
+async def _verify_api_key_offloop(key_id: int, api_key: str, stored_hash: str) -> bool:
+    """Run the Argon2 API key verification in a worker thread, bounded.
+
+    Raises ApiKeyCheckBusy without hashing when too many checks are already
+    pending for this key id or overall.
+    """
+    from auth import verify_api_key
+    global _api_key_verify_sem, _api_key_verify_pending
+    if _api_key_verify_sem is None:
+        _api_key_verify_sem = asyncio.Semaphore(_API_KEY_VERIFY_WORKERS)
+    per_key = _api_key_verify_pending_by_key.get(key_id, 0)
+    if (per_key >= _API_KEY_VERIFY_MAX_PENDING_PER_KEY
+            or _api_key_verify_pending >= _API_KEY_VERIFY_MAX_PENDING):
+        raise ApiKeyCheckBusy()
+    _api_key_verify_pending += 1
+    _api_key_verify_pending_by_key[key_id] = per_key + 1
+    try:
+        async with _api_key_verify_sem:
+            return await asyncio.to_thread(verify_api_key, api_key, stored_hash)
+    finally:
+        _api_key_verify_pending -= 1
+        left = _api_key_verify_pending_by_key.get(key_id, 1) - 1
+        if left > 0:
+            _api_key_verify_pending_by_key[key_id] = left
+        else:
+            _api_key_verify_pending_by_key.pop(key_id, None)
+
+
 async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
     """Authenticate using an API key.
 
@@ -903,7 +1021,7 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
     Returns:
         TokenPayload if valid, None otherwise
     """
-    from auth import parse_api_key, verify_api_key
+    from auth import parse_api_key
 
     # Parse key to get prefix
     prefix = parse_api_key(api_key)
@@ -913,9 +1031,10 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
     # Look up key by prefix
     key_record = await db.get_api_key_by_prefix(prefix)
     if not key_record:
-        # Constant-time: always attempt a verification to prevent
-        # timing side-channel that reveals valid key prefixes
-        verify_api_key(api_key, "$argon2id$v=19$m=65536,t=3,p=4$dummy$dummy")
+        # Unknown or revoked prefix: reject without running the expensive hash.
+        # The lookup prefix is short (12 bits), so this only cheaply discards
+        # most forged keys; keys that share a real prefix are bounded by the
+        # per-key pending-check cap in _verify_api_key_offloop.
         return None
 
     # Check if revoked
@@ -932,9 +1051,12 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
         except ValueError:
             pass
 
-    # Verify the key hash
-    if not verify_api_key(api_key, key_record["key_hash"]):
-        return None
+    # Verify the key hash (skipped for a key already verified against this
+    # exact stored hash; the checks above ran against the database just now)
+    if not _api_key_cached_ok(key_record["id"], api_key, key_record["key_hash"]):
+        if not await _verify_api_key_offloop(key_record["id"], api_key, key_record["key_hash"]):
+            return None
+        _api_key_remember(key_record["id"], api_key, key_record["key_hash"])
 
     # Update last used timestamp
     await db.update_api_key_last_used(key_record["id"])
@@ -1287,12 +1409,40 @@ async def http_revoke_token(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
     token_id = data.get("token_id")
     if not token_id:
         return web.json_response({"error": "token_id required"}, status=400)
 
-    if await revoke_token(token_id):
+    if not isinstance(token_id, str):
+        return web.json_response({"error": "token_id required"}, status=400)
+
+    # Only admins may revoke tokens that belong to other users; everyone else
+    # can only touch their own and gets 404 for anything else. The credential
+    # used must itself carry admin power, so a narrowly scoped admin key or
+    # stream key cannot sign other users out.
+    caller_role = await get_user_role_from_token(token)
+    is_admin_caller = (get_role_level(caller_role) >= get_role_level("admin")
+                       and token.has_scope("admin"))
+    target = await db.get_token(token_id)
+    # Admins follow the same hierarchy as password resets: they cannot act on
+    # accounts at or above their own level (superadmins may act on anyone).
+    if is_admin_caller and target and target["user_id"] != token.user_id:
+        target_user = await db.get_user_by_id(target["user_id"])
+        target_role = (target_user or {}).get("role") or (
+            "admin" if (target_user or {}).get("is_admin") else "user")
+        if not can_manage_role(caller_role, target_role):
+            return web.json_response({"error": "Token not found"}, status=404)
+    if await revoke_token(token_id, None if is_admin_caller else token.user_id):
         logger.info(f"Token {token_id[:8]}... revoked by user {token.user_id}")
+        if target and target["user_id"] != token.user_id:
+            actor = await db.get_user_by_id(token.user_id)
+            await audit_log("token_revoke", token.user_id,
+                            actor["username"] if actor else "unknown",
+                            target_id=target["user_id"], target_type="user",
+                            details={"token_id": token_id[:8]})
         return web.json_response({"status": "revoked"})
     else:
         return web.json_response({"error": "Token not found"}, status=404)
@@ -10034,6 +10184,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     mws = MetricsWebSocket(ws, conn_id)
 
     try:
+        # Registered inside the try so the finally below always unregisters it.
+        _register_user_ws(token.user_id, ws, token.token_id)
         if path == "/" or path == "/ws":
             await handle_ping_ws(mws, token)
         elif path == "/ws/terminal/local":
@@ -10044,6 +10196,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             await handle_relay_ws(mws, path, token, client_ip)
     finally:
         active_connections.discard(ws)
+        _unregister_user_ws(token.user_id, ws)
         metrics = traffic_metrics.end_connection(conn_id)
         # Persist session to database for real services (service_id > 0)
         if metrics and metrics.service_id > 0:
@@ -10988,6 +11141,9 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 ws_url = f"{ws_url}?{ws_query}"
 
         try:
+            # Registered inside the try so the finally below always unregisters
+            # it, and a session revocation closes this relay as well.
+            _register_user_ws(token.user_id, ws, token.token_id)
             connector = aiohttp.TCPConnector(ssl=verify_ssl)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(ws_url) as upstream:
@@ -11022,6 +11178,8 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                         await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error(f"Proxy WS {conn_uuid} error: {e}")
+        finally:
+            _unregister_user_ws(token.user_id, ws)
         return ws
 
     # Build upstream URL
@@ -13556,6 +13714,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         pass
 
     try:
+        # Registered inside the try so the finally below always unregisters it.
+        _register_user_ws(user_id, raw_ws, token.token_id)
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
@@ -15243,6 +15403,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     finally:
         # Clean up global connection tracking
         active_connections.discard(raw_ws)
+        _unregister_user_ws(user_id, raw_ws)
         traffic_metrics.end_connection(chat_conn_id)
         count = _online_users.get(user_id, 1) - 1
         if count <= 0:
@@ -15963,11 +16124,15 @@ async def http_change_password(request: web.Request) -> web.Response:
         data = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "JSON object required"}, status=400)
 
     current_password = data.get("current_password")
     new_password = data.get("new_password")
 
-    if not current_password or not new_password:
+    if (not current_password or not new_password
+            or not isinstance(current_password, str)
+            or not isinstance(new_password, str)):
         return web.json_response(
             {"error": "current_password and new_password required"},
             status=400
@@ -15993,11 +16158,10 @@ async def http_change_password(request: web.Request) -> web.Response:
     await db.update_password_hash(token.user_id, new_hash)
 
     # Revoke all existing tokens except the current session
-    await db.conn.execute(
-        "UPDATE tokens SET revoked = 1 WHERE user_id = ? AND token_id != ?",
-        (token.user_id, token.token_id)
-    )
-    await db.conn.commit()
+    await db.revoke_user_tokens(token.user_id, except_token_id=token.token_id)
+    # API keys and stream keys are not revoked here, so their sockets stay open.
+    await close_user_websockets(token.user_id, except_token_id=token.token_id,
+                                keep_prefixes=("apikey-", "streamkey-"))
 
     logger.info(f"Password changed for user {token.user_id}")
 
@@ -16402,6 +16566,8 @@ async def http_update_user_role(request: web.Request) -> web.Response:
         data = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "JSON object required"}, status=400)
 
     new_role = data.get("role")
 
@@ -16441,11 +16607,10 @@ async def http_update_user_role(request: web.Request) -> web.Response:
     await db.set_user_role(user_id, new_role)
 
     # Revoke all tokens - user must re-authenticate with new role scopes
-    await db.conn.execute(
-        "UPDATE tokens SET revoked = 1 WHERE user_id = ?",
-        (user_id,)
-    )
-    await db.conn.commit()
+    await db.revoke_user_tokens(user_id)
+    # API keys carry the scopes of the role they were created under.
+    await db.revoke_user_api_keys(user_id)
+    await close_user_websockets(user_id)
 
     logger.info(f"Role changed for user {target_user['username']} from {target_role} to {new_role} by user {token.user_id}")
 
@@ -16543,9 +16708,11 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
         data = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "JSON object required"}, status=400)
 
     new_password = data.get("new_password")
-    if not new_password:
+    if not new_password or not isinstance(new_password, str):
         return web.json_response({"error": "new_password required"}, status=400)
 
     if len(new_password) < 8:
@@ -16571,7 +16738,26 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
     new_hash = hash_password(new_password)
     await db.reset_user_password(user_id, new_hash)
 
+    # Sign the target out everywhere; an admin resetting their own password
+    # keeps the session they are using.
+    keep_token_id = token.token_id if user_id == token.user_id else None
+    revoked = await db.revoke_user_tokens(user_id, except_token_id=keep_token_id)
+    # API keys outlive browser sessions, so they go too, as do WebSockets opened
+    # with the revoked sessions. A self-reset keeps the caller's own credential.
+    keys_revoked = await db.revoke_user_api_keys(user_id, except_token_id=keep_token_id)
+    # Stream keys are not revoked by a reset, so their sockets stay open.
+    ws_closed = await close_user_websockets(user_id, except_token_id=keep_token_id,
+                                            keep_prefixes=("streamkey-",))
+
     logger.info(f"Password reset for user {target_user['username']} by {actor_role} {token.user_id}")
+
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("password_reset", token.user_id, actor["username"] if actor else "unknown",
+                    target_id=user_id, target_type="user",
+                    target_name=target_user["username"],
+                    details={"sessions_revoked": revoked,
+                             "api_keys_revoked": keys_revoked,
+                             "websockets_closed": ws_closed})
 
     return web.json_response({
         "message": f"Password reset for user '{target_user['username']}'"
@@ -17817,6 +18003,13 @@ async def init_admin_user() -> None:
             (hashed,),
         )
         await db.conn.commit()
+        revoked = await db.revoke_user_tokens(admin["id"])
+        keys_revoked = await db.revoke_user_api_keys(admin["id"])
+        await audit_log("password_reset", admin["id"], "cli",
+                        target_id=admin["id"], target_type="user",
+                        target_name="admin",
+                        details={"sessions_revoked": revoked,
+                                 "api_keys_revoked": keys_revoked, "via": "cli"})
         label = "ADMIN PASSWORD RESET"
 
     creds_file.write_text(f"Username: admin\nPassword: {password}\n")
@@ -17828,6 +18021,9 @@ async def init_admin_user() -> None:
     print(f"Credentials saved to: {creds_file}")
     print("IMPORTANT: Read and delete this file after noting the password!")
     print(f"{'='*50}\n")
+    if label == "ADMIN PASSWORD RESET":
+        print("NOTE: restart the portal service to also close WebSocket sessions "
+              "(such as terminals) that were already open.\n")
 
     # Create default services if none exist
     services = await db.get_all_services()
@@ -17940,9 +18136,14 @@ async def set_admin_cli(username: str, remove: bool = False) -> None:
         (new_status, new_role, user["id"])
     )
     await db.conn.commit()
+    # Existing sessions carry the old role's scopes; force a fresh login.
+    await db.revoke_user_tokens(user["id"])
+    await db.revoke_user_api_keys(user["id"])
 
     status_word = "removed from" if remove else "added to"
     print(f"User '{username}' has been {status_word} admin group (role={new_role})")
+    print("NOTE: restart the portal service to also close WebSocket sessions "
+          "that were already open for this user.")
 
     await db.close()
 

@@ -200,9 +200,9 @@ async def validate_token(token: str) -> TokenPayload:
     return payload
 
 
-async def revoke_token(token_id: str) -> bool:
-    """Revoke a token by its ID."""
-    return await db.revoke_token(token_id)
+async def revoke_token(token_id: str, user_id: int = None) -> bool:
+    """Revoke a token by its ID, optionally only if owned by user_id."""
+    return await db.revoke_token(token_id, user_id)
 
 
 def extract_token_from_request(
