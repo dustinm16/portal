@@ -12622,11 +12622,15 @@ def _proxy_redirect_url(loc: str, current_url: str, proxy_prefix: str, target_or
 def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str) -> str:
     """A Location from a site in general-browsing mode, kept inside the proxy.
 
-    A root-relative value is put under the site's own path; an absolute URL
-    (the scheme in any letter case) is wrapped as /proxy/<id>/<url>, with the
-    scheme lower-cased so the handler recognises it, so the browser never
-    leaves the proxy and no site sees the member's address.
+    A protocol-relative value (//host/path) names another host and takes the
+    current site's scheme; a root-relative value is put under the site's own
+    path; an absolute URL (the scheme in any letter case) is wrapped as
+    /proxy/<id>/<url>, with the scheme lower-cased so the handler recognises
+    it, so the browser never leaves the proxy and no site sees the member's
+    address.
     """
+    if loc.startswith("//"):
+        return f"{proxy_base}/{target_origin.split(':', 1)[0].lower()}:{loc}"
     if loc.startswith("/"):
         return f"{proxy_base}/{target_origin}{loc}"
     if loc[:8].lower().startswith(("http://", "https://")):

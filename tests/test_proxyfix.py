@@ -317,6 +317,10 @@ try:
           bl("https://t.example/x") == "/proxy/abc/https://t.example/x"
           and bl("HTTPS://t.example/x") == "/proxy/abc/https://t.example/x"
           and bl("Http://t.example/x?y=1") == "/proxy/abc/http://t.example/x?y=1", bl("HTTPS://t.example/x"))
+    check("browser location: a protocol-relative value goes to that host with the site's scheme, not under the site",
+          bl("//cdn.example/login?a=1") == "/proxy/abc/http://cdn.example/login?a=1"
+          and server._proxy_browser_location("//cdn.example/x", "/proxy/abc", "https://site.example")
+          == "/proxy/abc/https://cdn.example/x", bl("//cdn.example/login?a=1"))
     check("browser location: a relative value is left alone", bl("next") == "next" and bl("") == "")
 finally:
     Config.HOSTNAME = saved_hostname
