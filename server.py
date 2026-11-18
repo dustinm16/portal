@@ -12549,8 +12549,9 @@ def _proxy_request_headers(request: web.Request, config: dict, upstream_host: st
     Only headers matching the connection's forward_headers list are copied.
     The portal's session cookie and Authorization are never copied, and the
     forwarding headers always come from the portal, never from the client.
-    Browser mode (any site on the internet) is told nothing about the member
-    or the portal beyond the scheme.
+    X-Forwarded-Host and X-Forwarded-Prefix are sent only when the connection
+    has forwarded_host on. Browser mode (any site on the internet) is told
+    nothing about the member or the portal beyond the scheme.
     """
     import fnmatch as _fnmatch
 
@@ -12579,10 +12580,13 @@ def _proxy_request_headers(request: web.Request, config: dict, upstream_host: st
         client_ip = get_client_ip(request)
         out["X-Forwarded-For"] = client_ip
         out["X-Real-IP"] = client_ip
-        host = _proxy_forwarded_host(request)
-        if host:
-            out["X-Forwarded-Host"] = host
-        out["X-Forwarded-Prefix"] = proxy_prefix
+        # Off by default: an app that honours X-Forwarded-Host without the prefix
+        # writes links outside the proxy path.
+        if config.get("forwarded_host") is True:
+            host = _proxy_forwarded_host(request)
+            if host:
+                out["X-Forwarded-Host"] = host
+            out["X-Forwarded-Prefix"] = proxy_prefix
 
     if config.get("auth_header"):
         out["Authorization"] = config["auth_header"]

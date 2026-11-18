@@ -149,15 +149,32 @@ try:
                                         "x-forwarded-prefix", "x-real-ip") for k in h), str(dict(h)))
     check("headers: X-Forwarded-For is the peer address (untrusted peer)", h.getall("X-Forwarded-For") == ["203.0.113.50"], str(dict(h)))
     check("headers: X-Real-IP is the peer address", h.getall("X-Real-IP") == ["203.0.113.50"])
-    check("headers: X-Forwarded-Host is the portal host", h.getall("X-Forwarded-Host") == ["portal.example"])
-    check("headers: X-Forwarded-Prefix is the proxy path", h.getall("X-Forwarded-Prefix") == [P])
+    check("headers: X-Forwarded-Host and X-Forwarded-Prefix are not sent by default (client copies dropped too)",
+          "X-Forwarded-Host" not in h and "X-Forwarded-Prefix" not in h and "evil" not in json.dumps(list(h.items())), str(dict(h)))
+    for off in ({"forwarded_host": False}, {"forwarded_host": "true"}, {"forwarded_host": 1}, {"forwarded_host": None}):
+        ho = server._proxy_request_headers(req(), off, "up.example:8080", P, False)
+        check(f"headers: forwarded_host={off['forwarded_host']!r} is not the boolean true, so neither is sent",
+              "X-Forwarded-Host" not in ho and "X-Forwarded-Prefix" not in ho, str(dict(ho)))
+    check("headers: X-Forwarded-Proto, X-Forwarded-For and X-Real-IP are always sent",
+          h.getall("X-Forwarded-Proto") == ["http"] and h.getall("X-Forwarded-For") == ["203.0.113.50"]
+          and h.getall("X-Real-IP") == ["203.0.113.50"])
+    on = server._proxy_request_headers(req(headers=[("X-Forwarded-Host", "evil.example"), ("X-Forwarded-Prefix", "/evil")]),
+                                       {"forwarded_host": True}, "up.example:8080", P, False)
+    check("headers: forwarded_host on sends X-Forwarded-Host, the portal host", on.getall("X-Forwarded-Host") == ["portal.example"], str(dict(on)))
+    check("headers: forwarded_host on sends X-Forwarded-Prefix, the proxy path", on.getall("X-Forwarded-Prefix") == [P])
+    check("headers: forwarded_host on still sends the other forwarding headers once",
+          on.getall("X-Forwarded-For") == ["203.0.113.50"] and on.getall("X-Real-IP") == ["203.0.113.50"]
+          and on.getall("X-Forwarded-Proto") == ["http"])
+    hb = server._proxy_request_headers(req(), {"forwarded_host": True}, "example.com", P + "/https://example.com", True)
+    check("headers: forwarded_host on does not change browser mode (scheme only)",
+          "X-Forwarded-Host" not in hb and "X-Forwarded-Prefix" not in hb and "X-Forwarded-For" not in hb, str(dict(hb)))
     check("headers: X-Forwarded-Proto comes from the connection", h.getall("X-Forwarded-Proto") == ["http"])
     check("headers: Host is the upstream", h.getall("Host") == ["up.example:8080"])
     check("headers: session cookie is stripped from Cookie, others kept",
           h.getall("Cookie") == ["a=1; b=2"], str(h.getall("Cookie", [])))
 
     # a pattern that matches everything still cannot pass any of them
-    cfg = {"forward_headers": ["*"]}
+    cfg = {"forward_headers": ["*"], "forwarded_host": True}
     h = server._proxy_request_headers(req(headers=[
         ("X-Forwarded-For", "6.6.6.6"), ("X-REAL-IP", "6.6.6.6"), ("x-forwarded-host", "evil.example"),
         ("X-Forwarded-Prefix", "/evil"), ("X-Forwarded-Server", "evil"), ("Forwarded", "for=6.6.6.6"),
@@ -197,7 +214,8 @@ try:
             check(f"headers: forward_headers={pats} still copies an ordinary header", h.get("X-Request-ID") == "r1")
 
     # configured headers still win over the generated ones, without duplicates
-    cfg = {"auth_header": "Bearer upstreamtoken", "extra_headers": {"x-forwarded-host": "app.example", "X-Extra": "1"}}
+    cfg = {"auth_header": "Bearer upstreamtoken", "forwarded_host": True,
+           "extra_headers": {"x-forwarded-host": "app.example", "X-Extra": "1"}}
     h = server._proxy_request_headers(req(headers=[("Authorization", "Bearer secret")]), cfg, "up", P, False)
     check("headers: configured Authorization replaces the client's", h.getall("Authorization") == ["Bearer upstreamtoken"])
     check("headers: extra_headers override case-insensitively, no duplicate",
@@ -206,7 +224,7 @@ try:
     # trusted peer: the client address comes from get_client_ip
     h = server._proxy_request_headers(req("198.51.100.7", [
         ("CF-Connecting-IP", "192.0.2.77"), ("X-Forwarded-For", "6.6.6.6, 192.0.2.77"),
-        ("X-Forwarded-Proto", "https"), ("X-Forwarded-Host", "evil.example")]), {}, "up", P, False)
+        ("X-Forwarded-Proto", "https"), ("X-Forwarded-Host", "evil.example")]), {"forwarded_host": True}, "up", P, False)
     check("headers: trusted peer, X-Forwarded-For is the real client", h.getall("X-Forwarded-For") == ["192.0.2.77"], str(dict(h)))
     check("headers: trusted peer, X-Real-IP is the real client", h.getall("X-Real-IP") == ["192.0.2.77"])
     check("headers: trusted peer, X-Forwarded-Proto https", h.getall("X-Forwarded-Proto") == ["https"])
@@ -221,7 +239,7 @@ try:
     check("headers: browser mode sends no client address, host or prefix",
           not any(n in h for n in ("X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host", "X-Forwarded-Prefix")), str(dict(h)))
     check("headers: browser mode still sends the scheme", h.getall("X-Forwarded-Proto") == ["https"])
-    bad = server._proxy_request_headers(req(host="bad host\r\nX: y"), {}, "up", P, False)
+    bad = server._proxy_request_headers(req(host="bad host\r\nX: y"), {"forwarded_host": True}, "up", P, False)
     check("headers: an unusable Host is replaced by the configured host",
           bad.getall("X-Forwarded-Host", None) == ["portal.example"], str(dict(bad)))
 
@@ -229,7 +247,7 @@ try:
     def xfh(host, hostname="portal.example"):
         Config.HOSTNAME = hostname
         try:
-            return server._proxy_request_headers(req(host=host), {}, "up", P, False).getall("X-Forwarded-Host", None)
+            return server._proxy_request_headers(req(host=host), {"forwarded_host": True}, "up", P, False).getall("X-Forwarded-Host", None)
         finally:
             Config.HOSTNAME = "portal.example"
     check("xfh: Host: attacker.example gives the configured host", xfh("attacker.example") == ["portal.example"], str(xfh("attacker.example")))
@@ -588,8 +606,21 @@ async def main():
     try:
         async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as c:
             # --- forwarded headers and cookies, streamed and buffered paths
+            # default (forwarded_host off): neither X-Forwarded-Host nor X-Forwarded-Prefix is sent, client copies are dropped
+            CONFIG.clear()
+            async with c.get(f"{base}/echo", headers={
+                    "X-Forwarded-Host": "evil.example", "X-Forwarded-Prefix": "/evil"}) as r:
+                hdrs = {}
+                for k, v in json.loads(await r.text())["headers"]:
+                    hdrs.setdefault(k.lower(), []).append(v)
+                check("default: upstream gets no X-Forwarded-Host and no X-Forwarded-Prefix",
+                      "x-forwarded-host" not in hdrs and "x-forwarded-prefix" not in hdrs, str(hdrs))
+                check("default: client address and scheme headers are still sent",
+                      hdrs.get("x-forwarded-for") == ["127.0.0.1"] and hdrs.get("x-real-ip") == ["127.0.0.1"]
+                      and hdrs.get("x-forwarded-proto") == ["http"], str(hdrs))
             for ct, label in (("text/plain", "streamed"), ("application/json", "buffered")):
                 CONFIG.clear()
+                CONFIG["forwarded_host"] = True
                 async with c.get(f"{base}/echo?ct={ct}", headers={
                         "X-Forwarded-For": "6.6.6.6", "X-Real-IP": "6.6.6.6", "X-Forwarded-Host": "evil.example",
                         "X-Forwarded-Prefix": "/evil", "Authorization": "Bearer PORTALSECRET",
@@ -622,6 +653,7 @@ async def main():
             # --- forward_headers=* cannot smuggle anything through
             CONFIG.clear()
             CONFIG["forward_headers"] = ["*"]
+            CONFIG["forwarded_host"] = True
             async with c.get(f"{base}/echo", headers={
                     "X-Forwarded-Host": "evil.example", "x-forwarded-server": "evil", "X-Real-IP": "6.6.6.6",
                     "Authorization": "Bearer PORTALSECRET", "Cookie": f"{SESSION}=PORTALSESSION",
@@ -647,6 +679,7 @@ async def main():
 
             # --- a client-chosen Host header does not reach the upstream as X-Forwarded-Host
             CONFIG.clear()
+            CONFIG["forwarded_host"] = True
             async with c.get(f"{base}/echo", headers={"Host": "attacker.example"}) as r:
                 hdrs = {}
                 for k, v in json.loads(await r.text())["headers"]:
@@ -724,6 +757,7 @@ async def main():
                 check("redirect: a prefix-aware app (Location /proxy/xyz/login) ends on the upstream's /login, not /proxy/xyz/login there",
                       r.status == 200 and body == "UPSTREAM LOGIN", f"{r.status} {body[:80]}")
             Config.HOSTNAME = "localhost"       # the portal's name differs from the upstream's (127.0.0.1)
+            CONFIG["forwarded_host"] = True     # the app only builds such a Location when it is sent the host
             try:
                 del recorder_hits[:]
                 async with c.get(f"{base}/r-host", allow_redirects=False) as r:

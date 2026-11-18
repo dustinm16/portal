@@ -148,6 +148,12 @@ class HTTPProxyPlugin(PluginBase):
                     "items": {"type": "string"},
                     "default": []
                 },
+                "forwarded_host": {
+                    "type": "boolean",
+                    "title": "Send Forwarded Host and Prefix",
+                    "description": "Send X-Forwarded-Host (the portal's host name) and X-Forwarded-Prefix (/proxy/<id>) to the app. Turn on only for an app that builds its links from both (for example an app with a base path setting); an app that honours the host but not the prefix writes links outside the proxy path. X-Forwarded-Proto, X-Forwarded-For and X-Real-IP are always sent.",
+                    "default": False
+                },
                 "browser_mode": {
                     "type": "boolean",
                     "title": "General Browsing Mode",

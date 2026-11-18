@@ -67,6 +67,9 @@ async def run(ctx):
         props = body.get("types", {}).get("http", {}).get("config_schema", {}).get("properties", {})
         ctx.ok("proxyfix: web interface schema has no rewrite_urls", bool(props) and "rewrite_urls" not in props, str(sorted(props)))
         ctx.ok("proxyfix: web interface schema has no preserve_host", bool(props) and "preserve_host" not in props, str(sorted(props)))
+        fh = props.get("forwarded_host", {})
+        ctx.ok("proxyfix: web interface schema has forwarded_host, a boolean that is off by default",
+               fh.get("type") == "boolean" and fh.get("default") is False, str(fh))
         ctx.ok("proxyfix: web interface schema keeps timeout 5-300",
                props.get("timeout", {}).get("minimum") == 5 and props.get("timeout", {}).get("maximum") == 300,
                str(props.get("timeout")))
@@ -74,7 +77,7 @@ async def run(ctx):
         # A config that still carries rewrite_urls is accepted on create and update.
         async with s.post(f"{ctx.base_url}/api/connections", json={
                 "name": "pf-ok", "type": "http", "host": GOOD_HOST, "port": 80,
-                "config": {"rewrite_urls": True, "preserve_host": True, "timeout": 30}}) as r:
+                "config": {"rewrite_urls": True, "preserve_host": True, "forwarded_host": True, "timeout": 30}}) as r:
             created = await r.json()
             ctx.ok("proxyfix: create with stored rewrite_urls and preserve_host keys is accepted",
                    r.status in (200, 201) and bool(created.get("id")), f"{r.status} {created}")
