@@ -1,6 +1,7 @@
 """Authentication module for Open Relay Portal."""
 
 import secrets
+import time
 import hashlib
 import logging
 import jwt
@@ -13,6 +14,7 @@ from argon2.exceptions import VerifyMismatchError
 
 from config import Config
 from database import db
+from session_devices import clean_user_agent
 
 
 ph = PasswordHasher()
@@ -163,9 +165,14 @@ async def create_access_token(
     user_id: int,
     scopes: list[str],
     name: str = None,
-    expires_in_hours: int = None
+    expires_in_hours: int = None,
+    ip: str = None,
+    user_agent: str = None
 ) -> tuple[str, str]:
     """Create a new access token for a user.
+
+    ip and user_agent (the caller's address and User-Agent header) are kept on
+    the token row for the sessions page.
 
     Returns:
         Tuple of (jwt_token, token_id)
@@ -182,26 +189,58 @@ async def create_access_token(
         token_id=token_id,
         scopes=scopes,
         name=name,
-        expires_at=expires_at
+        expires_at=expires_at,
+        ip=ip,
+        user_agent=clean_user_agent(user_agent)
     )
 
     jwt_token = create_jwt(user_id, token_id, scopes, expires_hours)
     return jwt_token, token_id
 
 
-async def validate_token(token: str) -> TokenPayload:
+# last_used_at / last_ip are written at most once per TOUCH_INTERVAL seconds
+# per token: every authenticated request passes through validate_token, and a
+# write plus commit on each of them would load the single SQLite writer.
+TOUCH_INTERVAL = 60
+_TOUCH_SWEEP_SIZE = 2048
+_last_touch: dict[str, float] = {}
+
+
+def _touch_clock() -> float:
+    return time.monotonic()
+
+
+def _touch_due(token_id: str) -> bool:
+    """True (and the time is noted) when this token's last_used write is due."""
+    now = _touch_clock()
+    last = _last_touch.get(token_id)
+    if last is not None and 0 <= now - last < TOUCH_INTERVAL:
+        return False
+    if len(_last_touch) >= _TOUCH_SWEEP_SIZE:
+        # Forget tokens not seen for a while (revoked, expired, logged out);
+        # one that is still in use is simply written again at its next request.
+        for key in [k for k, t in _last_touch.items() if now - t >= TOUCH_INTERVAL]:
+            _last_touch.pop(key, None)
+    _last_touch[token_id] = now
+    return True
+
+
+async def validate_token(token: str, client_ip: str = None) -> TokenPayload:
     """Validate a JWT token and check database status.
 
-    Raises AuthError if token is invalid or revoked.
+    client_ip, when given, is stored as the token's last_ip with the
+    last-used time. Raises AuthError if token is invalid or revoked.
     """
     payload = decode_jwt(token)
 
     # Check if token is still valid in database (not revoked)
     if not await db.is_token_valid(payload.token_id):
+        _last_touch.pop(payload.token_id, None)
         raise AuthError("Token has been revoked or expired")
 
-    # Update last used timestamp
-    await db.update_token_last_used(payload.token_id)
+    # Update last used timestamp (throttled, see TOUCH_INTERVAL)
+    if _touch_due(payload.token_id):
+        await db.update_token_last_used(payload.token_id, client_ip)
 
     return payload
 

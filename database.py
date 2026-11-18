@@ -1138,6 +1138,10 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip, ts)",
     "CREATE INDEX IF NOT EXISTS idx_security_events_user ON security_events(user_id, ts)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_security_events_agg ON security_events(agg_key)",
+    # Sessions page: where and with what a login was made, and where it was last used
+    "ALTER TABLE tokens ADD COLUMN ip TEXT",
+    "ALTER TABLE tokens ADD COLUMN user_agent TEXT",
+    "ALTER TABLE tokens ADD COLUMN last_ip TEXT",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -2418,18 +2422,28 @@ class Database:
         token_id: str,
         scopes: list[str],
         name: str = None,
-        expires_at: datetime = None
+        expires_at: datetime = None,
+        ip: str = None,
+        user_agent: str = None
     ) -> int:
-        """Create a new token record and return its ID."""
+        """Create a new token record and return its ID.
+
+        ip and user_agent record where the login was made (the sessions page);
+        last_ip starts out as the same address.
+        """
         cursor = await self.conn.execute(
-            """INSERT INTO tokens (user_id, token_id, name, scopes, expires_at)
-               VALUES (?, ?, ?, ?, ?)""",
+            """INSERT INTO tokens (user_id, token_id, name, scopes, expires_at,
+                                   ip, user_agent, last_ip)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 user_id,
                 token_id,
                 name,
                 ",".join(scopes),
-                expires_at.isoformat() if expires_at else None
+                expires_at.isoformat() if expires_at else None,
+                ip,
+                user_agent,
+                ip
             )
         )
         await self.conn.commit()
@@ -2518,13 +2532,44 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount
 
-    async def update_token_last_used(self, token_id: str) -> None:
-        """Update the last_used_at timestamp for a token."""
-        await self.conn.execute(
-            "UPDATE tokens SET last_used_at = ? WHERE token_id = ?",
-            (datetime.now(timezone.utc).isoformat(), token_id)
-        )
+    async def update_token_last_used(self, token_id: str, last_ip: str = None) -> None:
+        """Update the last_used_at timestamp (and, when known, last_ip) for a token."""
+        if last_ip:
+            await self.conn.execute(
+                "UPDATE tokens SET last_used_at = ?, last_ip = ? WHERE token_id = ?",
+                (datetime.now(timezone.utc).isoformat(), last_ip, token_id)
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE tokens SET last_used_at = ? WHERE token_id = ?",
+                (datetime.now(timezone.utc).isoformat(), token_id)
+            )
         await self.conn.commit()
+
+    async def get_user_live_tokens(self, user_id: int) -> list[dict]:
+        """Tokens of a user that can still be used (not revoked, not expired),
+        newest first. Includes browser sessions and tokens made through
+        POST /api/token."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM tokens WHERE user_id = ? AND revoked = 0 ORDER BY created_at DESC, id DESC",
+            (user_id,)
+        )
+        now = datetime.now(timezone.utc)
+        live = []
+        for row in await cursor.fetchall():
+            token = dict(row)
+            exp = token.get("expires_at")
+            if exp:
+                try:
+                    when = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+                    if when.tzinfo is None:
+                        when = when.replace(tzinfo=timezone.utc)
+                    if when < now:
+                        continue
+                except ValueError:
+                    pass
+            live.append(token)
+        return live
 
     async def is_token_valid(self, token_id: str) -> bool:
         """Check if a token is valid (exists, not revoked, not expired)."""

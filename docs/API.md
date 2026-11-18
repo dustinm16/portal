@@ -196,6 +196,67 @@ Users can revoke only their own tokens. Admins can revoke tokens of users they a
 
 ---
 
+#### GET /api/me/sessions
+List the signed-in sessions of the current account: browser logins and tokens made through `POST /api/token`. API keys are not sessions; they are listed under `/api/api-keys`.
+
+Needs a browser session or an all-scope (`*`) credential. A stream key or a narrowly scoped API key or token gets `403`. Only the caller's own sessions are returned, and never a token or its id: `id` is an opaque public id (a truncated hash) that only identifies the row for sign-out. Timestamps are ISO-8601 UTC. `device` is read from the stored User-Agent by a local parser ("Unknown device" when there is none, as for sessions that predate the upgrade). `ip` is the address of the login, `last_ip` the address of the last use (written at most once a minute). `current` is true for the credential making the request.
+
+**Response:**
+```json
+{
+  "sessions": [
+    {
+      "id": "9471afa903bc501b",
+      "kind": "browser",
+      "name": null,
+      "device": "Firefox on Linux",
+      "browser": "Firefox",
+      "os": "Linux",
+      "created_at": "2026-11-18T16:52:29Z",
+      "last_used_at": "2026-11-18T16:52:29Z",
+      "expires_at": "2026-11-19T16:52:29Z",
+      "ip": "203.0.113.7",
+      "last_ip": "203.0.113.7",
+      "current": true
+    }
+  ]
+}
+```
+
+`kind` is `browser` for a login session and `token` for a token made through the API (`name` is then its name).
+
+---
+
+#### DELETE /api/me/sessions/{id}
+Sign out one session of the current account, by the `id` from the list. Same credential rules as the list. The session making the request cannot be signed out here (`400`, use logout); an id that is unknown or belongs to someone else returns `404`. The sockets, voice call and in-flight proxied downloads opened with that session end at once (close code 4001); the other sessions are not affected.
+
+**Response:**
+```json
+{ "status": "revoked" }
+```
+
+---
+
+#### POST /api/me/sessions/revoke-others
+Sign out every session of the current account except the one making the request (browser sessions and tokens made through the API). API keys and stream keys are not revoked, and the sockets opened with them stay open. Same credential rules as the list. A credential that is not itself a session (an all-scope API key) keeps all of its own sockets and signs out every session.
+
+**Response:**
+```json
+{ "status": "ok", "revoked": 2, "websockets_closed": 1 }
+```
+
+---
+
+#### POST /api/users/{id}/sessions/revoke
+Admin "sign out everywhere": revoke every browser session and token of one user and close what was opened with them. Needs the admin role, a credential with the `admin` and all scopes (a browser session of an admin has both), and the same role hierarchy as password resets (a plain admin cannot act on an admin or superadmin; `403`). API keys and stream keys of the user are not revoked. On the caller's own account the session being used is kept (`kept_current_session` is true). Recorded in the audit log as `sessions_revoke`. `404` for an unknown user.
+
+**Response:**
+```json
+{ "status": "ok", "revoked": 3, "kept_current_session": false }
+```
+
+---
+
 #### GET /api/invite-code
 Get the current daily invite code (admin only).
 

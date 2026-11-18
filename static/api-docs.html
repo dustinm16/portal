@@ -640,6 +640,53 @@
                     </div>
                 </div>
 
+                <!-- Sessions -->
+                <h3>Sessions</h3>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/me/sessions</span>
+                        <span class="endpoint-desc">List your signed-in sessions</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Browser logins and tokens made through <code>POST /api/token</code> of the current account. API keys are not sessions; they are listed under <a href="#api-keys">API Keys</a>. Needs a browser session or an all-scope (<code>*</code>) credential; a stream key or a narrowly scoped key or token gets 403. Each row has an opaque public <code>id</code> (never the token), <code>kind</code> (<code>browser</code> or <code>token</code>), <code>device</code>, <code>browser</code> and <code>os</code> read locally from the User-Agent, <code>created_at</code>, <code>last_used_at</code>, <code>expires_at</code> (ISO-8601 UTC), <code>ip</code> (login), <code>last_ip</code> (last use, written at most once a minute) and <code>current</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/me/sessions/{id}</span>
+                        <span class="endpoint-desc">Sign out one session</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Signs out the session with that public <code>id</code>. The session making the request cannot be signed out here (400, use logout); an unknown id or another member's session returns 404. Sockets, voice call and in-flight proxied downloads opened with it end at once (close code 4001); other sessions are not affected. Same credential rules as the list.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/me/sessions/revoke-others</span>
+                        <span class="endpoint-desc">Sign out other devices</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Signs out every session of the account except the one making the request. API keys and stream keys are not revoked. Returns <code>{"status": "ok", "revoked": n, "websockets_closed": n}</code>. Same credential rules as the list.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/users/{id}/sessions/revoke</span>
+                        <span class="endpoint-desc">Admin: sign a user out everywhere</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Revokes every browser session and token of the user and closes what was opened with them. Needs the admin role and a credential with the <code>admin</code> and all scopes, and follows the same role hierarchy as password resets (403 otherwise). API keys and stream keys are not revoked. On your own account the session you are using is kept. Written to the audit log as <code>sessions_revoke</code>.</p>
+                    </div>
+                </div>
+
                 <!-- Registration -->
                 <h3>Registration</h3>
 

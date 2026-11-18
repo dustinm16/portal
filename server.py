@@ -47,6 +47,7 @@ from aiohttp import web, WSMsgType
 from multidict import CIMultiDict
 
 from config import Config, ALLOWED_SHELLS
+from session_devices import parse_user_agent, public_session_id, matches_public_id
 from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
 from auth import (
     AuthError,
@@ -1567,7 +1568,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         try:
-            return await validate_token(auth_header[7:])
+            return await validate_token(auth_header[7:], get_client_ip(request))
         except AuthError:
             pass
 
@@ -1601,7 +1602,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     token_str = request.query.get("token")
     if token_str:
         try:
-            payload = await validate_token(token_str)
+            payload = await validate_token(token_str, get_client_ip(request))
             # Noted for the proxy, which must not pass the member's token on to the upstream.
             request[_AUTH_VIA_QUERY_TOKEN] = True
             return payload
@@ -1612,7 +1613,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     session_token = request.cookies.get(Config.SESSION_COOKIE_NAME)
     if session_token:
         try:
-            return await validate_token(session_token)
+            return await validate_token(session_token, get_client_ip(request))
         except AuthError:
             pass
 
@@ -2111,7 +2112,9 @@ async def http_create_token(request: web.Request) -> web.Response:
         user_id=user["id"],
         scopes=scopes,
         name=token_name,
-        expires_in_hours=expires_hours
+        expires_in_hours=expires_hours,
+        ip=client_ip,
+        user_agent=request.headers.get("User-Agent")
     )
 
     logger.info(f"Token created for user '{username}' from {client_ip}")
@@ -2210,6 +2213,148 @@ async def http_list_tokens(request: web.Request) -> web.Response:
             for t in tokens
         ]
     })
+
+
+def _iso_utc(value) -> Optional[str]:
+    """A stored timestamp (SQLite "YYYY-MM-DD HH:MM:SS" or ISO with an offset,
+    both UTC) as ISO-8601 with a Z, so the browser reads it as UTC."""
+    if not value:
+        return None
+    try:
+        when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _session_view(row: dict, current_token_id: str) -> dict:
+    """One session row as shown to its owner: never the token id itself, only
+    the opaque public id derived from it."""
+    device = parse_user_agent(row.get("user_agent"))
+    return {
+        "id": public_session_id(row["token_id"]),
+        "kind": "browser" if row.get("name") == "web_session" else "token",
+        "name": None if row.get("name") == "web_session" else row.get("name"),
+        "device": device["label"],
+        "browser": device["browser"],
+        "os": device["os"],
+        "created_at": _iso_utc(row.get("created_at")),
+        "last_used_at": _iso_utc(row.get("last_used_at")),
+        "expires_at": _iso_utc(row.get("expires_at")),
+        "ip": row.get("ip"),
+        "last_ip": row.get("last_ip"),
+        "current": bool(current_token_id) and row["token_id"] == current_token_id,
+    }
+
+
+def _full_credential_error(token) -> Optional[web.Response]:
+    """The sessions routes act on the user's whole account, so only a browser
+    session or a full-scope credential may use them: a stream key or a narrowly
+    scoped API key or token gets 403."""
+    if not has_full_user_scope(token):
+        return web.json_response(
+            {"error": "This credential cannot manage sessions"}, status=403)
+    return None
+
+
+async def http_list_my_sessions(request: web.Request) -> web.Response:
+    """List the caller's own sessions (browser logins and tokens made through
+    the API). API keys are not sessions; they are listed under /api/api-keys."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    err = _full_credential_error(token)
+    if err:
+        return err
+    rows = await db.get_user_live_tokens(token.user_id)
+    return web.json_response({
+        "sessions": [_session_view(r, token.token_id) for r in rows]
+    })
+
+
+async def http_revoke_my_session(request: web.Request) -> web.Response:
+    """Sign out one of the caller's own sessions, by its public id."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    err = _full_credential_error(token)
+    if err:
+        return err
+    public_id = request.match_info.get("id", "")
+    target = next((r for r in await db.get_user_live_tokens(token.user_id)
+                   if matches_public_id(r["token_id"], public_id)), None)
+    if target is None:
+        return web.json_response({"error": "Session not found"}, status=404)
+    if target["token_id"] == token.token_id:
+        return web.json_response(
+            {"error": "This is the session you are using. Use Log out to end it."},
+            status=400)
+    if not await db.revoke_token(target["token_id"], token.user_id):
+        return web.json_response({"error": "Session not found"}, status=404)
+    # What was opened with that session ends with it; the other sessions stay.
+    await close_user_websockets(token.user_id, only_token_id=target["token_id"])
+    logger.info(f"Session {public_id} of user {token.user_id} signed out by the user")
+    return web.json_response({"status": "revoked"})
+
+
+async def http_revoke_my_other_sessions(request: web.Request) -> web.Response:
+    """Sign out every session of the caller except the one making the request.
+    API keys and stream keys are not sessions and are left alone."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    err = _full_credential_error(token)
+    if err:
+        return err
+    revoked = await db.revoke_user_tokens(token.user_id, except_token_id=token.token_id)
+    closed = await close_user_websockets(token.user_id, except_token_id=token.token_id,
+                                         keep_prefixes=("apikey-", "streamkey-"))
+    logger.info(f"User {token.user_id} signed out {revoked} other session(s)")
+    return web.json_response({"status": "ok", "revoked": revoked, "websockets_closed": closed})
+
+
+async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
+    """Admin "sign out everywhere" for one user. Governed by the same hierarchy
+    as password resets (can_manage_role). On the caller's own account it keeps
+    the session being used, so an admin cannot lock themselves out. Sessions and
+    tokens only: API keys and stream keys are not revoked."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    actor_role = await get_user_role_from_token(token)
+    if (get_role_level(actor_role) < get_role_level("admin")
+            or not token.has_scope("admin") or not has_full_user_scope(token)):
+        return web.json_response(
+            {"error": "Only admins and superadmins can sign users out"}, status=403)
+    user_id = request.match_info.get("id")
+    if not user_id or not user_id.isdigit():
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+    user_id = int(user_id)
+    target_user = await db.get_user_by_id(user_id)
+    if not target_user:
+        return web.json_response({"error": "User not found"}, status=404)
+    own = user_id == token.user_id
+    if not own:
+        target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
+        if not can_manage_role(actor_role, target_role):
+            return web.json_response(
+                {"error": f"You cannot sign out users with role '{target_role}'"}, status=403)
+    keep_token_id = token.token_id if own else None
+    revoked = await db.revoke_user_tokens(user_id, except_token_id=keep_token_id)
+    closed = await close_user_websockets(user_id, except_token_id=keep_token_id,
+                                         keep_prefixes=("apikey-", "streamkey-"))
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log("sessions_revoke", token.user_id,
+                    actor["username"] if actor else "unknown",
+                    target_id=user_id, target_type="user",
+                    target_name=target_user["username"],
+                    details={"sessions_revoked": revoked, "websockets_closed": closed,
+                             "kept_current_session": own})
+    logger.info(f"Sessions of user {user_id} signed out by {actor_role} {token.user_id}")
+    return web.json_response({"status": "ok", "revoked": revoked,
+                              "kept_current_session": own})
 
 
 def _attach_resource_usage(status: dict) -> None:
@@ -12545,7 +12690,9 @@ async def http_login_submit(request: web.Request) -> web.Response:
         user_id=user["id"],
         scopes=scopes,
         name="web_session",
-        expires_in_hours=session_hours
+        expires_in_hours=session_hours,
+        ip=client_ip,
+        user_agent=request.headers.get("User-Agent")
     )
 
     logger.info(f"Web login for user '{username}' from {client_ip} (remember={bool(remember_me)})")
@@ -20724,6 +20871,10 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/users/{id}", http_delete_user)
     app.router.add_get("/api/me", http_get_current_user)
     app.router.add_post("/api/me/password", http_change_password)
+    app.router.add_get("/api/me/sessions", http_list_my_sessions)
+    app.router.add_post("/api/me/sessions/revoke-others", http_revoke_my_other_sessions)
+    app.router.add_delete("/api/me/sessions/{id}", http_revoke_my_session)
+    app.router.add_post("/api/users/{id}/sessions/revoke", http_admin_revoke_user_sessions)
     app.router.add_put("/api/me/status", http_update_user_status)
     app.router.add_put("/api/me/nickname", http_update_user_nickname)
     app.router.add_put("/api/me/anonymous", http_update_chat_anonymous)

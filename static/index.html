@@ -991,6 +991,22 @@
                         <button class="btn btn-primary" onclick="setup2FA()">Enable 2FA</button>
                     </div>
                 </div>
+
+                <hr style="border-color: var(--card-border); margin: 1.5rem 0;">
+
+                <h4 style="margin-bottom: 0.5rem;">Sessions</h4>
+                <p style="color: var(--text-secondary); font-size: 0.8125rem; margin-bottom: 0.75rem;">
+                    Where your account is signed in. API keys are listed separately under API Keys.
+                </p>
+                <div id="sessions-section">
+                    <div id="sessions-loading" class="loading" style="padding: 1rem;">
+                        <div class="spinner"></div>
+                        <span>Loading sessions...</span>
+                    </div>
+                    <div id="sessions-error" style="display: none; color: var(--text-muted);"></div>
+                    <div id="sessions-list" class="table-responsive" style="display: none;"></div>
+                    <button type="button" class="btn btn-danger btn-sm" id="sessions-revoke-others" style="display: none; margin-top: 0.75rem;">Sign out other devices</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1951,7 +1967,7 @@
     <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
     <script src="/static/js/fileeditor.js?v=1"></script>
     <script src="/static/js/dashboard.js?v=58"></script>
-    <script src="/static/js/admin.js?v=36"></script>
+    <script src="/static/js/admin.js?v=37"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
     <script src="/static/js/user-connections.js?v=47"></script>
     <!-- VOD Storage Settings Modal -->

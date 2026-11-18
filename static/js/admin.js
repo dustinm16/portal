@@ -871,6 +871,9 @@ function renderUsersTable(users) {
             if (canResetPasswords) {
                 actions += `<button class="btn btn-secondary btn-sm" onclick="showResetPasswordModal(${user.id}, '${escapeHtml(user.username).replace(/'/g, "\\'")}')">Reset Password</button> `;
             }
+            if (canResetPasswords) {
+                actions += `<button class="btn btn-secondary btn-sm" data-signout-user="${Number(user.id)}">Sign out</button> `;
+            }
             if (canDeleteUsers) {
                 actions += `<button class="btn btn-danger btn-sm" onclick="confirmDeleteUser(${user.id}, '${escapeHtml(user.username).replace(/'/g, "\\'")}')">Delete</button>`;
             }
@@ -888,6 +891,11 @@ function renderUsersTable(users) {
             </tr>
         `;
     }).join('');
+
+    tbody.querySelectorAll('button[data-signout-user]').forEach(btn => {
+        const target = users.find(u => String(u.id) === btn.dataset.signoutUser);
+        btn.addEventListener('click', () => adminSignOutUser(btn.dataset.signoutUser, target ? target.username : 'this user'));
+    });
 
     document.getElementById('users-loading').style.display = 'none';
     document.getElementById('users-table').style.display = 'table';
@@ -1441,6 +1449,150 @@ function showProfileModal() {
 
     // Load 2FA status
     load2FAStatus();
+    loadSessions();
+}
+
+// =============================================================================
+// Sessions (profile modal)
+// =============================================================================
+
+/**
+ * Format an ISO-8601 UTC timestamp from the sessions API for display.
+ */
+function formatSessionTime(iso) {
+    if (!iso) return '\u2014';
+    const date = new Date(iso);
+    if (isNaN(date.getTime())) return '\u2014';
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+
+/**
+ * Load and show the signed-in sessions of the current user.
+ */
+async function loadSessions() {
+    const loadingEl = document.getElementById('sessions-loading');
+    const errorEl = document.getElementById('sessions-error');
+    const listEl = document.getElementById('sessions-list');
+    const othersBtn = document.getElementById('sessions-revoke-others');
+    if (!loadingEl || !listEl) return;
+
+    loadingEl.style.display = 'flex';
+    errorEl.style.display = 'none';
+    listEl.style.display = 'none';
+    othersBtn.style.display = 'none';
+
+    try {
+        const response = await Portal.fetch('/api/me/sessions');
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to load sessions');
+        }
+        const data = await response.json();
+        renderSessions(data.sessions || []);
+    } catch (error) {
+        loadingEl.style.display = 'none';
+        errorEl.textContent = error.message || 'Failed to load sessions';
+        errorEl.style.display = 'block';
+    }
+}
+
+function renderSessions(sessions) {
+    const loadingEl = document.getElementById('sessions-loading');
+    const listEl = document.getElementById('sessions-list');
+    const othersBtn = document.getElementById('sessions-revoke-others');
+
+    const rows = sessions.map(s => {
+        let device = escapeHtml(s.device || 'Unknown device');
+        if (s.kind === 'token') {
+            device += ' <span style="color: var(--text-muted);">(API token' +
+                (s.name ? ': ' + escapeHtml(s.name) : '') + ')</span>';
+        }
+        if (s.current) {
+            device += ' <span class="badge" style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.7rem; margin-left: 0.35rem;">This device</span>';
+        }
+        const action = s.current
+            ? '<span style="color: var(--text-muted); font-size: 0.75rem;">Use Log out</span>'
+            : `<button type="button" class="btn btn-secondary btn-sm" data-session-id="${escapeHtml(s.id)}">Sign out</button>`;
+        return `
+            <tr>
+                <td>${device}</td>
+                <td>${escapeHtml(formatSessionTime(s.created_at))}</td>
+                <td>${escapeHtml(formatSessionTime(s.last_used_at))}</td>
+                <td>${escapeHtml(s.last_ip || s.ip || 'Unknown')}</td>
+                <td>${action}</td>
+            </tr>`;
+    }).join('');
+
+    listEl.innerHTML = `
+        <table class="data-table">
+            <thead><tr><th>Device</th><th>Signed in</th><th>Last used</th><th>Last IP</th><th></th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="5" style="color: var(--text-muted);">No sessions</td></tr>'}</tbody>
+        </table>`;
+    listEl.querySelectorAll('button[data-session-id]').forEach(btn => {
+        btn.addEventListener('click', () => revokeSession(btn.dataset.sessionId));
+    });
+
+    loadingEl.style.display = 'none';
+    listEl.style.display = 'block';
+    othersBtn.style.display = sessions.some(s => !s.current) ? 'inline-block' : 'none';
+}
+
+async function revokeSession(sessionId) {
+    if (!confirm('Sign this device out?')) return;
+    try {
+        const response = await Portal.fetch('/api/me/sessions/' + encodeURIComponent(sessionId), {
+            method: 'DELETE'
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to sign the device out');
+        }
+        Portal.toast('Device signed out');
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to sign the device out', 'error');
+    }
+    loadSessions();
+}
+
+async function revokeOtherSessions() {
+    if (!confirm('Sign out every other device? This device stays signed in.')) return;
+    try {
+        const response = await Portal.fetch('/api/me/sessions/revoke-others', { method: 'POST' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to sign the other devices out');
+        }
+        const data = await response.json().catch(() => ({}));
+        Portal.toast(`Signed out ${data.revoked || 0} other session(s)`);
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to sign the other devices out', 'error');
+    }
+    loadSessions();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('sessions-revoke-others');
+    if (btn) btn.addEventListener('click', revokeOtherSessions);
+});
+
+/**
+ * Admin: sign a user out of every session.
+ */
+async function adminSignOutUser(userId, username) {
+    if (!confirm(`Sign ${username} out of every device? Their API keys are not affected.`)) return;
+    try {
+        const response = await Portal.fetch(`/api/users/${encodeURIComponent(userId)}/sessions/revoke`, {
+            method: 'POST'
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to sign the user out');
+        }
+        const data = await response.json().catch(() => ({}));
+        Portal.toast(`Signed out ${data.revoked || 0} session(s)`);
+    } catch (error) {
+        Portal.toast(error.message || 'Failed to sign the user out', 'error');
+    }
 }
 
 /**
