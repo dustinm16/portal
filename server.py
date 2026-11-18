@@ -7158,6 +7158,9 @@ async def _vod_activity(user_id: int, action: str, detail: str) -> None:
     await db.log_activity(user_id, get_display_name(user) if user else "unknown", action, detail)
 
 
+_VOD_HOST_KEY_ERROR = "Host key changed; review it in VOD storage settings"
+
+
 async def _vod_dial(user_id: int, storage: dict, addrs: list):
     """Dial VOD storage on already policy-checked addresses and verify its host
     key. There is nobody to ask at upload time, so a first key is pinned
@@ -7190,7 +7193,7 @@ async def _vod_dial(user_id: int, storage: dict, addrs: list):
         await _vod_note_host_key(user_id, storage, refused=refused.fingerprint)
         await _vod_activity(user_id, "vod_host_key_refused",
                             f"VOD storage host key changed (now {refused.fingerprint}); connection refused")
-        return None, None, "Host key changed; review it in VOD storage settings"
+        return None, None, _VOD_HOST_KEY_ERROR
     except asyncio.TimeoutError:
         return None, None, "Connection timed out"
     except asyncssh.Error as e:
@@ -9223,6 +9226,9 @@ async def _get_vod_sftp(request: web.Request, token: TokenPayload):
     """Helper: connect to user's VOD SFTP storage. Returns (conn, sftp, error_response)."""
     conn, sftp, error = await _connect_vod_sftp(token.user_id)
     if error:
+        if error == _VOD_HOST_KEY_ERROR:
+            error = ("The VOD storage host key was refused (it changed). Review the host key "
+                     "in VOD storage settings on the dashboard.")
         return None, None, web.json_response({"error": error}, status=502)
     return conn, sftp, None
 

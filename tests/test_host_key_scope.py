@@ -119,6 +119,26 @@ def test_409_body_has_no_accept_token_for_scoped_callers():
         assert status == 409 and body["can_accept"] is True and body.get("accept_token") and body.get("accept_url"), label
 
 
+def test_vod_browser_error_points_at_the_dashboard_for_a_refused_key():
+    async def refused(user_id):
+        return None, None, server._VOD_HOST_KEY_ERROR
+
+    async def broken(user_id):
+        return None, None, "Connection failed"
+
+    real = server._connect_vod_sftp
+    try:
+        for fn, expect_dashboard in ((refused, True), (broken, False)):
+            server._connect_vod_sftp = fn
+            _, _, resp = asyncio.run(server._get_vod_sftp(make_mocked_request("GET", "/api/sftp/vod/list"), tok(["*"])))
+            text = json.loads(resp.text)["error"]
+            assert resp.status == 502
+            assert (("VOD storage settings" in text and "dashboard" in text and "host key" in text.lower())
+                    == expect_dashboard), text
+    finally:
+        server._connect_vod_sftp = real
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
