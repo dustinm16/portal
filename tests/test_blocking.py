@@ -648,6 +648,182 @@ feed("127.0.0.1", 100, {})
 check("self-check: it re-arms once the share is clearly low", server._peer_trust_warned is False)
 reset_peers()
 
+
+# ---------------------------------------------------------------------------
+# Canonical addresses in manual blocks, the TRUSTED_PROXIES breadth warning,
+# printable CLI output, the proxy-trust caution
+# ---------------------------------------------------------------------------
+
+class _Admin:
+    user_id = 1
+    scopes = ["*"]
+
+    def has_scope(self, scope):
+        return True
+
+
+class _BlockRequest:
+    def __init__(self, peer, body=None, match=None):
+        self.transport = _Transport(peer)
+        self.headers = CIMultiDict({})
+        self.match_info = match or {}
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
+async def canonical_cases():
+    import json as _json
+    import secevents
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Database(str(Path(tmp) / "canon.db"))
+        await d.connect()
+        saved = (server.db, server.authenticate_request)
+        try:
+            await d.create_user("canon_admin", "x")
+            server.db = d
+            secevents.log.bind(d)
+
+            async def fake_auth(request):
+                return _Admin()
+            server.authenticate_request = fake_auth
+            server._blocked_ips.clear()
+
+            r = await server.http_block_ip(_BlockRequest("203.0.113.5", {"ip_address": "2001:DB8::1", "reason": "x"}))
+            check("manual block: an upper-case IPv6 address is stored in canonical form",
+                  r.status == 201 and _json.loads(r.body)["ip_address"] == "2001:db8::1"
+                  and await row(d, "2001:db8::1") and await row(d, "2001:DB8::1") is None, str(r.body))
+            check("manual block: the middleware cache matches either spelling and a mapped IPv4",
+                  server._is_ip_blocked("2001:db8::1") and server._is_ip_blocked("2001:DB8:0::1")
+                  and not server._is_ip_blocked("2001:db8::2"))
+            r = await server.http_block_ip(_BlockRequest("203.0.113.5", {"ip_address": "2001:db8::1", "reason": "again"}))
+            cur = await d.conn.execute("SELECT COUNT(*) AS n FROM blocked_ips WHERE ip_address LIKE '2001:%'")
+            check("manual block: the other spelling is the same block, not a second row",
+                  r.status == 201 and (await cur.fetchone())["n"] == 1)
+            r = await server.http_block_ip(_BlockRequest("203.0.113.5", {"ip_address": "::ffff:5.6.7.8"}))
+            check("manual block: an IPv4-mapped address is stored as IPv4",
+                  r.status == 201 and await row(d, "5.6.7.8") is not None and server._is_ip_blocked("5.6.7.8"))
+            r = await server.http_block_ip(_BlockRequest("203.0.113.5", {"ip_address": "not-an-ip"}))
+            check("manual block: a non-address is still refused", r.status == 400)
+            r = await server.http_block_ip(_BlockRequest("2001:db8::5", {"ip_address": "2001:DB8::5"}))
+            check("manual block: the own-address guard compares canonical forms",
+                  r.status == 400 and await row(d, "2001:db8::5") is None, str(r.body))
+
+            r = await server.http_unblock_ip(_BlockRequest("203.0.113.5", match={"ip": "2001:DB8::1"}))
+            check("unblock: the other spelling removes the block and the cache entry",
+                  r.status == 200 and await row(d, "2001:db8::1") is None and not server._is_ip_blocked("2001:db8::1"),
+                  str(r.body))
+            r = await server.http_unblock_ip(_BlockRequest("203.0.113.5", match={"ip": "::ffff:5.6.7.8"}))
+            check("unblock: an IPv4-mapped spelling removes the IPv4 block", r.status == 200 and await row(d, "5.6.7.8") is None)
+
+            # a row typed before this release (non-canonical) is still matched and removed
+            await d.conn.execute("INSERT INTO blocked_ips (ip_address, reason, source) VALUES ('2001:DB8::77', 'old', 'manual')")
+            await d.conn.commit()
+            check("loading blocks: a non-canonical stored row is keyed canonically",
+                  "2001:db8::77" in await d.get_active_blocked_ips())
+            r = await server.http_unblock_ip(_BlockRequest("203.0.113.5", match={"ip": "2001:db8::77"}))
+            check("unblock: a not-yet-migrated row is removed by its canonical spelling",
+                  r.status == 200 and await row(d, "2001:DB8::77") is None)
+        finally:
+            server.db, server.authenticate_request = saved
+            server._blocked_ips.clear()
+            secevents.log.bind(None)
+            await d.close()
+
+    # migration: existing rows are rewritten, duplicates merged, junk left alone, a second start is a no-op
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "mig.db")
+        d = Database(path)
+        await d.connect()
+        await d.close()
+        c = sqlite3.connect(path)
+        c.executemany("INSERT INTO blocked_ips (ip_address, reason, expires_at, source) VALUES (?,?,?,?)", [
+            ("2001:DB8::1", "typed upper", "2999-01-01 00:00:00", "auto"),
+            ("2001:db8::1", "typed lower", "2030-01-01 00:00:00", "manual"),
+            ("2001:0db8:0:0:0:0:0:9", "long form", None, "manual"),
+            ("::ffff:9.9.9.9", "mapped", "2040-01-01 00:00:00", "manual"),
+            ("9.9.9.9", "plain", "2035-01-01 00:00:00", "auto"),
+            ("not an address", "junk", None, "manual"),
+            ("8.8.8.8", "already canonical", None, "manual"),
+        ])
+        c.commit()
+        c.close()
+
+        def rows_now():
+            c = sqlite3.connect(path)
+            try:
+                return c.execute("SELECT ip_address, reason, expires_at, source FROM blocked_ips ORDER BY ip_address").fetchall()
+            finally:
+                c.close()
+        d = Database(path)
+        await d.connect()
+        await d.close()
+        got = {r[0]: r for r in rows_now()}
+        check("migration: addresses are rewritten to canonical form",
+              set(got) == {"2001:db8::1", "2001:db8::9", "9.9.9.9", "not an address", "8.8.8.8"}, str(sorted(got)))
+        check("migration: duplicates keep the manual row and the longest expiry",
+              got["2001:db8::1"][1] == "typed lower" and got["2001:db8::1"][2] == "2999-01-01 00:00:00"
+              and got["2001:db8::1"][3] == "manual", str(got["2001:db8::1"]))
+        check("migration: a mapped duplicate merges into the IPv4 row, the manual one wins",
+              got["9.9.9.9"][1] == "mapped" and got["9.9.9.9"][2] == "2040-01-01 00:00:00", str(got["9.9.9.9"]))
+        check("migration: a junk row and a permanent block are left as they were",
+              got["not an address"][1] == "junk" and got["2001:db8::9"][2] is None)
+        before = rows_now()
+        d = Database(path)
+        await d.connect()
+        await d.close()
+        check("migration: a second start changes nothing", rows_now() == before)
+
+
+asyncio.run(canonical_cases())
+
+check("breadth: networks broader than /8 and /16 are found, /8 and /16 themselves are not",
+      [str(n) for n in ipguard.broad_networks(ipaddress.ip_network(x) for x in
+       ("10.0.0.0/8", "10.0.0.0/7", "0.0.0.0/0", "2001::/16", "2000::/15", "::/0", "127.0.0.1/32"))]
+      == ["10.0.0.0/7", "0.0.0.0/0", "2000::/15", "::/0"])
+saved_extra, saved_host = list(server._extra_trusted_networks), Config.HOST
+try:
+    server._extra_trusted_networks[:] = [ipaddress.ip_network(x) for x in ("96.0.0.0/7", "2000::/3", "127.0.0.1/32", "10.0.0.0/8")]
+    Config.HOST = "0.0.0.0"
+    cap.records.clear()
+    server._log_proxy_trust_at_startup()
+    broad = [m for m in cap.records if "TRUSTED_PROXIES contains" in m]
+    check("startup: a TRUSTED_PROXIES network broader than /8 or /16 is warned about, whatever HOST is",
+          len(broad) == 2 and "96.0.0.0/7" in broad[0] and "2000::/3" in broad[1]
+          and "spoof" not in broad[0].lower() and "forwarding headers" in broad[0], str(broad))
+    server._extra_trusted_networks[:] = [ipaddress.ip_network("127.0.0.1/32"), ipaddress.ip_network("10.0.0.0/8")]
+    cap.records.clear()
+    server._log_proxy_trust_at_startup()
+    check("startup: narrow entries give no breadth warning", not [m for m in cap.records if "TRUSTED_PROXIES contains" in m])
+finally:
+    server._extra_trusted_networks[:] = saved_extra
+    Config.HOST = saved_host
+    cap.records.clear()
+
+reset_peers()
+feed("127.0.0.1", 40, CF_HEADERS)
+note = server._proxy_trust_status()["message"] or ""
+check("the proxy-trust note tells the admin to verify the peer before trusting it",
+      "really is your own proxy" in note and "TRUSTED_PROXIES" in note, note)
+check("the logged warning carries the same caution",
+      any("really is your own proxy" in m for m in cap.records), str(cap.records))
+reset_peers()
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = str(Path(tmp) / "print.db")
+    asyncio.run(make_db(path))
+    c = sqlite3.connect(path)
+    c.execute("INSERT INTO blocked_ips (ip_address, reason, source) VALUES ('6.6.6.6', ?, 'manual')",
+              ("evil\x1b[31m red\nsecond line\x07\u2028end",))
+    c.commit()
+    c.close()
+    rc, out = run_cli(ban_cli.clear_bans, path)
+    line = next((ln for ln in out.splitlines() if "6.6.6.6" in ln), "")
+    check("CLI output: control characters in a stored reason are not printed",
+          rc == 0 and "\x1b" not in out and "\x07" not in out and "\u2028" not in out
+          and "evil[31m redsecond lineend" in line, repr(out))
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: " + "; ".join(failures))

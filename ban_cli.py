@@ -56,10 +56,16 @@ def _rows(conn):
     ))
 
 
+def _printable(value) -> str:
+    """Text for the terminal: anything not printable (escape sequences, line
+    breaks, other control characters) is dropped from what was stored."""
+    return "".join(ch for ch in str(value) if ch.isprintable())
+
+
 def _describe(row) -> str:
-    until = row["expires_at"] or "permanent"
-    reason = f" reason: {row['reason']}" if row["reason"] else ""
-    return f"  {row['ip_address']}  ({row['source']}, until {until}){reason}"
+    until = _printable(row["expires_at"] or "permanent")
+    reason = f" reason: {_printable(row['reason'])}" if row["reason"] else ""
+    return f"  {_printable(row['ip_address'])}  ({_printable(row['source'])}, until {until}){reason}"
 
 
 def _record_event(conn, details: dict) -> None:

@@ -150,9 +150,17 @@ _blocked_ips: dict[str, Optional[str]] = {}
 
 
 def _is_ip_blocked(ip: str) -> bool:
-    """Check the in-process blocked-IP cache. Lazily evicts expired entries."""
-    if ip not in _blocked_ips:
+    """Check the in-process blocked-IP cache. Lazily evicts expired entries.
+
+    The cache is keyed by canonical address (ipguard.canonical_ip); the lookup
+    folds the caller's address the same way, but only when something is blocked.
+    """
+    if not _blocked_ips:
         return False
+    if ip not in _blocked_ips:
+        ip = ipguard.canonical_ip(ip) or ip
+        if ip not in _blocked_ips:
+            return False
     expires_at = _blocked_ips[ip]
     if expires_at is None:
         return True
@@ -1021,7 +1029,9 @@ def _note_request_peer(request: web.Request) -> None:
                 "Most recent requests arrive from a loopback or private address that carries Cloudflare "
                 "headers, but that address is not a trusted proxy. Every visitor is being attributed to it. "
                 "If cloudflared or a reverse proxy runs on this host, set TRUSTED_PROXIES in .env "
-                "(for example 127.0.0.1,::1) and restart. Trust is not changed automatically."
+                "(for example 127.0.0.1,::1) and restart, after checking that the peer really is your own proxy "
+                "(a tunnel or another local program can send the same headers). "
+                "Trust is not changed automatically."
             )
     elif _peer_suspect_count * 4 <= len(_peer_marks):
         # Re-arm only once the share is clearly below the trip point, so traffic hovering around half
@@ -1046,7 +1056,9 @@ def _proxy_trust_status() -> dict:
             "but that address is not a trusted proxy, so every visitor is attributed to it and IP blocks and "
             "rate limits apply to everyone at once. If cloudflared or a reverse proxy runs on this host, add "
             "its address to TRUSTED_PROXIES in .env (for example 127.0.0.1,::1) and restart. "
-            "Trust is never changed automatically."
+            "First check that the peer really is your own proxy: a tunnel, VPN or other local program can send "
+            "the same headers, and trusting a peer that is not a proxy lets anyone choose the address they are "
+            "seen as. Trust is never changed automatically."
         ) if tripped else None,
     }
 
@@ -1056,6 +1068,14 @@ def _log_proxy_trust_at_startup() -> None:
         f"Trusted proxies: {len(_cf_networks)} Cloudflare range(s) ({_cf_source}), "
         f"{len(_extra_trusted_networks)} from TRUSTED_PROXIES; loopback trusted: {_is_trusted_proxy('127.0.0.1')}"
     )
+    for net in ipguard.broad_networks(_extra_trusted_networks):
+        logger.warning(
+            f"TRUSTED_PROXIES contains {net}, which is broader than /{ipguard.MIN_PREFIX_V4} (IPv4) or "
+            f"/{ipguard.MIN_PREFIX_V6} (IPv6). Every address in it is treated as a proxy: automatic blocking "
+            "never applies to them, and any of them can choose the visitor address with forwarding headers "
+            "(IP blocks and rate limits can then be avoided). List only your own proxies. "
+            "Nothing is changed automatically."
+        )
     loopback_bind = Config.HOST in ("127.0.0.1", "::1", "localhost")
     if loopback_bind and not _is_trusted_proxy("127.0.0.1"):
         logger.warning(
@@ -9858,12 +9878,12 @@ async def http_block_ip(request: web.Request) -> web.Response:
     reason = (data.get("reason") or "").strip() or None
     duration_hours = data.get("duration_hours")
 
-    try:
-        ipaddress.ip_address(ip_address)
-    except ValueError:
+    # Stored and matched in canonical form: '2001:DB8::1' and '2001:db8::1' are one block.
+    ip_address = ipguard.canonical_ip(ip_address)
+    if ip_address is None:
         return web.json_response({"error": "Invalid IP address"}, status=400)
 
-    if get_client_ip(request) == ip_address:
+    if ipguard.canonical_ip(get_client_ip(request)) == ip_address:
         return web.json_response(
             {"error": "Refusing to block your own current IP address"}, status=400
         )
@@ -9902,9 +9922,11 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     if not token.has_scope("admin") and not token.has_scope("*"):
         return forbidden_response(request)
 
-    ip_address = request.match_info.get("ip", "")
+    typed = request.match_info.get("ip", "")
+    ip_address = ipguard.canonical_ip(typed) or typed
     removed = await db.unblock_ip(ip_address)
     _blocked_ips.pop(ip_address, None)
+    _blocked_ips.pop(typed, None)
     # Unblocking also lifts a temporary scanner-probe block on that address.
     # Those are held in memory only, keyed by the canonical address form.
     probe_key = _valid_ip(ip_address) or ip_address

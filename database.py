@@ -18,6 +18,7 @@ from config import Config
 import recording_paths
 import chat_uploads
 import secevents
+import ipguard
 
 logger = logging.getLogger("portal.database")
 
@@ -1273,6 +1274,51 @@ class Database:
 
         # Encrypt plaintext TOTP secrets and hash plaintext backup codes
         await self._migrate_totp_and_backup_codes()
+
+        # Blocks are kept in canonical address form
+        await self._migrate_blocked_ips_canonical()
+
+    async def _migrate_blocked_ips_canonical(self) -> None:
+        """Rewrite blocked_ips rows to the canonical address form (idempotent).
+
+        Rows typed as '2001:DB8::1' or '::ffff:1.2.3.4' become '2001:db8::1' and
+        '1.2.3.4'. When several rows are one address, one is kept (a manual block
+        over an automatic one, then the one that lasts longest) and given the
+        longest expiry of the group, so the merge never blocks for less time
+        than before. Rows that are not an address are left alone.
+        """
+        try:
+            cursor = await self._connection.execute(
+                "SELECT id, ip_address, expires_at, source FROM blocked_ips ORDER BY id")
+            rows = [dict(r) for r in await cursor.fetchall()]
+        except Exception as e:
+            logger.warning(f"Block list normalisation skipped: {e}")
+            return
+        groups: dict[str, list[dict]] = {}
+        for r in rows:
+            canon = ipguard.canonical_ip(r["ip_address"])
+            if canon is not None:
+                groups.setdefault(canon, []).append(r)
+        changed = False
+        for canon, grp in groups.items():
+            if len(grp) == 1 and grp[0]["ip_address"] == canon:
+                continue
+
+            def strength(r):
+                return (r["source"] == "manual", r["expires_at"] is None, r["expires_at"] or "")
+
+            keep = max(grp, key=strength)
+            expires = None if any(r["expires_at"] is None for r in grp) else max(r["expires_at"] for r in grp)
+            for r in grp:
+                if r["id"] != keep["id"]:
+                    await self._connection.execute("DELETE FROM blocked_ips WHERE id = ?", (r["id"],))
+            await self._connection.execute(
+                "UPDATE blocked_ips SET ip_address = ?, expires_at = ? WHERE id = ?",
+                (canon, expires, keep["id"]))
+            changed = True
+        if changed:
+            await self._connection.commit()
+            logger.info("Block list: addresses rewritten to their canonical form")
 
     async def _seed_default_connections(self) -> None:
         """One-time: add default Web Browser connection and enable browser_mode on existing ones."""
@@ -5947,6 +5993,7 @@ class Database:
         """
         if source not in ("manual", "auto"):
             raise ValueError("source must be 'manual' or 'auto'")
+        ip_address = ipguard.canonical_ip(ip_address) or ip_address
         if source == "manual":
             cursor = await self.conn.execute(
                 """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at, source)
@@ -5981,12 +6028,17 @@ class Database:
         return cursor.rowcount > 0
 
     async def unblock_ip(self, ip_address: str) -> bool:
-        """Remove an IP block."""
-        cursor = await self.conn.execute(
-            "DELETE FROM blocked_ips WHERE ip_address = ?", (ip_address,)
-        )
+        """Remove an IP block. The address is matched in its canonical form
+        (a row written before addresses were canonicalised is matched as typed)."""
+        canon = ipguard.canonical_ip(ip_address) or ip_address
+        cursor = await self.conn.execute("SELECT id, ip_address FROM blocked_ips")
+        ids = [(r["id"],) for r in await cursor.fetchall()
+               if (ipguard.canonical_ip(r["ip_address"]) or r["ip_address"]) == canon
+               or r["ip_address"] == ip_address]
+        if ids:
+            await self.conn.executemany("DELETE FROM blocked_ips WHERE id = ?", ids)
         await self.conn.commit()
-        return cursor.rowcount > 0
+        return bool(ids)
 
     async def list_blocked_ips(self) -> list[dict]:
         """List all blocked IPs (including expired ones — caller filters)."""
@@ -6011,7 +6063,15 @@ class Database:
                WHERE expires_at IS NULL OR expires_at > datetime('now')"""
         )
         rows = await cursor.fetchall()
-        return {row["ip_address"]: row["expires_at"] for row in rows}
+        blocks: dict[str, Optional[str]] = {}
+        for row in rows:
+            key = ipguard.canonical_ip(row["ip_address"]) or row["ip_address"]
+            # Two spellings of one address (not merged yet): the longer block wins.
+            if key in blocks and blocks[key] is None:
+                continue
+            if key not in blocks or row["expires_at"] is None or row["expires_at"] > (blocks[key] or ""):
+                blocks[key] = row["expires_at"]
+        return blocks
 
     # Activity types visible to all authenticated users (community events)
     PUBLIC_ACTIVITY_TYPES = {"stream_live", "stream_offline", "register"}

@@ -275,6 +275,30 @@ async def _admin_checks(ctx, adm, loopback_trusted):
     else:
         ctx.skip("blocking: PUT cf-ranges", "the admin account is not a superadmin")
 
+    # ---- a manual block is one block however the address is spelled -------
+    typed = "2001:DB8:5EED::17"
+    canon = "2001:db8:5eed::17"
+    try:
+        async with adm.post(f"{base}/api/admin/blocked-ips", json={"ip_address": typed, "reason": "smoke canonical"}, headers=hdr) as r:
+            made = await r.json(content_type=None)
+        _ok(ctx, "blocking: a manual block on an upper-case IPv6 address is stored in canonical form",
+               r.status == 201 and made.get("ip_address") == canon, f"{r.status} {made}")
+        async with adm.post(f"{base}/api/admin/blocked-ips", json={"ip_address": canon, "reason": "smoke canonical"}, headers=hdr) as r:
+            await r.read()
+        async with adm.get(f"{base}/api/admin/blocked-ips", headers=hdr) as r:
+            listed = [b["ip_address"] for b in (await r.json(content_type=None)).get("blocked_ips", [])]
+        _ok(ctx, "blocking: both spellings are one row in the block list",
+               listed.count(canon) == 1 and typed not in listed, str([x for x in listed if "5eed" in x.lower()]))
+        async with adm.delete(f"{base}/api/admin/blocked-ips/{typed}", headers=hdr) as r:
+            await r.read()
+            _ok(ctx, "blocking: the other spelling removes it", r.status == 200, str(r.status))
+        async with adm.delete(f"{base}/api/admin/blocked-ips/{canon}", headers=hdr) as r:
+            await r.read()
+            _ok(ctx, "blocking: and nothing is left to remove", r.status == 404, str(r.status))
+    finally:
+        async with adm.delete(f"{base}/api/admin/blocked-ips/{canon}", headers=hdr) as r:
+            await r.read()
+
     # ---- proxy-trust self-check through the endpoint ---------------------
     if loopback_trusted:
         ctx.skip("blocking: proxy-trust endpoint", "the copied .env trusts loopback")
@@ -288,7 +312,8 @@ async def _admin_checks(ctx, adm, loopback_trusted):
             st = await r.json(content_type=None)
         _ok(ctx, "blocking: loopback requests carrying Cloudflare headers trip the proxy-trust note",
                r.status == 200 and st.get("suspect") is True and "127.0.0.1" in st.get("peers", [])
-               and "TRUSTED_PROXIES" in (st.get("message") or ""), str(st))
+               and "TRUSTED_PROXIES" in (st.get("message") or "")
+               and "really is your own proxy" in (st.get("message") or ""), str(st))
         _ok(ctx, "blocking: the server log carries the proxy-trust warning",
                "that address is not a trusted proxy" in ctx.server_log())
         if superadmin:

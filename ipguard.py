@@ -100,6 +100,28 @@ def parse_env_cidrs(text: str) -> tuple:
     return nets, warnings
 
 
+def canonical_ip(text) -> Optional[str]:
+    """The one written form of an address: lower case, compressed, an IPv4-mapped
+    IPv6 address folded to IPv4. None when the text is not an address.
+
+    Blocks are stored and looked up in this form, so '2001:DB8::1' and
+    '2001:db8::1' are the same block.
+    """
+    try:
+        addr = ipaddress.ip_address(str(text).strip())
+    except ValueError:
+        return None
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return str(addr)
+
+
+def broad_networks(nets: Iterable) -> list:
+    """The networks broader than a never-ban entry may be (/8 IPv4, /16 IPv6)."""
+    return [n for n in nets
+            if n.prefixlen < (MIN_PREFIX_V4 if n.version == 4 else MIN_PREFIX_V6)]
+
+
 def addr_in_networks(addr, nets: Iterable) -> bool:
     return any(addr.version == n.version and addr in n for n in nets)
 
