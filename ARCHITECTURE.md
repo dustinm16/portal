@@ -842,7 +842,7 @@ GET /terminal            - Terminal UI
 GET /vnc                 - VNC viewer
 GET /spice               - SPICE viewer
 GET /proxmox             - Proxmox dashboard
-GET /watch/:id           - Stream viewer (HLS)
+GET /watch/:id           - Stream viewer (HLS, picture-in-picture); ?chat=only = pop-out chat window (no player, same access checks)
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (feature guide)
 GET /files               - File manager (admin local + user SFTP)

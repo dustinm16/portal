@@ -510,6 +510,16 @@
             border-color: var(--accent-blue);
         }
 
+        /* Picture-in-picture button: hidden until the browser is known to support it */
+        .pip-btn { display: none; }
+        .pip-btn.supported { display: flex; }
+        .pip-btn.active { border-color: var(--accent-blue); }
+        /* Native HLS (no MSE): quality, buffer and stats do not apply, but the PiP button stays */
+        .player-controls.native-hls .player-control-group:not(.pip-group) { display: none; }
+        .player-controls.native-hls .fullscreen-btn:not(.pip-btn) { display: none; }
+        .player-controls.native-hls { justify-content: flex-end; }
+        .player-controls.native-hls.pip-unsupported { display: none; }
+
         /* Stream offline state */
         .stream-offline {
             text-align: center;
@@ -637,7 +647,8 @@
                             Stats
                         </button>
                     </div>
-                    <div class="player-control-group" style="margin-left: auto;">
+                    <div class="player-control-group pip-group" style="margin-left: auto;">
+                        <button class="fullscreen-btn pip-btn" id="pip-btn" type="button" title="Picture in picture">Picture in picture</button>
                         <button class="fullscreen-btn" onclick="toggleFullscreen()">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -1022,6 +1033,7 @@
                         <p>This stream is currently offline</p>
                     </div>
                 `;
+                updatePipButton();
                 return;
             }
 
@@ -1053,9 +1065,14 @@
                 startStatsUpdate();
 
                 document.querySelector('.player-controls').style.display = 'flex';
+                document.querySelector('.player-controls').classList.remove('native-hls');
+                updatePipButton();
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = hlsUrl;
-                document.querySelector('.player-controls').style.display = 'none';
+                // The bar stays, reduced to the PiP button (see .native-hls)
+                document.querySelector('.player-controls').style.display = '';
+                document.querySelector('.player-controls').classList.add('native-hls');
+                updatePipButton();
             } else {
                 video.parentElement.innerHTML = `
                     <div class="stream-offline">
@@ -1069,8 +1086,79 @@
             }
         }
 
+        // ---- Picture in picture -------------------------------------------
+        // The button stays hidden unless the browser supports PiP for this video
+        // (standard API, or Safari's presentation mode). Firefox has no page API;
+        // its own PiP toggle on the video keeps working.
+        let pipBoundVideo = null;
+
+        function pipSupported(video) {
+            if (!video) return false;
+            if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function'
+                    && !video.disablePictureInPicture) {
+                return true;
+            }
+            return typeof video.webkitSetPresentationMode === 'function'
+                && typeof video.webkitSupportsPresentationMode === 'function'
+                && video.webkitSupportsPresentationMode('picture-in-picture');
+        }
+
+        function pipActive(video) {
+            return !!video && (document.pictureInPictureElement === video
+                || video.webkitPresentationMode === 'picture-in-picture');
+        }
+
+        function updatePipButton() {
+            const btn = document.getElementById('pip-btn');
+            if (!btn) return;
+            // The video element is replaced when the stream is offline, so look it up each time.
+            const video = document.getElementById('stream-video');
+            btn.classList.toggle('supported', pipSupported(video));
+            btn.classList.toggle('active', pipActive(video));
+            // with native HLS the bar holds nothing else, so hide it when PiP is not offered
+            const bar = document.querySelector('.player-controls');
+            if (bar) bar.classList.toggle('pip-unsupported', !pipSupported(video));
+            if (video && video !== pipBoundVideo) {
+                pipBoundVideo = video;
+                ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged',
+                    'loadedmetadata', 'loadeddata']
+                    .forEach(ev => video.addEventListener(ev, updatePipButton));
+            }
+        }
+
+        async function togglePip() {
+            const video = document.getElementById('stream-video');
+            if (!pipSupported(video)) { updatePipButton(); return; }
+            try {
+                if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
+                    if (document.pictureInPictureElement === video) {
+                        await document.exitPictureInPicture();
+                    } else {
+                        await video.requestPictureInPicture();
+                    }
+                } else {
+                    video.webkitSetPresentationMode(
+                        video.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+                }
+            } catch (err) {
+                console.warn('Picture in picture is not available yet:', err);
+            }
+            updatePipButton();
+        }
+
+        document.getElementById('pip-btn').addEventListener('click', togglePip);
+
         function closeViewer() {
             document.getElementById('viewer-overlay').classList.remove('active');
+
+            // Closing the viewer ends playback, so end the floating window too.
+            if (document.pictureInPictureElement && document.exitPictureInPicture) {
+                document.exitPictureInPicture().catch(() => {});
+            }
+            const pipVideo = document.getElementById('stream-video');
+            if (pipVideo && pipVideo.webkitPresentationMode === 'picture-in-picture') {
+                pipVideo.webkitSetPresentationMode('inline');
+            }
 
             stopStatsUpdate();
 

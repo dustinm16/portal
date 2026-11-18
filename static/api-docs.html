@@ -1755,6 +1755,9 @@ hls.on(Hls.Events.MANIFEST_PARSED, () => {
 });</pre>
                 </div>
 
+                <h3>Watch page and pop-out chat</h3>
+                <p>The Portal watch page <code>/watch/{id}</code> has a picture-in-picture button next to Fullscreen (also on <code>/live</code>). It is shown only when the browser supports picture-in-picture for the video; Firefox has no page API for it, so use the toggle Firefox draws on the video. In browsers that play HLS natively (for example iPhone Safari) the quality, buffer and stats controls are not shown; the bar then holds only the picture-in-picture button, and the native video controls offer it too. <code>/watch/{id}?chat=only</code> shows only the chat at full width, for a pop-out window; it is served, authorised and loaded exactly like the normal page (login required, the stream comes from <code>GET /api/streams/{id}</code>, bans and anonymous masking apply as usual). The pop-out is a second <code>/ws/chat</code> connection of the same member to the same room: it adds no second join announcement and no second entry to the users list, and closing it announces a leave only when it was the member's last connection in that room. Voice stays in the main window.</p>
+
                 <h3>Publishing via WHIP (same network only)</h3>
                 <div class="alert alert-warning">
                     <strong>Not available through the public proxy.</strong> The offer and answer travel through Portal on port 443, but the media does not. It flows directly between the client and MediaMTX's WebRTC media port (UDP/TCP 8189 by default), which the configuration Portal generates binds to loopback and which never passes through the public proxy. WHIP and WHEP therefore work only where the client can reach that port directly, for example on the same network after changing the WebRTC bind addresses in the MediaMTX configuration. From the internet, publish with RTMPS and play back with HLS.

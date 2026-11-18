@@ -8,6 +8,12 @@
     <link rel="stylesheet" href="/static/css/portal.css?v=54">
     <script src="/static/js/theme.js?v=3"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
+    <script>
+        // ?chat=only turns the page into a pop-out chat window (no player).
+        if (new URLSearchParams(window.location.search).get('chat') === 'only') {
+            document.documentElement.classList.add('chat-only');
+        }
+    </script>
     <style>
         body {
             margin: 0;
@@ -655,6 +661,46 @@
         .watch-screen-share.active { display:flex; }
         .watch-screen-share-header { display:flex; align-items:center; justify-content:space-between; padding:0 0.25rem 0.3rem; font-size:0.7rem; color:var(--text-secondary); }
         .watch-screen-share video { width:100%; max-height:30vh; object-fit:contain; border-radius:3px; }
+
+        /* Picture-in-picture button: hidden until the browser is known to support it */
+        .pip-btn { display: none; }
+        .pip-btn.supported { display: flex; }
+        .pip-btn.active { border-color: var(--accent-blue); }
+        /* Native HLS (no MSE): quality, buffer and stats do not apply, but the PiP button stays */
+        .player-controls.native-hls .player-control-group:not(.pip-group) { display: none; }
+        .player-controls.native-hls .fullscreen-btn:not(.pip-btn) { display: none; }
+        .player-controls.native-hls { justify-content: flex-end; }
+        .player-controls.native-hls.pip-unsupported { display: none; }
+
+        /* Pop-out chat button: a window of its own only makes sense beside the player */
+        .chat-popout-btn {
+            background: rgba(255,255,255,0.1); color: var(--text-secondary, #b9bbbe);
+            border: 1px solid rgba(255,255,255,0.15); border-radius: 4px;
+            padding: 0.25rem 0.5rem; cursor: pointer; font-size: 0.75rem; white-space: nowrap;
+        }
+        .chat-popout-btn:hover { background: rgba(255,255,255,0.15); }
+        @media (max-width: 900px) { .chat-popout-btn { display: none; } }
+
+        /* Pop-out chat window (?chat=only): only the chat, full width. These rules
+           come after the mobile rules above and use the html.chat-only prefix so
+           the off-screen sidebar layout under 900px does not apply. */
+        html.chat-only .viewer-main,
+        html.chat-only .chat-backdrop,
+        html.chat-only .chat-toggle-btn,
+        html.chat-only .chat-close-btn,
+        html.chat-only .chat-popout-btn,
+        html.chat-only .watch-voice-btn,
+        html.chat-only .watch-voice-controls,
+        html.chat-only .watch-screen-share { display: none !important; }
+        html.chat-only .viewer-container { flex-direction: column; }
+        html.chat-only .viewer-chat {
+            position: static;
+            transform: none;
+            width: 100%;
+            flex: 1;
+            min-height: 0;
+            border-left: none;
+        }
     </style>
 </head>
 <body>
@@ -729,7 +775,8 @@
                             Stats
                         </button>
                     </div>
-                    <div class="player-control-group" style="margin-left: auto;">
+                    <div class="player-control-group pip-group" style="margin-left: auto;">
+                        <button class="fullscreen-btn pip-btn" id="pip-btn" type="button" title="Picture in picture">Picture in picture</button>
                         <button class="fullscreen-btn" onclick="toggleFullscreen()">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="14" height="14">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -743,8 +790,9 @@
         <div class="chat-backdrop" id="chat-backdrop" onclick="toggleChat()"></div>
         <div class="viewer-chat" id="viewer-chat">
             <div class="viewer-chat-header">
-                <span>Stream Chat</span>
+                <span id="chat-header-title">Stream Chat</span>
                 <div style="display:flex;gap:0.3rem;align-items:center;">
+                    <button class="chat-popout-btn" id="chat-popout-btn" type="button" onclick="popOutChat()" title="Open the chat in its own window">Pop out</button>
                     <button class="watch-voice-btn" id="watch-voice-btn" onclick="toggleWatchVoice()">Join Voice</button>
                     <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">Bans</button>
                     <button class="chat-close-btn" onclick="toggleChat()" title="Close chat">&times;</button>
@@ -826,6 +874,11 @@
             }
         };
 
+        // Pop-out chat window: /watch/<id>?chat=only shows only the chat. It loads
+        // the stream through the same API calls and joins the chat the same way as
+        // the normal page, so access checks, bans and anonymous masking are identical.
+        const chatOnly = new URLSearchParams(window.location.search).get('chat') === 'only';
+
         // Get stream ID from URL
         const pathParts = window.location.pathname.split('/');
         streamId = pathParts[pathParts.length - 1];
@@ -897,7 +950,7 @@
                 }
 
                 if (!response.ok) {
-                    document.getElementById('viewer-title').textContent = 'Stream not found';
+                    showLoadError('Stream not found');
                     return;
                 }
 
@@ -905,17 +958,22 @@
                 streamData = data.stream;
 
                 if (!streamData) {
-                    document.getElementById('viewer-title').textContent = 'Stream not found';
+                    showLoadError('Stream not found');
                     return;
                 }
 
-                document.title = `${streamData.name} - Open Relay Portal`;
+                document.title = chatOnly
+                    ? `${streamData.name} chat - Open Relay Portal`
+                    : `${streamData.name} - Open Relay Portal`;
                 document.getElementById('viewer-title').textContent = streamData.name;
                 const broadcasterName = streamData.owner_nickname || streamData.owner_username || 'Unknown';
                 document.getElementById('viewer-broadcaster').textContent = broadcasterName;
                 document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
 
-                if (streamData.is_live === 1) {
+                if (chatOnly) {
+                    // No player in the pop-out: it would only add a second viewer.
+                    document.getElementById('chat-header-title').textContent = streamData.name;
+                } else if (streamData.is_live === 1) {
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
                     document.getElementById('viewer-count-value').textContent = streamData.viewer_count || 0;
@@ -934,13 +992,21 @@
                     connectChat(chatKey);
                 }
 
-                // Periodically refresh stream info (only after successful load)
-                refreshInterval = setInterval(refreshStreamInfo, 15000);
+                // Periodically refresh stream info (only after successful load).
+                // The pop-out has no player or counters to refresh.
+                if (!chatOnly) {
+                    refreshInterval = setInterval(refreshStreamInfo, 15000);
+                }
 
             } catch (error) {
                 console.error('Failed to load stream:', error);
-                document.getElementById('viewer-title').textContent = 'Error loading stream';
+                showLoadError('Error loading stream');
             }
+        }
+
+        function showLoadError(text) {
+            document.getElementById('viewer-title').textContent = text;
+            if (chatOnly) appendSystemMessage(text, true);
         }
 
         function showOfflineMessage() {
@@ -954,6 +1020,7 @@
             `;
             document.getElementById('live-indicator').style.display = 'none';
             document.getElementById('viewer-count').style.display = 'none';
+            updatePipButton();
         }
 
         function showEncodingMessage() {
@@ -967,6 +1034,7 @@
             `;
             document.getElementById('live-indicator').style.display = 'none';
             document.getElementById('viewer-count').style.display = 'none';
+            updatePipButton();
         }
 
         function getHlsConfig(bufferSetting) {
@@ -997,6 +1065,7 @@
                 const bufferSetting = document.getElementById('buffer-selector').value;
                 const hlsConfig = getHlsConfig(bufferSetting);
 
+                document.querySelector('.player-controls').classList.remove('native-hls');
                 hlsPlayer = new Hls(hlsConfig);
                 hlsPlayer.loadSource(hlsUrl);
                 hlsPlayer.attachMedia(video);
@@ -1019,10 +1088,12 @@
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 // Native HLS fallback (Safari) - limited controls
                 video.src = hlsUrl;
-                document.querySelector('.player-controls').style.display = 'none';
+                // The bar stays, reduced to the PiP button (see .native-hls)
+                document.querySelector('.player-controls').classList.add('native-hls');
             } else {
                 console.error('HLS not supported');
             }
+            updatePipButton();
         }
 
         function populateQualityLevels(levels) {
@@ -1243,7 +1314,10 @@
             chatWs = new WebSocket(wsUrl);
 
             chatWs.onopen = () => {
-                VoiceChat.init(chatWs, onWatchVoiceState, onWatchScreenShareChange, currentUser?.id);
+                // Voice stays in the main window; the pop-out is text only.
+                if (!chatOnly) {
+                    VoiceChat.init(chatWs, onWatchVoiceState, onWatchScreenShareChange, currentUser?.id);
+                }
                 chatWs.send(JSON.stringify({
                     type: 'join',
                     stream_key: streamKey
@@ -1325,7 +1399,7 @@
                     }
                     break;
                 default:
-                    if (data.type && (data.type.startsWith('voice_') || data.type.startsWith('screen_share_'))) {
+                    if (!chatOnly && data.type && (data.type.startsWith('voice_') || data.type.startsWith('screen_share_'))) {
                         VoiceChat.handleMessage(data);
                     }
                     break;
@@ -1638,6 +1712,17 @@
             return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
 
+        function popOutChat() {
+            // Named window: clicking again reuses the open pop-out instead of
+            // starting another chat connection.
+            const win = window.open(
+                `/watch/${encodeURIComponent(streamId)}?chat=only`,
+                `portal-chat-${streamId}`,
+                'popup=yes,width=420,height=680'
+            );
+            if (win) win.focus();
+        }
+
         function toggleChat() {
             const chat = document.getElementById('viewer-chat');
             const backdrop = document.getElementById('chat-backdrop');
@@ -1816,6 +1901,68 @@
             if (state.screenSharing) VoiceChat.stopScreenShare();
             else VoiceChat.startScreenShare();
         }
+
+        // ---- Picture in picture -------------------------------------------
+        // The button stays hidden unless the browser supports PiP for this video
+        // (standard API, or Safari's presentation mode). Firefox has no page API;
+        // its own PiP toggle on the video keeps working.
+        let pipBoundVideo = null;
+
+        function pipSupported(video) {
+            if (!video) return false;
+            if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function'
+                    && !video.disablePictureInPicture) {
+                return true;
+            }
+            return typeof video.webkitSetPresentationMode === 'function'
+                && typeof video.webkitSupportsPresentationMode === 'function'
+                && video.webkitSupportsPresentationMode('picture-in-picture');
+        }
+
+        function pipActive(video) {
+            return !!video && (document.pictureInPictureElement === video
+                || video.webkitPresentationMode === 'picture-in-picture');
+        }
+
+        function updatePipButton() {
+            const btn = document.getElementById('pip-btn');
+            if (!btn) return;
+            // The video element is replaced when the stream goes offline, so look it up each time.
+            const video = document.getElementById('stream-video');
+            btn.classList.toggle('supported', pipSupported(video));
+            btn.classList.toggle('active', pipActive(video));
+            // with native HLS the bar holds nothing else, so hide it when PiP is not offered
+            const bar = document.querySelector('.player-controls');
+            if (bar) bar.classList.toggle('pip-unsupported', !pipSupported(video));
+            if (video && video !== pipBoundVideo) {
+                pipBoundVideo = video;
+                ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged',
+                    'loadedmetadata', 'loadeddata']
+                    .forEach(ev => video.addEventListener(ev, updatePipButton));
+            }
+        }
+
+        async function togglePip() {
+            const video = document.getElementById('stream-video');
+            if (!pipSupported(video)) { updatePipButton(); return; }
+            try {
+                if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
+                    if (document.pictureInPictureElement === video) {
+                        await document.exitPictureInPicture();
+                    } else {
+                        await video.requestPictureInPicture();
+                    }
+                } else {
+                    video.webkitSetPresentationMode(
+                        video.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+                }
+            } catch (err) {
+                Portal.toast('Picture in picture is not available yet. Start playback first.', 'error');
+            }
+            updatePipButton();
+        }
+
+        document.getElementById('pip-btn').addEventListener('click', togglePip);
 
         // Clean up on close
         window.addEventListener('beforeunload', () => {

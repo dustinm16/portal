@@ -13242,6 +13242,36 @@ chat_rooms: dict[str, set] = {}
 # Mutable chat user state: user_id -> dict with anonymous, nickname, avatar
 # Updated by HTTP handlers so WS handlers see changes immediately
 chat_user_state: dict[int, dict] = {}
+# Number of open chat sockets per user; the state dict above is shared by all of them
+_chat_state_refs: dict[int, int] = {}
+
+
+def _chat_state_acquire(user_id: int, fresh: dict) -> dict:
+    """Return the one state dict every chat socket of this user shares.
+
+    A user can hold several chat sockets (main tab and pop-out window). The HTTP
+    handlers update the registry entry, so each socket must use that same dict,
+    otherwise an older socket keeps stale anonymous/nickname/avatar values.
+    Call it inside the try whose finally calls _chat_state_release.
+    """
+    state = chat_user_state.get(user_id)
+    if state is None:
+        state = chat_user_state[user_id] = dict(fresh)
+    # else: an older socket is connected and the HTTP handlers keep this dict
+    # current. `fresh` was read from the database before the handshake and may
+    # be older than a change made since, so the live state wins.
+    _chat_state_refs[user_id] = _chat_state_refs.get(user_id, 0) + 1
+    return state
+
+
+def _chat_state_release(user_id: int) -> None:
+    """Drop one socket's hold on the shared state; forget it with the last socket."""
+    count = _chat_state_refs.get(user_id, 1) - 1
+    if count <= 0:
+        _chat_state_refs.pop(user_id, None)
+        chat_user_state.pop(user_id, None)
+    else:
+        _chat_state_refs[user_id] = count
 
 # Voice chat state: channel_name -> {user_id -> {ws, username, muted, deafened, speaking}}
 voice_state: dict[str, dict[int, dict]] = {}
@@ -14551,6 +14581,23 @@ async def _mask_reactor_ids(reactions_by_message: dict, viewer_id, viewer_role) 
             r["user_ids"] = [uid for uid in r.get("user_ids", []) if uid not in anonymous]
 
 
+def _user_has_other_socket(channel: str, user_id, ws) -> bool:
+    """True if the user has another open socket in the room besides ws.
+
+    A member can hold more than one chat socket in a room (the main watch page
+    and the pop-out chat window), so join and leave announcements are made only
+    by the first socket to arrive and the last one to go. Callers run this right
+    after changing the room set, with no await in between. Only room membership
+    counts, not the socket's closed flag: a socket whose close frame was handled
+    but whose cleanup has not run yet is still in the room and will announce the
+    leave itself, so two sockets closing together announce it exactly once.
+    """
+    for entry in chat_rooms.get(channel, ()):
+        if entry[1] == user_id and entry[0] is not ws:
+            return True
+    return False
+
+
 def _chat_users_list(users_info: list, channel: str, viewer_id, viewer_role) -> list:
     """Online-user entries for one viewer. Anonymous participants appear under
     the name "Anonymous" with no nickname or avatar; ordinary members get an
@@ -15160,12 +15207,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             _avatar = json.loads(user["avatar"])
         except (json.JSONDecodeError, TypeError):
             pass
-    my_state = {
+    chat_fresh_state = {
         "anonymous": bool(user.get("chat_anonymous")),
         "nickname": user.get("nickname"),
         "avatar": _avatar,
     }
-    chat_user_state[user_id] = my_state
+    my_state = None  # taken inside the try below, released by its finally
 
     # Rate limiting: max 5 messages per 5 seconds
     chat_rate_limit = 5
@@ -15194,21 +15241,24 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         dm_user_connections[user_id] = set()
     dm_user_connections[user_id].add(raw_ws)
 
-    # Send DM conversations list on connect
     try:
-        dm_convs = await db.get_dm_conversations(user_id)
-        dm_unread = await db.get_dm_unread_counts(user_id)
-        await ws.send_json({
-            "type": "dm_conversations_list",
-            "conversations": dm_convs,
-            "unread_counts": dm_unread
-        })
-    except (ConnectionError, ConnectionResetError, TypeError):
-        pass
-
-    try:
-        # Registered inside the try so the finally below always unregisters it.
+        # Everything that holds a reference is taken inside this try, with no
+        # suspension point before it, so a cancellation later on still runs the finally.
+        my_state = _chat_state_acquire(user_id, chat_fresh_state)
         _register_user_ws(user_id, raw_ws, token.token_id)
+
+        # Send DM conversations list on connect
+        try:
+            dm_convs = await db.get_dm_conversations(user_id)
+            dm_unread = await db.get_dm_unread_counts(user_id)
+            await ws.send_json({
+                "type": "dm_conversations_list",
+                "conversations": dm_convs,
+                "unread_counts": dm_unread
+            })
+        except (ConnectionError, ConnectionResetError, TypeError):
+            pass
+
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
@@ -15270,12 +15320,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # Leave current text channel (voice stays in its own room)
                         if current_channel and current_channel in chat_rooms:
                             chat_rooms[current_channel].discard(user_entry)
+                            # Another socket of this user (pop-out chat window) may
+                            # still be in the room: then nobody has left.
+                            still_here = _user_has_other_socket(current_channel, user_id, ws)
                             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                            await broadcast_to_channel(current_channel, {
-                                "type": "user_left",
-                                "user_id": user_id,
-                                "username": display_name
-                            }, exclude=ws, anon_subject=user_id if my_state["anonymous"] else None)
+                            if not still_here:
+                                await broadcast_to_channel(current_channel, {
+                                    "type": "user_left",
+                                    "user_id": user_id,
+                                    "username": display_name
+                                }, exclude=ws, anon_subject=user_id if my_state["anonymous"] else None)
                             # Broadcast updated users list to remaining users
                             await broadcast_users_list(current_channel)
 
@@ -15302,6 +15356,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         current_channel = channel["name"]
                         if current_channel not in chat_rooms:
                             chat_rooms[current_channel] = set()
+                        # A second socket of the same user (pop-out chat window) joins
+                        # silently: the first one already announced the user.
+                        announce_join = not _user_has_other_socket(current_channel, user_id, ws)
                         chat_rooms[current_channel].add(user_entry)
 
                         # Send channel info (include stream data if this is a stream channel)
@@ -15444,13 +15501,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         # Notify others
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                        await broadcast_to_channel(current_channel, {
-                            "type": "user_joined",
-                            "user_id": user_id,
-                            "username": display_name,
-                            "role": user_role,
-                            "anonymous": my_state["anonymous"]
-                        }, exclude=ws, anon_subject=user_id if my_state["anonymous"] else None)
+                        if announce_join:
+                            await broadcast_to_channel(current_channel, {
+                                "type": "user_joined",
+                                "user_id": user_id,
+                                "username": display_name,
+                                "role": user_role,
+                                "anonymous": my_state["anonymous"]
+                            }, exclude=ws, anon_subject=user_id if my_state["anonymous"] else None)
                         # Broadcast updated users list to all in channel
                         await broadcast_users_list(current_channel)
 
@@ -16943,7 +17001,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             vc_users = voice_state.get(vc)
             if vc_users is None:
                 continue
-            if user_id in vc_users:
+            # Only the socket that joined voice may end it: closing a second
+            # socket (pop-out chat window) must not drop the voice call.
+            if user_id in vc_users and vc_users[user_id].get("ws") is ws:
                 # Auto-stop screen share on disconnect
                 if vc_users[user_id].get("screen_sharing"):
                     try:
@@ -16966,12 +17026,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         # Clean up chat room
         if current_channel and current_channel in chat_rooms:
             chat_rooms[current_channel].discard(user_entry)
+            still_here = _user_has_other_socket(current_channel, user_id, ws)
             display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-            await broadcast_to_channel(current_channel, {
-                "type": "user_left",
-                "user_id": user_id,
-                "username": display_name
-            }, anon_subject=user_id if my_state["anonymous"] else None)
+            if not still_here:
+                await broadcast_to_channel(current_channel, {
+                    "type": "user_left",
+                    "user_id": user_id,
+                    "username": display_name
+                }, anon_subject=user_id if my_state["anonymous"] else None)
             # Broadcast updated users list to remaining users
             await broadcast_users_list(current_channel)
             # Remove empty rooms
@@ -16987,8 +17049,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     break
             if has_other_ws:
                 break
+        _chat_state_release(user_id)
         if not has_other_ws:
-            chat_user_state.pop(user_id, None)
             # Auto-set offline + update last_seen (preserve manual busy/dnd)
             try:
                 u_status = await db.get_user_status(user_id)

@@ -3930,8 +3930,8 @@ The following endpoints are deprecated and will be removed in a future version. 
 | `/admin` | Admin panel (metrics, services, users) |
 | `/chat` | Community chat |
 | `/streams` | Community streams |
-| `/watch/{id}` | Stream viewer with integrated chat |
-| `/live` | Public live streams (unauthenticated) |
+| `/watch/{id}` | Stream viewer with integrated chat and a picture-in-picture button (shown only in browsers that support it). `/watch/{id}?chat=only` is the pop-out chat window: the same page without the player, served and authorised exactly like `/watch/{id}`; the stream is loaded through `GET /api/streams/{id}` and the chat joined over `/ws/chat` as on the normal page. A member's second chat socket in a room (the pop-out beside the main tab) is not announced again and does not appear twice in the users list; a leave is announced when the last socket of that member closes |
+| `/live` | Public live streams (unauthenticated), with the same picture-in-picture button |
 | `/about` | Feature guide (public; all features visible to everyone) |
 | `/guides` | Connection setup guides for 75+ types (public) |
 | `/docs` | API documentation (public; admin endpoints stripped server-side for non-admins) |

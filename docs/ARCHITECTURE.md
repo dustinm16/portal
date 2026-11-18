@@ -1303,7 +1303,7 @@ GET /spice               - SPICE viewer
 GET /proxmox             - Proxmox dashboard
 GET /browser              - Embedded HTTP browser (tabbed, multi-site navigation, ?connection={id})
 *   /proxy/{id}/{path}     - HTTP reverse proxy for user connections (all methods + WebSocket, browser_mode for multi-site)
-GET /watch/:id           - Stream viewer (HLS)
+GET /watch/:id           - Stream viewer (HLS, picture-in-picture); ?chat=only = pop-out chat window (no player, same access checks)
 GET /api-docs            - Interactive API documentation
 GET /about               - About page (public; admin sections server-stripped for non-admins)
 GET /files               - File manager (admin local + user SFTP)
