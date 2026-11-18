@@ -496,6 +496,42 @@ async function scenario(name, fn) {
     check('outside a call nothing opens', !menu() && !e.defaultPrevented);
   });
 
+  await scenario('push-to-talk keys', async () => {
+    // PTT mode: Space transmits, except on a button and anywhere inside the volume popover
+    const env = await joined(makeEnv({ mode: 'ptt' }), 1, [2]);
+    giveAudio(env, 0);
+    const { VC, doc, ws } = env;
+    const press = (target, code) => (doc.handlers.keydown || []).slice().forEach(h => h({ code: code || 'Space', target, preventDefault() {}, stopPropagation() {} }));
+    const release = (target) => (doc.handlers.keyup || []).slice().forEach(h => h({ code: 'Space', target, preventDefault() {}, stopPropagation() {} }));
+    const speaking = () => VC.getState().speaking === true || env.sent.some(m => m.indexOf('"voice_speaking"') >= 0 && m.indexOf('true') >= 0);
+    const sentSpeaking = () => env.sent.filter(m => m.indexOf('voice_speaking') >= 0).length;
+    check('push-to-talk listeners are installed in PTT mode', (doc.handlers.keydown || []).length >= 1);
+    press({ tagName: 'BUTTON' });
+    check('Space on a button does not transmit', sentSpeaking() === 0);
+    press({ tagName: 'INPUT' }); press({ tagName: 'TEXTAREA' });
+    check('Space in a text field does not transmit', sentSpeaking() === 0);
+    // inside the popover (a real node under .voice-user-menu, not a button)
+    const bar = doc.createElement('div'); doc.body.appendChild(bar);
+    const tile = doc.createElement('span'); tile.className = 'tile'; tile.setAttribute('data-voice-uid', '2'); bar.appendChild(tile);
+    VC.openUserMenu(2, 'peer', tile, { x: 5, y: 5 });
+    const root = doc.querySelector('.voice-user-menu');
+    check('the popover is open', !!root);
+    const slider = root.querySelector('input');
+    press(slider);
+    check('Space on the slider inside the popover does not transmit', sentSpeaking() === 0);
+    press(root.querySelector('.vum-title'));
+    check('Space on any element inside the popover does not transmit', sentSpeaking() === 0);
+    press({ tagName: 'DIV', closest(sel) { return sel === '.voice-user-menu' ? root : null; } });
+    check('Space on an element that closest() places in the popover does not transmit', sentSpeaking() === 0);
+    VC.closeUserMenu();
+    press({ tagName: 'BODY', closest() { return null; } });
+    check('Space elsewhere on the page still transmits', sentSpeaking() === 1 && speaking());
+    release({ tagName: 'BODY' });
+    check('releasing stops transmitting', sentSpeaking() === 2);
+    press({ tagName: 'BODY', closest() { return null; } }, 'KeyQ');
+    check('another key does not transmit', sentSpeaking() === 2);
+  });
+
   await scenario('reentrancy', async () => {
     // a second join after a failed microphone does not leave a context open
     const env = makeEnv();

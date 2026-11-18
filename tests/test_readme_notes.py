@@ -38,7 +38,7 @@ says("it stores IP addresses and user agents", "ip address and user agent")
 says("retention defaults to 180 days and how to change it", "180 days", "retention_security_events_days")
 says("only a superadmin reads it", "only a superadmin can read the log")
 says("sessions store IP and user agent", "sessions now store the ip address and user agent")
-says("the Cloudflare refresh is the only scheduled outbound request (with the caveats)",
+says("the Cloudflare refresh is the only scheduled outbound request this release adds (two named older exceptions)",
      "only scheduled outbound request", "game servers", "portal-update.timer")
 says("what the refresh fetches", "https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6")
 says("the refresh sends no portal data", "sends no portal data")

@@ -358,7 +358,10 @@ const VoiceChat = (() => {
     // PTT handlers
     function _pttKeyDown(e) {
         if (!_inVoice || _muted) return;
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+        const t = e.target || {};
+        if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON' || t.isContentEditable) return;
+        // Space on a button there both presses it and transmits: leave the volume popover to itself.
+        if (t.closest && t.closest('.voice-user-menu')) return;
         if (e.code === _prefs.pttKey && !_pttActive) {
             _pttActive = true;
             if (_localStream) {
