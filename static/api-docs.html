@@ -1489,7 +1489,7 @@
                             <tr>
                                 <td><span class="param-name">is_public</span></td>
                                 <td><span class="param-type">boolean</span></td>
-                                <td>Change visibility</td>
+                                <td>Change visibility. Switching from public to private rotates the playback key; the response then also carries the new key as <code>public_key</code>.</td>
                             </tr>
                             <tr>
                                 <td><span class="param-name">rtmp_enabled</span></td>
@@ -1508,6 +1508,17 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Generate a new stream key, invalidating the old one. Use this if your key is compromised.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/regenerate-public-key</span>
+                        <span class="endpoint-desc">Rotate the stream's share link</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Generate a new public (playback) key, invalidating the old one. Existing viewing links and embeds built from the old key stop working. Owner only. Returns <code>{"public_key": "pub_..."}</code>.</p>
                     </div>
                 </div>
 
@@ -5620,7 +5631,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=42"></script>
+    <script src="/static/js/portal.js?v=43"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

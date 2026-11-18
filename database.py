@@ -1189,6 +1189,9 @@ class Database:
         # Encrypt notifications, automod rules, and audit log details
         await self._migrate_encrypt_extended_data()
 
+        # One-time: rotate playback keys of private streams, scrub go-live notifications
+        await self._migrate_private_stream_keys()
+
         # Generate UUIDs for any connections that don't have one
         await self._populate_connection_uuids()
 
@@ -1777,6 +1780,66 @@ class Database:
             await self._connection.commit()
         except Exception:
             pass
+
+    async def _migrate_private_stream_keys(self) -> None:
+        """Rotate the playback key of every private stream and strip the key from
+        stored go-live notifications. Runs once (settings flag); safe on an empty DB."""
+        import logging
+        import secrets
+        log = logging.getLogger("portal.database")
+        flag = "private_stream_keys_rotated_v1"
+        try:
+            cursor = await self._connection.execute(
+                "SELECT value FROM settings WHERE key = ?", (flag,)
+            )
+            row = await cursor.fetchone()
+            if row and row["value"] == "1":
+                return
+        except Exception:
+            return
+
+        try:
+            rotated = 0
+            cursor = await self._connection.execute(
+                "SELECT id FROM user_streams WHERE is_public = 0 OR is_public IS NULL"
+            )
+            for row in await cursor.fetchall():
+                new_key = f"pub_{secrets.token_urlsafe(16)}"
+                pk_encrypted = encrypt_config(new_key) if CRYPTO_AVAILABLE else new_key
+                await self._connection.execute(
+                    "UPDATE user_streams SET public_key = ?, public_key_hash = ?, updated_at = ? WHERE id = ?",
+                    (pk_encrypted, hash_stream_key(new_key),
+                     datetime.now(timezone.utc).isoformat(), row["id"])
+                )
+                rotated += 1
+
+            scrubbed = 0
+            cursor = await self._connection.execute(
+                "SELECT id, data FROM notifications WHERE type = 'stream_live' AND data LIKE '%public_key%'"
+            )
+            for row in await cursor.fetchall():
+                try:
+                    payload = json.loads(row["data"])
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(payload, dict) and "public_key" in payload:
+                    payload.pop("public_key", None)
+                    await self._connection.execute(
+                        "UPDATE notifications SET data = ? WHERE id = ?",
+                        (json.dumps(payload), row["id"])
+                    )
+                    scrubbed += 1
+
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')", (flag,)
+            )
+            await self._connection.commit()
+            if rotated or scrubbed:
+                log.info(f"Rotated {rotated} private stream playback key(s), "
+                         f"scrubbed {scrubbed} go-live notification(s)")
+        except Exception as e:
+            await self._connection.rollback()
+            log.warning(f"Private stream key rotation failed (will retry next start): {e}")
 
     async def _migrate_encrypt_extended_data(self) -> None:
         """Encrypt plaintext notifications, automod rules config, and audit log details."""
@@ -3662,6 +3725,22 @@ class Database:
 
         query = "UPDATE user_streams SET stream_key = ?, stream_key_hash = ?, updated_at = ? WHERE id = ?"
         params = [sk_encrypted, sk_hash, datetime.now(timezone.utc).isoformat(), stream_id]
+
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+
+        cursor = await self.conn.execute(query, params)
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def regenerate_public_key(self, stream_id: int, new_key: str, user_id: int = None) -> bool:
+        """Replace a stream's public (playback) key. The old key stops resolving at once."""
+        pk_hash = hash_stream_key(new_key)
+        pk_encrypted = encrypt_config(new_key) if CRYPTO_AVAILABLE else new_key
+
+        query = "UPDATE user_streams SET public_key = ?, public_key_hash = ?, updated_at = ? WHERE id = ?"
+        params = [pk_encrypted, pk_hash, datetime.now(timezone.utc).isoformat(), stream_id]
 
         if user_id is not None:
             query += " AND user_id = ?"

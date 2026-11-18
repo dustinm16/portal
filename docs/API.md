@@ -1112,6 +1112,8 @@ Update stream settings.
 }
 ```
 
+Changing `is_public` from `true` to `false` rotates the stream's playback key automatically; the old key stops resolving at once. The response then also carries the new key as `public_key` (alongside the updated `stream` object).
+
 ---
 
 #### DELETE /api/streams/:id
@@ -1136,6 +1138,20 @@ Regenerate stream key.
     "id": 1,
     "stream_key": "live_newkey456..."
   }
+}
+```
+
+---
+
+#### POST /api/streams/:id/regenerate-public-key
+Rotate the stream's playback key (share link). The old key stops resolving at once, so existing viewing links and embeds built from it stop working.
+
+**Authentication:** Required (stream owner only)
+
+**Response:**
+```json
+{
+  "public_key": "pub_newkey789..."
 }
 ```
 

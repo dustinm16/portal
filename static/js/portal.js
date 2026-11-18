@@ -963,8 +963,8 @@ const NotificationBell = {
         await this.markRead(id);
         try {
             const data = JSON.parse(dataStr);
-            if (data.public_key) {
-                window.open('/watch/' + data.public_key, '_blank');
+            if (data.stream_id) {
+                window.open('/watch/' + data.stream_id, '_blank');
             }
         } catch (e) { /* ignore */ }
     },
@@ -1103,8 +1103,8 @@ const NotificationBell = {
             n.close();
             try {
                 const data = notification.data || {};
-                if (data.public_key) {
-                    window.open('/watch/' + data.public_key, '_blank');
+                if (data.stream_id) {
+                    window.open('/watch/' + data.stream_id, '_blank');
                 }
             } catch (e) { /* ignore */ }
         };

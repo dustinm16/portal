@@ -3044,7 +3044,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=42"></script>
+    <script src="/static/js/portal.js?v=43"></script>
     <script src="/static/js/voice.js?v=5"></script>
     <script>
         // Mobile sidebar toggle
@@ -4002,7 +4002,9 @@
                 currentStreamId = data.stream_id;
                 currentStreamPublicKey = data.stream_public_key || null;
 
-                watchBtn.style.display = 'inline-flex';
+                // Viewers who are not entitled to a private stream get no playback
+                // key, so there is nothing to open: hide the button for them.
+                watchBtn.style.display = currentStreamPublicKey ? 'inline-flex' : 'none';
                 if (data.stream_is_live === 1) {
                     watchBtn.classList.add('is-live');
                     watchBtn.innerHTML = '<span class="live-pulse"></span> Watch Live';

@@ -383,6 +383,7 @@ async function showStreamDetails(streamId) {
 
                 <div class="form-actions">
                     <button class="btn btn-warning" onclick="regenerateStreamKey(${stream.id})">Regenerate Key</button>
+                    <button class="btn btn-warning" onclick="regeneratePublicKey(${stream.id})">Rotate Share Link</button>
                     ${stream.rtmp_enabled ? `<button class="btn btn-primary" onclick="generateRtmpToken(${stream.id})">Generate RTMP Token</button>` : ''}
                     <button class="btn btn-secondary" onclick="closeModal('stream-details-modal')">Close</button>
                 </div>
@@ -518,7 +519,14 @@ async function toggleStreamPublic(streamId, isPublic) {
             const error = await response.json().catch(() => ({}));
             Portal.toast(error.error || 'Failed to update stream', 'error');
         } else {
+            const data = await response.json().catch(() => ({}));
             loadUserStreams();
+            if (data.public_key) {
+                // The server rotated the playback key; refresh the open details
+                // modal so its displayed values and Copy buttons use the new key.
+                Portal.toast('Stream is private; share link rotated', 'success');
+                showStreamDetails(streamId);
+            }
         }
     } catch (error) {
         console.error('Failed to update stream:', error);
@@ -729,6 +737,32 @@ async function regenerateStreamKey(streamId) {
     } catch (error) {
         console.error('Failed to regenerate key:', error);
         Portal.toast('Failed to regenerate key', 'error');
+    }
+}
+
+/**
+ * Rotate the share link (playback key). Old viewing URLs stop working.
+ */
+async function regeneratePublicKey(streamId) {
+    if (!confirm('Rotate the share link? Existing viewing links, embeds and open watch pages for this stream will stop working.')) {
+        return;
+    }
+
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}/regenerate-public-key`, {
+            method: 'POST'
+        });
+
+        if (response.ok) {
+            Portal.toast('Share link rotated', 'success');
+            showStreamDetails(streamId);
+        } else {
+            const error = await response.json().catch(() => ({}));
+            Portal.toast(error.error || 'Failed to rotate share link', 'error');
+        }
+    } catch (error) {
+        console.error('Failed to rotate share link:', error);
+        Portal.toast('Failed to rotate share link', 'error');
     }
 }
 

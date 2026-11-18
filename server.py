@@ -3542,8 +3542,20 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         )
         data["chat_channel_id"] = chat_channel_id
 
+    # A stream switched from public to private must not keep a playback key that
+    # may have been shared while it was public.
+    became_private = (
+        "is_public" in data and not data["is_public"] and bool(stream.get("is_public"))
+    )
+
     success = await db.update_user_stream(stream_id, user_id=token.user_id, **data)
     if success:
+        rotated_key = None
+        if became_private:
+            rotated_key = generate_public_key()
+            if not await db.regenerate_public_key(stream_id, rotated_key, user_id=token.user_id):
+                rotated_key = None
+                logger.error(f"Failed to rotate playback key for stream {stream_id} after it became private")
         # Revoke all RTMP tokens if rtmp_enabled was toggled off
         if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
             revoked = await db.revoke_rtmp_tokens_for_stream(stream_id)
@@ -3554,7 +3566,10 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         if updated_stream:
             updated_stream.pop("stream_key_hash", None)
             updated_stream.pop("public_key_hash", None)
-        return web.json_response({"stream": updated_stream})
+        response = {"stream": updated_stream}
+        if rotated_key:
+            response["public_key"] = rotated_key
+        return web.json_response(response)
     return web.json_response({"error": "Failed to update stream"}, status=500)
 
 
@@ -3606,6 +3621,29 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
     success = await db.regenerate_stream_key(stream_id, new_key, user_id=token.user_id)
     if success:
         return web.json_response({"stream_key": new_key})
+    return web.json_response({"error": "Not authorized or stream not found"}, status=403)
+
+
+async def http_regenerate_public_key(request: web.Request) -> web.Response:
+    """Rotate the playback key ("share link") of a stream (owner only).
+
+    The previous pub_ key stops resolving immediately; the new key is returned.
+    """
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    stream_id = request.match_info.get("id")
+    try:
+        stream_id = int(stream_id)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid stream ID"}, status=400)
+
+    new_key = generate_public_key()
+
+    success = await db.regenerate_public_key(stream_id, new_key, user_id=token.user_id)
+    if success:
+        return web.json_response({"public_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
 
@@ -5408,19 +5446,24 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                         "stream_id": stream_id,
                         "is_live": 1
                     })
-            # Send notification to all users
+            # Send notification. The data carries the stream id only (the watch
+            # page resolves access itself); the playback key never travels in it.
             streamer_name = stream.get("owner_nickname") or stream.get("owner_username", "Someone")
-            await broadcast_notification(
-                "stream_live", f"{streamer_name} is live!",
-                f"{stream['name']} just went live",
-                data={"stream_id": stream_id, "public_key": stream.get("public_key", "")},
-                exclude_user_id=stream.get("user_id")
-            )
-            asyncio.create_task(fire_webhook_event("stream.live", {
+            if stream.get("is_public"):
+                await broadcast_notification(
+                    "stream_live", f"{streamer_name} is live!",
+                    f"{stream['name']} just went live",
+                    data={"stream_id": stream_id},
+                    exclude_user_id=stream.get("user_id")
+                )
+            # Private streams send no go-live notification.
+            webhook_payload = {
                 "stream_id": stream_id, "stream_name": stream["name"],
                 "owner_username": stream.get("owner_username"),
-                "public_key": stream.get("public_key", "")
-            }))
+            }
+            if stream.get("is_public"):
+                webhook_payload["public_key"] = stream.get("public_key", "")
+            asyncio.create_task(fire_webhook_event("stream.live", webhook_payload))
 
         # Start VOD recording on every publish (guards against duplicates internally)
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
@@ -12220,7 +12263,11 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
         if stream:
             ch["stream_id"] = stream["id"]
             ch["stream_is_live"] = stream.get("is_live", 0)
-            ch["stream_public_key"] = stream.get("public_key", "")
+            # A private stream's playback key is shown to its owner only
+            if stream.get("is_public") or stream.get("user_id") == token.user_id:
+                ch["stream_public_key"] = stream.get("public_key", "")
+            else:
+                ch["stream_public_key"] = ""
             ch["stream_owner"] = stream.get("owner_nickname") or stream.get("owner_username", "")
     # Enrich with unread counts
     unread_counts = await db.get_unread_counts(token.user_id)
@@ -13827,7 +13874,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             channel_info["stream_id"] = stream["id"]
                             channel_info["stream_name"] = stream.get("name", "")
                             channel_info["stream_is_live"] = stream.get("is_live", 0)
-                            channel_info["stream_public_key"] = stream.get("public_key", "")
+                            if stream.get("is_public") or stream.get("user_id") == user_id:
+                                channel_info["stream_public_key"] = stream.get("public_key", "")
+                            else:
+                                channel_info["stream_public_key"] = ""
                         await ws.send_json(channel_info)
 
                         # Send message history enriched with user data
@@ -17217,6 +17267,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/streams/{id}", http_update_user_stream)
     app.router.add_delete("/api/streams/{id}", http_delete_user_stream)
     app.router.add_post("/api/streams/{id}/regenerate-key", http_regenerate_stream_key)
+    app.router.add_post("/api/streams/{id}/regenerate-public-key", http_regenerate_public_key)
     app.router.add_post("/api/streams/{id}/rtmp-token", http_create_rtmp_token)
     # Stream thumbnails
     app.router.add_post("/api/streams/{id}/thumbnail", http_upload_stream_thumbnail)
