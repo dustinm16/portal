@@ -16462,6 +16462,16 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     except Exception as e:
         errors.append(f"device_metrics: {e}")
     try:
+        rec_days = int(config.get("retention_recordings_days", 30))
+        if rec_days > 0:
+            results["recordings"] = await db.cleanup_old_recordings(days=rec_days)
+    except Exception as e:
+        errors.append(f"recordings: {e}")
+    try:
+        results["recording_orphans"] = await db.cleanup_orphan_recordings()
+    except Exception as e:
+        errors.append(f"recording_orphans: {e}")
+    try:
         results["invite_codes"] = await db.cleanup_old_invite_codes(days=30)
     except Exception as e:
         errors.append(f"invite_codes: {e}")
@@ -18163,6 +18173,17 @@ class PortalServer:
         await db.connect()
         logger.info(f"Database connected: {Config.DATABASE_PATH}")
 
+        # Terminal recordings are private: tighten an existing directory now,
+        # not only when the next recording starts.
+        try:
+            from plugins.terminal import prepare_recordings_dir, tighten_recording_files
+            prepare_recordings_dir(Config.RECORDINGS_DIR)
+            tightened = tighten_recording_files(Config.RECORDINGS_DIR)
+            if tightened:
+                logger.info(f"Set mode 0600 on {tightened} existing recording file(s)")
+        except OSError as e:
+            logger.warning(f"Could not prepare the recordings directory {Config.RECORDINGS_DIR}: {e}")
+
         # Reset all streams to offline on startup (no stream can be live before MediaMTX starts)
         stale = await db.reset_all_streams_offline()
         if stale:
@@ -18413,6 +18434,26 @@ class PortalServer:
                         total += d
                 except Exception as e:
                     logger.error(f"[Retention] Device metrics cleanup failed: {e}")
+
+                # Terminal recordings
+                try:
+                    rec_days = int(config.get("retention_recordings_days", 30))
+                    if rec_days > 0:
+                        d = await db.cleanup_old_recordings(days=rec_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Removed {d} terminal recordings older than {rec_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Recordings cleanup failed: {e}")
+
+                # Recording files no row refers to (account or service deleted)
+                try:
+                    d = await db.cleanup_orphan_recordings()
+                    if d > 0:
+                        logger.info(f"[Retention] Removed {d} orphan terminal recording files")
+                    total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Orphan recording sweep failed: {e}")
 
                 # Revoked invite codes (purge after 30 days)
                 try:

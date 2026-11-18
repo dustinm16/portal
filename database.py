@@ -8,12 +8,17 @@ import aiosqlite
 import base64
 import hashlib
 import os
+import stat
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from config import Config
 
 logger = logging.getLogger("portal.database")
+
+# Terminal recording files end in this extension (see plugins/terminal.py).
+RECORDING_FILE_EXTENSION = ".cast"
 
 # Message encryption using Fernet-like scheme with AES
 try:
@@ -1136,6 +1141,10 @@ class Database:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DATABASE_PATH
         self._connection: Optional[aiosqlite.Connection] = None
+        # Terminal recordings whose session is still running (ids and file
+        # names), kept by the recorder; retention must not touch these.
+        self.live_recording_ids: set[int] = set()
+        self.live_recording_files: set[str] = set()
 
     async def connect(self) -> None:
         """Initialize database connection and schema."""
@@ -2933,6 +2942,91 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def cleanup_old_recordings(self, days: int, recordings_dir: Optional[str] = None) -> int:
+        """Remove recordings older than `days`: the file first, then the row.
+
+        Only a plain file name inside the recordings directory is ever
+        unlinked; a row whose filename points anywhere else is left alone and
+        logged. A row is kept when its file cannot be removed, so the next
+        run retries. A recording whose session is still running is skipped.
+        Returns the number of rows removed.
+        """
+        if days <= 0:
+            return 0
+        directory = os.path.realpath(recordings_dir or Config.RECORDINGS_DIR)
+        cursor = await self.conn.execute(
+            "SELECT id, filename FROM recordings WHERE created_at < datetime('now', ?)",
+            (f"-{int(days)} days",)
+        )
+        rows = await cursor.fetchall()
+        dir_fd = None
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            pass  # no directory yet: nothing on disk to remove, rows can still go
+        removed = 0
+        try:
+            for row in rows:
+                if row["id"] in self.live_recording_ids:
+                    continue  # the session is still running and writing to it
+                name = row["filename"]
+                if (not isinstance(name, str) or not name or name in (".", "..")
+                        or "/" in name or "\\" in name or "\x00" in name):
+                    logger.warning(f"Retention: recording {row['id']} has an unsafe filename, left in place")
+                    continue
+                if dir_fd is not None:
+                    try:
+                        os.unlink(name, dir_fd=dir_fd)  # a symlink is removed itself, never followed
+                    except FileNotFoundError:
+                        pass
+                    except OSError as e:
+                        logger.warning(f"Retention: could not remove recording file {name}: {e}")
+                        continue
+                await self.conn.execute("DELETE FROM recordings WHERE id = ?", (row["id"],))
+                removed += 1
+            await self.conn.commit()
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
+        return removed
+
+    async def cleanup_orphan_recordings(self, recordings_dir: Optional[str] = None,
+                                        min_age_seconds: int = 3600) -> int:
+        """Remove recording files that no row refers to (left behind when a user
+        or service was deleted). Only regular files with the recording extension
+        directly inside the recordings directory are considered; symlinks and
+        subdirectories are never followed, files of a running session and files
+        younger than `min_age_seconds` are left alone. Returns the number removed.
+        """
+        directory = os.path.realpath(recordings_dir or Config.RECORDINGS_DIR)
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            return 0
+        removed = 0
+        try:
+            cursor = await self.conn.execute("SELECT filename FROM recordings")
+            referenced = {r["filename"] for r in await cursor.fetchall()}
+            cutoff = time.time() - min_age_seconds
+            with os.scandir(dir_fd) as entries:
+                candidates = [e.name for e in entries if e.name.endswith(RECORDING_FILE_EXTENSION)]
+            for name in candidates:
+                if name in referenced or name in self.live_recording_files:
+                    continue
+                try:
+                    st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    if not stat.S_ISREG(st.st_mode) or st.st_mtime > cutoff:
+                        continue
+                    os.unlink(name, dir_fd=dir_fd)
+                    removed += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as e:
+                    logger.warning(f"Retention: could not remove orphan recording file {name}: {e}")
+        finally:
+            os.close(dir_fd)
+        return removed
 
     async def delete_recording(self, recording_id: int) -> bool:
         """Delete a recording record by ID."""
@@ -6420,6 +6514,7 @@ class Database:
         "retention_activity_max": "500",
         "retention_service_logs_max": "1000",
         "retention_device_metrics_days": "14",
+        "retention_recordings_days": "30",
         "cleanup_interval_hours": "6",
         "auto_vacuum": "true",
     }
@@ -6453,6 +6548,7 @@ class Database:
                         "retention_notifications_days": 3650,
                         "retention_activity_max": 100000, "retention_service_logs_max": 100000,
                         "retention_device_metrics_days": 365,
+                        "retention_recordings_days": 3650,
                         "cleanup_interval_hours": 168,  # max 1 week
                     }
                     if key in max_vals and int_val > max_vals[key]:

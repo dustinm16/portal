@@ -3414,6 +3414,7 @@ Get data retention configuration settings.
   "retention_activity_max": "500",
   "retention_service_logs_max": "1000",
   "retention_device_metrics_days": "14",
+  "retention_recordings_days": "30",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
 }
@@ -3435,6 +3436,7 @@ Update data retention settings.
   "retention_activity_max": "500",
   "retention_service_logs_max": "1000",
   "retention_device_metrics_days": "14",
+  "retention_recordings_days": "30",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
 }
@@ -3453,6 +3455,7 @@ Setting any value to `0` disables cleanup for that category (keeps forever).
     "retention_activity_max": "500",
     "retention_service_logs_max": "1000",
     "retention_device_metrics_days": "14",
+    "retention_recordings_days": "30",
     "cleanup_interval_hours": "6",
     "auto_vacuum": "true"
   }

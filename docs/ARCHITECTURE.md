@@ -1228,6 +1228,7 @@ Configurable retention policies:
 - **retention_activity_max** (default 500) — Max activity log entries
 - **retention_service_logs_max** (default 1000) — Max service log entries per service
 - **retention_device_metrics_days** (default 14) — Device-wide metric samples (`device_metric_samples`)
+- **retention_recordings_days** (default 30) — Terminal recordings: the `.cast` file in `RECORDINGS_DIR` is unlinked first (only a plain file name inside that directory, never a path), then the `recordings` row is deleted. A recording whose session is still running is never removed. The same cleanup also removes orphan files: regular `.cast` files directly in `RECORDINGS_DIR` that no row refers to (left behind when a user or service is deleted), that belong to no running session and are older than one hour; symlinks are never followed. The orphan sweep runs whatever the retention setting, and its count is reported as `recording_orphans` by the manual run
 - **cleanup_interval_hours** (default 6) — Auto-cleanup interval
 - **auto_vacuum** (default true) — VACUUM database after cleanup
 

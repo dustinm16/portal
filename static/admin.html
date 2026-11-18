@@ -5850,6 +5850,11 @@
                         <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
                     </div>
                     <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Terminal Recording Retention (days)</label>
+                        <input type="number" id="ret-recordings" value="${c.retention_recordings_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
+                    </div>
+                    <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Cleanup Interval (hours)</label>
                         <input type="number" id="ret-interval" value="${c.cleanup_interval_hours}" min="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                     </div>
@@ -5877,6 +5882,7 @@
                 retention_activity_max: pInt('ret-activity-max', 500),
                 retention_service_logs_max: pInt('ret-svc-logs', 1000),
                 retention_device_metrics_days: pInt('ret-device-metrics', 14),
+                retention_recordings_days: pInt('ret-recordings', 30),
                 cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
             };
@@ -5920,6 +5926,8 @@
                     if (d.expired_tokens) parts.push(`${d.expired_tokens} tokens`);
                     if (d.expired_api_keys) parts.push(`${d.expired_api_keys} API keys`);
                     if (d.service_logs) parts.push(`${d.service_logs} service logs`);
+                    if (d.recordings) parts.push(`${d.recordings} recordings`);
+                    if (d.recording_orphans) parts.push(`${d.recording_orphans} orphan recording files`);
                     const summary = parts.length ? parts.join(', ') : 'Nothing to clean up';
                     status.innerHTML = `<span style="color:var(--accent-green);">Cleanup complete: ${summary}${d.vacuumed ? ' (DB vacuumed)' : ''}</span>`;
                     Portal.toast('Cleanup complete');
