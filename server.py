@@ -122,6 +122,7 @@ from host_check import (
     HostCheckError, HostBlockedError, HostResolveError,
     _SSRFSafeResolver, _SSRFSafeConnector,
 )
+import backup_manager
 import update_manager
 setup_logging()
 logger = logging.getLogger("portal")
@@ -366,6 +367,7 @@ _rtmp_stream_paths: dict[int, str] = {}
 # between concurrent stream connect/disconnect/auth events
 _stream_state_lock = asyncio.Lock()
 VOD_TEMP_DIR = "/tmp/portal_vods"
+backup_manager.register_served_dir(VOD_TEMP_DIR, "the VOD temp directory")
 
 # Multi-platform relay state
 RELAY_PLATFORMS = {
@@ -1368,6 +1370,11 @@ async def http_create_token(request: web.Request) -> web.Response:
             {"error": "username and password required"},
             status=400
         )
+
+    # "web_session" is the name of browser login sessions; the backup download
+    # route trusts it, so a token made through the API may not carry it.
+    if isinstance(token_name, str) and token_name.strip().casefold() == "web_session":
+        return web.json_response({"error": "That token name is reserved"}, status=400)
 
     # Authenticate user
     user = await authenticate_user(username, password)
@@ -17718,6 +17725,159 @@ async def http_admin_updates_history(request: web.Request) -> web.Response:
         return web.json_response({"error": "Failed to get update history"}, status=500)
 
 
+# =========================================================================
+# Backup archives (superadmin only)
+# =========================================================================
+
+async def _backup_superadmin(request: web.Request, cookie_only: bool = False):
+    """Return (user, error_response). Only a superadmin passes.
+
+    The credential itself must carry admin power: a stream key or a narrowly
+    scoped key or token that belongs to a superadmin is refused with 403.
+
+    With cookie_only the caller must hold a browser login session: API keys,
+    bearer tokens, ?token= values and tokens minted through the API are not
+    accepted, because a downloaded archive holds the JWT secret and the
+    encryption salt.
+    """
+    if cookie_only:
+        cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
+        token = None
+        if cookie:
+            try:
+                token = await validate_token(cookie)
+            except AuthError:
+                token = None
+        if token:
+            row = await db.get_token(token.token_id)
+            if not token.has_scope("*") or not row or row.get("name") != "web_session":
+                return None, web.json_response(
+                    {"error": "A browser login session is required"}, status=403)
+    else:
+        token = await authenticate_request(request)
+    if not token:
+        return None, web.json_response({"error": "Unauthorized"}, status=401)
+    if not token.has_scope("admin"):
+        return None, web.json_response({"error": "Superadmin required"}, status=403)
+    user = await db.get_user_by_id(token.user_id)
+    if not user or user.get("role") != "superadmin":
+        return None, web.json_response({"error": "Superadmin required"}, status=403)
+    return user, None
+
+
+async def http_admin_backups_list(request: web.Request) -> web.Response:
+    """List backup archives with the settings and the last result."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        archives = await asyncio.to_thread(backup_manager.list_archives)
+        free = None
+        adir = backup_manager.archives_dir()
+        probe = adir if adir.is_dir() else adir.parent
+        try:
+            free = shutil.disk_usage(str(probe)).free
+        except OSError:
+            pass
+        return web.json_response({
+            "archives": archives,
+            "config": await backup_manager.load_config(),
+            "status": await backup_manager.get_status(),
+            "free_bytes": free,
+            "stage_mode": bool(Config.STAGE_MODE),
+        })
+    except Exception as e:
+        logger.error(f"Failed to list backups: {e}")
+        return web.json_response({"error": "Failed to list backups"}, status=500)
+
+
+async def http_admin_backups_run(request: web.Request) -> web.Response:
+    """Take a backup archive now."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        info = await backup_manager.run_now("manual")
+    except backup_manager.BackupError as e:
+        return web.json_response({"error": str(e)}, status=409 if "already running" in str(e) else 500)
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+        return web.json_response({"error": "Backup failed; see the server log"}, status=500)
+    await audit_log("backup.run", user["id"], user.get("username", "unknown"),
+                    target_name=info["name"], details={"bytes": info["size"]})
+    return web.json_response(info, status=201)
+
+
+async def http_admin_backups_settings(request: web.Request) -> web.Response:
+    """Update the backup settings: enabled, interval_hours, keep, extra_dir."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    current = (await backup_manager.load_config())["extra_dir"]
+    if backup_manager.extra_dir_changed(data, current):
+        # Moving the destination is the one way left to move archive bytes off the box, so it
+        # needs the superadmin's own browser session, like a download. Nothing is saved before.
+        _, cerr = await _backup_superadmin(request, cookie_only=True)
+        if cerr:
+            if cerr.status == 401:
+                cerr = web.json_response(
+                    {"error": "A browser login session is required to change the extra destination"},
+                    status=403)
+            return cerr
+    update, errors = await asyncio.to_thread(
+        backup_manager.validate_config_update, data, current)
+    if errors:
+        return web.json_response({"error": "; ".join(errors)}, status=400)
+    config = await backup_manager.save_config(update)
+    await audit_log("backup.settings", user["id"], user.get("username", "unknown"),
+                    details={"changed": sorted(update)})
+    return web.json_response({"updated": True, "config": config})
+
+
+async def http_admin_backups_download(request: web.Request) -> web.StreamResponse:
+    """Download one archive. Needs the superadmin's own login cookie."""
+    user, err = await _backup_superadmin(request, cookie_only=True)
+    if err:
+        return err
+    name = request.match_info.get("name", "")
+    try:
+        path = await asyncio.to_thread(backup_manager.resolve_archive, name)
+    except FileNotFoundError:
+        return web.json_response({"error": "Archive not found"}, status=404)
+    except backup_manager.BackupError:
+        return web.json_response({"error": "Invalid archive name"}, status=400)
+    await audit_log("backup.download", user["id"], user.get("username", "unknown"),
+                    target_name=name, details={"ip": get_client_ip(request)})
+    logger.warning(f"Backup archive {name} downloaded by user {user['id']}")
+    return web.FileResponse(path, headers={
+        "Content-Type": "application/gzip",
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "Cache-Control": "no-store",
+    })
+
+
+async def http_admin_backups_delete(request: web.Request) -> web.Response:
+    """Delete one archive. Needs the superadmin's own login cookie."""
+    user, err = await _backup_superadmin(request, cookie_only=True)
+    if err:
+        return err
+    name = request.match_info.get("name", "")
+    try:
+        await asyncio.to_thread(backup_manager.delete_archive, name)
+    except FileNotFoundError:
+        return web.json_response({"error": "Archive not found"}, status=404)
+    except backup_manager.BackupError:
+        return web.json_response({"error": "Invalid archive name"}, status=400)
+    except OSError as e:
+        return web.json_response({"error": f"Could not delete: {e.strerror or e}"}, status=500)
+    await audit_log("backup.delete", user["id"], user.get("username", "unknown"), target_name=name)
+    return web.json_response({"deleted": True})
+
+
 def create_app() -> web.Application:
     """Create the aiohttp application."""
     # aiohttp's own default (1 MB) sits under every per-endpoint upload cap in
@@ -18132,6 +18292,11 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/admin/updates/snapshots/{id}", http_admin_updates_snapshots_delete)
     app.router.add_post("/api/admin/updates/rollback", http_admin_updates_rollback)
     app.router.add_get("/api/admin/updates/history", http_admin_updates_history)
+    app.router.add_get("/api/admin/backups", http_admin_backups_list)
+    app.router.add_post("/api/admin/backups/run", http_admin_backups_run)
+    app.router.add_put("/api/admin/backups/settings", http_admin_backups_settings)
+    app.router.add_get("/api/admin/backups/{name}/download", http_admin_backups_download)
+    app.router.add_delete("/api/admin/backups/{name}", http_admin_backups_delete)
 
     # Webhooks (incoming token route must be before {id} wildcard)
     app.router.add_post("/api/webhooks/incoming/{token}", http_incoming_webhook)
@@ -18231,6 +18396,11 @@ class PortalServer:
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
+
+        # Scheduled backup due check shortly after start, so a service that restarts more
+        # often than the cleanup interval still gets its backups (skipped in staged mode)
+        if not Config.STAGE_MODE:
+            asyncio.create_task(backup_manager.run_startup_check())
 
         # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
         # (skipped in staged test mode: it would poll the host's real MediaMTX)
@@ -18531,6 +18701,12 @@ class PortalServer:
                         await db.vacuum_database()
                 except Exception as e:
                     logger.error(f"[Retention] VACUUM failed: {e}")
+
+                # Scheduled backup archive (skipped in staged mode and when disabled)
+                try:
+                    await backup_manager.run_scheduled()
+                except Exception as e:
+                    logger.error(f"[Backup] Scheduled backup failed: {e}")
 
                 if total > 0:
                     logger.info(f"[Retention] Cleanup complete: {total} total items removed")
@@ -18972,6 +19148,12 @@ def main():
     backup_db.add_argument("--out", default=None, metavar="PATH",
                            help="Output file (default: backups/portal-db-<timestamp>.db)")
 
+    # Backup archive (database + restore keys) and restore into an empty directory
+    subparsers.add_parser("backup-archive", help="Write a backup archive (database, .env, salt, invite code) to backups/archives/")
+    restore_cmd = subparsers.add_parser("restore-archive", help="Unpack a backup archive into an EMPTY directory after verifying it")
+    restore_cmd.add_argument("archive", help="Path of the .tar.gz archive")
+    restore_cmd.add_argument("--into", required=True, metavar="DIR", help="Empty target directory (created if missing)")
+
     # Update component
     update_cmd = subparsers.add_parser("update", help="Apply an update to a component")
     update_cmd.add_argument("--component", required=True,
@@ -19040,6 +19222,30 @@ def main():
             print(f"WARNING: integrity_check returned: {_result}", file=sys.stderr)
         print(_path)
         sys.exit(0 if _result == "ok" else 1)
+    elif args.command == "backup-archive":
+        try:
+            _cfg = backup_manager.read_config_sync()
+            _version = asyncio.run(update_manager._get_portal_version())
+            _info = backup_manager.create_archive(None, _version, _cfg["keep"], _cfg["extra_dir"])
+        except Exception as e:
+            print(f"backup-archive failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        if _info.get("extra_error"):
+            print(f"WARNING: copy to the extra destination failed: {_info['extra_error']}", file=sys.stderr)
+        print(_info["path"])
+    elif args.command == "restore-archive":
+        try:
+            _res = backup_manager.restore_archive(args.archive, args.into)
+        except Exception as e:
+            print(f"restore-archive failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Restored into {_res['into']}: {', '.join(_res['files'])}")
+        print(f"Archive made by portal version {_res['portal_version']} at {_res['created_at']}.")
+        for _w in _res["warnings"]:
+            print(f"WARNING: {_w}", file=sys.stderr)
+        print("Nothing in the live installation was changed. To use the restored data, put the same portal")
+        print("release in a fresh directory, copy these files into it, fix the paths and port listed above in")
+        print(".env, and start it there. See 'Backups and Rollback' in the README.")
     elif args.command == "update":
         async def _run_update():
             print(f"Starting update: {args.component}" + (f" version {args.version}" if args.version else ""))

@@ -577,6 +577,27 @@ def _strip_group_other_write(root: Path, skip_names: set = frozenset()) -> None:
             _fix(os.path.join(dirpath, name))
 
 
+def _require_safe_dest_dir(directory: Path) -> None:
+    """Refuse a destination directory that group or other can write to (unless sticky)."""
+    pst = os.stat(directory)
+    if pst.st_mode & 0o022 and not pst.st_mode & stat.S_ISVTX:
+        raise RuntimeError(
+            f"Refusing to write into {directory}: it is writable by group or other "
+            f"(mode {stat.S_IMODE(pst.st_mode):04o}) and has no sticky bit. "
+            f"Choose a private directory."
+        )
+
+
+def _require_free_space(directory: Path, needed: int, what: str) -> None:
+    """Raise when the filesystem holding *directory* has less than *needed* bytes free."""
+    free = shutil.disk_usage(str(directory)).free
+    if free < needed:
+        raise RuntimeError(
+            f"Not enough free disk space in {directory}: {free} bytes free, "
+            f"need at least {needed} ({what})"
+        )
+
+
 def backup_database(out: Optional[str] = None, db_path: Optional[str] = None) -> tuple[Path, int, str]:
     """Write a consistent copy of the database to a 0600 file and return (path, size, integrity).
 
@@ -609,25 +630,14 @@ def backup_database(out: Optional[str] = None, db_path: Optional[str] = None) ->
     if dest.exists() or dest.is_symlink():
         raise RuntimeError(f"Refusing to overwrite existing file: {dest}")
 
-    pst = os.stat(dest.parent)
-    if pst.st_mode & 0o022 and not pst.st_mode & stat.S_ISVTX:
-        raise RuntimeError(
-            f"Refusing to write into {dest.parent}: it is writable by group or other "
-            f"(mode {stat.S_IMODE(pst.st_mode):04o}) and has no sticky bit. "
-            f"Choose a private directory."
-        )
+    _require_safe_dest_dir(dest.parent)
 
     db_size = os.stat(db_path).st_size
     try:
         db_size += os.stat(db_path + "-wal").st_size
     except OSError:
         pass
-    free = shutil.disk_usage(str(dest.parent)).free
-    if free < 2 * db_size:
-        raise RuntimeError(
-            f"Not enough free disk space in {dest.parent}: {free} bytes free, "
-            f"need at least {2 * db_size} (twice the database size)"
-        )
+    _require_free_space(dest.parent, 2 * db_size, "twice the database size")
 
     try:
         workdir = tempfile.mkdtemp(prefix=".portal-backup-", dir=str(dest.parent))  # mode 0700
@@ -1045,6 +1055,32 @@ async def _apply_system_update(job: dict) -> None:
     _log(job, "System update complete.")
 
 
+async def _backup_before_update(job: dict) -> None:
+    """Write a backup archive (database plus restore keys) and stop the update if that fails."""
+    import backup_manager
+    _log(job, "Creating pre-update backup archive...")
+    try:
+        info = await backup_manager.run_now("pre-update")
+    except Exception as e:
+        raise RuntimeError(f"Pre-update backup failed, so the update was not started: {e}") from e
+    _log(job, f"Backup archive created: {info['name']}")
+    if info.get("extra_error"):
+        _log(job, f"WARNING: copy to the extra backup destination failed: {info['extra_error']}")
+
+
+async def _run_apply(job: dict, component: str, version: Optional[str]) -> None:
+    """Take a backup archive, then apply the update. Nothing is changed if the backup fails."""
+    await _backup_before_update(job)
+    if component == "portal":
+        await _apply_portal_update(job, version)
+    elif component == "pip":
+        await _apply_pip_update(job, version)
+    elif component == "mediamtx":
+        await _apply_mediamtx_update(job, version)
+    elif component == "system":
+        await _apply_system_update(job)
+
+
 async def start_apply(component: str, version: Optional[str] = None) -> str:
     """Dispatch an update job for the given component. Returns job_id."""
     if Config.STAGE_MODE:
@@ -1079,14 +1115,7 @@ async def start_apply(component: str, version: Optional[str] = None) -> str:
 
     async def _run(job: dict):
         async with lock:
-            if component == "portal":
-                await _apply_portal_update(job, version)
-            elif component == "pip":
-                await _apply_pip_update(job, version)
-            elif component == "mediamtx":
-                await _apply_mediamtx_update(job, version)
-            elif component == "system":
-                await _apply_system_update(job)
+            await _run_apply(job, component, version)
 
     name = f"Update {component}" + (f" to {version}" if version else "")
     return start_job(name, _run)
@@ -1217,6 +1246,21 @@ def _adopt_legacy_snapshot(snap_dir: Path, meta: dict, skip_names: set = frozens
     return True
 
 
+def _log_restore_hint(job: dict) -> None:
+    """Say how the database is restored: a rollback never does it."""
+    _log(job, "A rollback restores code only. The database, .env and keys are not touched.")
+    _log(job, "To recover them from a backup archive, unpack it into an empty directory with:")
+    _log(job, "  python server.py restore-archive <archive file> --into <empty directory>")
+    try:
+        import backup_manager
+        latest = backup_manager.latest_archive()
+    except Exception:
+        latest = None
+    if latest:
+        _log(job, f"Newest backup archive: {latest}")
+    _log(job, "See 'Backups and Rollback' in the README for the remaining steps.")
+
+
 async def _apply_rollback(job: dict, snap_id: str) -> None:
     """Restore portal files from snapshot and reinstall dependencies."""
     # Validate snap_id
@@ -1242,6 +1286,7 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
     await asyncio.to_thread(_check_snapshot_restorable, snap_dir, PRESERVE_DIRS | PRESERVE_FILES)
 
     _log(job, f"Rolling back to snapshot {snap_id} (version: {meta.get('version', 'unknown')})...")
+    _log_restore_hint(job)
 
     # Create a safety snapshot before rollback
     _log(job, "Creating pre-rollback safety snapshot...")

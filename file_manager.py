@@ -13,6 +13,8 @@ from pathlib import Path
 from pwd import getpwuid
 from grp import getgrgid
 
+import backup_manager
+
 logger = logging.getLogger("portal")
 
 # Files that should never be served or listed
@@ -30,7 +32,16 @@ def _is_blocked_name(name: str) -> bool:
     """Check if a filename is blocked."""
     if name in BLOCKED_FILES:
         return True
+    if backup_manager.is_protected_name(name):
+        return True
     return any(name.startswith(p) for p in BLOCKED_PREFIXES)
+
+
+def _is_archives_dir(path: Path, adir: Path = None) -> bool:
+    """True for the install's backups/archives directory or anything inside it."""
+    if adir is None:
+        adir = Path(os.path.realpath(backup_manager.archives_dir()))
+    return adir == path or adir in path.parents
 
 
 def _validate_path(path: str, root: str) -> Path:
@@ -65,6 +76,11 @@ def _validate_path(path: str, root: str) -> Path:
     # Check blocked files (by name and by relative path)
     rel = str(resolved.relative_to(root_path))
     if _is_blocked_name(resolved.name) or rel in BLOCKED_FILES:
+        raise ValueError("Access to this file is not allowed")
+    # Backup archives and database copies, also when an ancestor is their work directory,
+    # and the whole archives directory of this install.
+    if any(backup_manager.is_protected_name(part) for part in resolved.relative_to(root_path).parts) \
+            or _is_archives_dir(resolved):
         raise ValueError("Access to this file is not allowed")
 
     return resolved
@@ -124,10 +140,11 @@ def list_directory(path: str, root: str) -> list[dict]:
         raise ValueError("Not a directory")
 
     entries = []
+    adir = Path(os.path.realpath(backup_manager.archives_dir()))
     try:
         for item in resolved.iterdir():
             # Skip blocked files
-            if _is_blocked_name(item.name):
+            if _is_blocked_name(item.name) or _is_archives_dir(item, adir):
                 continue
             entries.append(_file_entry(item))
     except PermissionError:
@@ -238,6 +255,10 @@ def delete_path(path: str, root: str, recursive: bool = False) -> None:
                                 f"Cannot recursively delete: contains protected file '{name}'"
                             )
                         child = Path(dirpath) / name
+                        if _is_archives_dir(child):
+                            raise ValueError(
+                                "Cannot recursively delete: contains the backup archives directory"
+                            )
                         if child.is_symlink():
                             raise ValueError(
                                 "Cannot recursively delete: contains symbolic links"

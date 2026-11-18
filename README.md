@@ -263,13 +263,31 @@ audit (releases v1.7.0 → v1.10.3, RCE / host-access focus).
 ## Backups and Rollback
 
 ```bash
-sudo venv/bin/python server.py backup-db                 # backups/portal-db-<timestamp>.db
+sudo venv/bin/python server.py backup-archive            # backups/archives/portal-backup-<UTC time>.tar.gz
+sudo venv/bin/python server.py restore-archive /path/to/portal-backup-<time>.tar.gz --into /path/to/empty-dir
+sudo venv/bin/python server.py backup-db                 # database copy only: backups/portal-db-<timestamp>.db
 sudo venv/bin/python server.py backup-db --out /path/to/copy.db
 ```
 
-`backup-db` takes a consistent copy of the database through the SQLite backup API and runs an integrity check on it. It is safe while the portal is running, never overwrites an existing file, writes the copy owner-only (0600), needs free space of about twice the database size, and refuses a destination directory that other accounts can write to (a sticky directory such as `/tmp` is accepted). Run it before every upgrade.
+**Backup archives.** An archive is a `.tar.gz` with a `manifest.json` (portal version, schema marker, sha256 and size of every file), a consistent copy of the database made through the SQLite backup API (safe while the portal runs, integrity-checked), and the files needed to read it: `.env` (JWT secret), `.encryption_salt` and `.invite_code` when present. Without the salt and the JWT secret, encrypted chat messages, connection configs and two-factor secrets in the database cannot be read.
 
-Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus an integrity-checked copy of the database. A rollback restores the code only: it does not restore the database, `.env`, the virtual environment or `backups/`. The database copy inside a snapshot is there for manual recovery. Rollback refuses to run if the snapshot or the backup directories are owned by another account or writable by group or others; fix the ownership and modes (`chown` to the portal's account, `chmod 700`) and retry.
+Because of that, an archive is as sensitive as root access to the portal. Archives are written owner-only (0600) into `backups/archives/` (0700), through a temporary name that is renamed when complete. Nothing is written when less than twice the database size is free; the refusal is logged and shown in the Backups card. Keep copies on storage you trust.
+
+- **Schedule**: on by default, once a day, keeping the newest 7 archives. Change it in Admin > Settings > Backups (superadmin only): enabled, interval in hours (1 to 720), number to keep (1 to 100), and an optional extra destination directory. The scheduled job runs from the data cleanup loop, so it is checked every "cleanup interval" hours (Data Retention, default 6, at most 168); with a long cleanup interval a daily backup runs no more often than that. The due check also runs once about two minutes after the server starts, so an install that restarts more often than the cleanup interval still gets its backups; the first scheduled backup of a new install happens at that check. Use Back Up Now for an immediate one. Scheduled backups are skipped in staged test mode, Back Up Now still works.
+- **Extra destination**: after each archive, a copy is written there (0600, renamed into place) and older copies beyond the keep count are removed from that directory, only files named like portal archives. The directory must exist, be absolute, and not be writable by group or others unless it has the sticky bit. Directories under `/tmp`, `/var/tmp` and `/dev/shm` are refused: the service runs with PrivateTmp, so a copy written there would be invisible to the host and deleted on every restart. The destination may not be the installation directory or anything under it, nor inside a directory the portal serves or exposes: a file-manager root other than `/`, a game-server storage root, `RECORDINGS_DIR` or the VOD temp directory; this is checked when the setting is saved and again before every copy. Changing the extra destination needs the superadmin's browser login session (like a download); the other settings also work with an API key or token, and an extra destination that is left unchanged is not checked when saving, so an unmounted disk does not block editing them. A failed extra copy is reported and logged, the archive in `backups/archives/` is still kept.
+- **Download and delete** are in the same card and need a superadmin logged in with the browser cookie; API keys, bearer tokens and `?token=` links are refused for download. Every download is written to the audit log. Archives are never served to anyone else.
+- **Every update** (Apply in Admin > Updates, or `server.py update`) takes a backup archive first and does not start if the backup fails.
+
+**Restore.** `restore-archive` verifies the manifest hashes of every file, then unpacks into a directory that is empty (or does not exist yet). It refuses a directory that has anything in it and never reads or writes the live installation. If anything is wrong, nothing is left in the target. To bring a portal back from the unpacked files:
+
+1. Stop the damaged portal, or prepare a new host. Check out the same portal release as the manifest's `portal_version` (the command prints it) into a fresh directory with its virtual environment.
+2. Copy `portal.db`, `.env`, `.encryption_salt` and `.invite_code` from the restored directory into it. Keep the files owner-only (`chmod 600`).
+3. Edit `.env`: `DATABASE_PATH` and `RECORDINGS_DIR` must point inside the new directory (otherwise it opens the original database), and `SSL_CERT`, `SSL_KEY`, `HOSTNAME` and `PORT` must suit the new host. The command prints a warning for each of these that points outside the target.
+4. Start the portal. Users, encrypted chat, connection configs and two-factor secrets work again because the JWT secret and the salt came with the database.
+
+`backup-db` takes a consistent copy of the database only and runs an integrity check on it. It never overwrites an existing file, writes the copy owner-only (0600), needs free space of about twice the database size, and refuses a destination directory that other accounts can write to (a sticky directory such as `/tmp` is accepted).
+
+Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus an integrity-checked copy of the database. A rollback restores the code only: it does not restore the database, `.env`, the virtual environment or `backups/`, and it logs the `restore-archive` command and the newest archive instead of restoring anything. Rollback refuses to run if the snapshot or the backup directories are owned by another account or writable by group or others; fix the ownership and modes (`chown` to the portal's account, `chmod 700`) and retry.
 
 ### Upgrade notes for 1.10.8
 

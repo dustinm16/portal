@@ -1769,6 +1769,19 @@
                             <div class="loading"><div class="spinner"></div> Loading...</div>
                         </div>
                     </div>
+
+                    <!-- Backups Card -->
+                    <div class="admin-card" style="grid-column: span 2;" id="backups-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                            </svg>
+                            Backups
+                        </h3>
+                        <div id="backups-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -5146,7 +5159,7 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups()]);
         }
 
         async function loadCertInfo() {
@@ -5799,6 +5812,153 @@
             if (hashTab === 'system') sysLoadProcesses();
             else if (hashTab === 'files') filesLoadDirectory('/');
         }
+
+        // ===== BACKUP ARCHIVES (superadmin only) =====
+
+        let backupsState = null;
+
+        async function loadBackups() {
+            const el = document.getElementById('backups-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/backups');
+                if (res.status === 403) {
+                    el.innerHTML = '<p style="color:var(--text-muted);">Backups are managed by a superadmin.</p>';
+                    return;
+                }
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Failed to load backups</p>'; return; }
+                backupsState = await res.json();
+                renderBackups();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Failed to load backups</p>';
+            }
+        }
+
+        function renderBackups() {
+            const el = document.getElementById('backups-body');
+            const d = backupsState;
+            const c = d.config;
+            const st = d.status || {};
+            const fieldStyle = 'width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;';
+            const rows = d.archives.map(a => `
+                <tr>
+                    <td style="font-family:monospace;font-size:0.8rem;">${escapeHtml(a.name)}</td>
+                    <td>${escapeHtml(a.portal_version || (a.readable ? '' : 'unreadable'))}</td>
+                    <td>${escapeHtml(a.created_at || '')}</td>
+                    <td>${formatBytes(a.size)}</td>
+                    <td>
+                        <a class="range-btn" href="/api/admin/backups/${encodeURIComponent(a.name)}/download" download>Download</a>
+                        <button class="range-btn" data-backup-delete="${escapeHtml(a.name)}">Delete</button>
+                    </td>
+                </tr>`).join('');
+            let statusLine = '<span style="color:var(--text-muted);">No backup has run yet.</span>';
+            if (st.backup_last_status === 'ok') {
+                statusLine = `<span style="color:var(--accent-green);">Last backup: ${escapeHtml(st.backup_last_ok_at || '')}</span>`;
+                if (st.backup_last_error) statusLine += ` <span style="color:var(--accent-yellow, #eab308);">(${escapeHtml(st.backup_last_error)})</span>`;
+            } else if (st.backup_last_status === 'failed') {
+                statusLine = `<span style="color:var(--accent-red);">Last backup failed (${escapeHtml(st.backup_last_run_at || '')}): ${escapeHtml(st.backup_last_error || '')}</span>`;
+            }
+            el.innerHTML = `
+                <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                    An archive holds the database copy, the JWT secret and the encryption salt. Treat it like root access.
+                    Restore with <code>python server.py restore-archive FILE --into EMPTY_DIR</code> (see the README).
+                </p>
+                <div style="margin-bottom:0.75rem;">${statusLine}
+                    ${d.free_bytes != null ? ` <span style="color:var(--text-muted);">&middot; ${formatBytes(d.free_bytes)} free</span>` : ''}
+                    ${d.stage_mode ? ' <span style="color:var(--text-muted);">&middot; scheduled backups are off in staged mode</span>' : ''}
+                </div>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead><tr><th>Archive</th><th>Version</th><th>Created</th><th>Size</th><th>Actions</th></tr></thead>
+                        <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">No archives yet</td></tr>'}</tbody>
+                    </table>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-top:1rem;">
+                    <div>
+                        <label style="font-size:0.8rem;color:var(--text-muted);">Interval (hours)</label>
+                        <input type="number" id="bk-interval" value="${c.interval_hours}" min="1" max="720" style="${fieldStyle}">
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem;color:var(--text-muted);">Archives to keep</label>
+                        <input type="number" id="bk-keep" value="${c.keep}" min="1" max="100" style="${fieldStyle}">
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem;color:var(--text-muted);">Extra destination (optional, absolute path)</label>
+                        <input type="text" id="bk-extra" value="${escapeHtml(c.extra_dir)}" placeholder="/path/to/another/disk" style="${fieldStyle}">
+                    </div>
+                </div>
+                <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">
+                        <input type="checkbox" id="bk-enabled" ${c.enabled ? 'checked' : ''}>
+                        Scheduled backups (checked on each data cleanup run)
+                    </label>
+                </div>
+                <div style="margin-top:1rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
+                    <button class="btn btn-primary" data-backup-action="save">Save Settings</button>
+                    <button class="range-btn" data-backup-action="run" id="bk-run-btn">Back Up Now</button>
+                </div>`;
+        }
+
+        async function saveBackupSettings() {
+            const body = {
+                enabled: document.getElementById('bk-enabled').checked,
+                interval_hours: parseInt(document.getElementById('bk-interval').value, 10),
+                keep: parseInt(document.getElementById('bk-keep').value, 10),
+                extra_dir: document.getElementById('bk-extra').value.trim()
+            };
+            try {
+                const res = await Portal.fetch('/api/admin/backups/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (res.ok) { Portal.toast('Backup settings saved', 'success'); loadBackups(); }
+                else Portal.toast(data.error || 'Failed to save', 'error');
+            } catch (e) {
+                Portal.toast('Failed to save backup settings', 'error');
+            }
+        }
+
+        async function runBackupNow() {
+            const btn = document.getElementById('bk-run-btn');
+            btn.disabled = true;
+            btn.textContent = 'Backing up...';
+            try {
+                const res = await Portal.fetch('/api/admin/backups/run', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    Portal.toast('Backup created: ' + data.name, 'success');
+                    if (data.extra_error) Portal.toast('Extra destination: ' + data.extra_error, 'error');
+                } else {
+                    Portal.toast(data.error || 'Backup failed', 'error');
+                }
+            } catch (e) {
+                Portal.toast('Backup failed', 'error');
+            }
+            loadBackups();
+        }
+
+        async function deleteBackup(name) {
+            if (!confirm('Delete backup ' + name + '? This cannot be undone.')) return;
+            try {
+                const res = await Portal.fetch('/api/admin/backups/' + encodeURIComponent(name), { method: 'DELETE' });
+                if (res.ok) Portal.toast('Backup deleted', 'success');
+                else Portal.toast((await res.json()).error || 'Delete failed', 'error');
+            } catch (e) {
+                Portal.toast('Delete failed', 'error');
+            }
+            loadBackups();
+        }
+
+        document.addEventListener('click', function(e) {
+            const del = e.target.closest('[data-backup-delete]');
+            if (del) { deleteBackup(del.getAttribute('data-backup-delete')); return; }
+            const act = e.target.closest('[data-backup-action]');
+            if (!act) return;
+            if (act.getAttribute('data-backup-action') === 'save') saveBackupSettings();
+            else if (act.getAttribute('data-backup-action') === 'run') runBackupNow();
+        });
 
         // ===== DATA RETENTION =====
 
