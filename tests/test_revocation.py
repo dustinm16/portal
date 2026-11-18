@@ -173,6 +173,42 @@ async def run():
             r = await handler(FakeRequest(match={"id": "7"}))
             check(f"API key {label}: a key that does not exist (404) closes nothing",
                   r.status == 404 and not wk.closed and not ck.aborted)
+
+        # --- the sockets are closed before the voice entries are removed, so a revoked
+        # socket cannot create an entry in between; entries of other sessions stay
+        reset()
+        order = []
+        voice_ws = FakeWs()
+        orig_close = voice_ws.close
+
+        async def close(code=1000, message=b""):
+            await asyncio.sleep(0)
+            await orig_close(code, message)
+            order.append("closed")
+        voice_ws.close = close
+        server._register_user_ws(OWNER, voice_ws, "sess-1")
+        saved_revoke = server._voice_revoke_user
+
+        async def revoke_voice(user_id, spares):
+            order.append("voice revoked, socket closed=%s" % voice_ws.closed)
+            await saved_revoke(user_id, spares)
+        server._voice_revoke_user = revoke_voice
+        try:
+            await server.close_user_websockets(OWNER, only_token_id="sess-1")
+        finally:
+            server._voice_revoke_user = saved_revoke
+        check("close_user_websockets: the socket is closed before the voice entries are removed",
+              order == ["closed", "voice revoked, socket closed=True"], str(order))
+        order.clear()
+        voice_ws.closed = False
+        server._voice_revoke_user = revoke_voice
+        reset()
+        try:
+            await server.close_user_websockets(OWNER, only_token_id="sess-1")
+        finally:
+            server._voice_revoke_user = saved_revoke
+        check("close_user_websockets: held voice entries are removed also when no socket is open",
+              order == ["voice revoked, socket closed=False"], str(order))
     finally:
         (server.authenticate_request, server.get_user_role_from_token, server.db.get_token,
          server.db.get_user_by_id, server.revoke_token, server.audit_log,
