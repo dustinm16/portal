@@ -3348,10 +3348,15 @@
         }
 
         // Escape HTML helper
+        // Safe in element text and inside a double- or single-quoted attribute value.
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text || '';
-            return div.innerHTML.replace(/'/g, '&#39;').replace(/\\/g, '&#92;');
+            return String(text || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/\\/g, '&#92;');
         }
 
         // =================================================================
