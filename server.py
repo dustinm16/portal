@@ -32,6 +32,7 @@ import sys
 import uuid
 import weakref
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, time
@@ -43,6 +44,7 @@ import aiohttp
 import asyncssh
 import psutil
 from aiohttp import web, WSMsgType
+from multidict import CIMultiDict
 
 from config import Config, ALLOWED_SHELLS
 from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
@@ -329,24 +331,76 @@ def _unregister_user_ws(user_id: int, ws) -> None:
             _user_websockets.pop(user_id, None)
 
 
+class _ProxyHttpCall:
+    """One in-flight proxied HTTP response (the /proxy path, not its WebSockets).
+
+    Registered for the life of the request so that revoking the member's
+    credentials can end it: abort() drops the client connection and the
+    upstream response, and `aborted` tells the handler why it stopped.
+    """
+    __slots__ = ("request", "resp", "aborted")
+
+    def __init__(self, request):
+        self.request = request
+        self.resp = None
+        self.aborted = False
+
+    def abort(self) -> None:
+        self.aborted = True
+        transport = self.request.transport
+        if transport is not None:
+            transport.abort()
+        if self.resp is not None:
+            self.resp.close()
+
+
+# Open proxied HTTP responses per user: user_id -> {call: token_id}.
+_user_proxy_calls: dict[int, dict] = {}
+
+
+def _register_user_proxy_call(user_id: int, call: _ProxyHttpCall, token_id: str) -> None:
+    _user_proxy_calls.setdefault(user_id, {})[call] = token_id
+
+
+def _unregister_user_proxy_call(user_id: int, call: _ProxyHttpCall) -> None:
+    calls = _user_proxy_calls.get(user_id)
+    if calls is not None:
+        calls.pop(call, None)
+        if not calls:
+            _user_proxy_calls.pop(user_id, None)
+
+
+def _keeps_credential(token_id, except_token_id, keep_prefixes) -> bool:
+    return bool((except_token_id and token_id == except_token_id)
+                or (keep_prefixes and str(token_id).startswith(keep_prefixes)))
+
+
 async def close_user_websockets(user_id: int, except_token_id: str = None,
                                 keep_prefixes: tuple = (),
                                 only_token_id: str = None) -> int:
-    """Close a user's open WebSockets after their credentials were revoked.
+    """Close a user's open WebSockets, and abort their in-flight proxied HTTP
+    responses, after their credentials were revoked.
 
-    except_token_id keeps the sockets opened with that token (the caller's own
-    session). keep_prefixes keeps the sockets opened with a kind of credential
+    except_token_id keeps what was opened with that token (the caller's own
+    session). keep_prefixes keeps what was opened with a kind of credential
     that was not revoked (token ids "apikey-N" and "streamkey-N").
-    only_token_id closes just the sockets opened with that one token and keeps
+    only_token_id ends just what was opened with that one token and keeps
     every other session of the user (a single logout). Returns the number of
-    sockets closed.
+    WebSockets closed.
     """
     def _spared(tid) -> bool:
         if only_token_id is not None and tid != only_token_id:
             return True
-        return bool((except_token_id and tid == except_token_id)
-                    or (keep_prefixes and str(tid).startswith(keep_prefixes)))
+        return _keeps_credential(tid, except_token_id, keep_prefixes)
 
+    # Proxied HTTP responses (long downloads, event streams) have no total
+    # time limit, so they are cut here too.
+    for call, tid in list(_user_proxy_calls.get(user_id, {}).items()):
+        if not _spared(tid):
+            try:
+                call.abort()
+            except Exception:
+                logger.debug("aborting a proxied response failed", exc_info=True)
     targets = [
         ws for ws, tid in list(_user_websockets.get(user_id, {}).items())
         if not _spared(tid)
@@ -12306,6 +12360,373 @@ async def http_browser_page(request: web.Request) -> web.Response:
 
 _PROXY_MAX_RESPONSE_SIZE = 50 * 1024 * 1024   # 50 MB for text content needing URL rewriting
 _PROXY_MAX_REQUEST_SIZE = 10 * 1024 * 1024     # 10 MB
+_PROXY_MAX_REDIRECTS = 5                       # hops the portal follows for a non-browser connection
+
+
+_PROXY_TIMEOUT_DEFAULT = 60
+_PROXY_TIMEOUT_MIN = 5
+_PROXY_TIMEOUT_MAX = 300
+_PROXY_CONNECT_TIMEOUT = 10
+
+
+def _proxy_timeout_seconds(value) -> int:
+    """The per-connection `timeout` setting, forced into 5-300 seconds.
+
+    Anything that is not a number (missing, text, a boolean) gives the default.
+    """
+    if isinstance(value, bool):
+        return _PROXY_TIMEOUT_DEFAULT
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return _PROXY_TIMEOUT_DEFAULT
+    return max(_PROXY_TIMEOUT_MIN, min(_PROXY_TIMEOUT_MAX, seconds))
+
+
+def _proxy_client_timeout(config: dict) -> aiohttp.ClientTimeout:
+    """Connecting is bounded by a fixed 10 s; after that the response may take
+    as long as it likes as long as bytes keep arriving (`timeout` is the longest
+    silence). There is deliberately no total limit: a large download or a
+    stream must not be cut off at a wall-clock time."""
+    return aiohttp.ClientTimeout(
+        total=None,
+        connect=_PROXY_CONNECT_TIMEOUT,
+        sock_read=_proxy_timeout_seconds(config.get("timeout")),
+    )
+
+
+# Never copied from the client. Every X-Forwarded-* header (not only the ones
+# set below) is dropped as well, so a forward_headers pattern such as "x-*"
+# cannot pass a client-supplied copy.
+_PROXY_BLOCKED_HEADERS = frozenset({
+    "host", "content-length", "transfer-encoding", "authorization",
+    "accept-encoding", "x-real-ip", "forwarded",
+    # Client address headers a CDN or another proxy put there: the portal sets
+    # its own from the real peer, and in browser mode no site is told the member's address.
+    "cf-connecting-ip", "true-client-ip", "x-client-ip",
+    # Portal credentials (authenticate_request accepts both): never passed on.
+    "x-api-key", "x-stream-key",
+})
+_PROXY_HOST_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]{1,255}$")
+
+
+def _proxy_header_blocked(lower_name: str) -> bool:
+    return lower_name in _PROXY_BLOCKED_HEADERS or lower_name.startswith("x-forwarded-")
+
+
+def _proxy_forwarded_scheme(request: web.Request) -> str:
+    """Scheme the client used to reach the portal ("http" or "https").
+
+    Cloudflare's CF-Visitor and X-Forwarded-Proto are believed only from a
+    trusted proxy (the same rule as get_client_ip); otherwise it is the scheme
+    of this connection itself.
+    """
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    if peername and _is_trusted_proxy(peername[0]):
+        visitor = request.headers.get("CF-Visitor")
+        if visitor:
+            try:
+                scheme = str(json.loads(visitor).get("scheme", "")).lower()
+            except (ValueError, AttributeError):
+                scheme = ""
+            if scheme in ("http", "https"):
+                return scheme
+        xfp = request.headers.get("X-Forwarded-Proto", "")
+        scheme = xfp.split(",")[-1].strip().lower()
+        if scheme in ("http", "https"):
+            return scheme
+    return "https" if request.secure else "http"
+
+
+def _host_without_port(host: str) -> str:
+    """Lower-cased host name of a Host header value (port and IPv6 brackets removed)."""
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def _proxy_forwarded_host(request: web.Request) -> str:
+    """Host name for X-Forwarded-Host: always the portal's configured one.
+
+    The client's own Host header is used only when it names the configured
+    host (so its port is kept); a client cannot choose a different name, since
+    an upstream that builds redirect URLs from it would send the portal to
+    that name. Empty when nothing usable is configured.
+    """
+    configured = (Config.HOSTNAME or "").strip()
+    host = request.host or ""
+    if (configured and _PROXY_HOST_RE.match(host)
+            and _host_without_port(host) == _host_without_port(configured)):
+        return host
+    return configured if _PROXY_HOST_RE.match(configured) else ""
+
+
+def _proxy_request_headers(request: web.Request, config: dict, upstream_host: str,
+                           proxy_prefix: str, browser_mode: bool) -> CIMultiDict:
+    """Headers sent to the upstream for one proxied request.
+
+    Only headers matching the connection's forward_headers list are copied.
+    The portal's session cookie and Authorization are never copied, and the
+    forwarding headers always come from the portal, never from the client.
+    Browser mode (any site on the internet) is told nothing about the member
+    or the portal beyond the scheme.
+    """
+    import fnmatch as _fnmatch
+
+    forward_patterns = [p.lower() for p in (config.get("forward_headers") or [])
+                        if isinstance(p, str)][:20]
+    out = CIMultiDict()
+    cookies: list[str] = []
+    for key, value in request.headers.items():
+        k = key.lower()
+        if _proxy_header_blocked(k):
+            continue
+        if k == "cookie":
+            # Drop the portal session cookie; keep the rest.
+            cookies += [c.strip() for c in value.split(";")
+                        if c.strip() and not c.strip().startswith(Config.SESSION_COOKIE_NAME + "=")]
+            continue
+        # (non-whitelisted headers are dropped, the proxy default)
+        if forward_patterns and any(_fnmatch.fnmatch(k, p) for p in forward_patterns):
+            out.add(key, value)
+    if cookies:
+        out["Cookie"] = "; ".join(cookies)
+
+    out["Host"] = upstream_host
+    out["X-Forwarded-Proto"] = _proxy_forwarded_scheme(request)
+    if not browser_mode:
+        client_ip = get_client_ip(request)
+        out["X-Forwarded-For"] = client_ip
+        out["X-Real-IP"] = client_ip
+        host = _proxy_forwarded_host(request)
+        if host:
+            out["X-Forwarded-Host"] = host
+        out["X-Forwarded-Prefix"] = proxy_prefix
+
+    if config.get("auth_header"):
+        out["Authorization"] = config["auth_header"]
+    extra = config.get("extra_headers")
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            out[k] = v
+    return out
+
+
+def _origin_parts(url: str):
+    """(scheme, host, port) of an absolute http(s) URL, scheme and host
+    lower-cased and the default port filled in; None when it cannot be parsed."""
+    from urllib.parse import urlsplit
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:
+        return None
+    if scheme not in ("http", "https") or not host:
+        return None
+    return scheme, host, port
+
+
+def _proxy_rewrite_location(loc: str, proxy_prefix: str, target_origin: str) -> str:
+    """A Location header that reaches the client from a single-site connection.
+
+    Redirects are followed by the portal itself, so this only sees what is
+    left: a 201 with a Location, a 300, a 3xx the client has to handle. Such a
+    Location has to land on /proxy/<id>/... A value already under the proxy
+    path (an app that honours X-Forwarded-Prefix) is left alone, and an
+    absolute URL on the portal's own host (an app that honours
+    X-Forwarded-Host) is reduced to its path and treated the same way.
+    Relative values need no change. Scheme and host are compared without
+    regard to case. An absolute URL on the target's own host with a different
+    scheme or port is another service: it is returned unchanged, never mapped
+    back onto the target (that would be a redirect loop).
+    """
+    from urllib.parse import urlsplit
+
+    def under_prefix(path: str) -> bool:
+        return path == proxy_prefix or path.startswith((proxy_prefix + "/", proxy_prefix + "?"))
+
+    target = _origin_parts(target_origin)
+    # The origin must end where the Location says so: another port on the
+    # same host, or a longer host name, is not the upstream's own origin.
+    n = len(target_origin)
+    if (loc[:n].lower() == target_origin.lower()
+            and loc[n:n + 1] in ("", "/", "?", "#")):
+        return proxy_prefix + loc[n:]
+    if loc.startswith("//") and target:
+        loc = target[0] + ":" + loc
+    if loc.startswith("/"):
+        return loc if under_prefix(loc) else proxy_prefix + loc
+    if loc[:8].lower().startswith(("http://", "https://")):
+        loc_origin = _origin_parts(loc)
+        if loc_origin is None:
+            return loc
+        parsed = urlsplit(loc)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+        portal_host = _host_without_port(Config.HOSTNAME or "")
+        if portal_host and loc_origin[1] == portal_host and under_prefix(path):
+            return path
+        if target and (loc_origin[0] != target[0] or loc_origin[2] != target[2]) and (
+                loc_origin[1] == target[1] or loc_origin[1] != portal_host):
+            # Another scheme or port: not the target, so never mapped onto it.
+            return loc
+        return proxy_prefix + path
+    return loc
+
+
+_PROXY_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+
+class _ProxyTooManyRedirects(aiohttp.ClientError):
+    """An upstream sent more than _PROXY_MAX_REDIRECTS redirects in a row."""
+
+
+def _proxy_redirect_url(loc: str, current_url: str, proxy_prefix: str, target_origin: str):
+    """Absolute URL the portal requests next for a redirect Location, or None
+    when the Location cannot be used.
+
+    The upstream is sent X-Forwarded-Host and X-Forwarded-Prefix, so an app
+    that honours them answers with a Location on the portal's own host or
+    under /proxy/<id>. Those name the portal, not a service to dial: they are
+    mapped back onto the upstream (the prefix is removed), never requested as
+    they stand. Anything else (another host, or the upstream's own host on
+    another scheme or port, as in an http to https upgrade) is requested as
+    given, through the outbound host policy.
+    """
+    from urllib.parse import urljoin
+
+    try:
+        absolute = urljoin(current_url, loc.strip())
+        split = urlsplit(absolute)
+    except ValueError:
+        return None
+    origin = _origin_parts(absolute)
+    if origin is None:
+        return None
+    target = _origin_parts(target_origin)
+    portal_host = _host_without_port(Config.HOSTNAME or "")
+    on_target = origin == target
+    on_portal = bool(target and portal_host and origin[1] == portal_host and origin[1] != target[1])
+    if not (on_target or on_portal):
+        return urlunsplit((split.scheme, split.netloc, split.path or "/", split.query, ""))
+    path = split.path or "/"
+    if path == proxy_prefix or path.startswith(proxy_prefix + "/"):
+        path = path[len(proxy_prefix):] or "/"
+    return urlunsplit((urlsplit(target_origin).scheme, urlsplit(target_origin).netloc, path, split.query, ""))
+
+
+def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str) -> str:
+    """A Location from a site in general-browsing mode, kept inside the proxy.
+
+    A root-relative value is put under the site's own path; an absolute URL
+    (the scheme in any letter case) is wrapped as /proxy/<id>/<url>, with the
+    scheme lower-cased so the handler recognises it, so the browser never
+    leaves the proxy and no site sees the member's address.
+    """
+    if loc.startswith("/"):
+        return f"{proxy_base}/{target_origin}{loc}"
+    if loc[:8].lower().startswith(("http://", "https://")):
+        scheme, rest = loc.split(":", 1)
+        return f"{proxy_base}/{scheme.lower()}:{rest}"
+    return loc
+
+
+@asynccontextmanager
+async def _proxy_open_upstream(session, method, url, headers, body, *, follow,
+                               proxy_prefix, target_origin, own_headers):
+    """The upstream response, after the redirects the portal follows itself.
+
+    With follow=False the first response is returned as it is. Otherwise 301,
+    302, 303, 307 and 308 are followed by hand (at most _PROXY_MAX_REDIRECTS
+    hops, each one dialled through the session's policy connector). A Location
+    that names the portal's own host or the proxy path is mapped back onto the
+    upstream first (_proxy_redirect_url). A hop to another origin gets neither
+    cookies, credentials nor the portal's forwarded host and prefix:
+    `own_headers` are the configured header names (auth_header, extra_headers)
+    that belong to the upstream alone.
+    """
+    first_origin = _origin_parts(url)
+    first_headers = headers
+    resp = None
+    hops = 0
+    try:
+        while True:
+            resp = await session.request(method=method, url=url, headers=headers,
+                                         data=body, allow_redirects=False)
+            loc = resp.headers.get("Location")
+            if not follow or resp.status not in _PROXY_REDIRECT_STATUSES or not loc:
+                break
+            nxt = _proxy_redirect_url(loc, url, proxy_prefix, target_origin)
+            if nxt is None:
+                break
+            if hops >= _PROXY_MAX_REDIRECTS:
+                raise _ProxyTooManyRedirects(f"more than {_PROXY_MAX_REDIRECTS} redirects")
+            hops += 1
+            status = resp.status
+            resp.release()
+            resp = None
+            # Like a browser: 303, and 301/302 after a POST, become a GET
+            # without the body; 307 and 308 repeat the request as it was.
+            if (status == 303 and method != "HEAD") or (status in (301, 302) and method == "POST"):
+                method, body = "GET", None
+            url = nxt
+            nxt_split = urlsplit(url)
+            if _origin_parts(url) == first_origin:
+                headers = CIMultiDict(first_headers)
+            else:
+                headers = CIMultiDict(
+                    (k, v) for k, v in first_headers.items()
+                    if k.lower() not in ("cookie", "authorization", "x-forwarded-host", "x-forwarded-prefix",
+                                         "x-forwarded-for", "x-real-ip")
+                    and k.lower() not in own_headers)
+            headers["Host"] = nxt_split.netloc
+            if body is None:
+                for k in ("Content-Type", "Content-Length", "Transfer-Encoding"):
+                    headers.popall(k, None)
+        yield resp
+    finally:
+        if resp is not None:
+            resp.release()
+
+
+def _rewrite_set_cookie(value: str, cookie_prefix: str) -> Optional[str]:
+    """One upstream Set-Cookie value, made storable under the proxy path.
+
+    Every Path is put under `cookie_prefix` (a missing one becomes the prefix
+    root, so a cookie cannot leak to another connection's proxy path), and
+    every Domain is dropped (it names the upstream host, which the browser
+    would reject on the portal's origin). Only attributes after the first
+    name=value pair are touched. Returns None for a cookie that must not be
+    passed on: one named like the portal's own session cookie.
+    """
+    parts = value.split(";")
+    if parts[0].split("=", 1)[0].strip() == Config.SESSION_COOKIE_NAME:
+        return None
+    path = ""
+    kept = [parts[0].strip()]
+    for attr in parts[1:]:
+        attr = attr.strip()
+        if not attr:
+            continue
+        name, _, val = attr.partition("=")
+        lname = name.strip().lower()
+        if lname == "domain":
+            continue
+        if lname == "path":
+            val = val.strip()
+            path = val if val.startswith("/") else ""
+            continue
+        kept.append(attr)
+    if path == cookie_prefix or path.startswith(cookie_prefix + "/"):
+        new_path = path          # an app that honours X-Forwarded-Prefix
+    else:
+        new_path = cookie_prefix + (path or "/")
+    kept.append(f"Path={new_path}")
+    return "; ".join(kept)
 
 
 async def http_proxy_connection(request: web.Request) -> web.Response:
@@ -12372,7 +12793,6 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
             config["target_url"] = f"{scheme}://{host}:{port}"
 
     verify_ssl = config.get("verify_ssl", False)
-    timeout_s = config.get("timeout", 60)
     proxy_base = f"/proxy/{conn_uuid}"
 
     # Browser mode: extract target URL from path for multi-site navigation
@@ -12493,50 +12913,25 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                     pass  # silently skip invalid regex
         upstream_url = urlunsplit((_split.scheme, _split.netloc, _path, _split.query, _split.fragment))
 
-    # Prepare headers — strip Portal auth and sensitive headers
-    _PROXY_BLOCKED_HEADERS = frozenset({
-        "host", "content-length", "transfer-encoding", "authorization",
-        "accept-encoding", "x-forwarded-for", "x-forwarded-proto", "x-real-ip",
-    })
-    forward_patterns = [p.lower() for p in (config.get("forward_headers") or [])
-                        if isinstance(p, str)][:20]
-    fwd_headers = {}
-    for key, value in request.headers.items():
-        k = key.lower()
-        if k in _PROXY_BLOCKED_HEADERS:
-            continue
-        # Strip Portal session cookie from Cookie header
-        if k == "cookie":
-            cookies = [c.strip() for c in value.split(";")
-                       if not c.strip().startswith(Config.SESSION_COOKIE_NAME + "=")]
-            if cookies:
-                fwd_headers[key] = "; ".join(cookies)
-            continue
-        # Forward header if it matches the user-configured whitelist
-        if forward_patterns:
-            import fnmatch as _fnmatch
-            if any(_fnmatch.fnmatch(k, p) for p in forward_patterns):
-                fwd_headers[key] = value
-        # (non-whitelisted headers are dropped — proxy default)
-
-    fwd_headers["Host"] = parsed_target.netloc
-    fwd_headers["X-Forwarded-For"] = request.remote or ""
-    fwd_headers["X-Forwarded-Proto"] = "https"
-    fwd_headers["X-Real-IP"] = request.remote or ""
-
-    if config.get("auth_header"):
-        fwd_headers["Authorization"] = config["auth_header"]
-    for k, v in config.get("extra_headers", {}).items():
-        fwd_headers[k] = v
+    # Prepare headers: no Portal auth is passed on, and the forwarding headers
+    # (client address, scheme, host, prefix) are set here, never copied.
+    fwd_headers = _proxy_request_headers(
+        request, config, parsed_target.netloc, proxy_prefix, browser_mode)
 
     # Record connection usage
     await db.record_connection_usage(connection["id"], token.user_id)
 
+    stream_started = False
+    stream_resp = None
+    # Registered for the whole request: revoking the member's credentials aborts
+    # it (the response has no total time limit, so nothing else would).
+    call = _ProxyHttpCall(request)
+    _register_user_proxy_call(token.user_id, call, token.token_id)
     try:
         connector = _SSRFSafeConnector(ssl=verify_ssl)
         async with aiohttp.ClientSession(
             connector=connector,
-            timeout=aiohttp.ClientTimeout(total=timeout_s),
+            timeout=_proxy_client_timeout(config),
             auto_decompress=True
         ) as session:
             body = None
@@ -12545,16 +12940,24 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 if len(body) > _PROXY_MAX_REQUEST_SIZE:
                     return web.Response(status=413, text="Request body too large")
 
-            async with session.request(
-                method=request.method,
-                url=upstream_url,
-                headers=fwd_headers,
-                data=body,
-                allow_redirects=not browser_mode,
-                max_redirects=10
+            _extra = config.get("extra_headers")
+            async with _proxy_open_upstream(
+                session, request.method, upstream_url, fwd_headers, body,
+                # Browser mode: the redirect goes to the browser with its
+                # Location rewritten (every hop then comes back through here).
+                # Otherwise the portal follows it, every hop dialled through
+                # the outbound policy connector.
+                follow=not browser_mode,
+                proxy_prefix=proxy_prefix,
+                target_origin=target_origin,
+                own_headers={str(k).lower() for k in _extra} if isinstance(_extra, dict) else set(),
             ) as resp:
-                # Build response headers (before reading body — needed for streaming path)
-                resp_headers = {}
+                call.resp = resp
+                if call.aborted:
+                    return web.Response(status=401, text="Session revoked")
+                # Build response headers (before reading body — needed for streaming path).
+                # Repeated headers (several Set-Cookie lines) are all kept.
+                resp_headers = CIMultiDict()
                 for key, value in resp.headers.items():
                     k = key.lower()
                     if k in ("transfer-encoding", "connection", "keep-alive",
@@ -12570,31 +12973,22 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                         loc = value
                         if browser_mode:
                             # Browser mode: encode full URL in proxy path
-                            if loc.startswith("/"):
-                                loc = f"{proxy_base}/{target_origin}{loc}"
-                            elif loc.startswith("http://") or loc.startswith("https://"):
-                                loc = f"{proxy_base}/{loc}"
+                            loc = _proxy_browser_location(loc, proxy_base, target_origin)
                         else:
-                            if loc.startswith(target_origin):
-                                loc = proxy_prefix + loc[len(target_origin):]
-                            elif loc.startswith("/"):
-                                loc = proxy_prefix + loc
-                            elif loc.startswith("http://") or loc.startswith("https://"):
-                                from urllib.parse import urlparse as _up
-                                redir_parsed = _up(loc)
-                                redir_path = redir_parsed.path or "/"
-                                if redir_parsed.query:
-                                    redir_path += "?" + redir_parsed.query
-                                loc = proxy_prefix + redir_path
-                        resp_headers[key] = loc
+                            loc = _proxy_rewrite_location(loc, proxy_prefix, target_origin)
+                        resp_headers.add(key, loc)
                         continue
 
-                    # Rewrite Set-Cookie Path
+                    # Every Set-Cookie: Path moved under the proxy path, Domain dropped
                     if k == "set-cookie":
-                        cookie_prefix = proxy_prefix if not browser_mode else proxy_base
-                        value = re.sub(r'(?i)path=/', f'Path={cookie_prefix}/', value, count=1)
+                        # Per-site path in browser mode, so one site's cookies
+                        # are never sent to another site.
+                        rewritten = _rewrite_set_cookie(value, proxy_prefix)
+                        if rewritten is not None:
+                            resp_headers.add(key, rewritten)
+                        continue
 
-                    resp_headers[key] = value
+                    resp_headers.add(key, value)
 
                 # Proxied content is per-connection and session-scoped — never let a shared
                 # edge cache (e.g. Cloudflare) store it keyed by URL alone across sessions.
@@ -12608,23 +13002,46 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                     # Stream binary/media directly (no rewriting needed, no size limit)
                     stream_resp = web.StreamResponse(status=resp.status, headers=resp_headers)
                     await stream_resp.prepare(request)
+                    stream_started = True
+                    client_gone = False
                     async for chunk in resp.content.iter_chunked(65536):
-                        await stream_resp.write(chunk)
-                    await stream_resp.write_eof()
+                        try:
+                            await stream_resp.write(chunk)
+                        except ConnectionError:
+                            client_gone = True
+                            break
+                    if not client_gone and not call.aborted:
+                        try:
+                            await stream_resp.write_eof()
+                        except ConnectionError:
+                            client_gone = True
+                    if call.aborted:
+                        # Ended by revocation, not by the upstream: never a clean end.
+                        logger.info(f"Proxy connection {conn_uuid}: stream ended, session revoked")
+                        call.abort()
                     return stream_resp
 
-                # Text content — read with size limit for URL rewriting
-                chunks = []
-                total_size = 0
-                while True:
-                    chunk = await resp.content.read(65536)
-                    if not chunk:
-                        break
-                    total_size += len(chunk)
-                    if total_size > _PROXY_MAX_RESPONSE_SIZE:
-                        return web.Response(status=502, text="Upstream response too large")
-                    chunks.append(chunk)
-                response_body = b''.join(chunks)
+                # Text content: read with a size limit and, because it is held in
+                # memory, a total time limit (the connection's timeout), so an
+                # upstream that trickles bytes cannot hold the buffer for ever.
+                async def _read_text_body():
+                    chunks = []
+                    total_size = 0
+                    while True:
+                        chunk = await resp.content.read(65536)
+                        if not chunk:
+                            return b''.join(chunks)
+                        total_size += len(chunk)
+                        if total_size > _PROXY_MAX_RESPONSE_SIZE:
+                            return None
+                        chunks.append(chunk)
+
+                response_body = await asyncio.wait_for(
+                    _read_text_body(), _proxy_timeout_seconds(config.get("timeout")))
+                if response_body is None:
+                    return web.Response(status=502, text="Upstream response too large")
+                if call.aborted:
+                    return web.Response(status=401, text="Session revoked")
 
                 if needs_rewriting:
                     try:
@@ -12929,7 +13346,30 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                     body=response_body
                 )
 
+    except asyncio.TimeoutError:
+        # Connect took over 10 s, the upstream was silent for `timeout` seconds,
+        # or a rewritten text response did not arrive within `timeout` in total.
+        # (aiohttp's own timeout errors are ClientErrors too, so this clause
+        # comes first.)
+        if call.aborted:
+            return _proxy_revoked_response(call, stream_resp, conn_uuid)
+        if stream_started:
+            return _proxy_cut_download(call, stream_resp, conn_uuid, "idle timeout")
+        logger.error(f"Proxy connection {conn_uuid} timed out")
+        return web.Response(
+            status=504,
+            content_type="text/html",
+            text="<html><body style='background:#1a1a2e;color:#e0e0e0;font-family:sans-serif;padding:2rem'>"
+                 "<h2>Upstream service timed out</h2>"
+                 "<p>The upstream service did not answer in time.</p>"
+                 "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
+                 "</body></html>"
+        )
     except aiohttp.ClientError as e:
+        if call.aborted:
+            return _proxy_revoked_response(call, stream_resp, conn_uuid)
+        if stream_started:
+            return _proxy_cut_download(call, stream_resp, conn_uuid, f"{type(e).__name__}: {e}")
         logger.error(f"Proxy connection {conn_uuid} error: {e}")
         return web.Response(
             status=502,
@@ -12940,6 +13380,27 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                  "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
                  "</body></html>"
         )
+    finally:
+        _unregister_user_proxy_call(token.user_id, call)
+
+
+def _proxy_cut_download(call: _ProxyHttpCall, stream_resp, conn_uuid: str, why: str):
+    """The upstream failed after the 200 and part of the body were sent.
+
+    A new response would be written into that body and the download would
+    end as if complete, so the client connection is dropped instead (the
+    client sees an incomplete body). One warning line; returning the response
+    rather than raising keeps aiohttp from logging a traceback for it.
+    """
+    logger.warning(f"Proxy connection {conn_uuid}: download cut short ({why})")
+    call.abort()
+    return stream_resp
+
+
+def _proxy_revoked_response(call: _ProxyHttpCall, stream_resp, conn_uuid: str):
+    logger.info(f"Proxy connection {conn_uuid}: ended, session revoked")
+    call.abort()
+    return stream_resp if stream_resp is not None else web.Response(status=401, text="Session revoked")
 
 
 _SEARXNG_REQUEST_HOP_HEADERS = frozenset({

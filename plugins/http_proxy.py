@@ -2,7 +2,7 @@
 
 import ipaddress
 import logging
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import asyncio
 
@@ -106,11 +106,6 @@ class HTTPProxyPlugin(PluginBase):
                     "description": "Verify SSL certificates",
                     "default": False
                 },
-                "preserve_host": {
-                    "type": "boolean",
-                    "description": "Preserve original Host header",
-                    "default": False
-                },
                 "auth_header": {
                     "type": "string",
                     "format": "password",
@@ -121,15 +116,10 @@ class HTTPProxyPlugin(PluginBase):
                     "type": "object",
                     "description": "Extra headers to add to requests"
                 },
-                "rewrite_urls": {
-                    "type": "boolean",
-                    "description": "Rewrite URLs in responses",
-                    "default": True
-                },
                 "timeout": {
                     "type": "integer",
                     "title": "Timeout (seconds)",
-                    "description": "Upstream request timeout in seconds",
+                    "description": "Longest wait for the upstream in seconds: connecting is limited to 10 s, and a response is cut off only after this long without any data. A long download is not cut off while data keeps flowing, but a response that is rewritten in memory (HTML, CSS, JavaScript, JSON) must arrive within this time in total. Values outside 5-300 are adjusted.",
                     "default": 60,
                     "minimum": 5,
                     "maximum": 300
@@ -154,7 +144,7 @@ class HTTPProxyPlugin(PluginBase):
                 "forward_headers": {
                     "type": "array",
                     "title": "Forward Headers",
-                    "description": "Header names or glob patterns to forward from the client to upstream (e.g. X-User-*, X-Request-ID). Authorization, Cookie, and Host are never forwarded.",
+                    "description": "Header names or glob patterns to forward from the client to upstream (e.g. X-User-*, X-Request-ID). The portal session cookie, Authorization, Host and every X-Forwarded-* / X-Real-IP / CF-Connecting-IP / True-Client-IP / X-Client-IP header are never copied from the client.",
                     "items": {"type": "string"},
                     "default": []
                 },
@@ -167,124 +157,6 @@ class HTTPProxyPlugin(PluginBase):
             }
         }
     )
-
-    async def handle_http(
-        self,
-        request: web.Request,
-        target: ServiceTarget
-    ) -> web.Response:
-        """Proxy HTTP request to target service."""
-        config = target.config
-        target_url = config.get("target_url")
-        verify_ssl = config.get("verify_ssl", False)
-        timeout = aiohttp.ClientTimeout(total=config.get("timeout", 60))
-
-        # SSRF protection: validate target host
-        if target_url and not await _check_proxy_target(target_url, config):
-            return web.json_response({"error": "Host not allowed"}, status=403)
-
-        # Build target URL
-        path = request.match_info.get("path", "")
-        query = request.query_string
-        url = urljoin(target_url, path)
-        if query:
-            url = f"{url}?{query}"
-
-        # Prepare headers
-        headers = dict(request.headers)
-        headers.pop("Host", None)
-
-        if not config.get("preserve_host"):
-            parsed = urlparse(target_url)
-            headers["Host"] = parsed.netloc
-
-        if config.get("auth_header"):
-            headers["Authorization"] = config["auth_header"]
-
-        for key, value in config.get("extra_headers", {}).items():
-            headers[key] = value
-
-        # Forward user info
-        headers["X-Forwarded-For"] = request.remote
-        headers["X-Forwarded-Proto"] = request.scheme
-        headers["X-Real-IP"] = request.remote
-
-        logger.debug(f"Proxying {request.method} {url}")
-
-        try:
-            connector = _new_connector(config, verify_ssl)
-            async with aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout
-            ) as session:
-                # Read request body if present (cap at 10MB)
-                body = None
-                if request.body_exists:
-                    body = await request.content.read(10 * 1024 * 1024)
-                    if not request.content.at_eof():
-                        return web.json_response({"error": "Request body too large"}, status=413)
-
-                async with session.request(
-                    method=request.method,
-                    url=url,
-                    headers=headers,
-                    data=body,
-                    allow_redirects=False
-                ) as resp:
-                    # Read response (cap at 50MB for text)
-                    response_body = await resp.content.read(50 * 1024 * 1024)
-
-                    # Prepare response headers (preserve multi-valued like Set-Cookie)
-                    hop_by_hop = {
-                        "transfer-encoding", "connection",
-                        "keep-alive", "proxy-authenticate",
-                        "proxy-authorization", "te", "trailers",
-                        "upgrade"
-                    }
-                    response_headers = {}
-                    for key, value in resp.headers.items():
-                        if key.lower() in hop_by_hop:
-                            continue
-                        # For duplicate headers (e.g. Set-Cookie), keep all values
-                        if key in response_headers:
-                            # aiohttp Response accepts only single values per key,
-                            # so combine with separator (comma for most, newline for Set-Cookie)
-                            if key.lower() == 'set-cookie':
-                                # Will be handled via resp.cookies or raw headers
-                                continue
-                            response_headers[key] = f"{response_headers[key]}, {value}"
-                        else:
-                            response_headers[key] = value
-
-                    # Optionally rewrite URLs in HTML/JS responses
-                    content_type = resp.headers.get("Content-Type", "")
-                    if config.get("rewrite_urls") and "text" in content_type:
-                        try:
-                            text = response_body.decode("utf-8")
-                            # Rewrite absolute URLs to target
-                            parsed = urlparse(target_url)
-                            text = text.replace(
-                                f"{parsed.scheme}://{parsed.netloc}",
-                                ""  # Convert to relative
-                            )
-                            response_body = text.encode("utf-8")
-                        except UnicodeDecodeError:
-                            pass  # Binary content, skip URL rewriting
-                        except Exception as e:
-                            logger.debug(f"URL rewriting failed: {e}")
-
-                    return web.Response(
-                        status=resp.status,
-                        headers=response_headers,
-                        body=response_body
-                    )
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Proxy error: {e}")
-            return web.json_response(
-                {"error": f"Upstream error: {type(e).__name__}"},
-                status=502
-            )
 
     async def handle_websocket(
         self,

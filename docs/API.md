@@ -922,6 +922,14 @@ The page polls `GET /api/me` and watches for a same-origin redirect to `/login`;
 #### ALL /proxy/{connection_id}/{path}
 Reverse proxy passthrough for HTTP connections. `{connection_id}` is the opaque connection token. Proxies all HTTP methods and WebSocket upgrades to the backend. Portal session cookies and Authorization headers are stripped from upstream requests. Proxied HTML receives a JS interceptor that rewrites URLs to stay within the proxy layer.
 
+Headers sent to the upstream: `X-Forwarded-For` and `X-Real-IP` carry the client's address (resolved the same way as for rate limiting), `X-Forwarded-Proto` the scheme the client used (`CF-Visitor` / `X-Forwarded-Proto` are believed only from a trusted proxy), `X-Forwarded-Host` the portal's configured host name (the client's own `Host` is used only when it names that host, so a client cannot pick the name) and `X-Forwarded-Prefix` the proxy path (`/proxy/{id}`). Copies of these headers (and of `Forwarded`, `CF-Connecting-IP`, `True-Client-IP` and `X-Client-IP`) sent by the client are never passed on, even when `forward_headers` matches them. Neither are `Authorization`, the portal session cookie, `X-API-Key` or `X-Stream-Key`. In `browser_mode` only `X-Forwarded-Proto` is sent.
+
+Upstream redirects are followed by the portal itself (at most 5 hops, every hop dialled through the outbound host policy, so a redirect to a blocked address is refused); a `Set-Cookie` sent by an intermediate hop is not passed on to the browser. In general-browsing mode the `3xx` goes to the browser instead, with its `Location` kept under that site's own path. A `Location` that still reaches the browser from a single-site connection (a `201`, a `300`) is kept under `/proxy/{id}/`: a value already under it is left as is, an absolute URL on the portal's own host is mapped to its path, and one on the upstream's host with another scheme or port is returned unchanged.
+
+Every upstream `Set-Cookie` is kept: each `Path` is moved under the proxy path, a missing `Path` becomes the proxy root (in `browser_mode` the path of that site, `/proxy/{id}/<origin>/`), and `Domain` is removed. An upstream cookie named like the portal session cookie is dropped.
+
+The connection's `timeout` (5-300 seconds, default 60, out-of-range values are adjusted) is the longest the upstream may stay silent; connecting is limited to 10 seconds. A download that is passed through as it arrives has no total limit and continues while data arrives; a response that is rewritten in memory (HTML, CSS, JavaScript, JSON) must arrive within this time in total. A silent upstream gives `504`. Revoking the member's sessions ends their in-progress downloads.
+
 In `browser_mode`, the path encodes the full target URL (e.g., `/proxy/{id}/https://example.com/page`), enabling multi-site navigation. Localhost and private IPs are blocked for browser-mode targets.
 
 ---
