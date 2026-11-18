@@ -5258,17 +5258,22 @@ class Database:
     # Message Editing
     # =========================================================================
 
-    async def edit_chat_message(self, message_id: int, user_id: int, new_message: str, max_age_seconds: int = 300) -> Optional[dict]:
-        """Edit a chat message within time window. Returns updated message or None."""
-        msg = await self.get_chat_message(message_id)
+    @staticmethod
+    def chat_message_editable(msg: Optional[dict], user_id: int, max_age_seconds: int = 300) -> bool:
+        """True if msg is the user's own and still inside the edit window."""
         if not msg or msg["user_id"] != user_id:
-            return None
+            return False
         created = datetime.fromisoformat(msg["created_at"])
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        if (now - created).total_seconds() > max_age_seconds:
+        return (datetime.now(timezone.utc) - created).total_seconds() <= max_age_seconds
+
+    async def edit_chat_message(self, message_id: int, user_id: int, new_message: str, max_age_seconds: int = 300) -> Optional[dict]:
+        """Edit a chat message within time window. Returns updated message or None."""
+        msg = await self.get_chat_message(message_id)
+        if not self.chat_message_editable(msg, user_id, max_age_seconds):
             return None
+        now = datetime.now(timezone.utc)
         encrypted = encrypt_message(new_message)
         edited_at = now.isoformat()
         await self.conn.execute(

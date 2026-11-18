@@ -3738,6 +3738,9 @@
                 case 'message_edited':
                     handleMessageEdited(data);
                     break;
+                case 'edit_rejected':
+                    handleEditRejected(data);
+                    break;
                 case 'message_pinned':
                     handleMessagePinned(data);
                     break;
@@ -4446,6 +4449,13 @@
                 indicator.textContent = '(edited)';
                 header.appendChild(indicator);
             }
+        }
+
+        function handleEditRejected(data) {
+            // The server kept the old text: undo the edit that was shown before it was confirmed
+            const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
+            const textEl = msgEl && msgEl.querySelector('.message-text');
+            if (textEl) textEl.innerHTML = formatMessage(data.message);
         }
 
         function startEditMessage() {

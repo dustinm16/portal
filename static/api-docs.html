@@ -5695,7 +5695,7 @@ Headers:
 
                 <!-- Auto-Moderation -->
                 <h2 id="automod">Auto-Moderation <span class="badge-admin">ADMIN</span></h2>
-                <p>Configure automatic message filtering rules that run before messages are saved. Moderators and above bypass all automod rules. Triggers are logged to the audit log.</p>
+                <p>Configure automatic message filtering rules that run before messages are saved, and again when a member edits a message. A blocked message or edit is not stored and only its author is told. Moderators and above are still blocked, but are exempt from the timeout and mute penalties. Triggers are logged to the audit log.</p>
 
                 <div class="endpoint admin-only">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
@@ -5705,7 +5705,7 @@ Headers:
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns all configured auto-moderation rules.</p>
+                        <p>Returns all configured auto-moderation rules. Each rule has <code>not_enforced_reason</code>: <code>null</code> when the rule is enforced as written, otherwise why chat skips part of it (a stored regex pattern that no longer passes the checks below is skipped; the rule's other patterns still run). The admin list shows it as "not enforced: &lt;reason&gt;".</p>
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{
@@ -5733,12 +5733,21 @@ Headers:
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Create a new auto-moderation rule. Regex patterns are validated on creation.</p>
+                        <p>Create a new auto-moderation rule. The config is validated on creation and on update; an invalid config returns 400.</p>
+                        <h4>Regex rules</h4>
+                        <ul>
+                            <li>Each pattern is at most 500 characters, a rule has at most 100 patterns, and a pattern must compile.</li>
+                            <li>A pattern that repeats a group which already contains an unbounded repeat, such as <code>(a+)+$</code>, is refused. This check is a heuristic and cannot catch every slow pattern.</li>
+                            <li>Text is truncated to 2000 characters before a regex rule sees it, so text after that is not checked by regex rules. This bounds simple patterns only.</li>
+                            <li>Patterns run in a separate worker process with a 0.25 second limit. A pattern that overruns it stops the worker, counts as no match, and is skipped for 60 seconds, during which that pattern blocks nothing for anyone.</li>
+                            <li>Messages over the chat length limit (4000 characters, for new messages and edits) are rejected by chat and never reach automod.</li>
+                            <li>Rules saved before these limits existed are checked again at run time; a pattern that fails is skipped and the rule list reports it in <code>not_enforced_reason</code>.</li>
+                        </ul>
                         <h4>Rule Types</h4>
                         <table class="param-table">
                             <tr><th>Type</th><th>Config Fields</th><th>Description</th></tr>
                             <tr><td><code>word_filter</code></td><td>words[], match_mode (exact/contains/regex)</td><td>Block messages containing specific words</td></tr>
-                            <tr><td><code>spam_filter</code></td><td>max_messages, window_seconds, max_duplicates</td><td>Rate-based spam detection</td></tr>
+                            <tr><td><code>spam_filter</code></td><td>max_messages, window_seconds, max_duplicates</td><td>Not enforced: the rule can be stored but chat does not act on it</td></tr>
                             <tr><td><code>link_filter</code></td><td>allow_list[], block_list[], block_all</td><td>URL filtering</td></tr>
                             <tr><td><code>caps_filter</code></td><td>max_caps_percent, min_length</td><td>Excessive caps detection</td></tr>
                             <tr><td><code>mention_spam</code></td><td>max_mentions</td><td>Too many @mentions in one message</td></tr>
@@ -5772,7 +5781,7 @@ Headers:
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Update an existing auto-moderation rule. All fields are optional; only provided fields are updated.</p>
+                        <p>Update an existing auto-moderation rule. All fields are optional; only provided fields are updated. The resulting rule (new type with the old config, or new config with the old type) is validated the same way as on create, and an invalid one returns 400.</p>
                     </div>
                 </div>
 

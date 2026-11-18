@@ -1253,7 +1253,7 @@ DELETE /api/admin/automod/:id          - Delete rule
 GET    /api/admin/automod/actions      - View trigger log
 ```
 
-5 rule types: `word_filter` (blocked words, exact/contains/regex), `spam_filter` (rate-based), `link_filter` (allow/block lists), `caps_filter` (max caps %), `mention_spam` (max @mentions). 4 actions: `warn`, `delete`, `timeout`, `mute`. Rules cached 30s. Moderator+ bypass all automod checks.
+5 rule types: `word_filter` (blocked words, exact/contains/regex), `spam_filter` (stored but not enforced), `link_filter` (allow/block lists), `caps_filter` (max caps %), `mention_spam` (max @mentions). 4 actions: `warn`, `delete`, `timeout`, `mute`. Rules cached 30s. Rules run through `apply_automod()` for new messages and for edits (an edit is checked before it is stored and indexed; a blocked edit keeps the old text and only the author is told). Moderator+ are still blocked but exempt from timeout/mute penalties. Config is validated by `automod.validate_automod_config()` on create and update. Regex rules run in a separate worker process (`automod.RegexRunner`) with a 0.25 s limit because Python's `re` holds the GIL: patterns are capped at 500 characters, nested quantifiers are refused by a heuristic, and text is truncated to 2000 characters before a regex sees it; a pattern that overruns its limit is skipped for 60 s; messages over the 4000-character chat limit never reach automod. A stored rule whose patterns now fail validation is skipped at run time, and `GET /api/admin/automod` reports `not_enforced_reason` per rule for the admin list.
 
 ### SEO & Public Endpoints
 

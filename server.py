@@ -128,6 +128,7 @@ from host_check import (
 import backup_manager
 import update_manager
 import vod_staging
+import automod
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -13286,22 +13287,32 @@ async def _get_automod_rules() -> list:
     return _automod_rules_cache
 
 
-def _check_word_filter(text: str, config: dict) -> bool:
+_automod_regex = automod.RegexRunner()
+_automod_warned_patterns: set = set()
+
+
+async def _check_word_filter(text: str, config: dict) -> bool:
     """Check if message matches a word filter rule."""
     words = config.get("words", [])
     match_mode = config.get("match_mode", "contains")
     text_lower = text.lower()
     for word in words:
+        if not isinstance(word, str):
+            continue
         word_lower = word.lower()
         if match_mode == "exact":
             if word_lower in text_lower.split():
                 return True
         elif match_mode == "regex":
-            try:
-                if re.search(word, text, re.IGNORECASE):
-                    return True
-            except re.error:
+            # Rules stored before validation existed may hold unsafe patterns.
+            problem = automod.regex_problem(word)
+            if problem:
+                if word not in _automod_warned_patterns and len(_automod_warned_patterns) < 1000:
+                    _automod_warned_patterns.add(word)
+                    logger.warning(f"[AutoMod] Skipping unsafe stored regex pattern: {problem}")
                 continue
+            if await _automod_regex.search(word, text):
+                return True
         else:  # contains
             if word_lower in text_lower:
                 return True
@@ -13355,7 +13366,7 @@ async def check_automod(text: str, user_id: int, channel_id: int, channel_name: 
         triggered = False
         rule_type = rule["type"]
         if rule_type == "word_filter":
-            triggered = _check_word_filter(text, config)
+            triggered = await _check_word_filter(text, config)
         elif rule_type == "link_filter":
             triggered = _check_link_filter(text, config)
         elif rule_type == "caps_filter":
@@ -13383,9 +13394,79 @@ async def check_automod(text: str, user_id: int, channel_id: int, channel_name: 
                 "action": rule["action"],
                 "duration": rule.get("action_duration", 300),
                 "rule_name": rule["name"],
-                "rule_id": rule["id"]
+                "rule_id": rule["id"],
+                "created_by": rule.get("created_by")
             }
     return None
+
+
+async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel: dict,
+                        channel_name: str, username: str, my_state: dict,
+                        edit_of: dict | None = None) -> bool:
+    """Run automod on text a member is about to post or save, and carry out the action.
+
+    Returns True if the text is blocked; the caller must then not store it. Staff
+    (moderator and above) are still blocked but are exempt from the timeout and
+    mute penalties. The author is told through ws; nobody else is. edit_of is
+    the stored message when the text is an edit of it.
+    """
+    automod_result = await check_automod(text, user_id, channel["id"], channel_name)
+    if not automod_result:
+        return False
+    am_action = automod_result["action"]
+    is_privileged = user_role in ("admin", "superadmin", "moderator")
+    rule_name = automod_result["rule_name"]
+    # chat_timeouts.moderator_id must be a real account: the penalty is booked to the
+    # account that created the rule (it is announced to the channel as "AutoMod").
+    penalty_by = automod_result.get("created_by")
+    if am_action in ("timeout", "mute") and not is_privileged and not penalty_by:
+        logger.warning(f"[AutoMod] Rule {rule_name!r} has no creator account; {am_action} not applied")
+    elif am_action in ("timeout", "mute") and not is_privileged:
+        reason = f"AutoMod: {rule_name}"
+        display = "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username)
+        anon = user_id if my_state.get("anonymous") else None
+        try:
+            if am_action == "timeout":
+                duration = automod_result.get("duration") or 300
+                await db.create_chat_timeout(user_id, penalty_by, "timeout", channel["id"], reason, duration)
+                await broadcast_to_channel(channel_name, {
+                    "type": "user_timed_out",
+                    "user_id": user_id,
+                    "username": display,
+                    "duration": duration,
+                    "reason": reason,
+                    "moderator": "AutoMod"
+                }, anon_subject=anon)
+            else:
+                await db.create_chat_timeout(user_id, penalty_by, "mute", channel["id"], reason)
+                await broadcast_to_channel(channel_name, {
+                    "type": "user_muted",
+                    "user_id": user_id,
+                    "username": display,
+                    "reason": reason,
+                    "moderator": "AutoMod"
+                }, anon_subject=anon)
+        except Exception as e:
+            logger.warning(f"[AutoMod] Could not apply {am_action} for rule {rule_name!r}: {e}")
+    if edit_of is not None:
+        await ws.send_json({
+            "type": "error",
+            "error_code": "automod",
+            "message": f"Edit blocked by auto-moderation ({rule_name}); your message was not changed"
+        })
+        # The client shows an edit before the server confirms it; give the author the stored text back.
+        await ws.send_json({
+            "type": "edit_rejected",
+            "message_id": edit_of["id"],
+            "message": edit_of["message"]
+        })
+    else:
+        await ws.send_json({
+            "type": "error",
+            "error_code": "automod",
+            "message": f"Message blocked by auto-moderation ({rule_name})"
+        })
+    return True
 
 
 def _format_poll_for_client(poll: dict, user_id: int = None) -> dict:
@@ -14700,6 +14781,12 @@ async def http_get_automod_rules(request: web.Request) -> web.Response:
         if role not in ("admin", "superadmin"):
             return web.json_response({"error": "Admin access required"}, status=403)
     rules = await db.get_automod_rules()
+    for rule in rules:
+        try:
+            cfg = json.loads(rule["config"]) if isinstance(rule["config"], str) else rule["config"]
+        except (json.JSONDecodeError, TypeError):
+            cfg = None
+        rule["not_enforced_reason"] = automod.unenforced_reason(rule["type"], cfg)
     return web.json_response({"rules": rules})
 
 
@@ -14732,13 +14819,9 @@ async def http_create_automod_rule(request: web.Request) -> web.Response:
     if action not in _AUTOMOD_ACTIONS:
         return web.json_response({"error": f"Invalid action. Must be one of: {', '.join(_AUTOMOD_ACTIONS)}"}, status=400)
 
-    # Validate regex patterns in word_filter
-    if rule_type == "word_filter" and config.get("match_mode") == "regex":
-        for word in config.get("words", []):
-            try:
-                re.compile(word)
-            except re.error as e:
-                return web.json_response({"error": f"Invalid regex pattern '{word}': {e}"}, status=400)
+    config_error = automod.validate_automod_config(rule_type, config)
+    if config_error:
+        return web.json_response({"error": config_error}, status=400)
 
     rule_id = await db.create_automod_rule(
         type=rule_type,
@@ -14786,17 +14869,24 @@ async def http_update_automod_rule(request: web.Request) -> web.Response:
     if "action" in data and data["action"] not in _AUTOMOD_ACTIONS:
         return web.json_response({"error": "Invalid action"}, status=400)
 
-    # Validate regex if updating word_filter config
-    if "config" in data:
-        config = data["config"]
-        if isinstance(config, dict) and config.get("match_mode") == "regex":
-            for word in config.get("words", []):
-                try:
-                    re.compile(word)
-                except re.error as e:
-                    return web.json_response({"error": f"Invalid regex: {e}"}, status=400)
-        if isinstance(config, dict):
-            data["config"] = json.dumps(config)
+    # Validate the rule as it will be stored: a changed type keeps the old config and
+    # a changed config keeps the old type, so check the merged result.
+    if "type" in data or "config" in data:
+        existing = next((r for r in await db.get_automod_rules() if r["id"] == rule_id), None)
+        if not existing:
+            return web.json_response({"error": "Rule not found or no changes"}, status=404)
+        if "config" in data:
+            new_config = data["config"]
+        else:
+            try:
+                new_config = json.loads(existing["config"]) if isinstance(existing["config"], str) else existing["config"]
+            except (json.JSONDecodeError, TypeError):
+                new_config = {}
+        config_error = automod.validate_automod_config(data.get("type", existing["type"]), new_config)
+        if config_error:
+            return web.json_response({"error": config_error}, status=400)
+        if "config" in data:
+            data["config"] = json.dumps(data["config"])
 
     success = await db.update_automod_rule(rule_id, **{k: v for k, v in data.items() if k in ("type", "name", "config", "enabled", "action", "action_duration")})
     if not success:
@@ -15459,53 +15549,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # Auto-moderation check (applies to all users)
                         # Mod+ are exempt from timeout/mute penalties but messages are still blocked
                         if message_text:
-                            automod_result = await check_automod(message_text, user_id, channel["id"], current_channel)
-                            if automod_result:
-                                am_action = automod_result["action"]
-                                is_privileged = user_role in ("admin", "superadmin", "moderator")
-                                if am_action in ("warn", "delete"):
-                                    await ws.send_json({
-                                        "type": "error",
-                                        "error_code": "automod",
-                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
-                                    })
-                                    continue
-                                elif am_action == "timeout":
-                                    if not is_privileged:
-                                        await db.create_chat_timeout(user_id, 0, "timeout", channel["id"],
-                                                                     f"AutoMod: {automod_result['rule_name']}",
-                                                                     automod_result.get("duration", 300))
-                                        await broadcast_to_channel(current_channel, {
-                                            "type": "user_timed_out",
-                                            "user_id": user_id,
-                                            "username": "Anonymous" if my_state["anonymous"] else (my_state.get("nickname") or username),
-                                            "duration": automod_result.get("duration", 300),
-                                            "reason": f"AutoMod: {automod_result['rule_name']}",
-                                            "moderator": "AutoMod"
-                                        }, anon_subject=user_id if my_state["anonymous"] else None)
-                                    await ws.send_json({
-                                        "type": "error",
-                                        "error_code": "automod",
-                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
-                                    })
-                                    continue
-                                elif am_action == "mute":
-                                    if not is_privileged:
-                                        await db.create_chat_timeout(user_id, 0, "mute", channel["id"],
-                                                                     f"AutoMod: {automod_result['rule_name']}")
-                                        await broadcast_to_channel(current_channel, {
-                                            "type": "user_muted",
-                                            "user_id": user_id,
-                                            "username": "Anonymous" if my_state["anonymous"] else (my_state.get("nickname") or username),
-                                            "reason": f"AutoMod: {automod_result['rule_name']}",
-                                            "moderator": "AutoMod"
-                                        }, anon_subject=user_id if my_state["anonymous"] else None)
-                                    await ws.send_json({
-                                        "type": "error",
-                                        "error_code": "automod",
-                                        "message": f"Message blocked by auto-moderation ({automod_result['rule_name']})"
-                                    })
-                                    continue
+                            if await apply_automod(ws, message_text, user_id=user_id, user_role=user_role,
+                                                   channel=channel, channel_name=current_channel,
+                                                   username=username, my_state=my_state):
+                                continue
 
                         # Rate limit: max N messages per window
                         now = monotonic()
@@ -15745,6 +15792,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         edit_ch = await db.get_chat_channel_by_name(current_channel)
                         if not edit_ch or edit_msg["channel_id"] != edit_ch["id"]:
+                            continue
+                        # Same ownership and time-window rule as the store, checked first so a
+                        # refused edit never costs the author an automod penalty.
+                        if not db.chat_message_editable(edit_msg, user_id):
+                            await ws.send_json({"type": "error", "message": "Cannot edit (5-minute window expired or not your message)"})
+                            continue
+                        if await apply_automod(ws, new_text, user_id=user_id, user_role=user_role,
+                                               channel=edit_ch, channel_name=current_channel,
+                                               username=username, my_state=my_state, edit_of=edit_msg):
                             continue
                         updated = await db.edit_chat_message(message_id, user_id, new_text)
                         if updated:
@@ -19752,6 +19808,9 @@ class PortalServer:
 
         # Shutdown vulnerability scanner
         await shutdown_scanner()
+
+        # Stop the automod regex worker process
+        await _automod_regex.close()
 
         # Shutdown plugins
         await shutdown_plugins()

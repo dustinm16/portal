@@ -1323,7 +1323,7 @@
                 <p>Automated message filtering rules that protect chat channels without requiring moderators to be online. Configure rules in the Admin Panel &rarr; Settings tab.</p>
                 <ul>
                     <li><strong>Word Filter</strong> &mdash; Block messages containing specific words or patterns. Supports exact match, contains, and regex modes.</li>
-                    <li><strong>Spam Filter</strong> &mdash; Detect rapid-fire or duplicate messages with configurable rate limits and duplicate thresholds.</li>
+                    <li><strong>Spam Filter</strong> &mdash; Can be stored, but is not enforced yet: chat does not act on it.</li>
                     <li><strong>Link Filter</strong> &mdash; Control URL posting with allow/block lists or block all links entirely.</li>
                     <li><strong>Caps Filter</strong> &mdash; Prevent excessive caps lock usage above a configurable percentage threshold.</li>
                     <li><strong>Mention Spam</strong> &mdash; Limit the number of @mentions per message to prevent notification abuse.</li>
@@ -1335,7 +1335,7 @@
                     <li><strong>Timeout</strong> &mdash; Automatically timeout the user for a configurable duration</li>
                     <li><strong>Mute</strong> &mdash; Automatically mute the user</li>
                 </ul>
-                <p>Moderators, admins, and superadmins bypass all automod rules. All triggers are logged to the audit log.</p>
+                <p>Rules apply to new messages and to edits; an edit that breaks a rule is refused and the message keeps its old text. Moderators, admins, and superadmins are still blocked by a rule but are not timed out or muted by it. All triggers are logged to the audit log.</p>
 
                 <!-- File Manager -->
                 <h2 id="file-manager">File Manager</h2>

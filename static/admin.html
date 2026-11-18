@@ -6473,7 +6473,7 @@
         // =============================================
         const AUTOMOD_TYPES = {
             word_filter: 'Word Filter',
-            spam_filter: 'Spam Filter',
+            spam_filter: 'Spam Filter (not enforced)',
             link_filter: 'Link Filter',
             caps_filter: 'Caps Filter',
             mention_spam: 'Mention Spam'
@@ -6493,7 +6493,7 @@
                 }
 
                 document.getElementById('automod-rules-body').innerHTML = rules.map(r => `<tr>
-                    <td>${escapeHtml(r.name)}</td>
+                    <td>${escapeHtml(r.name)}${r.not_enforced_reason ? `<div style="color:#f87171;font-size:0.78rem;margin-top:2px;">not enforced: ${escapeHtml(r.not_enforced_reason)}</div>` : ''}</td>
                     <td>${AUTOMOD_TYPES[r.type] || r.type}</td>
                     <td>${AUTOMOD_ACTIONS[r.action] || r.action}${r.action_duration ? ' (' + r.action_duration + 's)' : ''}</td>
                     <td><label style="cursor:pointer;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleAutomodRule(${r.id}, this.checked)"></label></td>
@@ -6596,7 +6596,8 @@
                         <option value="contains" ${mode === 'contains' ? 'selected' : ''}>Contains</option>
                         <option value="exact" ${mode === 'exact' ? 'selected' : ''}>Exact word</option>
                         <option value="regex" ${mode === 'regex' ? 'selected' : ''}>Regex</option>
-                    </select>`;
+                    </select>
+                    <div style="margin-top:4px;color:var(--text-muted);font-size:0.78rem;">Regex mode: one pattern per entry, up to 500 characters, at most 100 patterns. Patterns that repeat a group containing an unbounded repeat, such as (a+)+, are refused, but this check cannot catch every slow pattern. Text is truncated to 2000 characters before a regex rule sees it, so anything after that is not checked by regex rules. Each pattern runs in a separate process with a 0.25 s limit; a pattern that overruns it is stopped and then skipped for 60 seconds, during which it blocks nothing. Messages over the chat length limit (4000 characters) are rejected by chat and never reach automod. A saved pattern that no longer passes these checks is skipped and marked "not enforced" in the rule list.</div>`;
             } else if (type === 'link_filter') {
                 html = `<label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Block list (domains, comma-separated)</label>
                     <textarea id="am-blocklist" rows="2" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);resize:vertical;">${escapeHtml((config.block_list || []).join(', '))}</textarea>
@@ -6608,6 +6609,8 @@
                     <input type="number" id="am-maxcaps" value="${config.max_caps_percent || 70}" min="0" max="100" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
                     <label style="display:block;margin-top:4px;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Min message length</label>
                     <input type="number" id="am-minlen" value="${config.min_length || 10}" min="1" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">`;
+            } else if (type === 'spam_filter') {
+                html = `<div style="color:var(--text-muted);font-size:0.85rem;">Not enforced: this rule type is stored but chat does not act on it yet.</div>`;
             } else if (type === 'mention_spam') {
                 html = `<label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:0.85rem;">Max mentions per message</label>
                     <input type="number" id="am-maxmentions" value="${config.max_mentions || 5}" min="1" style="width:100%;padding:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">`;

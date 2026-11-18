@@ -3613,10 +3613,10 @@ Query audit log with optional filters.
 
 ### Auto-Moderation (Admin)
 
-Automated message filtering with 5 rule types and 4 action types. Moderator+ bypass automod.
+Automated message filtering with 5 rule types and 4 action types. Rules run on new messages and on edits; a blocked message or edit is not stored and only its author is told (`error` with `error_code: "automod"`; for an edit the client also gets `edit_rejected` with the stored text). Moderators and above are still blocked but are exempt from the timeout and mute penalties.
 
 #### GET /api/admin/automod
-List all automod rules.
+List all automod rules. Each rule has `not_enforced_reason`: `null` when it is enforced as written, otherwise why chat skips part of it (a stored regex pattern that no longer passes the checks below is skipped; the rule's other patterns still run). The admin list shows it as "not enforced: <reason>".
 
 #### POST /api/admin/automod
 Create a new rule.
@@ -3632,11 +3632,19 @@ Create a new rule.
 }
 ```
 
-**Rule types:** `word_filter`, `spam_filter`, `link_filter`, `caps_filter`, `mention_spam`
+**Rule types:** `word_filter`, `spam_filter` (not enforced: stored, but chat does not act on it), `link_filter`, `caps_filter`, `mention_spam`
 **Actions:** `warn`, `delete`, `timeout`, `mute`
 
+The config is validated on create and on update (400 on failure). Regex mode (`word_filter` with `match_mode: "regex"`):
+- each pattern at most 500 characters, at most 100 patterns per rule, and it must compile
+- a pattern that repeats a group already containing an unbounded repeat (`(a+)+$`, `(\w+\s?)+`, `(?:a+){2,}`) is refused; this heuristic cannot catch every slow pattern (for example `a*a*a*b` or `(a|aa)+$`)
+- text is truncated to 2000 characters before a regex rule sees it, so text after that is not checked by regex rules; this bounds simple patterns only
+- patterns run in a separate worker process with a 0.25 s limit; a pattern that overruns it is stopped, counts as no match, and is skipped for 60 s, during which that pattern blocks nothing for anyone
+- messages over the chat length limit (4000 characters, for new messages and edits) are rejected by chat and never reach automod
+- rules saved before these limits existed are re-checked at run time; a pattern that fails is skipped and the rule is marked in `not_enforced_reason`
+
 #### PUT /api/admin/automod/{id}
-Update a rule.
+Update a rule. Fields are optional; the resulting rule (including a changed `type` with the stored config) is validated like a new one.
 
 #### DELETE /api/admin/automod/{id}
 Delete a rule.
