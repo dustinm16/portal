@@ -136,16 +136,20 @@ def test_credential_check_covers_sessions_keys_and_accounts():
     asyncio.run(go())
 
 
-def test_every_register_site_is_checked_or_covered_by_the_call_registry():
+def test_every_register_site_re_checks_the_credential():
     src = (ROOT / "server.py").read_text()
     import re
     sites = [m.start() for m in re.finditer(r"^\s+_register_user_ws\(", src, re.M)]
     assert len(sites) == 3, "a new handler registers sockets: add the re-check, or this test"
-    checked = [i for i in sites if "_credential_still_valid(token)" in src[i:i + 900]]
-    assert len(checked) == 2
-    # the proxy relay registers with no await since its call was registered, and tests abort
-    proxy = [i for i in sites if i not in checked][0]
-    assert "call.aborted" in src[proxy:proxy + 900]
+    # the proxy relay too: the call registry (call.aborted) is not a substitute, it does not
+    # see a revocation that landed before the call was registered
+    unchecked = [src[:i].count("\n") + 1 for i in sites if "_credential_still_valid(token)" not in src[i:i + 1400]]
+    assert not unchecked, f"register sites without a credential re-check, at server.py lines {unchecked}"
+    proxy = [i for i in sites if "_unregister_user_proxy_call(" in src[i:i + 900]]
+    assert len(proxy) == 1
+    window = src[proxy[0]:proxy[0] + 1400]
+    credential = window.index("_credential_still_valid(token)")
+    assert "4001" in window[credential:credential + 250]
 
 
 if __name__ == "__main__":

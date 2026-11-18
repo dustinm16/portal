@@ -12960,6 +12960,11 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             if call.aborted:
                 await ws.close(code=4001, message=b"session revoked")
                 return ws
+            # The upgrade awaited since the credential was checked; as the chat and
+            # generic handlers do, check it again now that the socket is registered.
+            if not await _credential_still_valid(token):
+                await ws.close(code=4001, message=b"session revoked")
+                return ws
             connector = _SSRFSafeConnector(ssl=verify_ssl)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(ws_url) as upstream:

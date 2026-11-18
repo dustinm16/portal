@@ -594,6 +594,16 @@ async def main():
     saved = (server.authenticate_request, server.db.get_accessible_connection,
              server.db.record_connection_usage, server.resolve_checked_host,
              server.resolve_checked_host_cached, server._SSRFSafeConnector)
+    saved_cred = (server.db.get_user_by_id, server.db.is_token_valid)
+
+    # The relay re-checks the credential once its socket is registered (user 1, session "t").
+    async def fake_user(user_id):
+        return {"id": user_id} if user_id == 1 else None
+
+    async def fake_token_valid(token_id):
+        return not REVOKED
+    server.db.get_user_by_id = fake_user
+    server.db.is_token_valid = fake_token_valid
     # Test-only: the real policy refuses a loopback upstream.
     server.authenticate_request = fake_auth
     server.db.get_accessible_connection = fake_get_connection
@@ -1169,6 +1179,7 @@ async def main():
         (server.authenticate_request, server.db.get_accessible_connection,
          server.db.record_connection_usage, server.resolve_checked_host,
          server.resolve_checked_host_cached, server._SSRFSafeConnector) = saved
+        server.db.get_user_by_id, server.db.is_token_valid = saved_cred
         await portal.close()
         await upstream.close()
         await site_b.close()
