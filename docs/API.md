@@ -88,7 +88,7 @@ username=admin&password=secret&remember_me=on
 ---
 
 #### GET /logout
-End current session.
+End current session. The chat sockets opened with this session are closed (code 4001) and its voice call ends; the account's other sessions are not affected.
 
 **Response:** Redirect to `/login`
 
@@ -2141,7 +2141,9 @@ TURN server is optional — only included if configured via environment variable
 ```json
 {"type": "voice_join"}
 {"type": "voice_join", "room": "dm:42"}
+{"type": "voice_join", "resume": true, "room": "general", "resume_token": "..."}
 {"type": "voice_leave"}
+{"type": "voice_leave", "room": "general", "resume_token": "..."}
 {"type": "voice_signal", "target_user_id": 5, "signal": {"type": "offer", "sdp": "..."}}
 {"type": "voice_signal", "target_user_id": 5, "signal": {"type": "answer", "sdp": "..."}}
 {"type": "voice_signal", "target_user_id": 5, "signal": {"type": "ice-candidate", "candidate": {...}}}
@@ -2152,16 +2154,27 @@ TURN server is optional — only included if configured via environment variable
 
 **Server → Client:**
 ```json
-{"type": "voice_state", "channel": "general", "users": [{"user_id": 1, "username": "alice", "muted": false, "deafened": false, "speaking": false}]}
+{"type": "voice_state", "channel": "general", "resume_token": "...", "users": [{"user_id": 1, "username": "alice", "muted": false, "deafened": false, "speaking": false, "screen_sharing": false, "reconnecting": false}]}
 {"type": "voice_user_joined", "user_id": 2, "username": "bob"}
 {"type": "voice_user_left", "user_id": 2}
+{"type": "voice_user_reconnecting", "user_id": 2}
+{"type": "voice_user_resumed", "user_id": 2}
+{"type": "voice_resume_failed", "message": "Voice session could not be resumed"}
+{"type": "voice_denied", "message": "Already in voice chat"}
 {"type": "voice_signal", "from_user_id": 2, "signal": {"type": "offer", "sdp": "..."}}
 {"type": "voice_mute_changed", "user_id": 2, "muted": true}
 {"type": "voice_deafen_changed", "user_id": 2, "deafened": true}
 {"type": "voice_speaking_changed", "user_id": 2, "speaking": true}
 ```
 
-- `voice_state`: Sent to joiner with list of all current voice users in the channel
+- `voice_state`: Sent to joiner with list of all current voice users in the channel, plus `resume_token` (random per join, sent only to the joining socket). After a resume the same message is sent with `"resumed": true`
+- One voice session per account. A second `voice_join` from another socket of the same account (a second tab) is answered with `voice_denied` ("Already in voice chat"), also while the first session is waiting to reconnect. Closing a tab that does not own the session does not affect the call, and only the owning socket can leave, mute, deafen, signal or share a screen
+- **Reconnecting:** when the socket that owns a session closes, the session is kept for 20 seconds. Other members receive `voice_user_reconnecting` (no `voice_user_left`), and the member's entry has `"reconnecting": true` in `voice_state` and `voice_reconnecting: true` in the `users` list. Reconnecting members receive no voice messages and cannot be signalled. If nothing resumes the session within 20 seconds, `voice_user_left` is sent
+- **Resume:** on the new socket, send `voice_join` with `resume: true`, the `room` from `voice_state.channel` and the `resume_token`. It is accepted only for the caller's own account, only with the matching token, and only while the session is reconnecting or is owned by an older socket of the same account (the older socket then receives `voice_denied`). Room access is checked again (private channel membership, stream bans, DM participation) and a channel room is refused for an anonymous member. No channel `join` is needed first. On success the new socket gets `voice_state` with `resumed: true` and the others get `voice_user_resumed`; otherwise the socket gets `voice_resume_failed` and the session is left as it was. The token stays valid for the lifetime of the session and is never put in broadcasts or logs; clients should keep it in memory only
+- **No grace period** for a `voice_leave`, for a revoked session (password reset, role change, account delete, password change, logout: close code 4001, also when the call is only being held) or for switching anonymous mode on: the session is removed at once and `voice_user_left` is sent. A logout closes only the chat sockets opened with that session and ends that session's call; the account's other sessions stay
+- **Leave while disconnected:** a `voice_leave` that carries `resume_token` (and optionally `room`) ends the account's own voice session from any of its sockets, also while the session is only being held. It is accepted only with the matching token for the caller's own account and removes the session at once; with a wrong token nothing happens. A client whose user clicks Leave while its socket is down sends this on the next socket instead of a resume
+- **Removed from the room:** a member who is banned from the stream chat, removed from a private channel or leaves a group DM while in that room's call is taken out of the call at once (`voice_denied`, then `voice_user_left` for the others)
+- A `voice_signal` offer may carry `"fresh": true`: the receiver discards its existing connection to the sender and starts over (used when joining and when resuming)
 - `voice_signal`: Targeted relay — only sent to the specified user, never broadcast
 - `voice_speaking`: Rate-limited to 1 broadcast per 100ms per user
 - Users can only be in voice in one channel at a time; switching text channels auto-leaves voice

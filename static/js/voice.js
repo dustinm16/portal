@@ -26,6 +26,19 @@ const VoiceChat = (() => {
     let _pendingCandidates = new Map(); // user_id -> [candidates] (buffered before remote desc set)
     let _makingOffer = new Set();  // user_ids we're currently creating offers for
 
+    // Reconnect state. The resume token is returned by the server when we join
+    // and lives only in this variable (never in storage), so another tab of the
+    // same account cannot take the call over. _reconnecting is true while our
+    // own chat socket is down and we are waiting to resume on a new one.
+    const GIVE_UP_MS = 30000;       // server keeps the seat for 20 s
+    let _room = null;
+    let _resumeToken = null;
+    let _reconnecting = false;
+    let _giveUpTimer = null;
+    // A Leave clicked while the socket was down: the seat is still held on the
+    // server, so the next socket sends a leave with the resume token.
+    let _pendingLeave = null;       // {room, token}
+
     // Screen sharing state
     let _screenStream = null;       // MediaStream from getDisplayMedia
     let _screenSharing = false;     // Are we sharing?
@@ -64,6 +77,69 @@ const VoiceChat = (() => {
         _onScreenShareChange = onScreenShareChange || null;
         _loadPrefs();
         _fetchIceServers();
+        if (ws && !ws.__voiceBound) {
+            ws.__voiceBound = true;
+            ws.addEventListener('close', (ev) => _onSocketClosed(ws, ev));
+        }
+        // A Leave clicked while disconnected: end the held seat on this socket.
+        if (_pendingLeave && !_inVoice) {
+            setTimeout(() => _sendPendingLeave(ws), 0);
+        }
+        // A new socket while we are in a call: take our seat back on it.
+        if (_inVoice) {
+            if (!_resumeToken || !_room) {
+                _cleanup();
+                _notifyState();
+            } else {
+                // After the page's own channel join, which it sends right after init().
+                setTimeout(() => _sendResume(ws), 0);
+            }
+        }
+    }
+
+    function _sendResume(ws) {
+        if (!_inVoice || ws !== _ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'voice_join', resume: true, room: _room, resume_token: _resumeToken
+        }));
+    }
+
+    function _sendPendingLeave(ws) {
+        if (!_pendingLeave || _inVoice || ws !== _ws || ws.readyState !== WebSocket.OPEN) return;
+        const p = _pendingLeave;
+        _pendingLeave = null;
+        ws.send(JSON.stringify({ type: 'voice_leave', room: p.room, resume_token: p.token }));
+    }
+
+    function _clearGiveUp() {
+        if (_giveUpTimer) { clearTimeout(_giveUpTimer); _giveUpTimer = null; }
+    }
+
+    function _onSocketClosed(ws, ev) {
+        if (ws !== _ws || !_inVoice) return;
+        if (ev && ev.code === 4001) {
+            // Signed out elsewhere: the server ended the call, the page leaves.
+            _pendingLeave = null;
+            _cleanup();
+            _notifyState();
+            return;
+        }
+        // Keep the microphone and the peer connections: audio between browsers
+        // does not go through this socket and often keeps flowing.
+        _reconnecting = true;
+        _clearGiveUp();
+        _giveUpTimer = setTimeout(() => {
+            _giveUpTimer = null;
+            if (_inVoice && _reconnecting) _lostForGood();
+        }, GIVE_UP_MS);
+        _notifyState();
+    }
+
+    function _lostForGood() {
+        _pendingLeave = null;
+        _cleanup();
+        _notifyState();
+        if (window.Portal && Portal.toast) Portal.toast('Voice connection lost. Join voice again.', 'error');
     }
 
     function handleMessage(data) {
@@ -74,6 +150,14 @@ const VoiceChat = (() => {
             // The server refused or ended this user's voice session
             if (_inVoice) { _cleanup(); _notifyState(); }
             if (window.Portal && Portal.toast && data.message) Portal.toast(data.message, 'error');
+        } else if (type === 'voice_resume_failed') {
+            // The seat was gone (grace over, or not ours to take back)
+            if (_inVoice) { _cleanup(); _notifyState(); }
+            if (window.Portal && Portal.toast) Portal.toast(data.message || 'Voice connection lost. Join voice again.', 'error');
+        } else if (type === 'voice_user_reconnecting') {
+            _setUserReconnecting(data.user_id, true);
+        } else if (type === 'voice_user_resumed') {
+            _setUserReconnecting(data.user_id, false);
         } else if (type === 'voice_user_joined') {
             _handleUserJoined(data);
         } else if (type === 'voice_user_left') {
@@ -116,6 +200,7 @@ const VoiceChat = (() => {
             _ws.send(JSON.stringify(msg));
         }
         _inVoice = true;
+        _reconnecting = false;
         _muted = false;
         _deafened = false;
         _speaking = false;
@@ -130,6 +215,9 @@ const VoiceChat = (() => {
         // Send leave to server
         if (_ws && _ws.readyState === WebSocket.OPEN) {
             _ws.send(JSON.stringify({ type: 'voice_leave' }));
+        } else if (_reconnecting && _room && _resumeToken) {
+            // The server still holds our seat; it is ended on the next socket.
+            _pendingLeave = { room: _room, token: _resumeToken };
         }
         _cleanup();
         _notifyState();
@@ -137,6 +225,10 @@ const VoiceChat = (() => {
 
     function _cleanup() {
         _inVoice = false;
+        _reconnecting = false;
+        _room = null;
+        _resumeToken = null;
+        _clearGiveUp();
         _speaking = false;
         _pttActive = false;
 
@@ -432,7 +524,16 @@ const VoiceChat = (() => {
 
     // Signal handlers
     function _handleVoiceState(data) {
-        // Initial state on join — list of existing voice users
+        // Initial state on join — list of existing voice users. The same message
+        // answers a resume (data.resumed), then only peers that are not connected
+        // are negotiated again.
+        const resumed = !!data.resumed;
+        if (data.resume_token) _resumeToken = data.resume_token;
+        if (data.channel) _room = data.channel;
+        if (resumed) {
+            _reconnecting = false;
+            _clearGiveUp();
+        }
         _voiceUsers.clear();
         _screenSharerId = null;
         for (const u of (data.users || [])) {
@@ -441,18 +542,60 @@ const VoiceChat = (() => {
                 muted: u.muted,
                 deafened: u.deafened,
                 speaking: u.speaking,
-                screen_sharing: u.screen_sharing || false
+                screen_sharing: u.screen_sharing || false,
+                reconnecting: !!u.reconnecting
             });
             if (u.screen_sharing) _screenSharerId = u.user_id;
         }
         // Create peer connections to existing users (we're the offerer)
         for (const u of (data.users || [])) {
-            if (_peers.has(u.user_id)) continue;
             // Don't create a peer to ourselves
             if (_isMe(u.user_id)) continue;
+            // A member that is reconnecting cannot receive our offer; they offer
+            // to us when they are back.
+            if (u.reconnecting) continue;
+            const pc = _peers.get(u.user_id);
+            if (pc) {
+                if (resumed && pc.connectionState !== 'connected') _createAndOffer(u.user_id);
+                continue;
+            }
             _createAndOffer(u.user_id);
         }
+        if (resumed) _resendLocalState();
         _notifyState();
+    }
+
+    // Mute, deafen and speaking changes made while the socket was down never
+    // reached the server; tell it where we are now.
+    function _resendLocalState() {
+        if (!_ws || _ws.readyState !== WebSocket.OPEN) return;
+        _ws.send(JSON.stringify({ type: 'voice_mute', muted: _muted }));
+        _ws.send(JSON.stringify({ type: 'voice_deafen', deafened: _deafened }));
+        _ws.send(JSON.stringify({ type: 'voice_speaking', speaking: _speaking }));
+    }
+
+    function _setUserReconnecting(userId, value) {
+        const user = _voiceUsers.get(userId);
+        if (user) user.reconnecting = value;
+        _notifyState();
+    }
+
+    // Close one peer connection and everything hanging off it.
+    function _dropPeer(userId) {
+        const pc = _peers.get(userId);
+        if (pc) {
+            pc.onicecandidate = null;
+            pc.onnegotiationneeded = null;
+            pc.ontrack = null;
+            pc.onconnectionstatechange = null;
+            pc.close();
+            _peers.delete(userId);
+        }
+        const audio = _audioElements.get(userId);
+        if (audio) { audio.srcObject = null; audio.remove(); _audioElements.delete(userId); }
+        _screenSenders.delete(userId);
+        _pendingCandidates.delete(userId);
+        _makingOffer.delete(userId);
     }
 
     function _isMe(userId) {
@@ -460,6 +603,9 @@ const VoiceChat = (() => {
     }
 
     async function _createAndOffer(userId) {
+        // Start from nothing: a stale connection to this user is thrown away
+        // here, and the "fresh" flag makes the other side do the same.
+        _dropPeer(userId);
         _makingOffer.add(userId);
         const pc = _createPeerConnection(userId);
         try {
@@ -469,7 +615,7 @@ const VoiceChat = (() => {
                 _ws.send(JSON.stringify({
                     type: 'voice_signal',
                     target_user_id: userId,
-                    signal: { type: 'offer', sdp: offer.sdp }
+                    signal: { type: 'offer', sdp: offer.sdp, fresh: true }
                 }));
             }
         } catch (e) {
@@ -483,7 +629,8 @@ const VoiceChat = (() => {
         const userId = data.user_id;
         _voiceUsers.set(userId, {
             username: data.username,
-            muted: false, deafened: false, speaking: false, screen_sharing: false
+            muted: false, deafened: false, speaking: false, screen_sharing: false,
+            reconnecting: false
         });
         // The new joiner will receive voice_state and create offers to us
         // We wait for their offer — no action needed here
@@ -500,14 +647,7 @@ const VoiceChat = (() => {
             }
         }
         _voiceUsers.delete(userId);
-        _screenSenders.delete(userId);
-        // Close peer
-        const pc = _peers.get(userId);
-        if (pc) { pc.close(); _peers.delete(userId); }
-        // Remove audio
-        const audio = _audioElements.get(userId);
-        if (audio) { audio.srcObject = null; audio.remove(); _audioElements.delete(userId); }
-        _pendingCandidates.delete(userId);
+        _dropPeer(userId);
         _notifyState();
     }
 
@@ -523,7 +663,11 @@ const VoiceChat = (() => {
             const offerCollision = _makingOffer.has(fromId) ||
                 (_peers.get(fromId)?.signalingState !== 'stable' && _peers.has(fromId));
 
-            if (!polite && offerCollision) {
+            // A fresh offer (join, or resume after a dropped connection) replaces
+            // whatever we had with that user, so it is never a collision.
+            if (signal.fresh) _dropPeer(fromId);
+
+            if (!signal.fresh && !polite && offerCollision) {
                 // Impolite peer ignores incoming offer during glare
                 return;
             }
@@ -724,6 +868,7 @@ const VoiceChat = (() => {
         if (_onStateChange) {
             _onStateChange({
                 inVoice: _inVoice,
+                reconnecting: _reconnecting,
                 muted: _muted,
                 deafened: _deafened,
                 speaking: _speaking,
@@ -742,6 +887,7 @@ const VoiceChat = (() => {
     function getState() {
         return {
             inVoice: _inVoice,
+            reconnecting: _reconnecting,
             muted: _muted,
             deafened: _deafened,
             speaking: _speaking,

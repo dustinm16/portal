@@ -655,6 +655,9 @@
         .watch-voice-controls button.active { color: var(--accent-red, #f04747); border-color: var(--accent-red, #f04747); }
         .watch-voice-controls .vc-disconnect { background: var(--accent-red, #f04747); color: #fff; border: none; }
         .watch-voice-controls button.sharing { color: var(--accent-green, #43b581); border-color: var(--accent-green, #43b581); }
+        .watch-voice-reconnect { display: none; flex-basis: 100%; color: var(--text-primary, #dcddde); }
+        .watch-voice-reconnect.show { display: block; }
+        .watch-voice-controls { flex-wrap: wrap; }
         .watch-voice-users { flex: 1; overflow-x: auto; color: var(--text-muted, #72767d); white-space: nowrap; }
         @media (pointer: coarse) { .watch-voice-controls button, .watch-voice-btn { min-height: 44px; } }
         .watch-screen-share { display:none; background:#000; border-bottom:1px solid rgba(255,255,255,0.1); padding:0.3rem; flex-direction:column; }
@@ -799,6 +802,7 @@
                 </div>
             </div>
             <div class="watch-voice-controls" id="watch-voice-controls">
+                <div class="watch-voice-reconnect" id="wv-reconnect" role="status">Reconnecting voice...</div>
                 <button id="wv-mute-btn" onclick="VoiceChat.toggleMute()">Mute</button>
                 <button id="wv-deafen-btn" onclick="VoiceChat.toggleDeafen()">Deafen</button>
                 <button id="wv-share-btn" onclick="toggleWatchScreenShare()" style="display:none;">Share</button>
@@ -839,7 +843,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=44"></script>
-    <script src="/static/js/voice.js?v=6"></script>
+    <script src="/static/js/voice.js?v=8"></script>
     <script>
         let streamId = null;
         let streamData = null;
@@ -1841,6 +1845,8 @@
             const shareBtn = document.getElementById('wv-share-btn');
             const users = document.getElementById('wv-users');
 
+            document.getElementById('wv-reconnect').classList.toggle('show', !!(state.inVoice && state.reconnecting));
+
             if (state.inVoice) {
                 btn.classList.add('in-voice');
                 btn.textContent = 'Leave Voice';
@@ -1861,7 +1867,7 @@
                         shareBtn.disabled = !!state.screenSharerId;
                     }
                 }
-                users.textContent = state.users.map(u => u.username + (u.speaking ? '*' : '') + (u.screen_sharing ? ' 🖥️' : '')).join(', ');
+                users.textContent = state.users.map(u => u.username + (u.reconnecting ? ' (reconnecting)' : '') + (u.speaking ? '*' : '') + (u.screen_sharing ? ' 🖥️' : '')).join(', ');
             } else {
                 btn.classList.remove('in-voice');
                 btn.textContent = 'Join Voice';

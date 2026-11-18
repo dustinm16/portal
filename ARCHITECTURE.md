@@ -663,7 +663,7 @@ GET  /api/voice/ice-servers          - ICE server config (STUN/TURN)
 WS   /ws/chat                        - Voice signaling (piggybacks on chat WS)
 ```
 
-Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively.
+Voice chat uses WebRTC P2P mesh (2-10 users). Server relays signaling only — no audio processing or storage. Audio encrypted via DTLS-SRTP natively. A dropped chat socket keeps the voice seat for 20 s (`voice_user_reconnecting`, then `voice_user_resumed` or `voice_user_left`); see docs/API.md.
 
 ### System Info
 
@@ -965,7 +965,7 @@ Open Relay Portal is designed with privacy and security as core principles:
 19. **Service Log PII Redaction** - Managed service logs auto-redact IPs, stream keys, passwords, tokens, and secrets
 20. **Stream Hash Redaction** - Internal `stream_key_hash` and `public_key_hash` stripped from all API responses (open, public, non-owner individual stream endpoints)
 21. **Watch Page Auth Expiry** - Expired sessions redirect to login instead of silently polling with 401s; API calls send `Accept: application/json` for proper error responses
-22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection; speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
+22. **Voice Chat Security** - WebRTC DTLS-SRTP encryption for all audio; `Permissions-Policy: microphone=(self)` restricts mic access to same origin; voice state is ephemeral (in-memory only, no database persistence); multi-tab voice rejection (a voice entry belongs to its socket; a dropped socket is held 20 s and resumed only by the same account with the per-join token; revoked sessions end the call at once); speaking broadcasts rate-limited (1 per 100ms); signaling validates target user presence before forwarding
 23. **RTMP Token Security** - Plain RTMP publish uses temporary `rtmp_` prefixed tokens; tokens are SHA-256 hashed in the database; single-use with a configurable grace period for reconnects; per-stream toggle (`rtmp_enabled`) prevents unauthorized plain RTMP usage
 24. **Certificate Management** - Admin-only cert operations (upload, generation, Let's Encrypt); private keys never exposed via API; cert/key pair validation before activation; file permissions 0o600 on private keys
 25. **File Manager Security** - Path traversal prevention via `Path.resolve()` + root check; blocked files list (`.env`, credentials); symlinks resolved and checked; configurable root directory; upload size limits enforced server-side

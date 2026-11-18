@@ -330,19 +330,30 @@ def _unregister_user_ws(user_id: int, ws) -> None:
 
 
 async def close_user_websockets(user_id: int, except_token_id: str = None,
-                                keep_prefixes: tuple = ()) -> int:
+                                keep_prefixes: tuple = (),
+                                only_token_id: str = None) -> int:
     """Close a user's open WebSockets after their credentials were revoked.
 
     except_token_id keeps the sockets opened with that token (the caller's own
     session). keep_prefixes keeps the sockets opened with a kind of credential
-    that was not revoked (token ids "apikey-N" and "streamkey-N"). Returns the
-    number of sockets closed.
+    that was not revoked (token ids "apikey-N" and "streamkey-N").
+    only_token_id closes just the sockets opened with that one token and keeps
+    every other session of the user (a single logout). Returns the number of
+    sockets closed.
     """
+    def _spared(tid) -> bool:
+        if only_token_id is not None and tid != only_token_id:
+            return True
+        return bool((except_token_id and tid == except_token_id)
+                    or (keep_prefixes and str(tid).startswith(keep_prefixes)))
+
     targets = [
         ws for ws, tid in list(_user_websockets.get(user_id, {}).items())
-        if not (except_token_id and tid == except_token_id)
-        and not (keep_prefixes and str(tid).startswith(keep_prefixes))
+        if not _spared(tid)
     ]
+    # A revoked session ends its voice call at once, with no reconnect grace,
+    # also when the socket is already gone and the call is only being held.
+    await _voice_revoke_user(user_id, _spared)
     if targets:
         await asyncio.gather(
             *(ws.close(code=4001, message=b"session revoked") for ws in targets),
@@ -4316,6 +4327,8 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     )
 
     if ban_id:
+        # A banned member does not stay in the stream chat's voice call.
+        await _voice_eject_if_not_allowed(user_id)
         # Get banned user's username for the response
         banned_user = await db.get_user_by_id(user_id)
         logger.info(f"User {banned_user['username'] if banned_user else user_id} banned from stream {stream['name']} by user {token.user_id}")
@@ -11962,6 +11975,9 @@ async def http_logout(request: web.Request) -> web.Response:
             token = await authenticate_request(request)
             if token:
                 await db.revoke_token(token.token_id)
+                # The chat sockets opened with this session and its voice call
+                # end with it (code 4001); the user's other sessions stay.
+                await close_user_websockets(token.user_id, only_token_id=token.token_id)
         except Exception:
             pass  # Best effort - still clear cookie
 
@@ -14633,6 +14649,7 @@ def _chat_users_list(users_info: list, channel: str, viewer_id, viewer_role) -> 
             "voice_muted": voice_info.get("muted", False),
             "voice_deafened": voice_info.get("deafened", False),
             "voice_speaking": voice_info.get("speaking", False),
+            "voice_reconnecting": bool(voice_info.get("reconnecting", False)),
             "screen_sharing": voice_info.get("screen_sharing", False)
         }
         if anon and not _viewer_sees_identity(viewer_id, viewer_role, u["id"]):
@@ -15117,6 +15134,7 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
     # Users can leave channels themselves
     if target_id == token.user_id:
         await db.remove_channel_member(channel_id, target_id)
+        await _voice_eject_if_not_allowed(target_id)
         return web.json_response({"success": True})
 
     # Otherwise need mod/channel-mod access
@@ -15124,6 +15142,7 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
         return web.json_response({"error": "Moderator access required"}, status=403)
 
     await db.remove_channel_member(channel_id, target_id)
+    await _voice_eject_if_not_allowed(target_id)
 
     target = await db.get_user_by_id(target_id)
     await audit_log("channel_member_remove", token.user_id, user["username"] if user else "unknown",
@@ -16353,6 +16372,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         )
 
                         if ban_id:
+                            # A banned member does not stay in the voice call.
+                            await _voice_eject_if_not_allowed(target_user_id)
                             # Get banned user info
                             banned_user = await db.get_user_by_id(target_user_id)
                             # Only a ban made from an anonymous post is masked.
@@ -16500,6 +16521,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     # Voice Chat Signaling
                     # =========================================================
                     elif msg_type == "voice_join":
+                        # A resume re-attaches this socket to the voice entry
+                        # the user already has (see _voice_resume).
+                        if data.get("resume"):
+                            resumed_room = await _voice_resume(
+                                ws, user_id, user_role, token.token_id, my_state, data)
+                            if resumed_room:
+                                voice_room = resumed_room
+                            continue
+
                         # Determine voice room: channel name or dm:{conv_id}
                         requested_room = data.get("room")
                         if requested_room and requested_room.startswith("dm:"):
@@ -16526,14 +16556,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                                 "message": ANON_VOICE_MESSAGE})
                             continue
 
-                        # Check not already in voice anywhere
-                        already_in = None
-                        for vc, vc_users in voice_state.items():
-                            if user_id in vc_users:
-                                already_in = vc
-                                break
-                        if already_in:
-                            await ws.send_json({"type": "error", "message": "Already in voice chat"})
+                        # One voice session per account: a second tab is
+                        # refused, also while the first one is reconnecting
+                        # (only a resume with the join's token takes it over).
+                        if _voice_find(user_id)[1] is not None:
+                            await ws.send_json({"type": "voice_denied",
+                                                "message": "Already in voice chat"})
                             continue
 
                         # Add to voice state
@@ -16546,25 +16574,19 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "muted": False,
                             "deafened": False,
                             "speaking": False,
-                            "screen_sharing": False
+                            "screen_sharing": False,
+                            "reconnecting": False,
+                            "resume_token": secrets.token_urlsafe(16),
+                            "token_id": token.token_id,
                         }
                         voice_room = target_room
 
                         # Send current voice users to joiner
-                        voice_users = []
-                        for vid, vdata in voice_state[voice_room].items():
-                            voice_users.append({
-                                "user_id": vid,
-                                "username": vdata["username"],
-                                "muted": vdata["muted"],
-                                "deafened": vdata["deafened"],
-                                "speaking": vdata["speaking"],
-                                "screen_sharing": vdata.get("screen_sharing", False)
-                            })
                         await ws.send_json({
                             "type": "voice_state",
                             "channel": voice_room,
-                            "users": voice_users
+                            "users": _voice_users_payload(voice_room),
+                            "resume_token": voice_state[voice_room][user_id]["resume_token"]
                         })
 
                         # Broadcast join to voice room participants
@@ -16578,23 +16600,18 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         logger.info(f"[Voice] {display_name} joined voice in {voice_room}")
 
                     elif msg_type == "voice_leave":
+                        # With the resume token this ends the account's own
+                        # session from a new socket, for a Leave that was
+                        # clicked while the old socket was down.
+                        if isinstance(data.get("resume_token"), str):
+                            if await _voice_leave_with_token(user_id, data):
+                                voice_room = None
+                            continue
                         if not voice_room:
                             continue
-                        if voice_room in voice_state and user_id in voice_state[voice_room]:
-                            # Auto-stop screen share if leaving while sharing
-                            if voice_state[voice_room][user_id].get("screen_sharing"):
-                                await broadcast_to_voice_room(voice_room, {"type": "screen_share_stopped", "user_id": user_id})
-                            del voice_state[voice_room][user_id]
-                            await broadcast_to_voice_room(voice_room, {
-                                "type": "voice_user_left",
-                                "user_id": user_id
-                            })
-                            if not voice_room.startswith("dm:"):
-                                await broadcast_users_list(voice_room)
-                            if not voice_state[voice_room]:
-                                del voice_state[voice_room]
-                            display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
-                            logger.info(f"[Voice] {display_name} left voice in {voice_room}")
+                        # Only the socket that owns the session can end it.
+                        if _voice_owned(voice_room, user_id, ws) is not None:
+                            await _voice_remove(voice_room, user_id)
                         voice_room = None
 
                     elif msg_type == "voice_signal":
@@ -16611,10 +16628,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if target_user_id == user_id:
                             continue  # Don't relay signals to self
 
-                        # Find target in voice state
-                        if (voice_room in voice_state and user_id in voice_state[voice_room]
-                                and target_user_id in voice_state[voice_room]):
-                            target_ws = voice_state[voice_room][target_user_id]["ws"]
+                        # Find target in voice state (a member that is
+                        # reconnecting has no live socket to receive it)
+                        target_entry = voice_state.get(voice_room, {}).get(target_user_id)
+                        if (_voice_owned(voice_room, user_id, ws) is not None
+                                and target_entry is not None
+                                and not target_entry.get("reconnecting")):
+                            target_ws = target_entry["ws"]
                             try:
                                 if not target_ws.closed:
                                     await target_ws.send_json({
@@ -16627,21 +16647,24 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                     elif msg_type == "voice_mute":
                         muted = bool(data.get("muted", False))
-                        if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
-                            voice_state[voice_room][user_id]["muted"] = muted
+                        own_entry = _voice_owned(voice_room, user_id, ws)
+                        if own_entry is not None:
+                            own_entry["muted"] = muted
                             bcast = {"type": "voice_mute_changed", "user_id": user_id, "muted": muted}
                             await broadcast_to_voice_room(voice_room, bcast)
 
                     elif msg_type == "voice_deafen":
                         deafened = bool(data.get("deafened", False))
-                        if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
-                            voice_state[voice_room][user_id]["deafened"] = deafened
+                        own_entry = _voice_owned(voice_room, user_id, ws)
+                        if own_entry is not None:
+                            own_entry["deafened"] = deafened
                             bcast = {"type": "voice_deafen_changed", "user_id": user_id, "deafened": deafened}
                             await broadcast_to_voice_room(voice_room, bcast)
 
                     elif msg_type == "voice_speaking":
                         speaking = bool(data.get("speaking", False))
-                        if voice_room and voice_room in voice_state and user_id in voice_state[voice_room]:
+                        own_entry = _voice_owned(voice_room, user_id, ws)
+                        if own_entry is not None:
                             # Rate-limit speaking broadcasts (max 1 per 100ms)
                             rate_key = (voice_room, user_id)
                             now = monotonic()
@@ -16650,12 +16673,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 continue
                             _voice_speaking_last[rate_key] = now
 
-                            voice_state[voice_room][user_id]["speaking"] = speaking
+                            own_entry["speaking"] = speaking
                             bcast = {"type": "voice_speaking_changed", "user_id": user_id, "speaking": speaking}
                             await broadcast_to_voice_room(voice_room, bcast)
 
                     elif msg_type == "screen_share_start":
-                        if not voice_room or voice_room not in voice_state or user_id not in voice_state[voice_room]:
+                        own_entry = _voice_owned(voice_room, user_id, ws)
+                        if own_entry is None:
                             continue
                         # Check timeout/mute in channel rooms (not DMs)
                         if not voice_room.startswith("dm:"):
@@ -16672,16 +16696,19 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if already_sharing:
                             await ws.send_json({"type": "error", "message": "Someone is already sharing their screen"})
                             continue
-                        voice_state[voice_room][user_id]["screen_sharing"] = True
+                        if _voice_owned(voice_room, user_id, ws) is not own_entry:
+                            continue  # the session changed while the checks above ran
+                        own_entry["screen_sharing"] = True
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
                         bcast = {"type": "screen_share_started", "user_id": user_id, "username": display_name}
                         await broadcast_to_voice_room(voice_room, bcast)
                         logger.info(f"[Voice] {display_name} started screen sharing in {voice_room}")
 
                     elif msg_type == "screen_share_stop":
-                        if not voice_room or voice_room not in voice_state or user_id not in voice_state[voice_room]:
+                        own_entry = _voice_owned(voice_room, user_id, ws)
+                        if own_entry is None:
                             continue
-                        voice_state[voice_room][user_id]["screen_sharing"] = False
+                        own_entry["screen_sharing"] = False
                         bcast = {"type": "screen_share_stopped", "user_id": user_id}
                         await broadcast_to_voice_room(voice_room, bcast)
                         display_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
@@ -17001,31 +17028,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         else:
             _online_users[user_id] = count
 
-        # Clean up voice state (remove from any room)
-        for vc in list(voice_state.keys()):
-            vc_users = voice_state.get(vc)
-            if vc_users is None:
-                continue
-            # Only the socket that joined voice may end it: closing a second
-            # socket (pop-out chat window) must not drop the voice call.
-            if user_id in vc_users and vc_users[user_id].get("ws") is ws:
-                # Auto-stop screen share on disconnect
-                if vc_users[user_id].get("screen_sharing"):
-                    try:
-                        await broadcast_to_voice_room(vc, {"type": "screen_share_stopped", "user_id": user_id})
-                    except (ConnectionError, ConnectionResetError, TypeError, KeyError):
-                        pass
-                del vc_users[user_id]
-                try:
-                    await broadcast_to_voice_room(vc, {"type": "voice_user_left", "user_id": user_id})
-                    if not vc.startswith("dm:"):
-                        await broadcast_users_list(vc)
-                except (ConnectionError, ConnectionResetError, TypeError, KeyError):
-                    pass
-                if not vc_users:
-                    voice_state.pop(vc, None)
+        # Voice: only the entries this socket owns are touched, so closing a
+        # second tab leaves the call in the first one alone. An owned entry
+        # keeps its place for a short grace period so the same browser can
+        # resume it on a new socket (revoked sessions were removed already).
+        await _voice_close_safely(ws, user_id)
         # Clean up speaking rate-limit entries
-        for key in [k for k in _voice_speaking_last if k[1] == user_id]:
+        for key in [k for k in _voice_speaking_last
+                    if k[1] == user_id and user_id not in voice_state.get(k[0], {})]:
             _voice_speaking_last.pop(key, None)
 
         # Clean up chat room
@@ -17249,6 +17259,7 @@ async def http_leave_dm_conversation(request: web.Request) -> web.Response:
     if not await db.is_dm_participant(conv_id, token.user_id):
         return web.json_response({"error": "Not a participant"}, status=403)
     await db.leave_dm_conversation(conv_id, token.user_id)
+    await _voice_eject_if_not_allowed(token.user_id)
     return web.json_response({"left": True})
 
 
@@ -17596,32 +17607,299 @@ async def drop_channel_voice(user_id: int) -> None:
     """Take a user out of every channel voice room and tell them why.
 
     Used when anonymous mode is switched on: voice payloads carry the real
-    account id, so the member cannot stay in a channel voice room.
+    account id, so the member cannot stay in a channel voice room. A session
+    that is waiting to reconnect is dropped too (its old socket is closed, so
+    the notice only goes to a socket that is still open).
     """
     for room in list(voice_state.keys()):
         users = voice_state.get(room)
         if not users or user_id not in users or room.startswith("dm:"):
             continue
         entry = users[user_id]
-        if entry.get("screen_sharing"):
-            await broadcast_to_voice_room(room, {"type": "screen_share_stopped", "user_id": user_id})
-        del users[user_id]
         try:
             if not entry["ws"].closed:
                 await entry["ws"].send_json({"type": "voice_denied", "message": ANON_VOICE_MESSAGE})
         except (ConnectionError, ConnectionResetError, TypeError):
             pass
+        await _voice_remove(room, user_id, entry)
+
+
+# Voice sessions. voice_state[room][user_id] is one entry per account:
+#   ws            the socket that owns the session (the wrapper the handler uses)
+#   reconnecting  True while that socket is gone and the grace period runs
+#   resume_token  random per join, sent only to the joiner; a resume needs it
+#   token_id      the web session / key the owning socket authenticated with
+#   grace_task    the task that removes the entry when the grace period ends
+VOICE_RESUME_GRACE = 20.0
+_voice_grace_tasks: set = set()
+
+
+def _voice_find(user_id: int):
+    """(room, entry) of the user's voice session, or (None, None)."""
+    for room, users in voice_state.items():
+        entry = users.get(user_id)
+        if entry is not None:
+            return room, entry
+    return None, None
+
+
+def _voice_owned(room, user_id: int, ws):
+    """The user's entry in room when ws owns it and it is not reconnecting."""
+    if not room:
+        return None
+    entry = voice_state.get(room, {}).get(user_id)
+    if entry is None or entry.get("ws") is not ws or entry.get("reconnecting"):
+        return None
+    return entry
+
+
+def _voice_users_payload(room: str) -> list:
+    return [
+        {
+            "user_id": vid,
+            "username": vdata["username"],
+            "muted": vdata["muted"],
+            "deafened": vdata["deafened"],
+            "speaking": vdata["speaking"],
+            "screen_sharing": vdata.get("screen_sharing", False),
+            "reconnecting": bool(vdata.get("reconnecting")),
+        }
+        for vid, vdata in voice_state.get(room, {}).items()
+    ]
+
+
+async def _voice_remove(room: str, user_id: int, expected=None) -> bool:
+    """The leave sequence: drop the entry, stop a screen share, tell the room.
+
+    expected, when given, makes this a no-op unless that exact entry is still
+    the user's (a grace timer must not remove a session that was resumed)."""
+    users = voice_state.get(room)
+    entry = users.get(user_id) if users else None
+    if entry is None or (expected is not None and entry is not expected):
+        return False
+    del users[user_id]
+    if not users:
+        voice_state.pop(room, None)
+    task = entry.pop("grace_task", None)
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+    _voice_speaking_last.pop((room, user_id), None)
+    try:
+        if entry.get("screen_sharing"):
+            await broadcast_to_voice_room(room, {"type": "screen_share_stopped", "user_id": user_id})
         await broadcast_to_voice_room(room, {"type": "voice_user_left", "user_id": user_id})
-        if not users:
-            voice_state.pop(room, None)
-        await broadcast_users_list(room)
+        if not room.startswith("dm:"):
+            await broadcast_users_list(room)
+    except (ConnectionError, ConnectionResetError, TypeError, KeyError):
+        pass
+    logger.info(f"[Voice] {entry.get('username', user_id)} left voice in {room}")
+    return True
+
+
+async def _voice_grace_expire(room: str, user_id: int, entry: dict) -> None:
+    try:
+        await asyncio.sleep(VOICE_RESUME_GRACE)
+        if entry.get("grace_task") is not asyncio.current_task() or not entry.get("reconnecting"):
+            return
+        await _voice_remove(room, user_id, entry)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"[Voice] Grace expiry failed in {room}: {e}")
+
+
+async def _voice_enter_grace(room: str, user_id: int, entry: dict) -> None:
+    """The owning socket closed: keep the entry for VOICE_RESUME_GRACE seconds."""
+    entry["reconnecting"] = True
+    task = asyncio.create_task(_voice_grace_expire(room, user_id, entry))
+    entry["grace_task"] = task
+    _voice_grace_tasks.add(task)
+    task.add_done_callback(_voice_grace_tasks.discard)
+    try:
+        await broadcast_to_voice_room(room, {"type": "voice_user_reconnecting", "user_id": user_id})
+        if not room.startswith("dm:"):
+            await broadcast_users_list(room)
+    except Exception as e:
+        # The entry is already marked and the timer runs; telling the room is
+        # best effort and must not stop the caller's own cleanup.
+        logger.warning(f"[Voice] Could not announce the lost connection in {room}: {e}")
+    logger.info(f"[Voice] {entry.get('username', user_id)} lost the connection in {room}, waiting to resume")
+
+
+async def _voice_socket_closed(ws, user_id: int) -> None:
+    """Called when a chat socket closes: start the grace period for the voice
+    entries this socket owns and leave every other entry alone."""
+    for room in list(voice_state.keys()):
+        entry = (voice_state.get(room) or {}).get(user_id)
+        if entry is None or entry.get("ws") is not ws or entry.get("reconnecting"):
+            continue
+        await _voice_enter_grace(room, user_id, entry)
+
+
+async def _voice_close_safely(ws, user_id: int) -> None:
+    """_voice_socket_closed for the end of the chat handler: whatever goes
+    wrong with the voice entries is logged, so the chat-room cleanup that
+    follows always runs."""
+    try:
+        await _voice_socket_closed(ws, user_id)
+    except Exception as e:
+        logger.error(f"[Voice] Cleanup after a closed chat socket failed for user {user_id}: {e}")
+
+
+async def _voice_leave_with_token(user_id: int, data: dict) -> bool:
+    """voice_leave that carries the resume token: ends the caller's own voice
+    session from any socket of the account, also while it is only being held
+    (a Leave clicked while the connection was down). The caller's account id
+    selects the entry and the token must match, so another account or another
+    tab without the token cannot end it."""
+    room, entry = _voice_find(user_id)
+    presented = data.get("resume_token")
+    if entry is None or not isinstance(presented, str):
+        return False
+    if data.get("room") is not None and data.get("room") != room:
+        return False
+    if not hmac.compare_digest(presented.encode("utf-8"), str(entry.get("resume_token", "")).encode("utf-8")):
+        return False
+    return await _voice_remove(room, user_id, entry)
+
+
+async def _voice_eject_if_not_allowed(user_id: int) -> None:
+    """After a ban or a membership removal: if the user's current voice room is
+    no longer open to them, take them out of it at once. Never raises."""
+    try:
+        room, entry = _voice_find(user_id)
+        if entry is None:
+            return
+        role = await _chat_role_of_user(user_id)
+        if await _voice_room_allowed(room, user_id, role):
+            return
+        ws = entry.get("ws")
+        if ws is not None and not entry.get("reconnecting"):
+            try:
+                await asyncio.wait_for(ws.send_json({
+                    "type": "voice_denied",
+                    "message": "You can no longer take part in this voice chat"}), 2)
+            except (asyncio.TimeoutError, ConnectionError, ConnectionResetError, TypeError, RuntimeError):
+                pass
+        await _voice_remove(room, user_id, entry)
+    except Exception as e:
+        logger.warning(f"[Voice] Could not re-check voice access for user {user_id}: {e}")
+
+
+async def _voice_revoke_user(user_id: int, spares) -> None:
+    """Remove at once (no grace) every voice entry whose owning session is
+    being closed. spares(token_id) is True for sessions that stay."""
+    for room in list(voice_state.keys()):
+        entry = (voice_state.get(room) or {}).get(user_id)
+        if entry is None or entry.get("token_id") is None or spares(entry["token_id"]):
+            continue
+        # A failure while telling the room must never keep the revoked
+        # sockets open, so it is logged and the caller goes on to close them.
+        try:
+            await _voice_remove(room, user_id, entry)
+        except Exception as e:
+            logger.warning(f"[Voice] Could not announce the end of a revoked call in {room}: {e}")
+
+
+async def _voice_room_allowed(room: str, user_id: int, user_role: str) -> bool:
+    """Whether the user may still be in this voice room (checked on resume)."""
+    if room.startswith("dm:"):
+        try:
+            return await db.is_dm_participant(int(room.split(":", 1)[1]), user_id)
+        except (ValueError, IndexError):
+            return False
+    channel = await db.get_chat_channel_by_name(room)
+    if not channel:
+        return False
+    if channel.get("visibility", "public") == "private" and user_role not in ("admin", "superadmin"):
+        if not await db.is_channel_member(channel["id"], user_id):
+            return False
+    stream = await db.get_stream_by_chat_channel(channel["id"])
+    if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
+        return False
+    return True
+
+
+async def _voice_notify_replaced(old_ws) -> None:
+    try:
+        await asyncio.wait_for(
+            old_ws.send_json({"type": "voice_denied", "message": "Voice moved to a newer connection"}), 2)
+    except (asyncio.TimeoutError, ConnectionError, ConnectionResetError, TypeError, RuntimeError):
+        pass
+
+
+async def _voice_resume(ws, user_id: int, user_role: str, token_id, my_state: dict, data: dict):
+    """voice_join with resume:true. Re-attaches ws to the user's own voice
+    entry and returns its room, or answers voice_resume_failed and returns None.
+
+    The entry is looked up by the caller's own account id, and the caller must
+    present the random resume token that voice_join returned to the socket that
+    created the session. It is taken over only while the entry is reconnecting
+    or while its current socket is being replaced by this one. A second tab,
+    which never saw the token, cannot do either."""
+    async def fail():
+        await ws.send_json({"type": "voice_resume_failed",
+                            "message": "Voice session could not be resumed"})
+        return None
+
+    room, entry = _voice_find(user_id)
+    presented = data.get("resume_token")
+    if entry is None or not isinstance(presented, str) or data.get("room") != room:
+        return await fail()
+    if not hmac.compare_digest(presented.encode("utf-8"), str(entry.get("resume_token", "")).encode("utf-8")):
+        return await fail()
+    if my_state["anonymous"] and not room.startswith("dm:"):
+        await ws.send_json({"type": "voice_denied", "message": ANON_VOICE_MESSAGE})
+        await _voice_remove(room, user_id, entry)
+        return None
+    if not await _voice_room_allowed(room, user_id, user_role):
+        await _voice_remove(room, user_id, entry)
+        return await fail()
+
+    # No await from here to the swap: the grace timer cannot slip in between.
+    if voice_state.get(room, {}).get(user_id) is not entry:
+        return await fail()
+    old_ws = entry.get("ws")
+    if old_ws is not ws:
+        task = entry.pop("grace_task", None)
+        if task is not None:
+            task.cancel()
+        entry["ws"] = ws
+        entry["reconnecting"] = False
+        entry["token_id"] = token_id
+        entry["username"] = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or entry["username"])
+
+    if old_ws is not ws and old_ws is not None and not old_ws.closed:
+        # The replaced socket may be half open; do not wait for it.
+        notice = asyncio.create_task(_voice_notify_replaced(old_ws))
+        _voice_grace_tasks.add(notice)
+        notice.add_done_callback(_voice_grace_tasks.discard)
+    try:
+        await ws.send_json({
+            "type": "voice_state",
+            "channel": room,
+            "users": _voice_users_payload(room),
+            "resume_token": entry["resume_token"],
+            "resumed": True,
+        })
+    except (ConnectionError, ConnectionResetError, TypeError):
+        pass
+    if old_ws is not ws:
+        await broadcast_to_voice_room(room, {"type": "voice_user_resumed", "user_id": user_id}, exclude=ws)
+        if not room.startswith("dm:"):
+            await broadcast_users_list(room)
+        logger.info(f"[Voice] {entry['username']} resumed voice in {room}")
+    return room
 
 
 async def broadcast_to_voice_room(room: str, message: dict, exclude=None):
-    """Broadcast a message to all users in a voice room."""
+    """Broadcast a message to all users in a voice room. Members that are
+    reconnecting have no live socket and are skipped."""
     if room not in voice_state:
         return
     for vid, vdata in list(voice_state[room].items()):
+        if vdata.get("reconnecting"):
+            continue
         vws = vdata.get("ws")
         if vws and vws != exclude:
             try:

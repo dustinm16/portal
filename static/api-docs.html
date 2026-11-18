@@ -3025,12 +3025,17 @@ ws.send(JSON.stringify({
                     <tr>
                         <td><span class="param-name">voice_join</span></td>
                         <td>room (optional)</td>
-                        <td>Join voice in the current text channel, or pass <code>room: "dm:{conversation_id}"</code> for DM voice. Voice in a channel is refused while anonymous mode is on (the server answers <code>voice_denied</code>), and turning anonymous mode on removes the user from a channel voice room the same way</td>
+                        <td>Join voice in the current text channel, or pass <code>room: "dm:{conversation_id}"</code> for DM voice. Voice in a channel is refused while anonymous mode is on (the server answers <code>voice_denied</code>), and turning anonymous mode on removes the user from a channel voice room the same way. One voice session per account: a second tab is answered with <code>voice_denied</code>. The <code>voice_state</code> reply carries a random <code>resume_token</code> for this join</td>
+                    </tr>
+                    <tr>
+                        <td><span class="param-name">voice_join</span> (resume)</td>
+                        <td>resume: true, room, resume_token</td>
+                        <td>Re-attach a new socket to your own voice session after the old socket dropped. Needs the token from the join and the room from <code>voice_state.channel</code>; accepted only for your own account and only while the session is reconnecting or owned by an older socket of yours. The reply is <code>voice_state</code> with <code>resumed: true</code>, or <code>voice_resume_failed</code></td>
                     </tr>
                     <tr>
                         <td><span class="param-name">voice_leave</span></td>
-                        <td>&mdash;</td>
-                        <td>Leave voice chat</td>
+                        <td>room, resume_token (both optional)</td>
+                        <td>Leave voice chat (only the socket that owns the session can; the call ends at once, with no reconnect period). With <code>resume_token</code> from the join the leave is accepted from any socket of your own account, also while the session is held after a dropped connection (a Leave clicked while disconnected)</td>
                     </tr>
                     <tr>
                         <td><span class="param-name">voice_signal</span></td>
@@ -3053,6 +3058,9 @@ ws.send(JSON.stringify({
                         <td>Voice activity indicator (rate-limited to 1/100ms)</td>
                     </tr>
                 </table>
+
+                <h3>Voice Reconnect</h3>
+                <p>When the socket that owns a voice session closes, the session is kept for 20 seconds. Other members receive <code>voice_user_reconnecting</code> instead of <code>voice_user_left</code>, then <code>voice_user_resumed</code> if the same account resumes in time, or <code>voice_user_left</code> after about 20 seconds. Members that are reconnecting show <code>reconnecting: true</code> in <code>voice_state</code> and <code>voice_reconnecting: true</code> in the <code>users</code> list, receive no voice messages and are skipped when broadcasting. A password reset, role change, account delete or anonymous mode ends a session at once, also while it is being held. Closing a second tab does not affect the call. Audio between browsers does not go through the socket, so a short drop often does not interrupt it; the client re-negotiates only the peers that are no longer connected (an offer with <code>fresh: true</code>). iOS suspends background pages, which still ends a call.</p>
 
                 <h3>Voice Modes</h3>
                 <p>Users can choose between two voice activation modes (stored in browser localStorage):</p>
