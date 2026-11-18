@@ -16530,6 +16530,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if await _chat_member_blocked(ws, edit_ch, user_id=user_id, user_role=user_role,
                                                       msg_times=chat_msg_times, rate_limit=chat_rate_limit,
                                                       rate_window=chat_rate_window):
+                            # The client shows an edit before the server confirms it: give the
+                            # author the stored text back, as for an edit automod refuses.
+                            await ws.send_json({
+                                "type": "edit_rejected",
+                                "message_id": edit_msg["id"],
+                                "message": edit_msg["message"]
+                            })
                             continue
                         if await apply_automod(ws, new_text, user_id=user_id, user_role=user_role,
                                                channel=edit_ch, channel_name=current_channel,

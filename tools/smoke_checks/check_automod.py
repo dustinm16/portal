@@ -245,6 +245,10 @@ async def run(ctx):
         await asyncio.sleep(0.5)
         st_again = await state(ids["amcarl"], data["amcarl"], [])
         carl_rows = [t for t in st_again.get("timeouts", []) if t["user_id"] == data["amcarl"]]
+        rej_again = await _wait_for(ev["amcarl"], lambda e: e.get("type") == "edit_rejected", start=marks["amcarl"])
+        ctx.ok("automod: a refused edit of a timed-out member gives the author the stored text back",
+               rej_again is not None and rej_again.get("message_id") == ids["amcarl"]
+               and rej_again.get("message") == old["amcarl"], json.dumps(rej_again))
         ctx.ok("automod: a timed-out member's edit gets the timeout error, not an automod penalty",
                e_again is not None and e_again.get("error_code") == "timeout", json.dumps(e_again))
         ctx.ok("automod: that edit books no second penalty row and tells the channel nothing",

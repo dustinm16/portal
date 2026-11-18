@@ -173,6 +173,9 @@ def test_edit_and_send_run_the_gate_before_automod():
     assert edit.index("_chat_member_blocked(") < edit.index("apply_automod(") < edit.index("db.edit_chat_message(")
     # the ownership and window refusals stay first: a refused edit costs no rate-limit slot
     assert edit.index("chat_message_editable(") < edit.index("_chat_member_blocked(")
+    # a gate refusal gives the author the stored text back (the client shows edits optimistically)
+    refusal = edit[edit.index("_chat_member_blocked("):edit.index("apply_automod(")]
+    assert '"type": "edit_rejected"' in refusal and 'edit_msg["message"]' in refusal and "continue" in refusal
     send_at = src.index('elif msg_type == "message":')
     send = src[send_at:src.index("elif msg_type ==", send_at + 10)]
     assert send.index("_chat_member_blocked(") < send.index("apply_automod(") < send.index("db.create_chat_message(")
