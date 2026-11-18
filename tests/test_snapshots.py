@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import update_manager as um  # noqa: E402
+import vod_staging  # noqa: E402
+
+# The sandboxes live under /tmp, which a custom staging folder may not (see
+# tests/test_vod_staging.py); these tests are about snapshots, not that rule.
+vod_staging.TEMP_ROOTS = ()
 
 
 def mode(p) -> int:
@@ -618,6 +623,92 @@ def test_failed_snapshot_cleanup_runs_off_the_event_loop():
             assert seen, f"{broken}: failed snapshot was not cleaned up"
             assert all(t != main_ident[0] for t in seen), f"{broken}: rmtree ran on the event loop thread"
             assert not list(um.SNAPSHOTS_DIR.glob("snap_*")), broken
+
+
+def test_snapshot_skips_vod_staging_and_rollback_keeps_it():
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        (sb.root / "data" / "vod_tmp" / "1_2026-01-01_1").mkdir(parents=True)
+        pending = sb.root / "data" / "vod_tmp" / "1_2026-01-01_1" / "chunk_000.mkv"
+        pending.write_text("pending")
+        (sb.root / "data" / "keep.txt").write_text("k")
+        custom = sb.root / "elsewhere"
+        custom.mkdir()
+        (custom / "chunk_001.mkv").write_text("pending")
+        vod_staging.ensure_private_dir(str(custom), adopt_nonempty=True)  # the portal marks its own folder
+        saved = Config.VOD_TEMP_DIR
+        Config.VOD_TEMP_DIR = str(custom)
+        try:
+            meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+            snap = Path(meta["path"])
+            assert not (snap / "data" / "vod_tmp").exists(), "staging folder was copied into the snapshot"
+            assert not (snap / "elsewhere").exists(), "a relocated staging folder was copied into the snapshot"
+            assert (snap / "data" / "keep.txt").exists()
+            # Rollback restores code only and leaves data/ (and the pending chunk) alone.
+            (sb.root / "server.py").write_text("changed\n")
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.VOD_TEMP_DIR = saved
+        assert (sb.root / "server.py").read_text() == "print('x')\n"
+        assert pending.read_text() == "pending", "rollback removed a pending VOD chunk"
+        # ... and so is a custom folder directly inside the project folder
+        assert (custom / "chunk_001.mkv").read_text() == "pending", "rollback removed a custom staging folder"
+
+
+def _staging_nested_setup(sb, marker: bool):
+    """A project with code/ (restorable) and a staging folder code/vods inside it."""
+    populate(sb.root)
+    (sb.root / "code").mkdir()
+    (sb.root / "code" / "mod.py").write_text("v1\n")
+    nested = sb.root / "code" / "vods"
+    nested.mkdir()
+    (nested / "chunk_009.mkv").write_text("pending")
+    if marker:
+        vod_staging.ensure_private_dir(str(nested), adopt_nonempty=True)
+    return nested
+
+
+def test_rollback_keeps_a_custom_staging_folder_nested_in_a_code_folder():
+    from config import Config
+    with Sandbox() as sb:
+        nested = _staging_nested_setup(sb, marker=True)
+        saved = Config.VOD_TEMP_DIR
+        Config.VOD_TEMP_DIR = str(nested)
+        try:
+            meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+            snap = Path(meta["path"])
+            assert not (snap / "code" / "vods").exists(), "nested staging folder was copied into the snapshot"
+            assert (snap / "code" / "mod.py").read_text() == "v1\n"
+            (sb.root / "code" / "mod.py").write_text("v2\n")
+            (sb.root / "code" / "extra.py").write_text("new\n")
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.VOD_TEMP_DIR = saved
+        assert (nested / "chunk_009.mkv").read_text() == "pending", "rollback removed the nested staging folder"
+        assert (sb.root / "code" / "mod.py").read_text() == "v1\n", "code next to the staging folder was not restored"
+        assert not (sb.root / "code" / "extra.py").exists(), "rollback left a file that is not in the snapshot"
+
+
+def test_unmarked_configured_folder_is_not_treated_as_staging_by_snapshot_or_rollback():
+    # A VOD_TEMP_DIR the portal refused (not its own folder) must not be frozen:
+    # the update process reads the raw setting and has no way to know it was refused.
+    from config import Config
+    with Sandbox() as sb:
+        populate(sb.root)
+        code = sb.root / "tools"
+        code.mkdir()
+        (code / "t.py").write_text("v1\n")
+        saved = Config.VOD_TEMP_DIR
+        Config.VOD_TEMP_DIR = str(code)
+        try:
+            meta = asyncio.run(um.create_snapshot("test", db_path=str(sb.root / "none.db")))
+            assert (Path(meta["path"]) / "tools" / "t.py").exists(), "an unmarked folder was left out of the snapshot"
+            (code / "t.py").write_text("v2\n")
+            _run_rollback_with_restart(sb, meta["id"])
+        finally:
+            Config.VOD_TEMP_DIR = saved
+        assert (sb.root / "tools" / "t.py").read_text() == "v1\n", "an unmarked folder was frozen against rollback"
 
 
 if __name__ == "__main__":

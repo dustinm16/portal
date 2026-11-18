@@ -63,7 +63,7 @@ _SKIP_DIRS = {".git", "venv", ".venv", "__pycache__", "certs", "logs", "recordin
 # Keys the runner always forces in the staged .env.
 _FORCED_ENV = (
     "HOST", "PORT", "HOSTNAME", "SSL_CERT", "SSL_KEY", "DATABASE_PATH",
-    "RECORDINGS_DIR", "PORTAL_STAGE_MODE", "PROBE_BLOCK_STRIKES", "PROBE_BLOCK_SECONDS",
+    "RECORDINGS_DIR", "VOD_TEMP_DIR", "PORTAL_STAGE_MODE", "PROBE_BLOCK_STRIKES", "PROBE_BLOCK_SECONDS",
     "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW",
 )
 # Keys dropped from a copied .env (they enable outgoing calls to third parties).
@@ -216,6 +216,7 @@ def write_env(stage: Path, port: int, cert: Path, key: Path, base_env: Path | No
         "SSL_KEY": str(key),
         "DATABASE_PATH": str(stage / "portal.db"),
         "RECORDINGS_DIR": str(stage / "recordings"),
+        "VOD_TEMP_DIR": str(stage / "data" / "vod_tmp"),
         "PORTAL_STAGE_MODE": "1",
         # turn on the scanner-probe blocker so a check about it is not vacuous
         "PROBE_BLOCK_STRIKES": "3",

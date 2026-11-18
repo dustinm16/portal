@@ -21,6 +21,7 @@ from time import time
 from typing import Optional
 
 from config import Config
+import vod_staging
 
 logger = logging.getLogger("portal.updates")
 
@@ -448,6 +449,27 @@ EXCLUDE_DIRS = {"venv", "__pycache__", ".git", "backups"}
 EXCLUDE_SUFFIXES = {".pyc", ".db-shm", ".db-wal"}
 
 
+def _vod_staging_dirs() -> list:
+    """Absolute paths of the VOD staging folder(s): never snapshotted, never removed by a rollback.
+
+    Chunks waiting to upload can be gigabytes and are not restorable. That is the
+    default folder under data/ plus the configured one, but a configured folder
+    only counts when the portal created it (marker file). Otherwise a
+    VOD_TEMP_DIR that the portal refused at start, such as a code folder, would
+    be skipped by snapshots and frozen by rollbacks.
+    """
+    # Real paths throughout: the snapshot walks PORTAL_DIR, which is resolved.
+    paths = [os.path.realpath(os.path.join(str(PORTAL_DIR), "data", "vod_tmp"))]
+    try:
+        configured = os.path.realpath(Config.VOD_TEMP_DIR)
+        if configured not in paths and vod_staging.has_marker(configured) \
+                and not vod_staging.dangerous_reason(configured, str(PORTAL_DIR)):
+            paths.append(configured)
+    except (OSError, ValueError):
+        pass
+    return paths
+
+
 def _snapshot_size(snap_dir: Path) -> int:
     """Return total size of snapshot directory in bytes."""
     total = 0
@@ -685,11 +707,13 @@ async def create_snapshot(reason: str = "manual", db_path: Optional[str] = None)
         logger.info("Git stash created for snapshot %s", snap_id)
 
     # Copy files excluding certain dirs/files
+    vod_dirs = set(_vod_staging_dirs())
+
     def _ignore(src, names):
         ignored = set()
         for name in names:
             p = Path(src) / name
-            if name in EXCLUDE_DIRS:
+            if name in EXCLUDE_DIRS or os.path.abspath(p) in vod_dirs:
                 ignored.add(name)
             elif p.is_file() and p.suffix in EXCLUDE_SUFFIXES:
                 ignored.add(name)
@@ -1130,6 +1154,44 @@ _ROLLBACK_PRESERVE_DIRS = {"venv", "backups", ".git", "data", "__pycache__"}
 _ROLLBACK_PRESERVE_FILES = {".env", "portal.db", "portal.db-shm", "portal.db-wal", "portal.db.backup"}
 
 
+def _rollback_staging_keep() -> tuple:
+    """(preserve_names, keep_path) for the VOD staging folder during a rollback.
+
+    A staging folder directly under the project folder is preserved by name like
+    data/. One nested deeper (for example "code/vods") sets keep_path: the folders
+    above it are cleaned and restored around it, and it is left alone.
+    """
+    names = set()
+    keep = None
+    root = os.path.realpath(str(PORTAL_DIR))
+    for path in _vod_staging_dirs():
+        rel = os.path.relpath(os.path.realpath(path), root)
+        parts = Path(rel).parts
+        if not parts or parts[0] == os.pardir or os.path.isabs(rel):
+            continue  # the project folder itself or outside it: nothing to protect
+        if parts[0] in _ROLLBACK_PRESERVE_DIRS:
+            continue
+        if len(parts) == 1:
+            names.add(parts[0])
+        else:
+            keep = Path(root) / rel
+    return names, keep
+
+
+def _rmtree_except(directory: Path, keep: Path) -> None:
+    """Remove everything under *directory* except *keep* and the folders leading to it."""
+    for child in directory.iterdir():
+        if child == keep:
+            continue
+        if not child.is_symlink() and child.is_dir():
+            if child in keep.parents:
+                _rmtree_except(child, keep)
+            else:
+                shutil.rmtree(str(child))
+        else:
+            child.unlink()
+
+
 def _backup_dirs_problems() -> list:
     """Describe every way backups/ or backups/snapshots/ is not private to the portal user."""
     uid = os.geteuid()
@@ -1275,7 +1337,8 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
     if not snap_dir.exists():
         raise RuntimeError(f"Snapshot directory not found: {snap_id}")
 
-    PRESERVE_DIRS = _ROLLBACK_PRESERVE_DIRS
+    staging_names, staging_keep = _rollback_staging_keep()
+    PRESERVE_DIRS = _ROLLBACK_PRESERVE_DIRS | staging_names
     PRESERVE_FILES = _ROLLBACK_PRESERVE_FILES
 
     meta = json.loads(meta_file.read_text(encoding="utf-8"))
@@ -1306,7 +1369,9 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
         if item.name in PRESERVE_DIRS or item.name in PRESERVE_FILES:
             continue
         try:
-            if item.is_dir():
+            if staging_keep is not None and not item.is_symlink() and item.resolve() in staging_keep.parents:
+                _rmtree_except(item.resolve(), staging_keep)
+            elif item.is_dir():
                 shutil.rmtree(str(item))
             else:
                 item.unlink()
@@ -1323,7 +1388,8 @@ async def _apply_rollback(job: dict, snap_id: str) -> None:
                 # Preserve symlinks as-is (don't follow — prevents symlink escape)
                 os.symlink(os.readlink(item), dest)
             elif item.is_dir():
-                shutil.copytree(str(item), str(dest), symlinks=True)
+                # dest may still exist when it holds the preserved staging folder
+                shutil.copytree(str(item), str(dest), symlinks=True, dirs_exist_ok=True)
             else:
                 shutil.copy2(str(item), str(dest))
         except Exception as e:

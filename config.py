@@ -81,6 +81,19 @@ class Config:
     )
     RECORDING_ENABLED: bool = os.getenv("RECORDING_ENABLED", "true").lower() == "true"
 
+    # Local staging folder for VOD chunks that are waiting to be uploaded.
+    # Must survive a restart, so it is not under /tmp. A relative value is
+    # resolved against the project directory. A folder that is not safe to use
+    # (see vod_staging.dangerous_reason) is refused at start and the default
+    # below is used instead; the server then updates VOD_TEMP_DIR to match.
+    VOD_TEMP_DIR_DEFAULT: str = os.path.abspath(os.path.join(
+        str(Path(__file__).parent), "data", "vod_tmp",
+    ))
+    VOD_TEMP_DIR: str = os.path.abspath(os.path.join(
+        str(Path(__file__).parent),
+        os.getenv("VOD_TEMP_DIR", "") or os.path.join("data", "vod_tmp"),
+    ))
+
     # Run each local web-terminal shell in its own systemd scope, so tmux /
     # screen sessions started from it survive a portal restart.
     TERMINAL_OWN_SCOPE: bool = os.getenv("TERMINAL_OWN_SCOPE", "true").lower() == "true"

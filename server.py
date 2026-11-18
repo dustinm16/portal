@@ -125,6 +125,7 @@ from host_check import (
 )
 import backup_manager
 import update_manager
+import vod_staging
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -367,8 +368,17 @@ _rtmp_stream_paths: dict[int, str] = {}
 # Lock for stream state dictionaries to prevent race conditions
 # between concurrent stream connect/disconnect/auth events
 _stream_state_lock = asyncio.Lock()
-VOD_TEMP_DIR = "/tmp/portal_vods"
+VOD_TEMP_DIR = Config.VOD_TEMP_DIR
 backup_manager.register_served_dir(VOD_TEMP_DIR, "the VOD temp directory")
+VOD_MIN_FREE_BYTES = vod_staging.MIN_FREE_BYTES
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Session folders that a recording is using or still finishing; recovery leaves them alone.
+_vod_busy_dirs: set = set()
+_vod_recovery_running = False
+# True once a staging folder passed its checks at start. While False (every
+# candidate folder was refused) nothing reads, changes or removes anything in
+# VOD_TEMP_DIR and no new recording captures VOD.
+_vod_staging_usable = True
 
 # Multi-platform relay state
 RELAY_PLATFORMS = {
@@ -4349,85 +4359,154 @@ async def start_vod_recording(stream: dict, stream_key: str) -> None:
     # Build paths — date-only remote dir so chunks accumulate across restarts
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     safe_name = re.sub(r'[^\w\s-]', '', stream.get("name", "stream")).strip().replace(' ', '_')[:50] or "stream"
-    session_dir = os.path.join(VOD_TEMP_DIR, f"{stream_id}_{date_str}_{int(time())}")
-    os.makedirs(session_dir, exist_ok=True)
-
     remote_base = storage["remote_path"].rstrip("/")
     remote_session_dir = f"{remote_base}/{safe_name}/{date_str}"
 
-    # Check remote SFTP for existing chunks to continue numbering
-    start_number = 0
-    conn, sftp, error = await _connect_vod_sftp(user_id)
-    if not error:
+    # The staging folder must be usable and have room, otherwise skip this
+    # recording and say so where the stream owner can see it.
+    skip_reason = None
+    if not _vod_staging_usable:
+        skip_reason = "no usable VOD staging folder (it was refused at start; see the start-up log)"
+    else:
         try:
-            await _sftp_makedirs(sftp, remote_session_dir)
-            existing = await sftp.listdir(remote_session_dir)
-            for fname in existing:
-                m = re.match(r'chunk_(\d+)\.mkv$', fname)
-                if m:
-                    n = int(m.group(1)) + 1
-                    if n > start_number:
-                        start_number = n
-            if start_number > 0:
-                logger.info(f"VOD resuming at chunk_{start_number:03d} in {safe_name}/{date_str}")
+            own = os.path.abspath(VOD_TEMP_DIR) == Config.VOD_TEMP_DIR_DEFAULT
+            vod_staging.ensure_private_dir(VOD_TEMP_DIR, (STATIC_DIR,), _PROJECT_ROOT, allow_temp=own)
+            enough, free = await asyncio.to_thread(vod_staging.has_free_space, VOD_TEMP_DIR, VOD_MIN_FREE_BYTES)
+            if not enough:
+                skip_reason = (
+                    f"only {vod_staging.format_size(free)} free in the VOD staging folder "
+                    f"(needs {vod_staging.format_size(VOD_MIN_FREE_BYTES)})"
+                )
+        except (OSError, ValueError) as e:
+            skip_reason = f"VOD staging folder is not usable: {e}"
+    if skip_reason:
+        logger.warning(f"VOD recording not started for '{stream.get('name', '')}': {skip_reason}")
+        try:
+            await db.log_activity(
+                user_id, get_display_name(stream), "vod_skipped",
+                f"VOD recording for '{stream.get('name', '')}' was not started: {skip_reason}",
+            )
         except Exception as e:
-            logger.debug(f"Could not check remote chunks: {e}")
-        finally:
-            conn.close()
+            logger.debug(f"Could not log VOD skip: {e}")
+        return
 
-    # Wait for MediaMTX stream to be ready
-    await asyncio.sleep(2)
-
-    # ffmpeg segment muxer: lossless remux into 5-minute MKV chunks via RTSPS
-    cmd = [
-        "ffmpeg", "-y",
-        "-rtsp_transport", "tcp",
-        "-i", source_url,
-        "-c", "copy",
-        "-f", "segment",
-        "-segment_time", str(VOD_SEGMENT_DURATION),
-        "-segment_format", "matroska",
-        "-segment_start_number", str(start_number),
-        "-reset_timestamps", "1",
-        os.path.join(session_dir, "chunk_%03d.mkv"),
-    ]
-
+    session_dir = os.path.join(VOD_TEMP_DIR, f"{stream_id}_{date_str}_{int(time())}")
+    # The folder is busy from now until the recording has uploaded its last chunk
+    # and cleaned up; the periodic recovery must not touch it in between.
+    _vod_busy_dirs.add(session_dir)
+    registered = False
     try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+        os.makedirs(session_dir, mode=0o700, exist_ok=True)
+        try:
+            vod_staging.write_sidecar(session_dir, {
+                "stream_id": stream_id,
+                "user_id": user_id,
+                "stream_name": stream.get("name", ""),
+                "remote_session_dir": remote_session_dir,
+            })
+        except OSError as e:
+            logger.warning(f"Could not write VOD session record in {session_dir}: {e}")
+
+        # Check remote SFTP for existing chunks to continue numbering
+        start_number = 0
+        conn, sftp, error = await _connect_vod_sftp(user_id)
+        if not error:
+            try:
+                await _sftp_makedirs(sftp, remote_session_dir)
+                existing = await sftp.listdir(remote_session_dir)
+                for fname in existing:
+                    m = re.match(r'chunk_(\d+)\.mkv$', fname)
+                    if m:
+                        n = int(m.group(1)) + 1
+                        if n > start_number:
+                            start_number = n
+                if start_number > 0:
+                    logger.info(f"VOD resuming at chunk_{start_number:03d} in {safe_name}/{date_str}")
+            except Exception as e:
+                logger.debug(f"Could not check remote chunks: {e}")
+            finally:
+                conn.close()
+
+        # Chunks an earlier session left unuploaded for the same remote folder keep
+        # their numbers; reusing one would overwrite them when they are uploaded.
+        start_number = max(
+            start_number,
+            await asyncio.to_thread(vod_staging.next_free_chunk_number, VOD_TEMP_DIR, remote_session_dir, session_dir),
         )
-    except FileNotFoundError:
-        logger.error("ffmpeg not found, cannot start VOD recording")
-        os.rmdir(session_dir)
+
+        # Wait for MediaMTX stream to be ready
+        await asyncio.sleep(2)
+
+        # ffmpeg segment muxer: lossless remux into 5-minute MKV chunks via RTSPS
+        cmd = [
+            "ffmpeg", "-y",
+            "-rtsp_transport", "tcp",
+            "-i", source_url,
+            "-c", "copy",
+            "-f", "segment",
+            "-segment_time", str(VOD_SEGMENT_DURATION),
+            "-segment_format", "matroska",
+            "-segment_start_number", str(start_number),
+            "-reset_timestamps", "1",
+            os.path.join(session_dir, "chunk_%03d.mkv"),
+        ]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            logger.error("ffmpeg not found, cannot start VOD recording")
+            vod_staging.remove_if_empty(session_dir)
+            return
+        except Exception as e:
+            logger.error(f"Failed to start VOD recording: {e}")
+            vod_staging.remove_if_empty(session_dir)
+            return
+
+        stop_event = asyncio.Event()
+        recording = {
+            "process": process,
+            "session_dir": session_dir,
+            "remote_session_dir": remote_session_dir,
+            "user_id": user_id,
+            "stream_name": stream.get("name", ""),
+            "started_at": datetime.now(timezone.utc),
+            "stop_event": stop_event,
+            "upload_task": None,
+            "uploaded": set(),  # local paths already uploaded
+        }
+
+        # Start background chunk uploader
+        recording["upload_task"] = asyncio.create_task(
+            _vod_chunk_uploader(recording)
+        )
+
+        async with _stream_state_lock:
+            active_recordings[stream_id] = recording
+        registered = True
+        logger.info(f"VOD recording started: {safe_name}/{date_str}/ from chunk_{start_number:03d} (every {VOD_SEGMENT_DURATION}s)")
+    finally:
+        if not registered:
+            _vod_busy_dirs.discard(session_dir)
+
+
+def _vod_cleanup_session_dir(session_dir: str) -> None:
+    """Remove an emptied staging directory; keep (and report) one that still holds chunks."""
+    _vod_busy_dirs.discard(session_dir)
+    if vod_staging.remove_if_empty(session_dir):
         return
-    except Exception as e:
-        logger.error(f"Failed to start VOD recording: {e}")
-        os.rmdir(session_dir)
+    try:
+        left = [n for n in os.listdir(session_dir) if n != vod_staging.SIDECAR_NAME]
+    except OSError:
         return
-
-    stop_event = asyncio.Event()
-    recording = {
-        "process": process,
-        "session_dir": session_dir,
-        "remote_session_dir": remote_session_dir,
-        "user_id": user_id,
-        "stream_name": stream.get("name", ""),
-        "started_at": datetime.now(timezone.utc),
-        "stop_event": stop_event,
-        "upload_task": None,
-        "uploaded": set(),  # local paths already uploaded
-    }
-
-    # Start background chunk uploader
-    recording["upload_task"] = asyncio.create_task(
-        _vod_chunk_uploader(recording)
-    )
-
-    async with _stream_state_lock:
-        active_recordings[stream_id] = recording
-    logger.info(f"VOD recording started: {safe_name}/{date_str}/ from chunk_{start_number:03d} (every {VOD_SEGMENT_DURATION}s)")
+    if left:
+        logger.warning(
+            f"VOD staging dir has {len(left)} leftover file(s): {session_dir} "
+            f"(they are uploaded by the next recovery pass)"
+        )
 
 
 async def _vod_chunk_uploader(recording: dict) -> None:
@@ -4494,19 +4573,16 @@ async def _vod_chunk_uploader(recording: dict) -> None:
                 active_recordings.pop(sid, None)
                 break
         # Clean up local staging directory
-        try:
-            remaining = list(Path(session_dir).iterdir())
-            if remaining:
-                logger.warning(f"VOD staging dir has {len(remaining)} leftover file(s): {session_dir}")
-            else:
-                Path(session_dir).rmdir()
-        except OSError:
-            pass
+        _vod_cleanup_session_dir(session_dir)
         logger.info(f"VOD recording auto-stopped for '{recording['stream_name']}' (ffmpeg exited)")
 
 
-async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
-    """Upload pending completed chunks to SFTP."""
+async def _do_vod_chunk_upload(recording: dict, final: bool = False, no_overwrite: bool = False) -> None:
+    """Upload pending completed chunks to SFTP.
+
+    With no_overwrite, a chunk whose remote name is taken is uploaded under a
+    "_recovered" name instead (used for chunks left over from an earlier run).
+    """
     session_dir = recording["session_dir"]
     remote_dir = recording["remote_session_dir"]
     user_id = recording["user_id"]
@@ -4542,8 +4618,19 @@ async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
         for local_path in pending:
             remote_path = f"{remote_dir}/{local_path.name}"
             try:
-                # 5-minute timeout per chunk upload (prevents hanging on dead connections)
-                await asyncio.wait_for(sftp.put(str(local_path), remote_path), timeout=300)
+                if no_overwrite:
+                    remote_path = await _vod_free_remote_name(sftp, remote_dir, local_path.name)
+                # Upload under a temporary name and rename on success, so an
+                # interrupted put never leaves a truncated chunk under the
+                # final name. 5-minute timeout per chunk upload (prevents
+                # hanging on dead connections).
+                part_path = remote_path + _VOD_PART_SUFFIX
+                try:
+                    await asyncio.wait_for(sftp.put(str(local_path), part_path), timeout=300)
+                    await _vod_finish_remote_upload(sftp, part_path, remote_path)
+                except BaseException:
+                    await _vod_remove_partial(sftp, part_path)
+                    raise
                 uploaded.add(str(local_path))
                 local_path.unlink()
                 logger.info(f"VOD chunk uploaded: {remote_path}")
@@ -4553,6 +4640,208 @@ async def _do_vod_chunk_upload(recording: dict, final: bool = False) -> None:
                 logger.error(f"VOD chunk upload failed ({local_path.name}): {e}")
     finally:
         conn.close()
+
+
+_VOD_PART_SUFFIX = ".part"
+
+
+async def _vod_finish_remote_upload(sftp, part_path: str, final_path: str) -> None:
+    """Rename a fully uploaded temporary chunk to its final name (atomic when the server allows)."""
+    posix_rename = getattr(sftp, "posix_rename", None)
+    if posix_rename is not None:
+        try:
+            await posix_rename(part_path, final_path)
+            return
+        except asyncssh.SFTPOpUnsupported:
+            pass  # the server lacks the OpenSSH extension; use the plain rename
+    try:
+        await sftp.rename(part_path, final_path)
+    except asyncssh.SFTPError:
+        # A plain rename does not replace an existing file. Only the live
+        # uploader can get here with the name taken (a retried chunk).
+        await sftp.remove(final_path)
+        await sftp.rename(part_path, final_path)
+
+
+async def _vod_remove_partial(sftp, part_path: str) -> None:
+    """Best effort: delete a temporary remote chunk after a failed upload."""
+    try:
+        await asyncio.wait_for(sftp.remove(part_path), timeout=15)
+    except Exception as e:  # the connection may be gone; the caller re-raises the real error
+        logger.debug(f"VOD partial chunk {part_path} could not be removed: {e!r}")
+
+
+async def _vod_free_remote_name(sftp, remote_dir: str, name: str) -> str:
+    """Return remote_dir/name, or a "_recovered" variant when that name is already taken."""
+    stem, dot, ext = name.rpartition(".")
+    candidate = f"{remote_dir}/{name}"
+    n = 0
+    while True:
+        try:
+            await sftp.stat(candidate)
+        except asyncssh.SFTPNoSuchFile:
+            return candidate
+        n += 1
+        candidate = f"{remote_dir}/{stem}_recovered{n}{dot}{ext}"
+        if n > 999:
+            raise RuntimeError(f"no free remote name for {name}")
+
+
+def _vod_prepare_staging() -> list:
+    """Create the staging folder, move in an old /tmp one, and list leftover sessions.
+
+    Runs once at start, before any recording can begin. A configured folder
+    that is not safe to use (the filesystem root, a mount point, /tmp, a home
+    directory, the project folder, a non-empty folder the portal did not
+    create, ...) is refused with a log line and the default folder is used
+    instead; the refused folder is not touched. Returns the session
+    directories that hold chunks from an earlier run. When no folder is
+    usable, _vod_staging_usable stays False, nothing is touched and the list
+    is empty.
+    """
+    global VOD_TEMP_DIR, _vod_staging_usable
+    _vod_staging_usable = False
+    default = Config.VOD_TEMP_DIR_DEFAULT
+    try:
+        own = os.path.abspath(VOD_TEMP_DIR) == default  # the portal's own location: adopt it as it is
+        vod_staging.ensure_private_dir(VOD_TEMP_DIR, (STATIC_DIR,), _PROJECT_ROOT,
+                                       adopt_nonempty=own, allow_temp=own)
+    except (OSError, ValueError) as e:
+        if os.path.abspath(VOD_TEMP_DIR) == default:
+            logger.error(
+                f"VOD staging folder {VOD_TEMP_DIR} is not usable: {e}. It was left untouched; "
+                f"VOD recording, recovery and cleanup are off until this is fixed"
+            )
+            return []
+        logger.error(
+            f"VOD_TEMP_DIR {VOD_TEMP_DIR} refused: {e}. It was left untouched; "
+            f"using the default folder {default} instead"
+        )
+        try:
+            # The default folder is the portal's own: adopt it even if a
+            # previous run left files in it without a marker.
+            vod_staging.ensure_private_dir(default, (STATIC_DIR,), _PROJECT_ROOT,
+                                           adopt_nonempty=True, allow_temp=True)
+        except (OSError, ValueError) as e2:
+            logger.error(
+                f"VOD staging folder {default} is not usable: {e2}. It was left untouched; "
+                f"VOD recording, recovery and cleanup are off until this is fixed"
+            )
+            return []
+        VOD_TEMP_DIR = default
+        Config.VOD_TEMP_DIR = default  # update_manager reads it for snapshots and rollback
+    _vod_staging_usable = True
+    logger.info(f"VOD staging folder: {VOD_TEMP_DIR}")
+    if not Config.STAGE_MODE:  # a staged instance must not touch the host's /tmp
+        try:
+            result = vod_staging.migrate_legacy(VOD_TEMP_DIR)
+        except Exception as e:
+            logger.error(f"VOD staging migration failed: {e}")
+            result = {"moved": [], "skipped": []}
+        if result["moved"]:
+            logger.info(f"Moved {len(result['moved'])} VOD staging folder(s) from {vod_staging.LEGACY_DIR}")
+        for name, why in result["skipped"]:
+            logger.warning(f"VOD staging migration skipped {name}: {why}")
+    return vod_staging.list_session_dirs(VOD_TEMP_DIR)
+
+
+async def _vod_has_destination(user_id: int) -> Optional[str]:
+    """None when the owner and the owner's VOD storage still exist, else the reason they do not.
+
+    A database error is not an answer: it returns None so nothing is removed on a guess.
+    """
+    try:
+        if not await db.get_user_by_id(user_id):
+            return "the owner no longer exists"
+        if not await db.get_vod_storage(user_id):
+            return "the owner has no VOD storage configured"
+    except Exception as e:
+        logger.debug(f"VOD recovery could not look up user {user_id}: {e}")
+    return None
+
+
+def _vod_drop_stale(session_dir: str, reason: str) -> bool:
+    """Remove an undeliverable session once it is 14 days old. Returns True when it was removed."""
+    name = os.path.basename(session_dir)
+    if not vod_staging.is_stale(session_dir):
+        logger.warning(
+            f"VOD staging dir {name} cannot be delivered ({reason}); "
+            f"kept until it is {vod_staging.STALE_DAYS} days old"
+        )
+        return False
+    count, size = vod_staging.remove_stale_session(session_dir)
+    logger.warning(
+        f"VOD staging: removed {name} after {vod_staging.STALE_DAYS} days, it could not be delivered "
+        f"({reason}): {count} chunk(s), {size} bytes"
+    )
+    return True
+
+
+async def recover_vod_staging(session_dirs: Optional[list] = None) -> None:
+    """Upload chunks that an earlier run left in the staging folder.
+
+    Called at start and again from the data cleanup loop, so an SFTP storage
+    that was down at start gets another try. Only one pass runs at a time; a
+    second call returns at once. Without *session_dirs* the folder is listed
+    afresh. Folders that a recording is using are skipped.
+    """
+    global _vod_recovery_running
+    if _vod_recovery_running:
+        logger.debug("VOD recovery already running; skipped")
+        return
+    if not _vod_staging_usable:
+        logger.warning("VOD recovery skipped: there is no usable VOD staging folder")
+        return
+    _vod_recovery_running = True
+    try:
+        if session_dirs is None:
+            session_dirs = await asyncio.to_thread(vod_staging.list_session_dirs, VOD_TEMP_DIR)
+        for session_dir in session_dirs:
+            if session_dir in _vod_busy_dirs or any(
+                rec.get("session_dir") == session_dir for rec in list(active_recordings.values())
+            ):
+                continue
+            await _vod_recover_one(session_dir)
+    finally:
+        _vod_recovery_running = False
+
+
+async def _vod_recover_one(session_dir: str) -> None:
+    chunks = vod_staging.chunk_files(session_dir)
+    for c in list(chunks):  # an empty chunk is never uploaded and would keep the folder alive
+        try:
+            if os.path.getsize(c) == 0:
+                os.unlink(c)
+                chunks.remove(c)
+        except OSError:
+            pass
+    if not chunks:
+        vod_staging.remove_if_empty(session_dir)
+        return
+    meta = vod_staging.read_sidecar(session_dir)
+    if not meta:
+        _vod_drop_stale(
+            session_dir,
+            "it has no usable session record; upload the chunks by hand if you need them",
+        )
+        return
+    gone = await _vod_has_destination(meta["user_id"])
+    if gone:
+        _vod_drop_stale(session_dir, gone)
+        return
+    logger.info(f"VOD recovery: {len(chunks)} chunk(s) from {os.path.basename(session_dir)}")
+    recording = {
+        "session_dir": session_dir,
+        "remote_session_dir": meta["remote_session_dir"],
+        "user_id": meta["user_id"],
+        "stream_name": meta.get("stream_name", ""),
+        "uploaded": set(),
+    }
+    try:
+        await _do_vod_chunk_upload(recording, final=True, no_overwrite=True)
+    except Exception as e:
+        logger.error(f"VOD recovery upload error for {session_dir}: {e}")
+    _vod_cleanup_session_dir(session_dir)
 
 
 async def _sftp_makedirs(sftp, path: str) -> None:
@@ -4642,14 +4931,7 @@ async def stop_vod_recording(stream_id: int, force: bool = False) -> None:
 
     # Clean up local staging directory
     session_dir = recording["session_dir"]
-    try:
-        remaining = list(Path(session_dir).iterdir())
-        if remaining:
-            logger.warning(f"VOD staging dir has {len(remaining)} leftover file(s): {session_dir}")
-        else:
-            Path(session_dir).rmdir()
-    except OSError:
-        pass
+    _vod_cleanup_session_dir(session_dir)
 
     logger.info(f"VOD recording stopped for '{recording['stream_name']}'")
 
@@ -18707,6 +18989,27 @@ class PortalServer:
     def __init__(self):
         self.runner = None
         self._shutdown_event = asyncio.Event()
+        self._vod_recovery_task = None
+
+    def _start_vod_recovery(self) -> None:
+        """Start a recovery pass over the VOD staging folder unless one is already running."""
+        task = self._vod_recovery_task
+        if _vod_recovery_running or (task is not None and not task.done()):
+            return
+        self._vod_recovery_task = asyncio.create_task(recover_vod_staging())
+
+    async def _cancel_vod_recovery(self) -> None:
+        """Cancel a running recovery pass and wait for it to end."""
+        task = self._vod_recovery_task
+        self._vod_recovery_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"VOD recovery task ended with {e}")
 
     async def start(self) -> None:
         """Start the server."""
@@ -18774,6 +19077,11 @@ class PortalServer:
             logger.info("Traffic metrics recorder started")
             await start_resource_metrics_recorder()
             await start_device_metrics_recorder(db)
+
+        # VOD staging: folder setup, old /tmp migration, upload of leftover chunks
+        vod_leftovers = await asyncio.to_thread(_vod_prepare_staging)
+        if vod_leftovers:
+            self._start_vod_recovery()
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
@@ -18915,6 +19223,12 @@ class PortalServer:
 
                 config = await db.get_retention_config()
                 total = 0
+
+                # Leftover VOD chunks: try the upload again, drop undeliverable ones after 14 days
+                try:
+                    self._start_vod_recovery()
+                except Exception as e:
+                    logger.error(f"[Retention] VOD recovery could not start: {e}")
 
                 # Chat messages
                 try:
@@ -19212,6 +19526,9 @@ class PortalServer:
         # Stop any active stream relays
         for sid in list(active_relays.keys()):
             await stop_stream_relays(sid, force=True)
+
+        # Stop the periodic VOD recovery before the recordings finish
+        await self._cancel_vod_recovery()
 
         # Stop any active VOD recordings and upload to SFTP
         await stop_all_recordings()
