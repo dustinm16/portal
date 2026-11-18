@@ -9,6 +9,7 @@ import asyncio
 import aiohttp
 from aiohttp import web, WSMsgType
 
+from host_check import HostCheckError, _SSRFSafeConnector, resolve_checked_host
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -16,7 +17,11 @@ logger = logging.getLogger("portal.plugins.http_proxy")
 
 
 def _is_blocked_proxy_host(host: str) -> bool:
-    """Check if a proxy target host is blocked (SSRF prevention)."""
+    """Check if a proxy target host is blocked (SSRF prevention).
+
+    Literal-name check kept for admin-defined services, which may target
+    internal backends by name.
+    """
     if not host:
         return True
     h = host.lower().strip()
@@ -32,6 +37,41 @@ def _is_blocked_proxy_host(host: str) -> bool:
     except ValueError:
         pass
     return False
+
+
+def _user_policy(config: dict) -> bool:
+    """True for user-defined connections.
+
+    Only the user-connection handler sets `_ssrf_safe` (it resets the key
+    first, so a stored config cannot supply it). Admin-defined services do
+    not carry it and keep the literal-name check and a plain connector.
+    """
+    return bool(config.get("_ssrf_safe"))
+
+
+def _new_connector(config: dict, verify_ssl):
+    if _user_policy(config):
+        return _SSRFSafeConnector(ssl=verify_ssl)
+    return aiohttp.TCPConnector(ssl=verify_ssl)
+
+
+async def _check_proxy_target(url: str, config: dict) -> bool:
+    """True if the target URL's host is allowed for this service.
+
+    User connections: resolve the name and refuse it if any address it
+    resolves to is blocked (the connector used for the request applies the
+    same policy again at connect time, so a different DNS answer cannot slip
+    in; the hostname stays for TLS SNI and the Host header). Admin-defined
+    services: the literal-name check only.
+    """
+    if not _user_policy(config):
+        return not _is_blocked_proxy_host(urlparse(url or "").hostname or "")
+    try:
+        parsed = urlparse(url or "")
+        await resolve_checked_host(parsed.hostname or "", parsed.port or 0)
+    except (HostCheckError, ValueError):
+        return False
+    return True
 
 
 @register_plugin
@@ -140,10 +180,8 @@ class HTTPProxyPlugin(PluginBase):
         timeout = aiohttp.ClientTimeout(total=config.get("timeout", 60))
 
         # SSRF protection: validate target host
-        if target_url:
-            parsed_target = urlparse(target_url)
-            if _is_blocked_proxy_host(parsed_target.hostname or ""):
-                return web.json_response({"error": "Target host not allowed"}, status=403)
+        if target_url and not await _check_proxy_target(target_url, config):
+            return web.json_response({"error": "Host not allowed"}, status=403)
 
         # Build target URL
         path = request.match_info.get("path", "")
@@ -174,7 +212,7 @@ class HTTPProxyPlugin(PluginBase):
         logger.debug(f"Proxying {request.method} {url}")
 
         try:
-            connector = aiohttp.TCPConnector(ssl=verify_ssl)
+            connector = _new_connector(config, verify_ssl)
             async with aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout
@@ -262,7 +300,7 @@ class HTTPProxyPlugin(PluginBase):
         # Convert http(s) to ws(s)
         parsed = urlparse(target_url)
         # SSRF check on WebSocket target (same as HTTP handler)
-        if _is_blocked_proxy_host(parsed.hostname or ""):
+        if not await _check_proxy_target(target_url, config):
             logger.warning(f"WebSocket proxy blocked: {parsed.hostname}")
             return
         ws_scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -273,7 +311,7 @@ class HTTPProxyPlugin(PluginBase):
         logger.info(f"WebSocket proxy to {ws_url} for user {user_id}")
 
         try:
-            connector = aiohttp.TCPConnector(ssl=verify_ssl)
+            connector = _new_connector(config, verify_ssl)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(ws_url) as upstream:
                     tasks = [

@@ -5,7 +5,6 @@ similar to WireGuard or OpenVPN, but over WebSocket for firewall traversal.
 """
 
 import asyncio
-import ipaddress
 import logging
 import os
 import struct
@@ -16,6 +15,7 @@ from dataclasses import dataclass
 
 from aiohttp import web, WSMsgType
 
+from host_check import resolve_checked_host, try_each_address
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -119,7 +119,12 @@ class VPNTunnelPlugin(PluginBase):
         config = target.config
         mode = config.get("mode", "socks")
 
-        if mode == "socks":
+        if config.get("_ssrf_safe") and mode != "socks":
+            # User connections (marked by the connection handler) may only
+            # use SOCKS mode; TUN/TAP creates a device on the server.
+            logger.warning(f"VPN tunnel mode {mode!r} refused for user connection (user {user_id})")
+            await ws.send_bytes(self._packet("error", b"Tunnel mode not allowed"))
+        elif mode == "socks":
             await self._handle_socks_tunnel(ws, target, user_id)
         elif mode in ("tun", "tap"):
             await self._handle_tun_tunnel(ws, target, user_id, mode)
@@ -208,23 +213,6 @@ class VPNTunnelPlugin(PluginBase):
                 writer.close()
             logger.info(f"SOCKS tunnel ended for user {user_id}")
 
-    @staticmethod
-    def _is_blocked_host(host: str) -> bool:
-        """Block connections to localhost, link-local, private, and cloud metadata endpoints."""
-        if not host:
-            return True
-        h = host.lower().strip()
-        blocked_hostnames = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
-                             'host.docker.internal', 'kubernetes.default',
-                             'metadata.google.internal', '169.254.169.254'}
-        if h in blocked_hostnames or h.startswith('127.') or h.startswith('::ffff:127.'):
-            return True
-        try:
-            ip = ipaddress.ip_address(h)
-            return ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved
-        except ValueError:
-            return False
-
     async def _socks_connect(
         self,
         ws: web.WebSocketResponse,
@@ -236,13 +224,16 @@ class VPNTunnelPlugin(PluginBase):
     ) -> None:
         """Establish SOCKS connection."""
         try:
-            if self._is_blocked_host(host):
+            # Shared outbound host policy: resolve, refuse if any address is
+            # blocked, and dial the checked address (not the name again).
+            try:
+                addrs = await resolve_checked_host(host, port)
+            except OSError:
                 error = self._packet("connect_err", struct.pack(">I", conn_id))
                 await ws.send_bytes(self._encrypt(error, cipher))
                 return
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=30
+            reader, writer = await try_each_address(
+                addrs, lambda a: asyncio.open_connection(a, port), 30
             )
             connections[conn_id] = (reader, writer)
 

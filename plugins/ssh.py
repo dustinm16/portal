@@ -7,6 +7,7 @@ from typing import Optional
 
 from aiohttp import web, WSMsgType
 
+from host_check import try_each_address
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -175,7 +176,15 @@ class SSHPlugin(PluginBase):
                 return
 
         try:
-            async with asyncssh.connect(**connect_opts) as conn:
+            # User connections arrive with the already policy-checked addresses
+            # in _pinned_hosts (set by the connection handler); dial those,
+            # trying each in turn on connect-level failures only.
+            conn = await try_each_address(
+                config.get("_pinned_hosts") or [host],
+                lambda a: asyncssh.connect(**{**connect_opts, "host": a, "connect_timeout": 15}),
+                None
+            )
+            async with conn:
                 # Build process options - only pass command when explicitly set
                 proc_opts = {
                     "term_type": "xterm-256color",

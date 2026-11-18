@@ -11,6 +11,7 @@ import logging
 
 from aiohttp import web, WSMsgType
 
+from host_check import try_each_address
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -127,14 +128,21 @@ class SPICEPlugin(PluginBase):
                     ssl_context.check_hostname = False
                     ssl_context.verify_mode = ssl.CERT_NONE
 
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port, ssl=ssl_context),
-                    timeout=timeout
+                # Dial the policy-checked address when the handler supplied one,
+                # keeping the original name for the TLS server name.
+                reader, writer = await try_each_address(
+                    config.get("_pinned_hosts") or [host],
+                    lambda a: asyncio.open_connection(
+                        a, port, ssl=ssl_context,
+                        server_hostname=config.get("_server_hostname") or host
+                    ),
+                    timeout
                 )
             else:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port),
-                    timeout=timeout
+                reader, writer = await try_each_address(
+                    config.get("_pinned_hosts") or [host],
+                    lambda a: asyncio.open_connection(a, port),
+                    timeout
                 )
 
             logger.debug(f"Connected to SPICE server {host}:{port}")

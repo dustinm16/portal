@@ -8,6 +8,7 @@ from typing import Dict, Optional
 
 from aiohttp import web, WSMsgType
 
+from host_check import try_each_address
 from .base import PluginBase, PluginInfo, ServiceTarget, ConnectionStats
 from . import register_plugin
 
@@ -95,9 +96,13 @@ class TCPTunnelPlugin(PluginBase):
         logger.info(f"TCP tunnel for user {user_id}: {host}:{port} ({protocol_hint})")
 
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=timeout
+            # User connections arrive with the already policy-checked address
+            # in _pinned_hosts (set by the connection handler); dial those,
+            # trying each in turn.
+            reader, writer = await try_each_address(
+                config.get("_pinned_hosts") or [host],
+                lambda a: asyncio.open_connection(a, port),
+                timeout
             )
         except asyncio.TimeoutError:
             logger.warning(f"TCP tunnel connection timeout to {host}:{port} for user {user_id}")

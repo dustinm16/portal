@@ -17,6 +17,7 @@ from urllib.parse import urljoin
 import aiohttp
 from aiohttp import web, WSMsgType
 
+from host_check import _SSRFSafeConnector
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -31,8 +32,12 @@ class ProxmoxAPI:
         host: str,
         port: int = 8006,
         verify_ssl: bool = False,
-        timeout: int = 30
+        timeout: int = 30,
+        restrict_hosts: bool = False
     ):
+        # restrict_hosts: user-supplied target, apply the outbound host policy
+        # at connect time (admin-defined services may target local hosts).
+        self.restrict_hosts = restrict_hosts
         self.base_url = f"https://{host}:{port}/api2/json"
         self.verify_ssl = verify_ssl
         self.timeout = timeout
@@ -49,7 +54,10 @@ class ProxmoxAPI:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
-            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            if self.restrict_hosts:
+                connector = _SSRFSafeConnector(ssl=ssl_context)
+            else:
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
             self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
@@ -266,7 +274,10 @@ class ProxmoxPlugin(PluginBase):
         return ProxmoxAPI(
             host=host,
             port=port,
-            verify_ssl=config.get("verify_ssl", False)
+            verify_ssl=config.get("verify_ssl", False),
+            # _pinned_hosts is only ever set by the user-connection handler
+            # (which resets it first, so a stored config cannot supply it)
+            restrict_hosts=bool(config.get("_pinned_hosts"))
         )
 
     async def handle_websocket(

@@ -11,6 +11,8 @@ from typing import Optional
 
 import asyncssh
 
+from host_check import HostCheckError, resolve_checked_host, try_each_address
+
 logger = logging.getLogger("portal")
 
 # Connection types eligible for SFTP browsing
@@ -33,8 +35,16 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
         except json.JSONDecodeError:
             config = {}
 
+    # Outbound host policy: check what the name resolves to and dial that
+    # address, so a later DNS answer cannot differ from the one checked.
+    try:
+        addrs = await resolve_checked_host(connection["host"], connection.get("port") or 22)
+    except HostCheckError:
+        logger.warning("SFTP connect refused by outbound host policy")
+        return None, None, "Host not allowed"
+
     connect_opts = {
-        "host": connection["host"],
+        "host": addrs[0],   # replaced per attempt by try_each_address below
         "port": connection.get("port") or 22,
         "username": config.get("username", ""),
         "known_hosts": None,
@@ -55,7 +65,8 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
         return None, None, "No credentials configured (need password or private key)"
 
     try:
-        conn = await asyncio.wait_for(asyncssh.connect(**connect_opts), timeout=10)
+        conn = await try_each_address(
+            addrs, lambda a: asyncssh.connect(**{**connect_opts, "host": a}), 10)
         sftp = await conn.start_sftp_client()
         return conn, sftp, None
     except asyncio.TimeoutError:
@@ -63,10 +74,10 @@ async def connect_sftp(connection: dict) -> tuple[Optional[asyncssh.SSHClientCon
     except asyncssh.PermissionDenied:
         return None, None, "Authentication failed"
     except asyncssh.Error as e:
-        logger.warning(f"SFTP connect SSH error for {connect_opts.get('host')}: {e}")
+        logger.warning(f"SFTP connect SSH error for {connection['host']}: {e}")
         return None, None, "Connection failed"
     except OSError as e:
-        logger.warning(f"SFTP connect OS error for {connect_opts.get('host')}: {e}")
+        logger.warning(f"SFTP connect OS error for {connection['host']}: {e}")
         return None, None, "Connection failed"
 
 

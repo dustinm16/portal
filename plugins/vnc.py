@@ -5,6 +5,7 @@ import logging
 
 from aiohttp import web, WSMsgType
 
+from host_check import try_each_address
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -78,9 +79,13 @@ class VNCPlugin(PluginBase):
         logger.info(f"VNC connection for user {user_id}: {host}:{port}")
 
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=30
+            # User connections arrive with the already policy-checked address
+            # in _pinned_hosts (set by the connection handler); dial those,
+            # trying each in turn.
+            reader, writer = await try_each_address(
+                config.get("_pinned_hosts") or [host],
+                lambda a: asyncio.open_connection(a, port),
+                30
             )
         except asyncio.TimeoutError:
             logger.error(f"VNC connection timeout for user {user_id}: {host}:{port}")

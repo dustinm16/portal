@@ -12,6 +12,7 @@ if len(_sys.argv) > 1 and _sys.argv[1] == "setup":
 del _sys
 
 import asyncio
+import copy
 import hashlib
 import hmac
 import html as _html
@@ -33,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, time
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 import re
 
 import aiohttp
@@ -116,6 +117,11 @@ import file_manager
 import gameservers
 import jobs as bg_jobs
 import sftp_browser
+from host_check import (
+    BLOCKED_HOSTS, is_blocked_host, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
+    HostCheckError, HostBlockedError, HostResolveError,
+    _SSRFSafeResolver, _SSRFSafeConnector,
+)
 import update_manager
 setup_logging()
 logger = logging.getLogger("portal")
@@ -384,7 +390,7 @@ def _has_bad_chars(value: str) -> bool:
     return bool(_BAD_RELAY_CHARS & set(value))
 
 
-def _validate_relay_url(rtmp_url: str) -> str | None:
+async def _validate_relay_url(rtmp_url: str) -> str | None:
     """Validate relay RTMP URL is not targeting internal/blocked hosts.
 
     Returns an error string if invalid, or None if OK.
@@ -398,17 +404,43 @@ def _validate_relay_url(rtmp_url: str) -> str | None:
         return "Invalid RTMP URL"
     if not hostname:
         return "RTMP URL must include a hostname"
+    # Literal check plus resolution (catches names that resolve to internal addresses)
     if is_blocked_host(hostname):
         return "RTMP URL points to a blocked/internal host"
-    # Resolve DNS to catch rebinding (hostname resolves to private IP)
     try:
-        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
-            resolved_ip = info[4][0]
-            if is_blocked_host(resolved_ip):
-                return "RTMP URL resolves to a blocked/internal address"
-    except socket.gaierror:
+        await resolve_checked_host(hostname, 0)
+    except HostBlockedError:
+        return "RTMP URL resolves to a blocked/internal address"
+    except HostResolveError:
         return "Could not resolve RTMP hostname"
     return None
+
+
+async def _checked_relay_target(rtmp_url: str, relay_key: str) -> tuple[list[str], str]:
+    """Re-check a relay destination right before ffmpeg is started.
+
+    Returns (extra ffmpeg output options, target URL). Raises HostCheckError
+    if the destination host is, or now resolves to, a blocked address.
+    For rtmp:// the checked address replaces the name in the URL (so ffmpeg
+    cannot resolve a different answer) and -rtmp_tcurl keeps the original
+    name in the RTMP connect request. For rtmps:// the name is kept (TLS
+    server name and certificate check) and only the check is repeated here;
+    ffmpeg resolves the name again itself, a known limit for rtmps.
+    The returned URL contains the stream key: never log it.
+    """
+    base = rtmp_url.rstrip("/")
+    parts = urlsplit(base)
+    addrs = await resolve_checked_host(parts.hostname or "", 0)
+    if parts.scheme != "rtmp":
+        return [], f"{base}/{relay_key}"
+    ip = pick_dial_address(addrs)
+    userinfo, at, hostport = parts.netloc.rpartition("@")
+    port = f":{parts.port}" if parts.port else ""
+    new_netloc = f"{userinfo}{at}{'[' + ip + ']' if ':' in ip else ip}{port}"
+    app = parts.path.lstrip("/").split("/", 1)[0]
+    tcurl = f"rtmp://{hostport}" + (f"/{app}" if app else "")
+    new_base = urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
+    return ["-rtmp_tcurl", tcurl], f"{new_base}/{relay_key}"
 
 
 async def _validate_webhook_url(url: str) -> str | None:
@@ -428,12 +460,10 @@ async def _validate_webhook_url(url: str) -> str | None:
     if is_blocked_host(hostname):
         return "URL points to a blocked/internal host"
     try:
-        loop = asyncio.get_event_loop()
-        for info in await loop.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM):
-            resolved_ip = info[4][0]
-            if is_blocked_host(resolved_ip):
-                return "URL resolves to a blocked/internal address"
-    except socket.gaierror:
+        await resolve_checked_host(hostname, 0)
+    except HostBlockedError:
+        return "URL resolves to a blocked/internal address"
+    except HostResolveError:
         return "Could not resolve hostname"
     return None
 
@@ -2734,42 +2764,104 @@ async def http_delete_api_key(request: web.Request) -> web.Response:
 # User Connections Management
 # =============================================================================
 
-# Blocked hosts for user connections (security - no local server access)
-BLOCKED_HOSTS = {'localhost', '127.0.0.1', '::1', '0.0.0.0',
-                 'host.docker.internal', 'kubernetes.default',
-                 '169.254.169.254', 'metadata.google.internal'}
+# BLOCKED_HOSTS / is_blocked_host now live in host_check.py (imported at the top).
+
+# Config keys of user connections that carry a URL the server will dial.
+_USER_CONFIG_URL_KEYS = ("target_url", "api_url", "webrtc_url", "hls_url")
 
 
-def is_blocked_host(host: str) -> bool:
-    """Check if host is blocked for user connections.
+def _user_connection_urls(config, keys=None) -> list[str]:
+    """Hostnames of the URLs a user connection config makes the server dial.
 
-    Blocks localhost variants, cloud metadata, and RFC 1918/6598 private ranges
-    to prevent SSRF attacks against internal network services.
+    `keys` limits which config keys are read (default: all of them).
     """
-    if not host:
-        return True
-    h = host.lower().strip()
-    # Direct matches
-    if h in BLOCKED_HOSTS:
-        return True
-    # 127.x.x.x range
-    if h.startswith('127.'):
-        return True
-    # IPv6 localhost variants
-    if h.startswith('::ffff:127.'):
-        return True
-    # IP range checks (loopback, link-local, private, shared)
-    try:
-        ip = ipaddress.ip_address(h)
-        if ip.is_loopback or ip.is_link_local or ip.is_private:
-            return True
-        # RFC 6598 shared address space (100.64.0.0/10) — is_private covers
-        # RFC 1918 ranges but check is_reserved for extra safety
-        if ip.is_reserved:
-            return True
-    except ValueError:
-        pass
-    return False
+    hosts = []
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
+    if isinstance(config, dict):
+        for key in (keys or _USER_CONFIG_URL_KEYS):
+            val = config.get(key)
+            if isinstance(val, str) and val.strip():
+                try:
+                    hosts.append(urlparse(val.strip()).hostname or "")
+                except ValueError:
+                    hosts.append("")
+    return hosts
+
+
+_MEDIAMTX_URL_KEYS = ("api_url", "webrtc_url", "hls_url")
+# URLs a user media connection must carry. The player only dials these; the
+# HLS URL is optional (it is policy-checked whenever it is present).
+_MEDIAMTX_REQUIRED_URL_KEYS = ("api_url", "webrtc_url")
+
+
+def _mediamtx_urls(config) -> dict:
+    """URL the mediamtx plugin dials for each key of a user connection config.
+
+    None means the key is absent; for the required keys the plugin then falls
+    back to a loopback default, which the host policy refuses. The connect
+    handler and the create/update checks both read the config through this
+    helper.
+    """
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
+    if not isinstance(config, dict):
+        config = {}
+    out = {}
+    for key in _MEDIAMTX_URL_KEYS:
+        val = config.get(key)
+        out[key] = val.strip() if isinstance(val, str) and val.strip() else None
+    return out
+
+
+def _mediamtx_missing_urls(conn_type, config) -> list[str]:
+    """Config keys a mediamtx-plugin connection type is missing (empty for other types)."""
+    if CONNECTION_TYPES.get(conn_type, {}).get("plugin") != "mediamtx":
+        return []
+    return [k for k, v in _mediamtx_urls(config).items()
+            if v is None and k in _MEDIAMTX_REQUIRED_URL_KEYS]
+
+
+def _vpn_mode_refused(conn_type, config) -> bool:
+    """True if a user vpn_tunnel connection config asks for anything but SOCKS mode.
+
+    TUN/TAP creates a network device on the server, so it is only available
+    to admin-defined services. An absent mode means SOCKS (the plugin default).
+    """
+    if CONNECTION_TYPES.get(conn_type, {}).get("plugin") != "vpn_tunnel":
+        return False
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config else {}
+        except json.JSONDecodeError:
+            config = {}
+    if not isinstance(config, dict):
+        return False
+    return "mode" in config and config["mode"] != "socks"
+
+
+async def _user_targets_allowed(host, config=None, port=0) -> bool:
+    """Save-time policy check for a user connection's host and URL targets.
+
+    Refuses only what is blocked (literal or resolved). A name that does not
+    resolve yet is allowed to be saved; connecting re-checks and fails closed.
+    """
+    for h in [host] + _user_connection_urls(config):
+        if h is None:
+            continue
+        try:
+            await resolve_checked_host(h, port)
+        except HostBlockedError:
+            return False
+        except HostResolveError:
+            pass
+    return True
 
 
 # Connection types mapped to plugins with full config support
@@ -2972,6 +3064,14 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid request"}, status=400)
+    if not isinstance(data.get("type", ""), str):
+        return web.json_response({"error": "Invalid connection type"}, status=400)
+    if not isinstance(data.get("name", ""), str):
+        return web.json_response({"error": "Invalid connection name"}, status=400)
+    if not isinstance(data.get("host", ""), str):
+        return web.json_response({"error": "Invalid host"}, status=400)
     name = data.get("name", "").strip()
     conn_type = data.get("type", "").strip().lower()
     host = data.get("host", "").strip()
@@ -2994,12 +3094,6 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     if not host:
         return web.json_response({"error": "Host required"}, status=400)
 
-    # Block localhost for user connections (security)
-    if is_blocked_host(host):
-        return web.json_response({
-            "error": "Local server access not allowed for user connections"
-        }, status=403)
-
     # Get default port if not specified
     type_info = CONNECTION_TYPES[conn_type]
     if port is None:
@@ -3011,6 +3105,17 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
                 return web.json_response({"error": "Invalid port number"}, status=400)
         except ValueError:
             return web.json_response({"error": "Invalid port number"}, status=400)
+
+    # Block local/internal targets for user connections (security): the host
+    # and any URL in the config, literal or resolved.
+    if not await _user_targets_allowed(host, config, port or 0):
+        return web.json_response({"error": "Host not allowed"}, status=403)
+    _missing = _mediamtx_missing_urls(conn_type, config)
+    if _missing:
+        return web.json_response(
+            {"error": f"{', '.join(_missing)} required for this connection type"}, status=400)
+    if _vpn_mode_refused(conn_type, config):
+        return web.json_response({"error": "Only SOCKS mode is available for this connection type"}, status=400)
 
     # Validate SSH key ownership if specified
     if ssh_key_id:
@@ -3119,6 +3224,24 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid request"}, status=400)
+
+    # A type must be a known type name before any policy check reads it
+    # (same normalisation as on create).
+    if "type" in data:
+        if not isinstance(data["type"], str):
+            return web.json_response({"error": "Invalid connection type"}, status=400)
+        data["type"] = data["type"].strip().lower()
+        if data["type"] not in CONNECTION_TYPES:
+            return web.json_response({"error": "Invalid connection type"}, status=400)
+    if "name" in data:
+        if not isinstance(data["name"], str):
+            return web.json_response({"error": "Invalid connection name"}, status=400)
+        data["name"] = data["name"].strip()
+        if not data["name"]:
+            return web.json_response({"error": "Connection name required"}, status=400)
+
     # Validate port if being updated
     if "port" in data and data["port"]:
         try:
@@ -3129,11 +3252,12 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
         except ValueError:
             return web.json_response({"error": "Invalid port number"}, status=400)
 
-    # Block localhost for user connections (security)
-    if "host" in data and is_blocked_host(data["host"]):
-        return web.json_response({
-            "error": "Local server access not allowed for user connections"
-        }, status=403)
+    if "host" in data:
+        if not isinstance(data["host"], str):
+            return web.json_response({"error": "Invalid host"}, status=400)
+        data["host"] = data["host"].strip()
+        if not data["host"]:
+            return web.json_response({"error": "Host required"}, status=400)
 
     # Resolve UUID to internal connection
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
@@ -3158,6 +3282,23 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     config_size = len(json.dumps(config_check) if isinstance(config_check, dict) else str(config_check or ""))
     if config_size > 10240:  # 10 KB
         return web.json_response({"error": "Config too large (max 10 KB)"}, status=400)
+
+    # Block local/internal targets for user connections (security): the
+    # resulting host and any URL in the resulting (merged) config.
+    new_host = data["host"] if "host" in data else None
+    if new_host is not None or "config" in data:
+        if not await _user_targets_allowed(new_host, data.get("config"), 0):
+            return web.json_response({"error": "Host not allowed"}, status=403)
+    if "config" in data or "type" in data:
+        _missing = _mediamtx_missing_urls(
+            data.get("type", connection.get("type")), data.get("config", connection.get("config")))
+        if _missing:
+            return web.json_response(
+                {"error": f"{', '.join(_missing)} required for this connection type"}, status=400)
+        if _vpn_mode_refused(data.get("type", connection.get("type")),
+                             data.get("config", connection.get("config"))):
+            return web.json_response(
+                {"error": "Only SOCKS mode is available for this connection type"}, status=400)
 
     try:
         if await db.update_user_connection(int_id, token.user_id, **data):
@@ -3225,9 +3366,15 @@ async def http_get_connection_types(request: web.Request) -> web.Response:
         plugin_name = type_info.get("plugin")
         plugin = get_plugin(plugin_name) if plugin_name else None
 
+        schema = plugin.info.config_schema if plugin and hasattr(plugin, 'info') else {}
+        if plugin_name == "vpn_tunnel":
+            # User connections may only use SOCKS mode: do not offer TUN/TAP.
+            schema = copy.deepcopy(schema)
+            schema.get("properties", {}).get("mode", {})["enum"] = ["socks"]
+
         types_with_schemas[type_name] = {
             **type_info,
-            "config_schema": plugin.info.config_schema if plugin and hasattr(plugin, 'info') else {}
+            "config_schema": schema
         }
 
     return web.json_response({"types": types_with_schemas})
@@ -4523,18 +4670,27 @@ async def start_stream_relays(stream: dict, stream_key: str) -> None:
         relay_id = dest["id"]
         rtmp_url = dest["rtmp_url"].rstrip("/")
         relay_key = dest["stream_key"]
-        target = f"{rtmp_url}/{relay_key}"
         platform = dest.get("platform", "custom")
 
         # Retry loop — RTSPS path may take a moment to become available
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
+                # Outbound host policy, re-applied at every start: the stored
+                # name may resolve differently than when it was saved.
+                try:
+                    out_opts, target = await _checked_relay_target(rtmp_url, relay_key)
+                except (HostCheckError, ValueError) as e:
+                    logger.warning(f"Relay {platform}/{dest['name']} not started: destination host refused by outbound host policy")
+                    asyncio.create_task(db.update_relay_last_error(
+                        relay_id, "Host not allowed" if isinstance(e, HostBlockedError) else "Host could not be resolved"))
+                    break
                 cmd = [
                     "ffmpeg", "-hide_banner", "-loglevel", "warning",
                     "-rtsp_transport", "tcp",
                     "-i", source_url,
                     "-c", "copy", "-f", "flv",
+                    *out_opts,
                     target
                 ]
                 process = await asyncio.create_subprocess_exec(
@@ -4630,14 +4786,24 @@ async def _restart_single_relay(stream_id: int, relay_id: int, dest: dict) -> No
         source_url = f"rtsp://127.0.0.1:8554/live/{active_key}"
 
         rtmp_url = fresh_dest["rtmp_url"].rstrip("/")
-        target = f"{rtmp_url}/{fresh_dest['stream_key']}"
 
         try:
+            # Outbound host policy, re-applied at every (re)start.
+            try:
+                out_opts, target = await _checked_relay_target(rtmp_url, fresh_dest["stream_key"])
+            except (HostCheckError, ValueError) as e:
+                logger.warning(f"Relay auto-restart refused ({platform}/{name}): destination host refused by outbound host policy")
+                asyncio.create_task(db.update_relay_last_error(
+                    relay_id, "Host not allowed" if isinstance(e, HostBlockedError) else "Host could not be resolved"))
+                if isinstance(e, HostBlockedError):
+                    return
+                continue
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", "warning",
                 "-rtsp_transport", "tcp",
                 "-i", source_url,
                 "-c", "copy", "-f", "flv",
+                *out_opts,
                 target
             ]
             process = await asyncio.create_subprocess_exec(
@@ -6405,8 +6571,14 @@ async def _connect_vod_sftp(user_id: int):
         return None, None, "No VOD storage configured"
 
     config = storage.get("config") or {}
+    try:
+        _addrs = await resolve_checked_host(storage["host"], storage["port"] or 22)
+    except HostCheckError:
+        logger.warning(f"VOD SFTP host refused by outbound host policy for user {user_id}")
+        return None, None, "Host not allowed"
     connect_opts = {
-        "host": storage["host"],
+        # Dial the checked address so a later DNS answer cannot differ.
+        "host": _addrs[0],   # replaced per attempt by try_each_address below
         "port": storage["port"] or 22,
         "username": storage["username"],
         "known_hosts": None,
@@ -6422,7 +6594,8 @@ async def _connect_vod_sftp(user_id: int):
         connect_opts["password"] = config.get("password", "")
 
     try:
-        conn = await asyncio.wait_for(asyncssh.connect(**connect_opts), timeout=10)
+        conn = await try_each_address(
+            _addrs, lambda a: asyncssh.connect(**{**connect_opts, "host": a}), 10)
         sftp = await conn.start_sftp_client()
         return conn, sftp, None
     except asyncio.TimeoutError:
@@ -6487,6 +6660,11 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
             raise ValueError
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid port"}, status=400)
+
+    # Refuse local/internal targets (a name that does not resolve yet may be
+    # saved; connecting re-checks and fails closed)
+    if not await _user_targets_allowed(host, None, port):
+        return web.json_response({"error": "Host not allowed"}, status=403)
 
     # Build config JSON with sensitive data
     config = {}
@@ -6564,8 +6742,16 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
     if not host or not username:
         return web.json_response({"error": "Host and username are required"}, status=400)
 
+    try:
+        _addrs = await resolve_checked_host(host, port)
+    except HostBlockedError:
+        return web.json_response({"success": False, "error": "Host not allowed"})
+    except HostResolveError:
+        return web.json_response({"success": False, "error": "Connection failed"})
+
     connect_opts = {
-        "host": host,
+        # Dial the checked address so a later DNS answer cannot differ.
+        "host": _addrs[0],   # replaced per attempt by try_each_address below
         "port": port,
         "username": username,
         "known_hosts": None,
@@ -6602,7 +6788,8 @@ async def http_test_vod_storage(request: web.Request) -> web.Response:
 
     conn = None
     try:
-        conn = await asyncio.wait_for(asyncssh.connect(**connect_opts), timeout=10)
+        conn = await try_each_address(
+            _addrs, lambda a: asyncssh.connect(**{**connect_opts, "host": a}), 10)
         sftp = await conn.start_sftp_client()
 
         # Try to list the remote path
@@ -10388,6 +10575,51 @@ async def handle_user_connection_ws(
     config["host"] = connection.get("host")
     config["port"] = connection.get("port") or type_info.get("default_port")
 
+    # Outbound host policy, applied at connect time. Internal keys are always
+    # reset here so a stored config can never supply its own dial address.
+    config.pop("_pinned_hosts", None)
+    config.pop("_server_hostname", None)
+    config.pop("_ssrf_safe", None)
+    _target_url_hosts = _user_connection_urls(config, ("target_url",))
+    try:
+        if plugin_name == "mediamtx":
+            # The plugin dials these URLs (and falls back to a loopback
+            # default when one is absent), never `host`. The marker makes it
+            # dial through the policy connector, without following redirects.
+            for _key, _val in _mediamtx_urls(config).items():
+                if _val is None and _key not in _MEDIAMTX_REQUIRED_URL_KEYS:
+                    continue  # optional and never dialled for a user connection
+                await resolve_checked_host(urlparse(_val or "http://localhost").hostname or "", 0)
+            config["_ssrf_safe"] = True
+        elif plugin_name == "http_proxy" and _target_url_hosts:
+            # A user-set target_url is dialled instead of `host`: check that
+            # (the plugin's connector re-checks every address it dials).
+            for _h in _target_url_hosts:
+                await resolve_checked_host(_h, 0)
+            config["_ssrf_safe"] = True
+        elif plugin_name == "vpn_tunnel":
+            # The tunnel never dials the connection's own host (the bridge
+            # checks each SOCKS destination itself). The marker makes the
+            # plugin allow only SOCKS mode for a user connection.
+            config["_ssrf_safe"] = True
+        elif plugin_name != "github":
+            # (github never dials the connection's own host.)
+            _addrs = await resolve_checked_host(config["host"], config["port"] or 0)
+            if plugin_name == "http_proxy":
+                # Marks a user connection: the plugin applies the policy
+                # connector to everything it dials.
+                config["_ssrf_safe"] = True
+            else:
+                # Dial the checked addresses (a later DNS answer cannot
+                # differ); keep the name for plugins that need it (TLS name).
+                config["_pinned_hosts"] = list(_addrs)
+                config["_server_hostname"] = config["host"]
+    except (HostCheckError, ValueError):
+        logger.warning(f"User connection {conn_id} refused by outbound host policy")
+        await ws.send_json({"type": "error", "message": "Host not allowed"})
+        await ws.close(code=4003, message=b"Host not allowed")
+        return
+
     # Plugin-specific adjustments
     if plugin_name == "ssh":
         # SSH: set known_hosts to ignore for user connections
@@ -11123,10 +11355,21 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     # Build target URL
     browser_mode = config.get("browser_mode", False)
     host = connection.get("host")
-    if is_blocked_host(host):
-        return web.Response(status=403, text="Access to blocked hosts not allowed")
     default_port = type_info.get("default_port", 80)
     port = connection.get("port") or config.get("port") or default_port
+    # Browser mode sends many requests per page: repeat checks of the same
+    # name are cached briefly (the connector re-checks every dial).
+    _check = resolve_checked_host_cached if browser_mode else resolve_checked_host
+    try:
+        _target_url_hosts = _user_connection_urls(config, ("target_url",))
+        if _target_url_hosts:
+            # A user-set target_url is dialled instead of host: check only that.
+            for _h in _target_url_hosts:
+                await _check(_h, 0)
+        else:
+            await _check(host, int(port))
+    except (HostCheckError, ValueError):
+        return web.Response(status=403, text="Host not allowed")
     if not config.get("target_url"):
         # Use HTTPS for types that default to 443 or are explicitly HTTPS
         https_types = {"https", "portainer", "truenas", "pfsense", "nextcloud", "cockpit"}
@@ -11150,8 +11393,11 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
         browse_full = f"{raw_path}?{browse_query}" if browse_query else raw_path
         parsed_browse = urlparse(browse_full)
         browse_host = parsed_browse.hostname or ""
-        if is_blocked_host(browse_host):
-            return web.Response(status=403, text="Access to local addresses not allowed")
+        try:
+            # Cached for a short time: the connector re-checks every dial.
+            await resolve_checked_host_cached(browse_host, parsed_browse.port or 0)
+        except (HostCheckError, ValueError):
+            return web.Response(status=403, text="Host not allowed")
         target_origin = f"{parsed_browse.scheme}://{parsed_browse.netloc}"
         target_url = target_origin
         config["target_url"] = target_url
@@ -11187,7 +11433,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
             # Registered inside the try so the finally below always unregisters
             # it, and a session revocation closes this relay as well.
             _register_user_ws(token.user_id, ws, token.token_id)
-            connector = aiohttp.TCPConnector(ssl=verify_ssl)
+            connector = _SSRFSafeConnector(ssl=verify_ssl)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(ws_url) as upstream:
                     async def _fwd_client():
@@ -11297,7 +11543,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     await db.record_connection_usage(connection["id"], token.user_id)
 
     try:
-        connector = aiohttp.TCPConnector(ssl=verify_ssl)
+        connector = _SSRFSafeConnector(ssl=verify_ssl)
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=timeout_s),
@@ -12849,7 +13095,7 @@ async def http_create_relay_destination(request: web.Request) -> web.Response:
         return web.json_response({"error": "URL must start with rtmp:// or rtmps://"}, status=400)
     if len(rtmp_url) > 2048:
         return web.json_response({"error": "RTMP URL too long (max 2048 chars)"}, status=400)
-    err = _validate_relay_url(rtmp_url)
+    err = await _validate_relay_url(rtmp_url)
     if err:
         return web.json_response({"error": err}, status=400)
 
@@ -12907,7 +13153,7 @@ async def http_update_relay_destination(request: web.Request) -> web.Response:
         if rtmp_url and len(rtmp_url) > 2048:
             return web.json_response({"error": "RTMP URL too long (max 2048 chars)"}, status=400)
         if rtmp_url:
-            err = _validate_relay_url(rtmp_url)
+            err = await _validate_relay_url(rtmp_url)
             if err:
                 return web.json_response({"error": err}, status=400)
             updates["rtmp_url"] = rtmp_url
@@ -13004,32 +13250,7 @@ async def http_get_relay_platforms(request: web.Request) -> web.Response:
     return web.json_response({"platforms": platforms})
 
 
-class _SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
-    """DNS resolver that rejects private/blocked IPs at connection time.
-
-    Prevents DNS rebinding: even if a hostname changes its DNS between
-    the initial check and the actual connection, this resolver catches it.
-    """
-
-    async def resolve(self, host: str, port: int = 0, family: int = 0):
-        result = await super().resolve(host, port, family)
-        import ipaddress
-        for entry in result:
-            ip_str = entry["host"]
-            if is_blocked_host(ip_str):
-                raise OSError(f"DNS resolved to blocked address: {ip_str}")
-            try:
-                ip = ipaddress.ip_address(ip_str)
-                if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
-                    raise OSError(f"DNS resolved to blocked address: {ip_str}")
-            except ValueError:
-                pass
-        return result
-
-
-def _SSRFSafeConnector(**kwargs):
-    """Create a TCPConnector that validates resolved IPs against SSRF blocklist."""
-    return aiohttp.TCPConnector(resolver=_SSRFSafeResolver(), **kwargs)
+# _SSRFSafeResolver / _SSRFSafeConnector now live in host_check.py (imported at the top).
 
 
 # Link preview cache: url -> (preview_data, timestamp) — bounded to 256 entries

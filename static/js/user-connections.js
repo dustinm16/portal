@@ -864,6 +864,12 @@ function generateDynamicConfigFields(type, typeInfo) {
  * Create a form field from schema property
  */
 function createConnectionConfigField(key, prop, isRequired) {
+    // Server URL defaults point at the local machine, which user connections may not use:
+    // show them as a hint instead of a prefilled value. The server requires the API and WebRTC
+    // URLs for a media stream connection, so those are always marked required; the HLS URL is optional.
+    const urlHintOnly = ['api_url', 'webrtc_url', 'hls_url'].includes(key);
+    if (key === 'api_url' || key === 'webrtc_url') isRequired = true;
+    if (key === 'hls_url') isRequired = false;
     const group = document.createElement('div');
     group.className = 'form-group';
 
@@ -1021,7 +1027,11 @@ function createConnectionConfigField(key, prop, isRequired) {
     input.id = `connection-config-${key}`;
     input.name = key;
     if (prop.default !== undefined && prop.type !== 'boolean') {
-        input.value = prop.default;
+        if (urlHintOnly) {
+            input.placeholder = String(prop.default);
+        } else {
+            input.value = prop.default;
+        }
     }
     if (prop.placeholder) input.placeholder = prop.placeholder;
     if (isRequired) input.required = true;
@@ -1115,6 +1125,15 @@ async function submitConnection(event) {
         return;
     }
 
+    // Media stream connections need their server URLs; check before the button goes into its loading state.
+    if (type === 'stream') {
+        const streamIds = ['connection-stream-api-url', 'connection-stream-webrtc-url'];
+        if (streamIds.some(id => !document.getElementById(id).value.trim())) {
+            Portal.toast('API URL and WebRTC URL are required for a media stream', 'error');
+            return;
+        }
+    }
+
     Portal.setButtonLoading(submitBtn, true);
 
     // Build config based on type
@@ -1159,6 +1178,9 @@ async function submitConnection(event) {
         case 'stream':
             config.protocol = document.getElementById('connection-stream-protocol').value;
             config.path = document.getElementById('connection-stream-path').value.trim();
+            config.api_url = document.getElementById('connection-stream-api-url').value.trim();
+            config.webrtc_url = document.getElementById('connection-stream-webrtc-url').value.trim();
+            config.hls_url = document.getElementById('connection-stream-hls-url').value.trim();
             break;
         case 'custom':
             config.protocol = document.getElementById('connection-custom-protocol').value.trim();
@@ -1278,6 +1300,9 @@ async function editConnection(connectionId) {
             case 'stream':
                 document.getElementById('connection-stream-protocol').value = config.protocol || 'rtsp';
                 document.getElementById('connection-stream-path').value = config.path || '';
+                document.getElementById('connection-stream-api-url').value = config.api_url || '';
+                document.getElementById('connection-stream-webrtc-url').value = config.webrtc_url || '';
+                document.getElementById('connection-stream-hls-url').value = config.hls_url || '';
                 break;
             case 'custom':
                 document.getElementById('connection-custom-protocol').value = config.protocol || '';

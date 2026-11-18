@@ -423,6 +423,9 @@
                 <div class="alert alert-info">
                     <strong>Tip:</strong> When adding a connection from the Dashboard, selecting a preset will show links to these guides and the software's official documentation directly in the form.
                 </div>
+                <div class="alert alert-info">
+                    <strong>Addresses Portal will not connect to:</strong> To protect the server and its network, user connections, relay destinations and VOD storage may not point at the Portal server itself (localhost, 127.x, ::1), cloud metadata addresses, link-local addresses, private networks (10.x, 172.16-31.x, 192.168.x) or the shared address range 100.64.0.0/10. This applies to the name you enter and to every address it resolves to, and it is checked again each time you connect. A connection to a device that only has such an address, for example a device on your home or office LAN or a Tailscale peer in 100.64.0.0/10, is refused with "Host not allowed". A name is refused when it resolves to such an address, even if it also has a public one, so split-horizon DNS (a name that points to a private address inside your network) is refused too. Use a public address or name for the target.
+                </div>
 
             <h2 id="cat-remote-access">Remote Access</h2>
 
@@ -2562,7 +2565,8 @@
                     <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
                     <li>Select <strong>VPN Bridge</strong> type</li>
                     <li>Enter the VPN gateway host and port</li>
-                    <li>Configure VPN-specific settings as needed</li>
+                    <li>Leave the tunnel mode at <code>socks</code>: personal connections can only use SOCKS mode, and a connection saved with <code>tun</code> or <code>tap</code> is refused (those modes are available to administrator-defined services only)</li>
+                    <li>Configure other VPN-specific settings as needed</li>
                 </ol>
                 <h4>Security Considerations</h4>
                 <ul>
@@ -2593,6 +2597,7 @@
                     <li>Go to <strong>Dashboard → My Connections → Add Connection</strong></li>
                     <li>Select <strong>MediaMTX Stream</strong> type</li>
                     <li>Enter host and port (default: 8554 for RTSP, 9997 for API)</li>
+                    <li>Set the <code>api_url</code>, <code>webrtc_url</code> and <code>hls_url</code> of the MediaMTX server in the connection settings. The API and WebRTC URLs are required; the HLS URL is optional. Any URL that is set must not point at Portal itself or a private address; a connection saved without the required ones is refused.</li>
                 </ol>
                 <h4>Security Considerations</h4>
                 <ul>
@@ -2622,6 +2627,7 @@
                     <li>Select <strong>Media Stream</strong> type</li>
                     <li>Enter the stream source host and port</li>
                     <li>Configure the stream protocol (RTSP, HTTP, etc.)</li>
+                    <li>The portal player reaches the stream through the <code>api_url</code>, <code>webrtc_url</code> and <code>hls_url</code> settings of the connection. The API and WebRTC URLs are required; the HLS URL is optional. Any URL that is set must not point at Portal itself or a private address; a connection saved without the required ones is refused.</li>
                 </ol>
                 <h4>Security Considerations</h4>
                 <ul>

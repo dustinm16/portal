@@ -13,15 +13,57 @@ import asyncio
 import json
 import logging
 from typing import Optional, Dict, List
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from aiohttp import web, WSMsgType
 
+from host_check import _SSRFSafeConnector
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
 logger = logging.getLogger("portal.plugins.mediamtx")
+
+
+def _origin(url: str):
+    """(scheme, lower-case host, effective port) of an http(s) URL, else None."""
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        host = (parts.hostname or "").lower()
+        port = parts.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:
+        return None
+    if scheme not in ("http", "https") or not host or not port:
+        return None
+    return scheme, host, port
+
+
+def resolve_ice_resource(webrtc_url: str, resource) -> Optional[str]:
+    """URL to PATCH for an ICE candidate, or None if it must not be dialled.
+
+    `resource` comes from the client. It is resolved against the configured
+    webrtc_url and accepted only when scheme, host and port equal that
+    origin. The returned URL is rebuilt from the configured origin plus the
+    path and query, so a differently parsed authority cannot change the
+    target.
+    """
+    if not isinstance(resource, str) or not resource or not isinstance(webrtc_url, str):
+        return None
+    if "\\" in resource or any(c.isspace() or ord(c) < 32 for c in resource):
+        return None
+    base = _origin(webrtc_url)
+    if base is None:
+        return None
+    try:
+        absolute = urljoin(webrtc_url.rstrip("/") + "/", resource)
+        if _origin(absolute) != base:
+            return None
+        parts = urlsplit(absolute)
+    except ValueError:
+        return None
+    origin = f"{urlsplit(webrtc_url).scheme.lower()}://{urlsplit(webrtc_url).netloc}"
+    return origin + (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
 
 
 @register_plugin
@@ -107,9 +149,36 @@ class MediaMTXPlugin(PluginBase):
 
         logger.info(f"MediaMTX session started for user {user_id}")
 
+        # User connections (marked by the connection handler) are dialled
+        # through a per-session client that applies the host policy to every
+        # address it connects to and never follows redirects; admin-defined
+        # services keep the shared session.
+        session = None
+        if config.get("_ssrf_safe"):
+            session = aiohttp.ClientSession(connector=_SSRFSafeConnector())
+        try:
+            await self._session_loop(ws, session, api_url, webrtc_url,
+                                     default_stream, allowed_streams, timeout, user_id)
+        finally:
+            if session is not None:
+                await session.close()
+            logger.info(f"MediaMTX session ended for user {user_id}")
+
+    async def _session_loop(
+        self,
+        ws: web.WebSocketResponse,
+        session: Optional[aiohttp.ClientSession],
+        api_url: str,
+        webrtc_url: str,
+        default_stream: str,
+        allowed_streams: List[str],
+        timeout: int,
+        user_id: int
+    ) -> None:
+        """Stream list on connect, then WebRTC signaling until the socket closes."""
         # Send available streams on connect
         try:
-            streams = await self._get_streams(api_url, timeout)
+            streams = await self._get_streams(api_url, timeout, session)
             if allowed_streams:
                 streams = [s for s in streams if s["name"] in allowed_streams]
 
@@ -134,7 +203,8 @@ class MediaMTXPlugin(PluginBase):
                     try:
                         data = json.loads(msg.data)
                         await self._handle_signaling(
-                            ws, data, webrtc_url, allowed_streams, timeout, user_id
+                            ws, data, webrtc_url, allowed_streams, timeout, user_id,
+                            session
                         )
                     except json.JSONDecodeError:
                         await ws.send_json({
@@ -145,8 +215,6 @@ class MediaMTXPlugin(PluginBase):
                     break
         except asyncio.CancelledError:
             pass
-        finally:
-            logger.info(f"MediaMTX session ended for user {user_id}")
 
     async def _handle_signaling(
         self,
@@ -155,9 +223,13 @@ class MediaMTXPlugin(PluginBase):
         webrtc_url: str,
         allowed_streams: List[str],
         timeout: int,
-        user_id: int
+        user_id: int,
+        session: Optional[aiohttp.ClientSession] = None
     ) -> None:
         """Handle WebRTC signaling messages."""
+        # `session` is set for user connections (policy connector); the
+        # shared session is only for admin-defined services.
+        http = session or self._http_session
         msg_type = data.get("type")
         stream = data.get("stream", "")
 
@@ -189,11 +261,12 @@ class MediaMTXPlugin(PluginBase):
                 # MediaMTX WebRTC WHEP endpoint
                 whep_url = f"{webrtc_url}/{stream}/whep"
 
-                async with self._http_session.post(
+                async with http.post(
                     whep_url,
                     data=sdp_offer,
                     headers={"Content-Type": "application/sdp"},
-                    timeout=aiohttp.ClientTimeout(total=timeout)
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                    allow_redirects=session is None
                 ) as resp:
                     if resp.status == 201:
                         sdp_answer = await resp.text()
@@ -225,14 +298,20 @@ class MediaMTXPlugin(PluginBase):
             candidate = data.get("candidate")
             resource = data.get("resource")
 
-            if candidate and resource:
+            # The resource is client-supplied: dial it only when it is on the
+            # configured webrtc_url origin (admin-defined services included).
+            target_url = resolve_ice_resource(webrtc_url, resource)
+            if candidate and resource and target_url is None:
+                logger.warning(f"ICE candidate refused for user {user_id}: resource is not on the media server origin")
+            elif candidate and target_url:
                 try:
                     # PATCH the resource with ICE candidate
-                    async with self._http_session.patch(
-                        resource,
+                    async with http.patch(
+                        target_url,
                         data=json.dumps({"candidate": candidate}),
                         headers={"Content-Type": "application/trickle-ice-sdpfrag"},
-                        timeout=aiohttp.ClientTimeout(total=timeout)
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                        allow_redirects=session is None
                     ) as resp:
                         if resp.status not in (200, 204):
                             logger.warning(f"ICE candidate rejected: {resp.status}")
@@ -243,7 +322,7 @@ class MediaMTXPlugin(PluginBase):
             # Refresh stream list
             api_url = webrtc_url.replace(":8889", ":9997")
             try:
-                streams = await self._get_streams(api_url, timeout)
+                streams = await self._get_streams(api_url, timeout, session)
                 if allowed_streams:
                     streams = [s for s in streams if s["name"] in allowed_streams]
                 await ws.send_json({"type": "streams", "streams": streams})
@@ -254,13 +333,18 @@ class MediaMTXPlugin(PluginBase):
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
 
-    async def _get_streams(self, api_url: str, timeout: int) -> List[dict]:
-        """Get list of active streams from MediaMTX API."""
+    async def _get_streams(self, api_url: str, timeout: int,
+                           session: Optional[aiohttp.ClientSession] = None) -> List[dict]:
+        """Get list of active streams from MediaMTX API.
+
+        With `session` (user connections) redirects are not followed.
+        """
         try:
             url = urljoin(api_url, "/v3/paths/list")
-            async with self._http_session.get(
+            async with (session or self._http_session).get(
                 url,
-                timeout=aiohttp.ClientTimeout(total=timeout)
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=session is None
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()

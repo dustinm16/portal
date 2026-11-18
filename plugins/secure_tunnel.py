@@ -15,11 +15,12 @@ import struct
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Set
+from typing import List, Optional, Dict, Set
 from weakref import WeakSet
 
 from aiohttp import web, WSMsgType
 
+from host_check import try_each_address
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
 
@@ -216,7 +217,9 @@ class SecureTunnelPlugin(PluginBase):
         try:
             await self._tunnel_loop(
                 ws, session, connections, conn_lock,
-                host, port, max_connections, connection_timeout, limiter
+                host, port, max_connections, connection_timeout, limiter,
+                # dial the policy-checked addresses when the handler supplied them
+                dial_addrs=config.get("_pinned_hosts")
             )
         finally:
             # Cleanup
@@ -244,7 +247,8 @@ class SecureTunnelPlugin(PluginBase):
         port: int,
         max_connections: int,
         connection_timeout: int,
-        limiter: Optional[BandwidthLimiter] = None
+        limiter: Optional[BandwidthLimiter] = None,
+        dial_addrs: Optional[List[str]] = None
     ) -> None:
         """Main tunnel I/O loop."""
         tasks = set()
@@ -272,9 +276,10 @@ class SecureTunnelPlugin(PluginBase):
                         return
 
                 try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(host, port),
-                        timeout=connection_timeout
+                    reader, writer = await try_each_address(
+                        dial_addrs or [host],
+                        lambda a: asyncio.open_connection(a, port),
+                        connection_timeout
                     )
 
                     conn = TunnelConnection(

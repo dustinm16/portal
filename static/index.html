@@ -1518,6 +1518,21 @@
                             <input type="text" id="connection-stream-path" placeholder="/live/stream1">
                         </div>
                     </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="connection-stream-api-url">API URL</label>
+                            <input type="text" id="connection-stream-api-url" placeholder="https://media.example.com:9997">
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-stream-webrtc-url">WebRTC URL</label>
+                            <input type="text" id="connection-stream-webrtc-url" placeholder="https://media.example.com:8889">
+                        </div>
+                        <div class="form-group">
+                            <label for="connection-stream-hls-url">HLS URL (optional)</label>
+                            <input type="text" id="connection-stream-hls-url" placeholder="https://media.example.com:8888">
+                        </div>
+                    </div>
+                    <small style="color: var(--text-muted);">The API and WebRTC URLs are required; the HLS URL is optional. None of them may point at Portal itself or a private address.</small>
                 </div>
 
                 <!-- Database-specific fields -->
@@ -1945,7 +1960,7 @@
     <script src="/static/js/dashboard.js?v=58"></script>
     <script src="/static/js/admin.js?v=35"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
-    <script src="/static/js/user-connections.js?v=40"></script>
+    <script src="/static/js/user-connections.js?v=44"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>
