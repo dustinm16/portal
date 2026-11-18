@@ -1676,6 +1676,11 @@ async def http_revoke_token(request: web.Request) -> web.Response:
             return web.json_response({"error": "Token not found"}, status=404)
     if await revoke_token(token_id, None if is_admin_caller else token.user_id):
         logger.info(f"Token {token_id[:8]}... revoked by user {token.user_id}")
+        if target:
+            # What was opened with that session ends with it: its sockets, its
+            # voice call and its in-flight proxied downloads. The owner's
+            # other sessions stay (also when an admin revokes a member's).
+            await close_user_websockets(target["user_id"], only_token_id=token_id)
         if target and target["user_id"] != token.user_id:
             actor = await db.get_user_by_id(token.user_id)
             await audit_log("token_revoke", token.user_id,
@@ -2973,6 +2978,9 @@ async def http_revoke_api_key(request: web.Request) -> web.Response:
 
     if await db.revoke_api_key(int(key_id), token.user_id):
         logger.info(f"API key {key_id} revoked by user {token.user_id}")
+        # Sockets, calls and proxied downloads opened with this key end now
+        # (its registry token id is "apikey-<id>").
+        await close_user_websockets(token.user_id, only_token_id=f"apikey-{int(key_id)}")
         return web.json_response({"status": "revoked"})
     else:
         return web.json_response({"error": "API key not found"}, status=404)
@@ -2990,6 +2998,7 @@ async def http_delete_api_key(request: web.Request) -> web.Response:
 
     if await db.delete_api_key(int(key_id), token.user_id):
         logger.info(f"API key {key_id} deleted by user {token.user_id}")
+        await close_user_websockets(token.user_id, only_token_id=f"apikey-{int(key_id)}")
         return web.json_response({"status": "deleted"})
     else:
         return web.json_response({"error": "API key not found"}, status=404)
@@ -12641,7 +12650,7 @@ def _proxy_browser_location(loc: str, proxy_base: str, target_origin: str) -> st
 
 @asynccontextmanager
 async def _proxy_open_upstream(session, method, url, headers, body, *, follow,
-                               proxy_prefix, target_origin, own_headers):
+                               proxy_prefix, target_origin, own_headers, call=None):
     """The upstream response, after the redirects the portal follows itself.
 
     With follow=False the first response is returned as it is. Otherwise 301,
@@ -12651,7 +12660,9 @@ async def _proxy_open_upstream(session, method, url, headers, body, *, follow,
     upstream first (_proxy_redirect_url). A hop to another origin gets neither
     cookies, credentials nor the portal's forwarded host and prefix:
     `own_headers` are the configured header names (auth_header, extra_headers)
-    that belong to the upstream alone.
+    that belong to the upstream alone. Once `call` (the registered request) is
+    aborted by a revocation no further hop is made: the redirect response is
+    returned as it is and the caller ends the request.
     """
     first_origin = _origin_parts(url)
     first_headers = headers
@@ -12666,6 +12677,8 @@ async def _proxy_open_upstream(session, method, url, headers, body, *, follow,
                 break
             nxt = _proxy_redirect_url(loc, url, proxy_prefix, target_origin)
             if nxt is None:
+                break
+            if call is not None and call.aborted:
                 break
             if hops >= _PROXY_MAX_REDIRECTS:
                 raise _ProxyTooManyRedirects(f"more than {_PROXY_MAX_REDIRECTS} redirects")
@@ -12740,11 +12753,24 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
     so that navigation stays within the /proxy/{conn_id}/ path.
     Also handles WebSocket upgrades for real-time web UIs.
     """
-    from urllib.parse import urlparse
-
     token = await authenticate_request(request)
     if not token:
         raise web.HTTPFound("/login")
+    # Registered right after authentication, before any further await, so a
+    # revocation that lands while the connection is looked up cannot slip
+    # between the two: it aborts this call, and the handler checks `aborted`
+    # before it dials the upstream. The registry holds it until the end.
+    call = _ProxyHttpCall(request)
+    _register_user_proxy_call(token.user_id, call, token.token_id)
+    try:
+        return await _proxy_connection_authed(request, token, call)
+    finally:
+        _unregister_user_proxy_call(token.user_id, call)
+
+
+async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttpCall) -> web.Response:
+    """The body of http_proxy_connection, after authentication and registration."""
+    from urllib.parse import urlparse
 
     conn_uuid = request.match_info.get("conn_id", "")
     if not conn_uuid:
@@ -12827,6 +12853,11 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
 
     # Handle WebSocket upgrade
     if request.headers.get("Upgrade", "").lower() == "websocket":
+        # A relay is tracked in the WebSocket registry (closed with code 4001),
+        # not as a proxied call.
+        _unregister_user_proxy_call(token.user_id, call)
+        if call.aborted:
+            return web.Response(status=401, text="Session revoked")
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
@@ -12924,13 +12955,11 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
 
     # Record connection usage
     await db.record_connection_usage(connection["id"], token.user_id)
+    if call.aborted:
+        return web.Response(status=401, text="Session revoked")
 
     stream_started = False
     stream_resp = None
-    # Registered for the whole request: revoking the member's credentials aborts
-    # it (the response has no total time limit, so nothing else would).
-    call = _ProxyHttpCall(request)
-    _register_user_proxy_call(token.user_id, call, token.token_id)
     try:
         connector = _SSRFSafeConnector(ssl=verify_ssl)
         async with aiohttp.ClientSession(
@@ -12955,6 +12984,7 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                 proxy_prefix=proxy_prefix,
                 target_origin=target_origin,
                 own_headers={str(k).lower() for k in _extra} if isinstance(_extra, dict) else set(),
+                call=call,
             ) as resp:
                 call.resp = resp
                 if call.aborted:
@@ -13384,8 +13414,6 @@ async def http_proxy_connection(request: web.Request) -> web.Response:
                  "<p><a href='/dashboard' style='color:#4fc3f7'>Back to Dashboard</a></p>"
                  "</body></html>"
         )
-    finally:
-        _unregister_user_proxy_call(token.user_id, call)
 
 
 def _proxy_cut_download(call: _ProxyHttpCall, stream_resp, conn_uuid: str, why: str):

@@ -409,6 +409,24 @@ async def chain(request):
     return web.Response(status=302, headers={"Location": f"/chain/{n - 1}"})
 
 
+upstream_hits = {"count": 0, "slowchain": 0}
+
+
+async def count_hit(request):
+    upstream_hits["count"] += 1
+    return web.Response(text="COUNTED")
+
+
+async def slow_chain(request):
+    """/slowchain/N waits 0.3 s, then redirects to /slowchain/N-1 until 0."""
+    upstream_hits["slowchain"] += 1
+    n = int(request.match_info["n"])
+    await asyncio.sleep(0.3)
+    if n <= 0:
+        return web.Response(text="SLOW CHAIN END")
+    return web.Response(status=302, headers={"Location": f"/slowchain/{n - 1}"})
+
+
 async def redirect_cookie(request):
     """A redirect hop that sets a cookie (a login), then the page."""
     return web.Response(status=302, headers={"Location": "/login", "Set-Cookie": "hop=1; Path=/"})
@@ -471,7 +489,12 @@ async def fake_auth(request):
     return T()
 
 
+LOOKUP_DELAY = 0
+
+
 async def fake_get_connection(conn_id, user_id):
+    if LOOKUP_DELAY:
+        await asyncio.sleep(LOOKUP_DELAY)
     return dict(NOW_CONNECTION, config=dict(CONFIG))
 
 
@@ -502,6 +525,8 @@ async def main():
     up_app.router.add_get("/chain/{n}", chain)
     up_app.router.add_get("/r-cookie", redirect_cookie)
     up_app.router.add_get("/r-elsewhere", redirect_elsewhere)
+    up_app.router.add_get("/count", count_hit)
+    up_app.router.add_get("/slowchain/{n}", slow_chain)
     up_app.router.add_get("/created", created)
     up_app.router.add_get("/trickle", trickle)
     upstream = TestServer(up_app, host="127.0.0.1")
@@ -826,6 +851,86 @@ async def main():
             await asyncio.sleep(0.3)
             check("revocation: another user's downloads are not touched",
                   await server.close_user_websockets(2) == 0 and not server._user_proxy_calls)
+
+            # --- a revocation that lands while the connection is still being looked up
+            #     (after authentication, before the upstream is dialled) is not missed
+            global LOOKUP_DELAY, REVOKED
+            CONFIG.clear()
+            upstream_hits["count"] = 0
+            LOOKUP_DELAY = 1.0
+            late_outcome = "complete"
+            late_status = 0
+
+            async def late_reader():
+                nonlocal late_outcome, late_status
+                try:
+                    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as rc:
+                        async with rc.get(f"{base}/count", allow_redirects=False) as r:
+                            late_status = r.status
+                            await r.read()
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    late_outcome = type(e).__name__
+
+            task = asyncio.create_task(late_reader())
+            await asyncio.sleep(0.4)
+            registered_early = len(server._user_proxy_calls.get(1, {}))
+            REVOKED = True      # as after a real revocation (a client retry would no longer authenticate)
+            await server.close_user_websockets(1)
+            await asyncio.wait_for(task, 5)
+            REVOKED = False
+            LOOKUP_DELAY = 0
+            check("revocation: a call is registered as soon as the request is authenticated (during the lookup)",
+                  registered_early == 1, str(registered_early))
+            check("revocation: a revocation during the connection lookup stops the request before the upstream is called",
+                  upstream_hits["count"] == 0 and late_status != 200, f"{upstream_hits} {late_outcome} {late_status}")
+            check("revocation: the registry is empty after the early one", not server._user_proxy_calls, str(server._user_proxy_calls))
+
+            # --- no further redirect hop is made once the call was aborted
+            CONFIG.clear()
+            upstream_hits["slowchain"] = 0
+
+            async def chain_reader():
+                try:
+                    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as rc:
+                        async with rc.get(f"{base}/slowchain/8", allow_redirects=False) as r:
+                            await r.read()
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    pass
+
+            task = asyncio.create_task(chain_reader())
+            await asyncio.sleep(0.8)
+            REVOKED = True
+            await server.close_user_websockets(1)
+            await asyncio.wait_for(task, 5)
+            REVOKED = False
+            at_revoke = upstream_hits["slowchain"]
+            await asyncio.sleep(3)
+            check("revocation: the redirect chain is not followed any further after the revocation (9 hops would run)",
+                  1 <= upstream_hits["slowchain"] <= at_revoke + 1 and upstream_hits["slowchain"] < 9,
+                  f"at revoke {at_revoke}, later {upstream_hits['slowchain']}")
+            check("revocation: the registry is empty after the chain", not server._user_proxy_calls, str(server._user_proxy_calls))
+
+            # the hop loop itself: an aborted call gets the redirect as it is, no new hop is dialled
+            # (aiohttp may also cancel the handler when the client goes, so this is checked on the helper)
+            upstream_hits["slowchain"] = 0
+            fake_call = server._ProxyHttpCall(None)
+            origin = f"http://127.0.0.1:{upstream.port}"
+
+            async def abort_soon():
+                await asyncio.sleep(0.45)
+                fake_call.aborted = True
+
+            aborter = asyncio.create_task(abort_soon())
+            async with aiohttp.ClientSession() as hop_session:
+                async with server._proxy_open_upstream(
+                        hop_session, "GET", f"{origin}/slowchain/8", {}, None, follow=True,
+                        proxy_prefix="/proxy/xyz", target_origin=origin, own_headers=set(),
+                        call=fake_call) as hop_resp:
+                    hop_status = hop_resp.status
+            await aborter
+            await asyncio.sleep(1)
+            check("revocation: _proxy_open_upstream makes no further hop once the call is aborted, and returns the redirect",
+                  hop_status == 302 and upstream_hits["slowchain"] == 2, f"{hop_status} {upstream_hits['slowchain']}")
 
             # --- buffered path has a total time cap equal to the timeout
             CONFIG.clear()
