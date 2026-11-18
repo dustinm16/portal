@@ -320,6 +320,10 @@ class SecurityEventLog:
             minute = row["ts"][:16]
             row["ip"] = aggregate_ip(row["ip"])
             key = (row["ip"], event, row["result"] or "", minute)
+            if event not in AGGREGATED and row["user_id"] is not None:
+                # An event over the immediate cap (see write): two accounts behind one
+                # address are counted apart, so a count is never filed under another account.
+                key += (f"u{row['user_id']}",)
             entry = self._agg.get(key)
             if entry is None:
                 known = self._minute_keys.get(minute)

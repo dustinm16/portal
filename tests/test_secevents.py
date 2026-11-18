@@ -244,6 +244,15 @@ async def immediate_cap_unit():
               len(revoke_agg) == 1 and revoke_agg[0][1] == 70, str(revoke_agg))
         check("every event is accounted for (written or counted)",
               len(logins) + sum(v for k, v in login_agg) == 100 and len(revokes) + sum(v for k, v in revoke_agg) == 100)
+        # two accounts behind one address, both over the cap: counted apart, never under the other's id
+        for _ in range(100):
+            await buf.write("login_success", ip="198.51.100.30", user_id=21, result="web")
+            await buf.write("login_success", ip="198.51.100.30", user_id=22, result="web")
+        await buf.flush()
+        k21 = [(k, v) for k, v in db.rows.items() if k.startswith("198.51.100.30|login_success|") and k.endswith("|u21")]
+        k22 = [(k, v) for k, v in db.rows.items() if k.startswith("198.51.100.30|login_success|") and k.endswith("|u22")]
+        check("two accounts behind one address over the cap get one counted row each (70 each)",
+              len(k21) == 1 and k21[0][1] == 70 and len(k22) == 1 and k22[0][1] == 70, str(db.rows))
         # another user, another event, another address are separate budgets
         for _ in range(5):
             await buf.write("login_success", ip="198.51.100.20", user_id=8, username="other", result="web")
@@ -370,7 +379,18 @@ async def filter_and_upsert_db_tests():
     await db.conn.commit()
 
 
+def unused_import_unit():
+    import ast
+    tree = ast.parse(Path(secevents.__file__).read_text())
+    imported = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.value.id for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)}
+    check("secevents.py has no unused import (timedelta was one)", "timedelta" not in imported and not (imported - used),
+          str(sorted(imported - used)))
+
+
 async def main_async(tmp):
+    unused_import_unit()
     await rows_per_minute_unit()
     await immediate_cap_unit()
     server.db.db_path = str(Path(tmp) / "t.db")
