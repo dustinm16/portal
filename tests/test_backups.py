@@ -928,6 +928,101 @@ def test_file_manager_refuses_the_whole_backups_directory_and_static_smuggling()
         check("a rename inside static works", (sb.root / "static" / "b" / "x.txt").exists())
 
 
+def test_stale_leftovers_are_removed_at_the_start_of_a_run():
+    with Sandbox() as sb:
+        sb.archive()
+        adir = bm.archives_dir()
+        old = time.time() - 2 * 3600
+        victims = [adir / ".work-abcd1234", adir / ".partial-abcd1234.tar.gz"]
+        keepers = [adir / ".work-FRESH123", adir / ".partial-FRESH123.tar.gz",   # younger than an hour
+                   adir / ".work-abc", adir / ".work-abcd12345", adir / "work-abcd1234",   # not the strict name
+                   adir / ".partial-abcd1234.tar.gz.bak", adir / ".partial-ab.tar.gz",
+                   adir / ".work-linkdir1", adir / ".partial-linkfil1.tar.gz"]   # symlinks
+        (adir / ".work-abcd1234").mkdir(mode=0o700)
+        (adir / ".work-abcd1234" / "portal.db").write_bytes(b"x")
+        (adir / ".partial-abcd1234.tar.gz").write_bytes(b"x")
+        (adir / ".work-FRESH123").mkdir(mode=0o700)
+        (adir / ".partial-FRESH123.tar.gz").write_bytes(b"x")
+        for n in (".work-abc", ".work-abcd12345", "work-abcd1234"):
+            (adir / n).mkdir()
+        (adir / ".partial-abcd1234.tar.gz.bak").write_bytes(b"x")
+        (adir / ".partial-ab.tar.gz").write_bytes(b"x")
+        outside = Path(sb._tmp.name) / "outside_dir"
+        outside.mkdir()
+        (outside / "precious").write_text("keep")
+        outside_file = Path(sb._tmp.name) / "outside_file"
+        outside_file.write_text("keep")
+        os.symlink(outside, adir / ".work-linkdir1")
+        os.symlink(outside_file, adir / ".partial-linkfil1.tar.gz")
+        for p in victims + keepers:
+            if p.name == ".work-FRESH123" or p.name == ".partial-FRESH123.tar.gz":
+                continue
+            os.utime(p, (old, old), follow_symlinks=False)
+        (adir / ".work-abcd1234" / "portal.db").touch()
+        info = sb.archive()
+        check("stale work directory and partial archive are gone", not any(p.exists() for p in victims))
+        check("the run reports what it removed", sorted(info["stale_removed"]) == sorted(p.name for p in victims),
+              str(info["stale_removed"]))
+        check("fresh, oddly named and symlinked entries are untouched",
+              all(os.path.lexists(p) for p in keepers), str([p.name for p in keepers if not os.path.lexists(p)]))
+        check("a symlink is never followed", (outside / "precious").read_text() == "keep" and outside_file.exists())
+        check("the earlier archives are still there", len(bm._matching_files(adir)) == 2)
+
+
+def test_waiting_for_a_running_backup():
+    with Sandbox() as sb:
+        bm._RUN_LOCK.acquire()
+        released = threading.Timer(0.5, bm._RUN_LOCK.release)
+        released.start()
+        try:
+            t0 = time.time()
+            info = sb.archive(wait=10)
+            waited = time.time() - t0
+        finally:
+            released.join()
+        check("a run with wait= takes the backup once the running one finishes",
+              bm.is_archive_name(info["name"]) and 0.3 < waited < 5, f"{waited:.2f}s")
+        bm._RUN_LOCK.acquire()
+        try:
+            try:
+                sb.archive(wait=0.3)
+                gave_up = False
+            except bm.BackupError as e:
+                gave_up = "still running" in str(e)
+        finally:
+            bm._RUN_LOCK.release()
+        check("it gives up after the wait", gave_up)
+        bm._RUN_LOCK.acquire()
+        try:
+            try:
+                sb.archive()
+                instant = False
+            except bm.BackupError as e:
+                instant = "already running" in str(e)
+        finally:
+            bm._RUN_LOCK.release()
+        check("without wait= the call still fails at once (manual Run route)", instant)
+        import ast
+        tree = ast.parse((ROOT / "server.py").read_text())
+        fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "http_admin_backups_run")
+        run_calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "run_now"]
+        check("the manual Run route does not wait", bool(run_calls) and not any(c.keywords for c in run_calls))
+
+
+def test_lowering_keep_needs_the_cookie():
+    check("lowering keep is detected", bm.keep_lowered({"keep": 3}, 7))
+    check("raising, keeping or not naming keep is not", not any((
+        bm.keep_lowered({"keep": 7}, 7), bm.keep_lowered({"keep": 9}, 7), bm.keep_lowered({"enabled": True}, 7),
+        bm.keep_lowered({"keep": True}, 7), bm.keep_lowered("x", 7))))
+    import ast
+    tree = ast.parse((ROOT / "server.py").read_text())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "http_admin_backups_settings")
+    src = ast.get_source_segment((ROOT / "server.py").read_text(), fn)
+    i = src.index("keep_lowered")
+    check("the settings route asks for the browser cookie when keep is lowered",
+          "cookie_only=True" in src[i:src.index("extra_dir_changed")])
+
+
 def test_download_and_delete_need_the_cookie():
     """Download and delete both take only the browser session cookie (checked in the handler source)."""
     import ast
@@ -956,11 +1051,11 @@ def test_update_requires_backup():
     import backup_manager
     saved_run = backup_manager.run_now
     try:
-        async def failing(reason="manual"):
+        async def failing(reason="manual", wait=0):
             raise backup_manager.BackupError("disk full")
 
-        async def passing(reason="manual"):
-            calls.append(["backup", reason])
+        async def passing(reason="manual", wait=0):
+            calls.append(["backup", reason, wait])
             return {"name": "portal-backup-20260101-000000.tar.gz", "extra_error": None}
 
         job = {"id": "t", "log": []}
@@ -973,7 +1068,7 @@ def test_update_requires_backup():
         check("an update does not start when the backup fails", refused and calls == [], str(calls))
         backup_manager.run_now = passing
         asyncio.run(um._run_apply(job, "portal", "v9"))
-        check("the backup is taken before the update runs", calls == [["backup", "pre-update"], ["apply", "v9"]], str(calls))
+        check("the backup is taken before the update runs", calls == [["backup", "pre-update", 600], ["apply", "v9"]], str(calls))
         job2 = {"id": "t2", "log": []}
         um._log_restore_hint(job2)
         text = "\n".join(job2["log"])
@@ -990,7 +1085,7 @@ if __name__ == "__main__":
                test_extra_destination_private_tmp, test_extra_destination_served_dirs,
                test_consistency_under_writes, test_config_and_schedule, test_startup_check, test_due_check_after_restart,
                test_resolve_archive,
-               test_restore, test_config_without_open_database, test_file_manager_blocks_backups, test_file_manager_refuses_the_whole_backups_directory_and_static_smuggling, test_download_and_delete_need_the_cookie,
+               test_restore, test_config_without_open_database, test_file_manager_blocks_backups, test_file_manager_refuses_the_whole_backups_directory_and_static_smuggling, test_stale_leftovers_are_removed_at_the_start_of_a_run, test_waiting_for_a_running_backup, test_lowering_keep_needs_the_cookie, test_download_and_delete_need_the_cookie,
                test_update_requires_backup):
         fn()
     print(f"\n{len(FAILS)} failed" if FAILS else "\nall passed")

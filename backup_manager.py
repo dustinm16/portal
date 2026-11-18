@@ -71,6 +71,11 @@ STARTUP_CHECK_DELAY_SECONDS = 120
 
 _RUN_LOCK = threading.Lock()
 
+# Leftovers of a run that was killed: its private work directory and its partial archive.
+STALE_AGE_SECONDS = 3600
+_STALE_WORK_RE = re.compile(r"^\.work-[A-Za-z0-9_]{8}$")
+_STALE_PARTIAL_RE = re.compile(r"^\.partial-[A-Za-z0-9_]{8}\.tar\.gz$")
+
 
 class BackupError(RuntimeError):
     """A backup could not be written or an archive could not be used."""
@@ -190,6 +195,43 @@ def prune(directory: Path, keep: int) -> list:
             removed.append(n)
         except OSError as e:
             logger.warning("Could not delete old backup %s: %s", n, e)
+    return removed
+
+
+def remove_stale_work(directory: Path, max_age: float = STALE_AGE_SECONDS, now: Optional[float] = None) -> list:
+    """Delete leftovers of an interrupted run from *directory*. Returns the names removed.
+
+    Only names exactly like the ones this module creates (`.work-XXXXXXXX` directories and
+    `.partial-XXXXXXXX.tar.gz` files) that are older than *max_age* seconds, owned by this
+    account and not symbolic links. Entries are inspected with lstat and a link is never followed.
+    """
+    now = time.time() if now is None else now
+    uid = os.geteuid()
+    removed = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return removed
+    for n in names:
+        is_dir = bool(_STALE_WORK_RE.match(n))
+        if not is_dir and not _STALE_PARTIAL_RE.match(n):
+            continue
+        path = os.path.join(directory, n)
+        try:
+            st = os.lstat(path)
+            if st.st_uid != uid or now - st.st_mtime < max_age:
+                continue
+            if is_dir:
+                if not stat.S_ISDIR(st.st_mode):
+                    continue
+                shutil.rmtree(path)
+            else:
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                os.unlink(path)
+            removed.append(n)
+        except OSError as e:
+            logger.warning("Could not delete stale backup leftover %s: %s", n, e)
     return removed
 
 
@@ -327,6 +369,15 @@ def check_extra_dir(path: str) -> Path:
     if not os.access(real, os.W_OK | os.X_OK):
         raise BackupError(f"Extra destination is not writable: {path}")
     return real
+
+
+def keep_lowered(data, current_keep: int) -> bool:
+    """True when the update asks for a smaller `keep` than the saved one (older archives
+    would be deleted at the next run)."""
+    if not isinstance(data, dict) or "keep" not in data:
+        return False
+    v = data["keep"]
+    return not isinstance(v, bool) and isinstance(v, int) and v < current_keep
 
 
 def extra_dir_changed(data, current_extra_dir: str) -> bool:
@@ -518,15 +569,19 @@ def _copy_to_extra(src: Path, name: str, extra_dir: str, keep: int) -> str:
 
 
 def create_archive(db_path: Optional[str] = None, version: str = "unknown",
-                   keep: int = 7, extra_dir: str = "") -> dict:
+                   keep: int = 7, extra_dir: str = "", wait: float = 0) -> dict:
     """Write one backup archive, prune old ones, and copy it to the extra destination.
 
     Refuses (and logs) when less than twice the database size is free. Raises
     BackupError on any failure; a failed run leaves no partial file behind.
     A failure of the optional extra copy does not fail the backup: it is
-    reported in the result as "extra_error".
+    reported in the result as "extra_error". With *wait* seconds given, a backup that is
+    already running is waited for that long instead of failing at once.
     """
-    if not _RUN_LOCK.acquire(blocking=False):
+    if wait and wait > 0:
+        if not _RUN_LOCK.acquire(timeout=wait):
+            raise BackupError(f"A backup was still running after waiting {int(wait)} seconds")
+    elif not _RUN_LOCK.acquire(blocking=False):
         raise BackupError("A backup is already running")
     try:
         return _create_archive_locked(db_path, version, keep, extra_dir)
@@ -545,6 +600,9 @@ def _create_archive_locked(db_path, version, keep, extra_dir) -> dict:
     if not os.path.isfile(db_path):
         raise BackupError(f"Database not found: {db_path}")
     adir = _ensure_archives_dir()
+    stale = remove_stale_work(adir)
+    if stale:
+        logger.info("Removed stale backup leftovers older than an hour: %s", ", ".join(stale))
 
     db_size = os.stat(db_path).st_size
     try:
@@ -626,6 +684,7 @@ def _create_archive_locked(db_path, version, keep, extra_dir) -> dict:
         "created_at": manifest["created_at"],
         "portal_version": manifest["portal_version"],
         "pruned": removed,
+        "stale_removed": stale,
         "missing": missing,
         "extra_path": None,
         "extra_error": None,
@@ -965,8 +1024,12 @@ async def _record(ok: bool, name: str = "", error: str = "") -> None:
         logger.error("Could not record the backup result: %s", e)
 
 
-async def run_now(reason: str = "manual") -> dict:
-    """Take a backup archive now (in a worker thread) and record the outcome."""
+async def run_now(reason: str = "manual", wait: float = 0) -> dict:
+    """Take a backup archive now (in a worker thread) and record the outcome.
+
+    With *wait* seconds given, a backup that is already running is waited for
+    that long instead of failing at once.
+    """
     cfg = await load_config()
     try:
         version = await um._get_portal_version()
@@ -974,13 +1037,14 @@ async def run_now(reason: str = "manual") -> dict:
         version = "unknown"
     try:
         info = await asyncio.to_thread(
-            create_archive, None, version, cfg["keep"], cfg["extra_dir"]
+            create_archive, None, version, cfg["keep"], cfg["extra_dir"], wait
         )
     except Exception as e:
         await _record(False, error=str(e))
         raise
     await _record(True, name=info["name"], error=info.get("extra_error") or "")
-    logger.info("Backup (%s) finished: %s", reason, info["name"])
+    logger.info("Backup (%s) finished: %s%s", reason, info["name"],
+                f"; pruned {', '.join(info['pruned'])}" if info.get("pruned") else "")
     return info
 
 

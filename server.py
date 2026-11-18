@@ -18508,7 +18508,9 @@ async def http_admin_backups_run(request: web.Request) -> web.Response:
         logger.error(f"Backup failed: {e}")
         return web.json_response({"error": "Backup failed; see the server log"}, status=500)
     await audit_log("backup.run", user["id"], user.get("username", "unknown"),
-                    target_name=info["name"], details={"bytes": info["size"]})
+                    target_name=info["name"],
+                    details={"bytes": info["size"], "pruned": info.get("pruned", []),
+                             "stale_removed": info.get("stale_removed", [])})
     return web.json_response(info, status=201)
 
 
@@ -18521,7 +18523,17 @@ async def http_admin_backups_settings(request: web.Request) -> web.Response:
         data = await request.json()
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
-    current = (await backup_manager.load_config())["extra_dir"]
+    saved_cfg = await backup_manager.load_config()
+    current = saved_cfg["extra_dir"]
+    if backup_manager.keep_lowered(data, saved_cfg["keep"]):
+        # A lower keep deletes the older archives at the next run: same bar as moving the destination.
+        _, kerr = await _backup_superadmin(request, cookie_only=True)
+        if kerr:
+            if kerr.status == 401:
+                kerr = web.json_response(
+                    {"error": "A browser login session is required to lower the number of archives kept"},
+                    status=403)
+            return kerr
     if backup_manager.extra_dir_changed(data, current):
         # Moving the destination is the one way left to move archive bytes off the box, so it
         # needs the superadmin's own browser session, like a download. Nothing is saved before.

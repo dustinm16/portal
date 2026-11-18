@@ -1106,12 +1106,16 @@ async def _apply_system_update(job: dict) -> None:
     _log(job, "System update complete.")
 
 
+# A backup that is already running (scheduled, or started by hand) is waited for this long.
+PRE_UPDATE_BACKUP_WAIT_SECONDS = 600
+
+
 async def _backup_before_update(job: dict) -> None:
     """Write a backup archive (database plus restore keys) and stop the update if that fails."""
     import backup_manager
     _log(job, "Creating pre-update backup archive...")
     try:
-        info = await backup_manager.run_now("pre-update")
+        info = await backup_manager.run_now("pre-update", wait=PRE_UPDATE_BACKUP_WAIT_SECONDS)
     except Exception as e:
         raise RuntimeError(f"Pre-update backup failed, so the update was not started: {e}") from e
     _log(job, f"Backup archive created: {info['name']}")
