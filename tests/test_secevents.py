@@ -207,6 +207,68 @@ async def rows_per_minute_unit():
           and sum(db2.rows.values()) == 30000, str(db2.rows))
 
 
+class _ImmediateDB(_CountingDB):
+    def __init__(self):
+        super().__init__()
+        self.inserted = []
+
+    async def insert_security_event(self, row):
+        self.inserted.append(row)
+
+
+async def immediate_cap_unit():
+    """Immediate events: at most 30 rows per (user id or address, event) and minute; the rest is aggregated."""
+    db = _ImmediateDB()
+    buf = secevents.SecurityEventLog(db)
+    clock = {"t": 1_900_000_020.0}          # 20 s into a minute: a loop of 100 stays inside it
+    real_clock = secevents._clock
+    secevents._clock = lambda: clock["t"]
+    try:
+        check("the cap is 30 per minute", secevents.IMMEDIATE_PER_MINUTE == 30)
+        for i in range(100):
+            await buf.write("login_success", ip="198.51.100.20", user_id=7, username="loop_user",
+                            result="web", details={"via": "web"})
+        for i in range(100):
+            await buf.write("session_revoked", ip="198.51.100.20", user_id=7, username="loop_user", result="own")
+        await buf.flush()
+        logins = [r for r in db.inserted if r["event"] == "login_success"]
+        revokes = [r for r in db.inserted if r["event"] == "session_revoked"]
+        check("a loop of 100 sign-ins writes 30 immediate rows", len(logins) == 30, str(len(logins)))
+        check("a loop of 100 session revocations writes 30 immediate rows", len(revokes) == 30, str(len(revokes)))
+        agg = {k: v for k, v in db.rows.items()}
+        login_agg = [(k, v) for k, v in agg.items() if "|login_success|" in k]
+        check("the other 70 sign-ins are one counted row for the minute",
+              len(login_agg) == 1 and login_agg[0][1] == 70, str(login_agg))
+        revoke_agg = [(k, v) for k, v in agg.items() if "|session_revoked|" in k]
+        check("the other 70 revocations are one counted row for the minute",
+              len(revoke_agg) == 1 and revoke_agg[0][1] == 70, str(revoke_agg))
+        check("every event is accounted for (written or counted)",
+              len(logins) + sum(v for k, v in login_agg) == 100 and len(revokes) + sum(v for k, v in revoke_agg) == 100)
+        # another user, another event, another address are separate budgets
+        for _ in range(5):
+            await buf.write("login_success", ip="198.51.100.20", user_id=8, username="other", result="web")
+            await buf.write("password_changed", ip="198.51.100.20", user_id=7, username="loop_user")
+            await buf.write("login_success", ip="198.51.100.21", user_id=None, username=None, result="web")
+        got = lambda e, u: len([r for r in db.inserted if r["event"] == e and r["user_id"] == u])  # noqa: E731
+        check("another user has their own budget", got("login_success", 8) == 5)
+        check("another event of the same user has its own budget", got("password_changed", 7) == 5)
+        check("without a user id the address is the key", len([r for r in db.inserted
+              if r["ip"] == "198.51.100.21"]) == 5)
+        # the next minute starts again
+        clock["t"] += 60
+        for _ in range(40):
+            await buf.write("login_success", ip="198.51.100.20", user_id=7, username="loop_user", result="web")
+        check("the next minute has a fresh budget of 30", len([r for r in db.inserted
+              if r["event"] == "login_success" and r["user_id"] == 7]) == 60)
+        # a flood of distinct keys cannot grow the memory of the counter without bound
+        for i in range(secevents.IMMEDIATE_MAX_KEYS + 50):
+            await buf.write("login_success", ip="203.0.113.1", user_id=100000 + i, result="web")
+        check("the per-minute counter is bounded",
+              len(buf._immediate_counts) <= secevents.IMMEDIATE_MAX_KEYS)
+    finally:
+        secevents._clock = real_clock
+
+
 async def probe_and_rate_unit():
     secevents.log._agg.clear()
     saved = (Config.PROBE_BLOCK_STRIKES, Config.RATE_LIMIT_REQUESTS)
@@ -310,6 +372,7 @@ async def filter_and_upsert_db_tests():
 
 async def main_async(tmp):
     await rows_per_minute_unit()
+    await immediate_cap_unit()
     server.db.db_path = str(Path(tmp) / "t.db")
     await server.db.connect()
     secevents.log.bind(server.db)

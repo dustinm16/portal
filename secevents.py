@@ -14,7 +14,11 @@ Two write paths, chosen by event name:
   writes, however many requests it sends. An IPv6 source counts as its /64, and
   one minute creates at most MINUTE_MAX_KEYS rows across all flushes: further
   sources that minute are added to one shared row per event and result.
-* Successes and credential changes are written at once.
+* Successes and credential changes are written at once, but at most
+  IMMEDIATE_PER_MINUTE rows per (user id or address, event) and minute: a member
+  who loops a sign-in or a sign-out cannot grow the table without bound. Further
+  events of that kind in the minute are counted in the aggregate buffer, one
+  counted row per minute.
 
 Nothing here raises into a caller, and a database error never stops a login.
 Secrets (passwords, 2FA and backup codes, tokens, API keys, invite codes) are
@@ -96,6 +100,8 @@ MINUTE_MAX_KEYS = 300           # distinct aggregate rows one minute may create,
 MINUTES_TRACKED = 3             # how many recent minutes keep their key set
 FLUSH_INTERVAL = 5.0            # seconds between flushes of the aggregate buffer
 IMMEDIATE_TIMEOUT = 2.0         # most a caller waits for an immediate write
+IMMEDIATE_PER_MINUTE = 30       # immediate rows per (user id or address, event) and minute
+IMMEDIATE_MAX_KEYS = 5000       # distinct such keys remembered for the current minute
 EXPORT_MAX_ROWS = 50000
 EXPORT_PAGE = 500
 OVERFLOW_IP = "*"
@@ -191,6 +197,11 @@ def ip_filter_values(text: str) -> list:
     return list(dict.fromkeys(values))
 
 
+def _clock() -> float:
+    """The time the per-minute cap counts in (replaced in tests)."""
+    return time.time()
+
+
 def now_ts(now: Optional[float] = None) -> str:
     """UTC timestamp in the one format this table uses (and every cutoff and filter)."""
     dt = datetime.fromtimestamp(time.time() if now is None else now, tz=timezone.utc)
@@ -269,6 +280,9 @@ class SecurityEventLog:
         # minute -> agg keys that minute has created; survives flushes so the
         # cap below limits rows written per minute, not just keys per flush.
         self._minute_keys: dict = {}
+        # (minute, who, event) -> immediate rows written; only the current minute is kept.
+        self._immediate_minute: str = ""
+        self._immediate_counts: dict = {}
         self._task: Optional[asyncio.Task] = None
         self._flush_lock: Optional[asyncio.Lock] = None
         self.dropped = 0          # rows lost to a failed flush that could not be re-queued
@@ -393,11 +407,34 @@ class SecurityEventLog:
 
     # -- immediate path -------------------------------------------------------
 
+    def _immediate_allowed(self, event: str, user_id, ip, minute: str) -> bool:
+        """Count one immediate row for (user id or address, event) in this minute; False over the cap."""
+        if minute != self._immediate_minute:
+            self._immediate_minute = minute
+            self._immediate_counts = {}
+        who = ("u", user_id) if isinstance(user_id, int) and not isinstance(user_id, bool) \
+            else ("i", clean_text(ip, 64) or "unknown")
+        key = (who, event)
+        used = self._immediate_counts.get(key)
+        if used is None:
+            if len(self._immediate_counts) >= IMMEDIATE_MAX_KEYS:
+                return False            # a flood of distinct keys: aggregate rather than remember them all
+            used = 0
+        if used >= IMMEDIATE_PER_MINUTE:
+            return False
+        self._immediate_counts[key] = used + 1
+        return True
+
     async def write(self, event: str, *, ip=None, user_agent=None, user_id=None, username=None,
                     result=None, details=None) -> None:
         """Write one event now. Never raises; waits at most IMMEDIATE_TIMEOUT."""
         try:
             if self._db is None:
+                return
+            now = _clock()
+            if not self._immediate_allowed(event, user_id, ip, now_ts(now)[:16]):
+                self.note(event, ip=ip, user_agent=user_agent, user_id=user_id, username=username,
+                          result=result, details=details, now=now)
                 return
             row = self._row(event, ip, user_agent, user_id, username, result, details)
             row["count"] = 1
