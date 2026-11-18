@@ -220,11 +220,39 @@ async def test_throttle(uid):
         # The table does not grow without bound.
         auth._last_touch.clear()
         for i in range(auth._TOUCH_SWEEP_SIZE + 10):
-            auth._touch_due(f"t{i}")
+            auth.touch_due(f"t{i}")
         clock.now += 61
-        auth._touch_due("fresh")
+        auth.touch_due("fresh")
         check("throttle: stale entries are swept when the table is large", len(auth._last_touch) <= 2,
               str(len(auth._last_touch)))
+
+        # API keys: the same once-a-minute throttle
+        auth._last_touch.clear()
+        full_key, key_hash, key_prefix = auth.generate_api_key()
+        key_id = await db.create_api_key(user_id=uid, name="throttle-key", key_hash=key_hash,
+                                         key_prefix=key_prefix, scopes="*")
+        key_writes = []
+        real_key_touch = db.update_api_key_last_used
+
+        async def counting_key(kid):
+            key_writes.append(kid)
+            await real_key_touch(kid)
+
+        db.update_api_key_last_used = counting_key
+        try:
+            for _ in range(200):
+                payload = await server.authenticate_api_key(full_key)
+            check("api key: the key is accepted", payload is not None and payload.token_id == f"apikey-{key_id}")
+            check("api key: 200 requests inside one minute write last_used once", len(key_writes) == 1,
+                  str(len(key_writes)))
+            clock.now += 61
+            await server.authenticate_api_key(full_key)
+            check("api key: after a minute the next request writes again", len(key_writes) == 2, str(len(key_writes)))
+            clock.now += 1
+            await server.authenticate_api_key(full_key)
+            check("api key: and is quiet again right after", len(key_writes) == 2)
+        finally:
+            db.update_api_key_last_used = real_key_touch
     finally:
         db.update_token_last_used = real
         auth._touch_clock = saved_clock
@@ -398,6 +426,35 @@ async def test_routes():
         state["caller"] = Caller(admin, "apikey-3", ("admin",))
         r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": str(bob)}))
         check("an admin-only scoped key is refused", r.status == 403)
+        check("the refusal of a scoped key is the shared full-scope message",
+              "full-access token is required" in body(r)["error"], body(r)["error"])
+        # someone promoted to admin keeps a member's scopes until they sign in again:
+        # the role is judged from the database, so that session works
+        promoted = await make_user("sess_promoted")
+        _, prom_sess = await make_session(promoted, "203.0.113.30", MAC_SAFARI)
+        _, bob3 = await make_session(bob, "198.51.100.21", MAC_SAFARI)
+        state["caller"] = Caller(promoted, prom_sess, ("services:read", "access:*"))
+        r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": str(bob)}))
+        check("a member's session is refused before the promotion",
+              r.status == 403 and "Only admins" in body(r)["error"] and (await token_row(bob3))["revoked"] == 0)
+        await db.set_user_role(promoted, "admin")
+        r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": str(bob)}))
+        check("a user promoted to admin can sign a member out with the session they already hold",
+              r.status == 200 and (await token_row(bob3))["revoked"] == 1, f"{r.status} {r.body[:120]}")
+        await db.set_user_role(promoted, "user")
+        _, bob4 = await make_session(bob, "198.51.100.22", MAC_SAFARI)
+        r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": str(bob)}))
+        check("a user demoted again is refused even with the same session",
+              r.status == 403 and (await token_row(bob4))["revoked"] == 0)
+        # a member's token narrowed to one scope (not an API key) on the member routes
+        state["caller"] = Caller(alice, "tok-narrow", ("services:read",))
+        codes = [(await h(FakeRequest(match={"id": "0" * 16}))).status for h in
+                 (server.http_list_my_sessions, server.http_revoke_my_session,
+                  server.http_revoke_my_other_sessions)]
+        check("a member token narrowed to services:read answers 403 on all three session routes",
+              codes == [403, 403, 403], str(codes))
+        r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": str(bob)}))
+        check("and on the admin route", r.status == 403)
         state["caller"] = Caller(admin, a1, ("*",))
         for bad, want in (("abc", 400), ("999999", 404)):
             r = await server.http_admin_revoke_user_sessions(FakeRequest(match={"id": bad}))

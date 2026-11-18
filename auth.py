@@ -199,8 +199,9 @@ async def create_access_token(
 
 
 # last_used_at / last_ip are written at most once per TOUCH_INTERVAL seconds
-# per token: every authenticated request passes through validate_token, and a
-# write plus commit on each of them would load the single SQLite writer.
+# per credential (a token, or "apikey-<id>" for an API key): every
+# authenticated request passes through validate_token or the API key check, and
+# a write plus commit on each of them would load the single SQLite writer.
 TOUCH_INTERVAL = 60
 _TOUCH_SWEEP_SIZE = 2048
 _last_touch: dict[str, float] = {}
@@ -210,8 +211,8 @@ def _touch_clock() -> float:
     return time.monotonic()
 
 
-def _touch_due(token_id: str) -> bool:
-    """True (and the time is noted) when this token's last_used write is due."""
+def touch_due(token_id: str) -> bool:
+    """True (and the time is noted) when this credential's last_used write is due."""
     now = _touch_clock()
     last = _last_touch.get(token_id)
     if last is not None and 0 <= now - last < TOUCH_INTERVAL:
@@ -239,7 +240,7 @@ async def validate_token(token: str, client_ip: str = None) -> TokenPayload:
         raise AuthError("Token has been revoked or expired")
 
     # Update last used timestamp (throttled, see TOUCH_INTERVAL)
-    if _touch_due(payload.token_id):
+    if touch_due(payload.token_id):
         await db.update_token_last_used(payload.token_id, client_ip)
 
     return payload

@@ -56,6 +56,21 @@ asyncio.run(main())
 '''
 
 
+KEY_ROW = '''
+import asyncio, json
+from database import db
+
+async def main():
+    await db.connect()
+    cur = await db.conn.execute("SELECT last_used_at FROM api_keys WHERE user_id = ? AND name = 'sessck-key'", (%d,))
+    row = await cur.fetchone()
+    await db.close()
+    print(json.dumps(row[0] if row else None))
+
+asyncio.run(main())
+'''
+
+
 async def _rows(ctx, user_id):
     rc, out = await ctx.run_py(ROWS % (user_id, user_id, user_id))
     return json.loads(out.strip().splitlines()[-1])
@@ -183,6 +198,20 @@ async def run(ctx):
                len(refused) >= 2 and all(st == 403 for _, st in refused), str(refused))
         if not member_key or not stream_key:
             ctx.skip("sessions: key checks incomplete", f"key={bool(member_key)} stream key={bool(stream_key)}")
+
+        # An API key's last_used is written at most once a minute: a burst changes nothing.
+        if member_key:
+            async with ctx.http() as keyless:
+                st, _, _ = await _req(keyless, ctx, "GET", "/api/me", headers={"X-API-Key": member_key})
+                rc, out = await ctx.run_py(KEY_ROW % uid_a)
+                first = json.loads(out.strip().splitlines()[-1])
+                await asyncio.sleep(1.2)
+                for _ in range(10):
+                    await _req(keyless, ctx, "GET", "/api/me", headers={"X-API-Key": member_key})
+                rc, out = await ctx.run_py(KEY_ROW % uid_a)
+                second = json.loads(out.strip().splitlines()[-1])
+            ctx.ok("sessions: a burst of API key requests does not rewrite the key's last_used",
+                   st == 200 and bool(first) and first == second, f"status {st}: {first} -> {second}")
 
         # Single revoke guards.
         phone_id = next(s["id"] for s in sessions if not s["current"])

@@ -58,6 +58,7 @@ from auth import (
     create_user,
     extract_token_from_request,
     validate_token,
+    touch_due,
     revoke_token,
     validate_invite_code,
     get_invite_code_info,
@@ -1786,8 +1787,9 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
             return None
         _api_key_remember(key_record["id"], api_key, key_record["key_hash"])
 
-    # Update last used timestamp
-    await db.update_api_key_last_used(key_record["id"])
+    # Update last used timestamp, at most once a minute per key (see auth.TOUCH_INTERVAL)
+    if touch_due(f"apikey-{key_record['id']}"):
+        await db.update_api_key_last_used(key_record["id"])
 
     # Create a TokenPayload for the API key
     scopes = key_record.get("scopes", "*").split(",")
@@ -2258,25 +2260,16 @@ def _session_view(row: dict, current_token_id: str) -> dict:
     }
 
 
-def _full_credential_error(token) -> Optional[web.Response]:
-    """The sessions routes act on the user's whole account, so only a browser
-    session or a full-scope credential may use them: a stream key or a narrowly
-    scoped API key or token gets 403."""
-    if not has_full_user_scope(token):
-        return web.json_response(
-            {"error": "This credential cannot manage sessions"}, status=403)
-    return None
-
-
 async def http_list_my_sessions(request: web.Request) -> web.Response:
     """List the caller's own sessions (browser logins and tokens made through
     the API). API keys are not sessions; they are listed under /api/api-keys."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    err = _full_credential_error(token)
-    if err:
-        return err
+    # The sessions routes act on the user's whole account: only a browser
+    # session or a full-scope credential may use them.
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     rows = await db.get_user_live_tokens(token.user_id)
     return web.json_response({
         "sessions": [_session_view(r, token.token_id) for r in rows]
@@ -2288,9 +2281,10 @@ async def http_revoke_my_session(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    err = _full_credential_error(token)
-    if err:
-        return err
+    # The sessions routes act on the user's whole account: only a browser
+    # session or a full-scope credential may use them.
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     public_id = request.match_info.get("id", "")
     target = next((r for r in await db.get_user_live_tokens(token.user_id)
                    if matches_public_id(r["token_id"], public_id)), None)
@@ -2319,9 +2313,10 @@ async def http_revoke_my_other_sessions(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
-    err = _full_credential_error(token)
-    if err:
-        return err
+    # The sessions routes act on the user's whole account: only a browser
+    # session or a full-scope credential may use them.
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     revoked = await db.revoke_user_tokens(token.user_id, except_token_id=token.token_id)
     closed = await close_user_websockets(token.user_id, except_token_id=token.token_id,
                                          keep_prefixes=("apikey-", "streamkey-"))
@@ -2342,11 +2337,16 @@ async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+    # The role comes from the database, not from the scopes the session was
+    # created with: someone promoted to admin keeps a member's scopes until
+    # they sign in again. The credential must still be a full-scope one, so a
+    # stream key or a scoped key cannot sign anyone out.
     actor_role = await get_user_role_from_token(token)
-    if (get_role_level(actor_role) < get_role_level("admin")
-            or not token.has_scope("admin") or not has_full_user_scope(token)):
+    if get_role_level(actor_role) < get_role_level("admin"):
         return web.json_response(
             {"error": "Only admins and superadmins can sign users out"}, status=403)
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
     user_id = request.match_info.get("id")
     if not user_id or not user_id.isdigit():
         return web.json_response({"error": "Invalid user ID"}, status=400)
