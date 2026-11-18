@@ -41,8 +41,9 @@ class Config:
     RATE_LIMIT_WINDOW: int = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 
     # Reverse proxies whose CF-Connecting-IP / X-Forwarded-For headers are
-    # believed. Loopback and Cloudflare's published ranges are always trusted;
-    # list extra proxies here as comma-separated IPs/CIDRs. Requests arriving
+    # believed. Cloudflare's published ranges are always trusted; list extra
+    # proxies here as comma-separated IPs/CIDRs (including 127.0.0.1,::1 for
+    # a reverse proxy or cloudflared on this host). Requests arriving
     # from any other peer are attributed to the peer address itself, so a
     # client connecting straight to the origin cannot spoof its IP.
     TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")

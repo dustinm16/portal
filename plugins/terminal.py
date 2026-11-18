@@ -390,6 +390,13 @@ class TerminalPlugin(PluginBase):
                 try:
                     scope = await _move_to_own_scope(pid, user_id)
                 finally:
+                    # Write as well as close: a terminal forked meanwhile holds
+                    # a copy of this write end until it execs, which would
+                    # otherwise delay the EOF the child is waiting for.
+                    try:
+                        os.write(gate_w, b"x")
+                    except OSError:
+                        pass
                     os.close(gate_w)
                     gate_w = None
                 logger.debug(f"Shell process started: pid={pid}, scope={scope}")

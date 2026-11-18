@@ -122,6 +122,7 @@ logger = logging.getLogger("portal")
 
 # Rate limiting storage
 rate_limits: dict[str, list[float]] = defaultdict(list)
+_rate_limits_last_prune = 0.0
 
 # App-wide IP blocking — {ip: expires_at_iso_or_None}, loaded at startup from
 # blocked_ips and kept in sync in-process so the middleware check on every
@@ -155,9 +156,38 @@ _PROBE_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 # Prefixes that relay to other applications, where such paths can be legitimate.
-_PROBE_EXEMPT_PREFIXES = ("/proxy/", "/search/", "/api/")
+# User uploads are exempt too: their URLs are user-influenced (chat images).
+_PROBE_EXEMPT_PREFIXES = ("/proxy/", "/search/", "/api/", "/static/uploads/")
+_PROBE_TABLE_MAX = 20000                            # hard cap per table
 _probe_strikes: dict[str, tuple[int, float]] = {}   # ip -> (count, first_seen)
 _probe_blocks: dict[str, float] = {}                # ip -> monotonic expiry
+_probe_last_prune = 0.0
+
+
+def _is_local_address(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
+def _is_scanner_probe(request: web.Request, status: int) -> bool:
+    """True for a failed request to a scanner-only path that no browser made.
+
+    Browsers attach Sec-Fetch-Site to every request they make over HTTPS and
+    page script cannot remove it, so requiring its absence means a web page,
+    an email or a chat message full of <img> tags cannot make a visitor's
+    browser earn strikes (and a block) on that visitor's behalf.
+    """
+    return (
+        status in (401, 404, 405)
+        and "Sec-Fetch-Site" not in request.headers
+        and not request.path.startswith(_PROBE_EXEMPT_PREFIXES)
+        and _PROBE_PATH_RE.search(request.path) is not None
+    )
 
 
 def _is_probe_blocked(ip: str) -> bool:
@@ -172,15 +202,28 @@ def _is_probe_blocked(ip: str) -> bool:
 
 def _record_probe(ip: str, path: str) -> None:
     """Count a scanner-style request; block the client once it repeats."""
-    if Config.PROBE_BLOCK_STRIKES <= 0 or ip == "unknown" or _is_trusted_proxy(ip):
+    global _probe_last_prune
+    # Never block the proxies themselves or local callers (MediaMTX hooks,
+    # health checks and tunnelled connections all arrive from loopback).
+    if (
+        Config.PROBE_BLOCK_STRIKES <= 0
+        or _is_trusted_proxy(ip)
+        or _is_local_address(ip)
+    ):
         return
     now = monotonic()
-    if len(_probe_strikes) > 5000:
+    # Sweep expired entries at most once a minute, and cap both tables, so a
+    # flood of distinct addresses costs O(1) per request and bounded memory.
+    if now - _probe_last_prune > 60 and (len(_probe_strikes) > 5000 or len(_probe_blocks) > 5000):
+        _probe_last_prune = now
         for k in [k for k, (_, first) in _probe_strikes.items() if now - first > 600]:
             del _probe_strikes[k]
-    if len(_probe_blocks) > 5000:
         for k in [k for k, exp in _probe_blocks.items() if exp <= now]:
             del _probe_blocks[k]
+    while len(_probe_strikes) >= _PROBE_TABLE_MAX:
+        del _probe_strikes[next(iter(_probe_strikes))]
+    while len(_probe_blocks) >= _PROBE_TABLE_MAX:
+        del _probe_blocks[next(iter(_probe_blocks))]
     count, first = _probe_strikes.get(ip, (0, now))
     if now - first > 600:
         count, first = 0, now
@@ -193,6 +236,18 @@ def _record_probe(ip: str, path: str) -> None:
         )
     else:
         _probe_strikes[ip] = (count, first)
+
+
+_CHAT_UPLOAD_URL_RE = re.compile(r"/static/uploads/chat/[A-Za-z0-9._-]+")
+
+
+def _valid_chat_upload_url(url) -> bool:
+    """A chat image/attachment URL must name one file in the chat upload dir."""
+    return (
+        isinstance(url, str)
+        and ".." not in url
+        and _CHAT_UPLOAD_URL_RE.fullmatch(url) is not None
+    )
 
 
 def safe_error_message(e: Exception) -> str:
@@ -442,8 +497,11 @@ _CLOUDFLARE_NETWORKS = (
 
 
 def _build_trusted_proxies() -> list:
+    # Loopback is deliberately NOT trusted by default: a user connection that
+    # tunnels back into the portal arrives from 127.0.0.1 and could otherwise
+    # supply any client address. Hosts with a local reverse proxy or
+    # cloudflared add 127.0.0.1 / ::1 through TRUSTED_PROXIES.
     nets = [ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS]
-    nets += [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")]
     for item in Config.TRUSTED_PROXIES.split(","):
         item = item.strip()
         if not item:
@@ -524,8 +582,12 @@ def check_rate_limit(client_ip: str) -> bool:
     now = time()
     window_start = now - Config.RATE_LIMIT_WINDOW
 
-    # Periodically drop idle clients so the table does not grow without bound
-    if len(rate_limits) > 5000:
+    # Drop idle clients so the table does not grow without bound. At most one
+    # sweep per window: under a flood of distinct addresses nothing is idle
+    # yet, and rescanning on every request would only add load.
+    global _rate_limits_last_prune
+    if len(rate_limits) > 5000 and now - _rate_limits_last_prune >= Config.RATE_LIMIT_WINDOW:
+        _rate_limits_last_prune = now
         for ip in [ip for ip, times in rate_limits.items() if not times or times[-1] <= window_start]:
             del rate_limits[ip]
 
@@ -13555,11 +13617,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         attachment_type = data.get("attachment_type", "").strip() or None
 
                         # Validate image_url if provided
-                        if image_url and not image_url.startswith("/static/uploads/chat/"):
+                        if image_url and not _valid_chat_upload_url(image_url):
                             image_url = None
 
                         # Validate attachment_url if provided
-                        if attachment_url and not attachment_url.startswith("/static/uploads/chat/"):
+                        if attachment_url and not _valid_chat_upload_url(attachment_url):
                             attachment_url = None
                             attachment_name = None
                             attachment_size = None
@@ -14732,7 +14794,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         text = data.get("message", "").strip()
                         image_url = data.get("image_url")
-                        if image_url and not image_url.startswith("/static/uploads/chat/"):
+                        if image_url and not _valid_chat_upload_url(image_url):
                             image_url = None
                         attachment_url = data.get("attachment_url")
                         attachment_name = data.get("attachment_name")
@@ -14743,7 +14805,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 attachment_size = int(attachment_size)
                             except (ValueError, TypeError):
                                 attachment_size = None
-                        if attachment_url and not attachment_url.startswith("/static/uploads/chat/"):
+                        if attachment_url and not _valid_chat_upload_url(attachment_url):
                             attachment_url = None
                             attachment_name = None
                             attachment_size = None
@@ -16298,11 +16360,7 @@ async def security_headers_middleware(request: web.Request, handler):
             # HTTPException (redirects, 404s, etc.) are also Response objects.
             # Catch them so we can add security headers before returning.
             response = exc
-        if (
-            response.status in (401, 404, 405)
-            and not request.path.startswith(_PROBE_EXEMPT_PREFIXES)
-            and _PROBE_PATH_RE.search(request.path)
-        ):
+        if _is_scanner_probe(request, response.status):
             _record_probe(client_ip, request.path)
 
     # HSTS - Enforce HTTPS for 1 year, include subdomains
