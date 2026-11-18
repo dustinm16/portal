@@ -571,7 +571,7 @@ async def run(ctx):
         opts, url = res["public_rtmp"]
         ctx.ok("hosts: relay rtmp dials the checked address, keeps the name in tcUrl",
                url == "rtmp://u:pw@93.184.216.34:1936/app/sub/KEY"
-               and opts == ["-rtmp_tcurl", "rtmp://public.example:1936/app"], str(res))
+               and opts == ["-rtmp_tcurl", "rtmp://public.example:1936/app/sub"], str(res))
         opts, url = res["public_rtmps"]
         ctx.ok("hosts: relay rtmps keeps the name for TLS",
                url == "rtmps://public.example/app/KEY" and opts == [], str(res))
