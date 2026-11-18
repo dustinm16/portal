@@ -1250,6 +1250,11 @@
                             <td>Maximum number of log entries to keep per managed service</td>
                         </tr>
                         <tr>
+                            <td><strong>Security Events</strong></td>
+                            <td>180 days</td>
+                            <td>Sign-in and credential events (Audit Log &rarr; Security) older than this are deleted; 0 keeps them all</td>
+                        </tr>
+                        <tr>
                             <td><strong>Cleanup Interval</strong></td>
                             <td>6 hours</td>
                             <td>How often the automatic cleanup task runs</td>
@@ -1319,6 +1324,7 @@
                     <li><strong>Paginated</strong> &mdash; Browse through the full history with pagination support.</li>
                     <li><strong>Auto-Cleanup</strong> &mdash; Configurable retention period (default: 90 days) via the Data Retention settings.</li>
                     <li><strong>Privacy</strong> &mdash; IP addresses are logged for security but not exposed in the API response.</li>
+                    <li><strong>Security events</strong> &mdash; Superadmins also get <em>Security</em> and <em>Auth</em> views in the Audit Log tab: sign-ins and failed attempts (including unknown accounts), 2FA, API keys, password and role changes, IP blocks and exports, each with IP address and browser. Repeated attempts from one address are counted in one row per minute. Passwords, codes, tokens and keys are never recorded. The list can be exported as CSV or JSON, and rows are kept for 180 days by default (Data Retention settings).</li>
                 </ul>
 
                 <!-- Auto-Moderation -->

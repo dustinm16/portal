@@ -757,6 +757,22 @@ CREATE TABLE chat_poll_votes (
     UNIQUE(poll_id, user_id, option_index)
 );
 
+-- Security events (v1.13.0): authentication and credential events, no FK to users
+CREATE TABLE security_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event TEXT NOT NULL,
+    category TEXT NOT NULL,          -- 'auth' | 'security'
+    user_id INTEGER,                 -- nullable (unknown user)
+    username_tried TEXT,             -- account typed or acting, <= 64 chars
+    ip TEXT,
+    user_agent TEXT,                 -- <= 200 chars
+    result TEXT,
+    details TEXT,                    -- JSON, never a secret
+    count INTEGER NOT NULL DEFAULT 1,
+    agg_key TEXT                     -- unique; set only on aggregated rows
+);
+
 -- Audit log (all moderation actions)
 CREATE TABLE audit_log (
     id INTEGER PRIMARY KEY,
@@ -1229,6 +1245,7 @@ Configurable retention policies:
 - **retention_activity_max** (default 500) — Max activity log entries
 - **retention_service_logs_max** (default 1000) — Max service log entries per service
 - **retention_device_metrics_days** (default 14) — Device-wide metric samples (`device_metric_samples`)
+- **retention_security_events_days** (default 180) — Security event log (`security_events`); `0` keeps everything
 - **retention_recordings_days** (default 30) — Terminal recordings: the `.cast` file in `RECORDINGS_DIR` is unlinked first (only a plain file name inside that directory, never a path), then the `recordings` row is deleted. A recording whose session is still running is never removed. The same cleanup also removes orphan files: regular `.cast` files directly in `RECORDINGS_DIR` that no row refers to (left behind when a user or service is deleted), that belong to no running session and are older than one hour; symlinks are never followed. The orphan sweep runs whatever the retention setting, and its count is reported as `recording_orphans` by the manual run
 - **Chat upload files**: Deleting a message also deletes its uploaded image or attachment file, after the deletion is committed, unless another row still names the same file: in a message image or attachment column (channel, DM or pinned), in decrypted message or DM text or reply preview, in a decrypted poll question or option, or in a plain-text user status message, channel topic or description, or stream name or description. Reading all that text happens once per cleanup run in a worker thread on a read-only SQLite connection (never on the event loop), not once per batch of 500. The last check and the unlinks then run together in one `BEGIN IMMEDIATE` transaction for exactly the candidate files, re-checking the plain columns and re-reading every row written or edited since the scan, so a row that names a file in the meantime keeps it. If any message cannot be decrypted, or the lock or check cannot complete, no file is removed; the manual cleanup result then carries `chat_files_skipped` (purges) or `chat_orphan_sweep.skipped` and the admin page shows it. Logged webhook payloads are not counted. This applies to retention, DM retention, clearing a channel (including the clear at the end of a stream) and deleting a single message. Files of messages removed some other way (a deleted channel, user or DM conversation) stay on disk and are only reported by the orphan sweep below. A daily orphan sweep looks at `static/uploads/chat` only: plain generated file names, regular files (links and folders are never followed or touched), older than 24 hours, that no row names as above. In 1.12.0 it only reports: the log shows the count, bytes and up to 20 names it would delete, and the manual run returns them as `chat_orphan_sweep`. Deletion is off until the setting `chat_orphan_sweep_delete` is `true`; it is not in the retention API or the admin UI.
 - **cleanup_interval_hours** (default 6) — Auto-cleanup interval
@@ -1243,6 +1260,15 @@ GET  /api/admin/audit-log              - Query audit log (filters: action, actor
 ```
 
 All moderation actions are logged: message_delete, pin/unpin, timeout/mute/unmute/ban/unban, channel CRUD, role changes, automod triggers, channel member management. Default 90-day retention.
+
+### Security Event Log (Superadmin, v1.13.0)
+
+```
+GET  /api/admin/security-events                 - Page through events (category, event, ip, username, user_id, since, until, limit, offset)
+GET  /api/admin/security-events/export          - Stream CSV or JSON (format=csv|json, same filters)
+```
+
+`secevents.py` plus the `security_events` table (no foreign key to `users`, so rows outlive accounts). `server.security_event()` (async) and `server.security_event_nowait()` (sync) never raise. Events in `secevents.AGGREGATED` (login failures, bad 2FA codes, probe blocks, rate-limit trips and similar) only increment an in-memory counter keyed by (ip, event, result, minute); a flusher task writes the counters in one transaction every 5 seconds and at shutdown, as an upsert on `agg_key` that adds to `count`. An IPv6 source is keyed by its /64. A per-minute set of keys (kept for the last three minutes, so it survives flushes) allows at most 300 rows per minute (`MINUTE_MAX_KEYS`); further sources count into one overflow bucket (`*`) per event and result. `clean_text` also strips bidi overrides/isolates and zero-width characters. All other events are written at once, with a 2 second cap on how long the caller waits. Timestamps are UTC `YYYY-MM-DD HH:MM:SS`. Reading and exporting need the superadmin role and an admin-scope credential; every export is recorded as `security_log_export`.
 
 ### Auto-Moderation (Admin)
 

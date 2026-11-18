@@ -2001,6 +2001,49 @@
 
             <!-- Audit Log Tab -->
             <div id="tab-audit" class="tab-content">
+                <!-- Superadmin only: shown once /api/admin/security-events answers 200 -->
+                <div id="audit-chips" class="sysmon-toolbar" style="display:none;">
+                    <button class="range-btn active" id="audit-chip-audit" onclick="setAuditView('audit')">Audit log</button>
+                    <button class="range-btn" id="audit-chip-security" onclick="setAuditView('security')">Security</button>
+                    <button class="range-btn" id="audit-chip-auth" onclick="setAuditView('auth')">Auth</button>
+                </div>
+                <div id="sec-view" style="display:none;">
+                    <div class="sysmon-toolbar" style="flex-wrap:wrap;gap:6px;">
+                        <select id="sec-filter-event" onchange="secResetAndLoad()" style="padding:4px 8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                            <option value="">All events</option>
+                        </select>
+                        <input type="text" id="sec-filter-ip" placeholder="IP address" maxlength="64" onchange="secResetAndLoad()" style="padding:4px 8px;width:140px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
+                        <label style="font-size:0.8rem;color:var(--text-muted);">From <input type="date" id="sec-filter-since" onchange="secResetAndLoad()" style="padding:3px 6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);"></label>
+                        <label style="font-size:0.8rem;color:var(--text-muted);">To <input type="date" id="sec-filter-until" onchange="secResetAndLoad()" style="padding:3px 6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);"></label>
+                        <button class="range-btn" onclick="loadSecurityEvents()">Refresh</button>
+                        <button class="range-btn" onclick="exportSecurityEvents('csv')">Export CSV</button>
+                        <button class="range-btn" onclick="exportSecurityEvents('json')">Export JSON</button>
+                        <span id="sec-count" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
+                    </div>
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr>
+                                    <th>Time (UTC)</th>
+                                    <th>Event</th>
+                                    <th>Account</th>
+                                    <th>IP</th>
+                                    <th>User agent</th>
+                                    <th>Result</th>
+                                    <th>Count</th>
+                                    <th>Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sec-log-body"></tbody>
+                        </table>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:8px;justify-content:center;">
+                        <button class="range-btn" id="sec-prev-btn" onclick="secPrevPage()" disabled>Previous</button>
+                        <span id="sec-page-info" style="padding:6px;color:var(--text-muted);font-size:0.85rem;"></span>
+                        <button class="range-btn" id="sec-next-btn" onclick="secNextPage()" disabled>Next</button>
+                    </div>
+                </div>
+                <div id="audit-view">
                 <div class="sysmon-toolbar">
                     <select id="audit-filter-action" onchange="loadAuditLog()" style="padding:4px 8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);">
                         <option value="">All Actions</option>
@@ -2047,6 +2090,7 @@
                     <button class="range-btn" id="audit-prev-btn" onclick="auditPrevPage()" disabled>Previous</button>
                     <span id="audit-page-info" style="padding:6px;color:var(--text-muted);font-size:0.85rem;"></span>
                     <button class="range-btn" id="audit-next-btn" onclick="auditNextPage()" disabled>Next</button>
+                </div>
                 </div>
             </div>
 
@@ -2277,7 +2321,7 @@
                 case 'settings': loadSettingsTab(); break;
                 case 'system': sysLoadProcesses(); break;
                 case 'files': filesLoadDirectory(filesCurrentPath || '/'); break;
-                case 'audit': loadAuditLog(); break;
+                case 'audit': loadAuditLog(); probeSecurityEvents(); break;
                 case 'automod': loadAutomodRules(); break;
                 case 'updates': loadUpdates(); break;
             }
@@ -6219,6 +6263,11 @@
                         <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
                     </div>
                     <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Security Event Retention (days)</label>
+                        <input type="number" id="ret-security-events" value="${c.retention_security_events_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
+                    </div>
+                    <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Cleanup Interval (hours)</label>
                         <input type="number" id="ret-interval" value="${c.cleanup_interval_hours}" min="1" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                     </div>
@@ -6247,6 +6296,7 @@
                 retention_service_logs_max: pInt('ret-svc-logs', 1000),
                 retention_device_metrics_days: pInt('ret-device-metrics', 14),
                 retention_recordings_days: pInt('ret-recordings', 30),
+                retention_security_events_days: pInt('ret-security-events', 180),
                 cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'
             };
@@ -6675,6 +6725,134 @@
 
         function auditPrevPage() { auditOffset = Math.max(0, auditOffset - auditLimit); loadAuditLog(); }
         function auditNextPage() { auditOffset += auditLimit; loadAuditLog(); }
+
+        // =============================================
+        // Security events (superadmin only)
+        // =============================================
+        const SEC_EVENTS = [
+            'login_success', 'login_failed', '2fa_required', '2fa_passed', '2fa_failed', '2fa_throttled',
+            'backup_code_used', 'logout', 'session_revoked', 'register_failed', '2fa_enabled', '2fa_disabled',
+            '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'password_changed',
+            'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
+            'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
+            'rate_limited', 'host_key_accepted', 'security_log_export'
+        ];
+        let auditView = 'audit';
+        let secOffset = 0;
+        const secLimit = 50;
+        let secTotal = 0;
+        let secAvailable = null;   // null = not probed yet
+
+        async function probeSecurityEvents() {
+            if (secAvailable !== null) return secAvailable;
+            try {
+                const res = await Portal.fetch('/api/admin/security-events?limit=1');
+                secAvailable = res.ok;
+            } catch (e) { secAvailable = false; }
+            if (secAvailable) {
+                document.getElementById('audit-chips').style.display = '';
+                const sel = document.getElementById('sec-filter-event');
+                if (sel.options.length === 1) {
+                    SEC_EVENTS.forEach(ev => { const o = document.createElement('option'); o.value = ev; o.textContent = ev; sel.appendChild(o); });
+                }
+            }
+            return secAvailable;
+        }
+
+        function setAuditView(view) {
+            auditView = view;
+            ['audit', 'security', 'auth'].forEach(v => {
+                document.getElementById('audit-chip-' + v).classList.toggle('active', v === view);
+            });
+            document.getElementById('audit-view').style.display = view === 'audit' ? '' : 'none';
+            document.getElementById('sec-view').style.display = view === 'audit' ? 'none' : '';
+            if (view === 'audit') loadAuditLog(); else secResetAndLoad();
+        }
+
+        function secQuery() {
+            const params = new URLSearchParams();
+            if (auditView === 'auth') params.set('category', 'auth');
+            const ev = document.getElementById('sec-filter-event').value;
+            const ip = document.getElementById('sec-filter-ip').value.trim();
+            const since = document.getElementById('sec-filter-since').value;
+            const until = document.getElementById('sec-filter-until').value;
+            if (ev) params.set('event', ev);
+            if (ip) params.set('ip', ip);
+            if (since) params.set('since', since);
+            if (until) params.set('until', until);
+            return params;
+        }
+
+        function secResetAndLoad() { secOffset = 0; loadSecurityEvents(); }
+        function secPrevPage() { secOffset = Math.max(0, secOffset - secLimit); loadSecurityEvents(); }
+        function secNextPage() { secOffset += secLimit; loadSecurityEvents(); }
+
+        async function loadSecurityEvents() {
+            const body = document.getElementById('sec-log-body');
+            const params = secQuery();
+            params.set('limit', secLimit);
+            params.set('offset', secOffset);
+            try {
+                const res = await Portal.fetch(`/api/admin/security-events?${params}`);
+                if (!res.ok) { body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">Failed to load</td></tr>'; return; }
+                const data = await res.json();
+                secTotal = data.total || 0;
+                const events = data.events || [];
+                document.getElementById('sec-count').textContent = `${secTotal} matching entries`;
+                document.getElementById('sec-page-info').textContent = secTotal ? `${secOffset + 1}-${Math.min(secOffset + secLimit, secTotal)} of ${secTotal}` : '';
+                document.getElementById('sec-prev-btn').disabled = secOffset === 0;
+                document.getElementById('sec-next-btn').disabled = secOffset + secLimit >= secTotal;
+                if (!events.length) {
+                    body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">No entries found</td></tr>';
+                    return;
+                }
+                body.innerHTML = events.map(e => {
+                    const ts = e.ts ? new Date(e.ts.replace(' ', 'T') + 'Z').toISOString().replace('T', ' ').slice(0, 19) : '';
+                    let details = '';
+                    if (e.details) {
+                        try { details = Object.entries(JSON.parse(e.details)).map(([k, v]) => `${k}: ${v}`).join(', '); }
+                        catch { details = e.details; }
+                    }
+                    const ua = e.user_agent || '';
+                    return `<tr>
+                        <td style="white-space:nowrap;">${escapeHtml(ts)}</td>
+                        <td><span style="background:var(--bg-secondary);padding:2px 6px;border-radius:3px;font-size:0.8rem;">${escapeHtml(e.event || '')}</span></td>
+                        <td>${escapeHtml(e.username_tried || '')}</td>
+                        <td style="white-space:nowrap;">${escapeHtml(e.ip || '')}</td>
+                        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(ua)}">${escapeHtml(ua)}</td>
+                        <td>${escapeHtml(e.result || '')}</td>
+                        <td>${e.count > 1 ? escapeHtml(String(e.count)) : ''}</td>
+                        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(details)}">${escapeHtml(details)}</td>
+                    </tr>`;
+                }).join('');
+            } catch (err) {
+                body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">Error loading security events</td></tr>';
+            }
+        }
+
+        async function exportSecurityEvents(format) {
+            const params = secQuery();
+            params.set('format', format);
+            try {
+                const res = await Portal.fetch(`/api/admin/security-events/export?${params}`);
+                if (!res.ok) { Portal.toast('Export failed', 'error'); return; }
+                const blob = await res.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `security-events.${format}`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+                if (res.headers.get('X-Export-Truncated') === 'true') {
+                    Portal.toast('Export holds the newest rows only; narrow the date range for the rest', 'error');
+                } else {
+                    Portal.toast('Export ready', 'success');
+                }
+            } catch (e) {
+                Portal.toast('Export failed', 'error');
+            }
+        }
 
         // =============================================
         // Auto-Moderation

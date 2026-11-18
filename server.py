@@ -52,6 +52,7 @@ from auth import (
     AuthError,
     TokenPayload,
     authenticate_user,
+    authenticate_user_reason,
     create_access_token,
     create_user,
     extract_token_from_request,
@@ -132,6 +133,7 @@ import ipguard
 import update_manager
 import vod_staging
 import automod
+import secevents
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -219,7 +221,7 @@ def _is_probe_blocked(ip: str) -> bool:
     return False
 
 
-def _record_probe(ip: str, path: str) -> None:
+def _record_probe(ip: str, path: str, user_agent: Optional[str] = None) -> None:
     """Count a scanner-style request; block the client once it repeats."""
     global _probe_last_prune
     # Never block the proxies themselves, local callers, this server's own
@@ -252,6 +254,9 @@ def _record_probe(ip: str, path: str) -> None:
         logger.info(
             f"Blocking {ip} for {Config.PROBE_BLOCK_SECONDS}s after repeated scanner probes (last: {path[:80]})"
         )
+        security_event_nowait(
+            "probe_block", ip=ip, user_agent=user_agent, result="blocked",
+            details={"path": path[:80], "seconds": Config.PROBE_BLOCK_SECONDS})
     else:
         _probe_strikes[ip] = (count, first)
 
@@ -1227,6 +1232,64 @@ def get_client_ip(request: web.Request) -> str:
     return peer_ip
 
 
+def _security_event_args(request, ip, user, user_id, username, user_agent=None):
+    if ip is None and request is not None:
+        try:
+            ip = get_client_ip(request)
+        except Exception:
+            ip = None
+    if user is not None:
+        user_id = user_id if user_id is not None else user.get("id")
+        username = username if username is not None else user.get("username")
+    return {
+        "ip": ip,
+        "user_agent": user_agent or (secevents.user_agent_of(request) if request is not None else None),
+        "user_id": user_id,
+        "username": username,
+    }
+
+
+def security_event_nowait(event: str, *, request=None, ip=None, user=None, user_id=None,
+                          username=None, result=None, details=None, user_agent=None) -> None:
+    """Count an attacker-triggered security event (login failure, bad code, probe,
+    rate-limit trip). Synchronous, no I/O, never raises: the event joins the
+    in-memory aggregate that is flushed every few seconds."""
+    try:
+        secevents.log.note(event, result=result, details=details,
+                           **_security_event_args(request, ip, user, user_id, username, user_agent))
+    except Exception:
+        pass
+
+
+async def security_event(event: str, *, request=None, ip=None, user=None, user_id=None,
+                         username=None, result=None, details=None, user_agent=None) -> None:
+    """Record a security event. Never raises and never holds a caller for long.
+
+    Aggregated events (see secevents.AGGREGATED) are only counted in memory;
+    all others are written to the security_events table at once. Callers must
+    never pass a password, code, token, API key or invite code.
+    """
+    try:
+        kwargs = _security_event_args(request, ip, user, user_id, username, user_agent)
+        if event in secevents.AGGREGATED:
+            secevents.log.note(event, result=result, details=details, **kwargs)
+        else:
+            await secevents.log.write(event, result=result, details=details, **kwargs)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+
+
+async def _username_of(user_id) -> Optional[str]:
+    """Account name for a user id, or None; for event rows, never raises."""
+    try:
+        user = await db.get_user_by_id(user_id)
+        return user["username"] if user else None
+    except Exception:
+        return None
+
+
 def get_display_name(user: dict) -> str:
     """Get display name for a user dict: nickname > username."""
     return user.get("nickname") or user.get("owner_nickname") or user.get("username") or user.get("owner_username") or "unknown"
@@ -1251,6 +1314,8 @@ def check_rate_limit(client_ip: str) -> bool:
 
     # Check limit
     if len(rate_limits[client_ip]) >= Config.RATE_LIMIT_REQUESTS:
+        # Counted, not written per request: one aggregate row per source per minute.
+        security_event_nowait("rate_limited", ip=client_ip)
         return False
 
     rate_limits[client_ip].append(now)
@@ -1412,25 +1477,30 @@ async def _totp_record_user_throttle(user: dict, client_ip: str) -> None:
         logger.warning(f"Could not record 2FA throttle activity for user id {user['id']}: {e}")
 
 
-async def verify_second_factor(user: dict, code, client_ip: str):
+async def verify_second_factor(user: dict, code, client_ip: str, request=None):
     """Check a TOTP or backup code for a password-verified user.
 
     Returns (result, retry_after) with result one of "totp", "backup",
     "invalid" or "throttled". A backup code is consumed atomically by
     db.use_backup_code, so it succeeds at most once even under concurrency.
+    Each outcome is also recorded as a security event (never the code).
     """
     allowed, retry_after, token, user_tripped = _totp_check(user["id"], client_ip)
     if not allowed:
         # The trip itself is recorded below, by the request that spent the
         # budget; a refused request must not be recorded as the cause.
+        security_event_nowait("2fa_throttled", request=request, ip=client_ip, user=user)
         return "throttled", retry_after
     code = code if isinstance(code, str) else str(code)
     if verify_totp(user.get("totp_secret"), code):
         _totp_end_attempt(user["id"], client_ip, token)
+        await security_event("2fa_passed", request=request, ip=client_ip, user=user, result="totp")
         return "totp", 0
     if await db.use_backup_code(user["id"], code):
         _totp_end_attempt(user["id"], client_ip, token)
+        await security_event("backup_code_used", request=request, ip=client_ip, user=user)
         return "backup", 0
+    security_event_nowait("2fa_failed", request=request, ip=client_ip, user=user, result="bad_code")
     # This wrong code may have used up the per-user budget. Record it now, with
     # the address that spent it, rather than waiting for the next request (which
     # is likely the account holder's) to trip the limit. Checked after the
@@ -1990,9 +2060,11 @@ async def http_create_token(request: web.Request) -> web.Response:
         return web.json_response({"error": "That token name is reserved"}, status=400)
 
     # Authenticate user
-    user = await authenticate_user(username, password)
+    user, fail_reason = await authenticate_user_reason(username, password)
     if not user:
         logger.warning(f"Failed login attempt for '{username}' from {client_ip}")
+        security_event_nowait("login_failed", request=request, ip=client_ip, username=username,
+                              result=fail_reason, details={"via": "token"})
         return web.json_response({"error": "Invalid credentials"}, status=401)
 
     # Second factor: same verification as the web login. Revealed only after
@@ -2000,11 +2072,13 @@ async def http_create_token(request: web.Request) -> web.Response:
     if user.get("totp_enabled"):
         totp_code = data.get("totp_code")
         if not totp_code or (isinstance(totp_code, str) and not totp_code.strip()):
+            security_event_nowait("2fa_required", request=request, ip=client_ip, user=user,
+                                  details={"via": "token"})
             return web.json_response(
                 {"error": "Two-factor code required", "totp_required": True},
                 status=401
             )
-        result, retry_after = await verify_second_factor(user, totp_code, client_ip)
+        result, retry_after = await verify_second_factor(user, totp_code, client_ip, request=request)
         if result == "throttled":
             return web.json_response(
                 {"error": "Too many incorrect codes. Try again later."},
@@ -2042,6 +2116,8 @@ async def http_create_token(request: web.Request) -> web.Response:
 
     logger.info(f"Token created for user '{username}' from {client_ip}")
     await db.log_activity(user["id"], get_display_name(user), "login", "Signed in", client_ip)
+    await security_event("login_success", request=request, ip=client_ip, user=user,
+                         details={"via": "token", "token_id": token_id[:8]})
 
     return web.json_response({
         "token": jwt_token,
@@ -2101,6 +2177,12 @@ async def http_revoke_token(request: web.Request) -> web.Response:
                             actor["username"] if actor else "unknown",
                             target_id=target["user_id"], target_type="user",
                             details={"token_id": token_id[:8]})
+        await security_event(
+            "session_revoked", request=request, user_id=token.user_id,
+            username=await _username_of(token.user_id),
+            details={"token_id": token_id[:8],
+                     "target_user_id": target["user_id"] if target else None,
+                     "own": bool(target and target["user_id"] == token.user_id)})
         return web.json_response({"status": "revoked"})
     else:
         return web.json_response({"error": "Token not found"}, status=404)
@@ -2812,6 +2894,11 @@ async def http_create_user(request: web.Request) -> web.Response:
             await db.set_user_role(user["id"], "admin")
         await _create_default_connections(user["id"])
         logger.info(f"User '{username}' created by admin user {token.user_id}")
+        await security_event("user_created", request=request, user_id=token.user_id,
+                             username=await _username_of(token.user_id),
+                             details={"via": "admin", "target_user_id": user["id"],
+                                      "target_username": user["username"],
+                                      "is_admin": bool(is_admin)})
         return web.json_response({
             "id": user["id"],
             "username": user["username"],
@@ -2873,6 +2960,8 @@ async def http_register(request: web.Request) -> web.Response:
     row = await cursor.fetchone()
     if row and row[0] > 0:
         logger.warning(f"Registration rate limit: {username} from {client_ip} (already registered in last 24h)")
+        security_event_nowait("register_failed", request=request, ip=client_ip, username=username,
+                              result="ip_limit")
         return web.json_response(
             {"error": "Registration limit reached. Only one account per IP per 24 hours."},
             status=429
@@ -2883,6 +2972,8 @@ async def http_register(request: web.Request) -> web.Response:
     if not is_valid:
         log_invite_code_usage(username, False, client_ip)
         logger.warning(f"Invalid invite code used for registration attempt: {username} from {client_ip}")
+        security_event_nowait("register_failed", request=request, ip=client_ip, username=username,
+                              result="invalid_invite")
         return web.json_response(
             {"error": "Invalid or expired invite code"},
             status=403
@@ -2894,6 +2985,8 @@ async def http_register(request: web.Request) -> web.Response:
         log_invite_code_usage(username, True, client_ip)
         logger.info(f"User '{username}' registered with invite code from {client_ip}")
         await db.log_activity(user["id"], username, "register", "Account created", client_ip)
+        await security_event("user_created", request=request, ip=client_ip, user=user,
+                             details={"via": "register"})
 
         # Track invite code usage
         if code_id:
@@ -2997,6 +3090,9 @@ async def http_create_invite_code(request: web.Request) -> web.Response:
     code_id = await db.create_invite_code(code, code_type, token.user_id, label, expires_at, max_uses)
 
     logger.info(f"Invite code created: type={code_type} id={code_id} by user {token.user_id}")
+    await security_event("invite_created", request=request, user_id=token.user_id,
+                         username=await _username_of(token.user_id),
+                         details={"invite_id": code_id, "type": code_type})
 
     return web.json_response({
         "id": code_id,
@@ -3023,6 +3119,9 @@ async def http_deactivate_invite_code(request: web.Request) -> web.Response:
 
     await db.deactivate_invite_code(code_id)
     logger.info(f"Invite code {code_id} deactivated by user {token.user_id}")
+    await security_event("invite_deactivated", request=request, user_id=token.user_id,
+                         username=await _username_of(token.user_id),
+                         details={"invite_id": code_id})
 
     return web.json_response({"status": "deactivated"})
 
@@ -3347,6 +3446,10 @@ async def http_create_api_key(request: web.Request) -> web.Response:
         )
 
         logger.info(f"API key '{name}' created for user {token.user_id}")
+        await security_event("api_key_created", request=request, user_id=token.user_id,
+                             username=await _username_of(token.user_id),
+                             details={"key_id": key_id, "name": name, "scopes": scopes,
+                                      "expires_at": expires_at})
 
         # Return the full key ONLY ONCE - it cannot be retrieved later
         return web.json_response({
@@ -3395,6 +3498,9 @@ async def http_revoke_api_key(request: web.Request) -> web.Response:
         # Sockets, calls and proxied downloads opened with this key end now
         # (its registry token id is "apikey-<id>").
         await close_user_websockets(token.user_id, only_token_id=f"apikey-{int(key_id)}")
+        await security_event("api_key_revoked", request=request, user_id=token.user_id,
+                             username=await _username_of(token.user_id),
+                             details={"key_id": int(key_id)})
         return web.json_response({"status": "revoked"})
     else:
         return web.json_response({"error": "API key not found"}, status=404)
@@ -3413,6 +3519,9 @@ async def http_delete_api_key(request: web.Request) -> web.Response:
     if await db.delete_api_key(int(key_id), token.user_id):
         logger.info(f"API key {key_id} deleted by user {token.user_id}")
         await close_user_websockets(token.user_id, only_token_id=f"apikey-{int(key_id)}")
+        await security_event("api_key_deleted", request=request, user_id=token.user_id,
+                             username=await _username_of(token.user_id),
+                             details={"key_id": int(key_id)})
         return web.json_response({"status": "deleted"})
     else:
         return web.json_response({"error": "API key not found"}, status=404)
@@ -4126,6 +4235,8 @@ async def http_accept_connection_host_key(request: web.Request) -> web.Response:
     user = await db.get_user_by_id(token.user_id)
     await db.log_activity(token.user_id, get_display_name(user) if user else "unknown",
                           "host_key_accept", f"Accepted host key for connection '{connection.get('name')}' ({fp})")
+    await security_event("host_key_accepted", request=request, user=user, user_id=token.user_id,
+                         details={"kind": "connection", "id": connection["id"], "fingerprint": fp})
     return web.json_response({"status": "accepted", "fingerprint": fp})
 
 
@@ -4164,6 +4275,8 @@ async def http_accept_service_host_key(request: web.Request) -> web.Response:
     user = await db.get_user_by_id(token.user_id)
     await db.log_activity(token.user_id, get_display_name(user) if user else "unknown",
                           "host_key_accept", f"Accepted host key for service '{service.get('name')}' ({fp})")
+    await security_event("host_key_accepted", request=request, user=user, user_id=token.user_id,
+                         details={"kind": "service", "id": service["id"], "fingerprint": fp})
     return web.json_response({"status": "accepted", "fingerprint": fp})
 
 
@@ -8124,6 +8237,9 @@ async def http_accept_vod_host_key(request: web.Request) -> web.Response:
             return web.json_response({"error": "Storage changed; try again"}, status=409)
     logger.info(f"VOD storage host key accepted by user {token.user_id}: {fp}")
     await _vod_activity(token.user_id, "vod_host_key_accepted", f"VOD storage host key accepted ({fp})")
+    await security_event("host_key_accepted", request=request, user_id=token.user_id,
+                         username=await _username_of(token.user_id),
+                         details={"kind": "vod_storage", "fingerprint": fp})
     return web.json_response({"status": "accepted", "fingerprint": fp})
 
 
@@ -9601,6 +9717,9 @@ async def http_block_ip(request: web.Request) -> web.Response:
         "ip_block", f"Blocked IP {ip_address}" + (f" ({reason})" if reason else "")
     )
     logger.info(f"IP {ip_address} blocked by user {token.user_id}" + (f": {reason}" if reason else ""))
+    await security_event("ip_blocked", request=request, user=admin_user, user_id=token.user_id,
+                         details={"target_ip": ip_address, "expires_at": expires_at,
+                                  "reason": reason, "kind": "manual"})
 
     return web.json_response({"success": True, "ip_address": ip_address, "expires_at": expires_at}, status=201)
 
@@ -9629,6 +9748,8 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
             "ip_unblock", f"Unblocked IP {ip_address}"
         )
         logger.info(f"IP {ip_address} unblocked by user {token.user_id}")
+        await security_event("ip_unblocked", request=request, user=admin_user, user_id=token.user_id,
+                             details={"target_ip": ip_address, "kind": "manual" if removed else "probe"})
         return web.json_response({"success": True})
     return web.json_response({"error": "IP not found in block list"}, status=404)
 
@@ -12372,9 +12493,11 @@ async def http_login_submit(request: web.Request) -> web.Response:
             content_type="text/html"
         )
 
-    user = await authenticate_user(username, password)
+    user, fail_reason = await authenticate_user_reason(username, password)
     if not user:
         logger.warning(f"Failed web login for '{username}' from {client_ip}")
+        security_event_nowait("login_failed", request=request, ip=client_ip, username=username,
+                              result=fail_reason, details={"via": "web"})
         if "application/json" in content_type:
             return web.json_response({"error": "Invalid credentials"}, status=401)
         return web.Response(
@@ -12388,13 +12511,15 @@ async def http_login_submit(request: web.Request) -> web.Response:
         if not totp_code or (isinstance(totp_code, str) and not totp_code.strip()):
             # 2FA required but not provided - request it
             logger.info(f"2FA required for user '{username}' from {client_ip}")
+            security_event_nowait("2fa_required", request=request, ip=client_ip, user=user,
+                                  details={"via": "web"})
             return web.json_response({
                 "status": "2fa_required",
                 "message": "Two-factor authentication required"
             }, status=200)
 
         # Verify TOTP or backup code (shared wrong-code throttle)
-        result, retry_after = await verify_second_factor(user, totp_code, client_ip)
+        result, retry_after = await verify_second_factor(user, totp_code, client_ip, request=request)
         if result == "throttled":
             return web.json_response(
                 {"error": "Too many incorrect codes. Try again later."},
@@ -12416,7 +12541,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
     # Create session token
     scopes = ["*"] if user["is_admin"] else ["services:read", "access:*"]
-    jwt_token, _ = await create_access_token(
+    jwt_token, session_token_id = await create_access_token(
         user_id=user["id"],
         scopes=scopes,
         name="web_session",
@@ -12424,6 +12549,9 @@ async def http_login_submit(request: web.Request) -> web.Response:
     )
 
     logger.info(f"Web login for user '{username}' from {client_ip} (remember={bool(remember_me)})")
+    await security_event("login_success", request=request, ip=client_ip, user=user,
+                         details={"via": "web", "remember": bool(remember_me),
+                                  "token_id": session_token_id[:8]})
 
     # For JSON requests, return token directly
     if "application/json" in content_type:
@@ -12464,6 +12592,9 @@ async def http_logout(request: web.Request) -> web.Response:
                 # The chat sockets opened with this session and its voice call
                 # end with it (code 4001); the user's other sessions stay.
                 await close_user_websockets(token.user_id, only_token_id=token.token_id)
+                await security_event("logout", request=request, user_id=token.user_id,
+                                     username=await _username_of(token.user_id),
+                                     details={"token_id": token.token_id[:8]})
         except Exception:
             pass  # Best effort - still clear cookie
 
@@ -15891,6 +16022,134 @@ async def http_get_audit_log(request: web.Request) -> web.Response:
 
 
 # =============================================================================
+# Security events API (superadmin only)
+# =============================================================================
+
+async def _security_log_caller(request: web.Request):
+    """(token, user, error response). Reading the log needs the superadmin role
+    on a credential that carries admin scope, so a narrow key cannot read it."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, None, unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return None, None, forbidden_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    if not user or user.get("role") != "superadmin":
+        return None, None, web.json_response({"error": "Superadmin access required"}, status=403)
+    return token, user, None
+
+
+def _security_log_filters(request: web.Request):
+    """Filters from the query string: (filters dict, error response)."""
+    q = request.query
+    filters = {}
+    category = q.get("category", "")
+    if category and category != "all":
+        if category not in secevents.CATEGORIES:
+            return None, web.json_response({"error": "category must be auth, security or all"}, status=400)
+        filters["category"] = category
+    if q.get("event"):
+        filters["event"] = q["event"][:40]
+    if q.get("ip"):
+        filters["ip"] = q["ip"][:64]
+    if q.get("username"):
+        filters["username"] = q["username"][:secevents.USERNAME_MAX]
+    if q.get("user_id"):
+        try:
+            filters["user_id"] = int(q["user_id"])
+        except (ValueError, TypeError):
+            return None, web.json_response({"error": "Invalid user_id"}, status=400)
+    for name, end in (("since", False), ("until", True)):
+        if q.get(name):
+            try:
+                filters[name] = secevents.parse_bound(q[name], end=end)
+            except (ValueError, TypeError):
+                return None, web.json_response({"error": f"Invalid {name}"}, status=400)
+    return filters, None
+
+
+async def http_get_security_events(request: web.Request) -> web.Response:
+    """GET /api/admin/security-events - page through the security event log."""
+    token, user, err = await _security_log_caller(request)
+    if err:
+        return err
+    filters, err = _security_log_filters(request)
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(request.query.get("limit", 50)), 200))
+        offset = max(0, int(request.query.get("offset", 0)))
+    except (ValueError, TypeError):
+        limit, offset = 50, 0
+    events = await db.get_security_events(limit=limit, offset=offset, **filters)
+    total = await db.count_security_events(**filters)
+    return web.json_response({"events": events, "total": total})
+
+
+async def http_export_security_events(request: web.Request) -> web.StreamResponse:
+    """GET /api/admin/security-events/export?format=csv|json - stream the filtered rows.
+
+    Capped at secevents.EXPORT_MAX_ROWS (newest first; the X-Export-Truncated
+    header says when rows were left out). Each export is itself recorded.
+    """
+    token, user, err = await _security_log_caller(request)
+    if err:
+        return err
+    fmt = request.query.get("format", "csv").lower()
+    if fmt not in ("csv", "json"):
+        return web.json_response({"error": "format must be csv or json"}, status=400)
+    filters, err = _security_log_filters(request)
+    if err:
+        return err
+    total = await db.count_security_events(**filters)
+    cap = secevents.EXPORT_MAX_ROWS
+    truncated = total > cap
+
+    await security_event(
+        "security_log_export", request=request, user=user, result=fmt,
+        details={"format": fmt, "rows": min(total, cap), "truncated": truncated,
+                 **{k: v for k, v in filters.items()}})
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    resp = web.StreamResponse(headers={
+        "Content-Type": "text/csv; charset=utf-8" if fmt == "csv" else "application/json",
+        "Content-Disposition": f'attachment; filename="security-events-{stamp}.{fmt}"',
+        "Cache-Control": "no-store",
+        "X-Export-Rows": str(min(total, cap)),
+        "X-Export-Truncated": "true" if truncated else "false",
+    })
+    await resp.prepare(request)
+    if fmt == "csv":
+        await resp.write(secevents.csv_line(secevents.CSV_COLUMNS).encode("utf-8"))
+    else:
+        await resp.write(b'{"events":[')
+    sent = 0
+    before_id = None
+    first = True
+    while sent < cap:
+        want = min(secevents.EXPORT_PAGE, cap - sent)
+        page = await db.get_security_events(limit=want, offset=0, before_id=before_id, **filters)
+        if not page:
+            break
+        chunk = []
+        for row in page:
+            if fmt == "csv":
+                chunk.append(secevents.csv_line(secevents.row_values(row)))
+            else:
+                chunk.append(("" if first else ",") + json.dumps(row, separators=(",", ":")))
+                first = False
+        await resp.write("".join(chunk).encode("utf-8"))
+        sent += len(page)
+        before_id = page[-1]["id"]
+        if len(page) < want:
+            break
+    if fmt == "json":
+        await resp.write(f'],"count":{sent},"truncated":{"true" if truncated else "false"}}}'.encode("utf-8"))
+    await resp.write_eof()
+    return resp
+
+
+# =============================================================================
 # Auto-Moderation API (admin only)
 # =============================================================================
 
@@ -18523,6 +18782,12 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     except Exception as e:
         errors.append(f"recording_orphans: {e}")
     try:
+        sec_days = int(config.get("retention_security_events_days", 180))
+        if sec_days > 0:
+            results["security_events"] = await db.cleanup_old_security_events(days=sec_days)
+    except Exception as e:
+        errors.append(f"security_events: {e}")
+    try:
         results["invite_codes"] = await db.cleanup_old_invite_codes(days=30)
     except Exception as e:
         errors.append(f"invite_codes: {e}")
@@ -19123,6 +19388,8 @@ async def http_change_password(request: web.Request) -> web.Response:
 
     if not verify_password(current_password, user["password_hash"]):
         logger.warning(f"Failed password change attempt for user {token.user_id}")
+        security_event_nowait("password_change_failed", request=request, user=user,
+                              result="bad_current_password")
         return web.json_response({"error": "Current password is incorrect"}, status=401)
 
     # Update password
@@ -19136,6 +19403,8 @@ async def http_change_password(request: web.Request) -> web.Response:
                                 keep_prefixes=("apikey-", "streamkey-"))
 
     logger.info(f"Password changed for user {token.user_id}")
+    await security_event("password_changed", request=request, user=user,
+                         details={"other_sessions_revoked": True})
 
     return web.json_response({"message": "Password changed successfully"})
 
@@ -19451,6 +19720,7 @@ async def http_2fa_verify(request: web.Request) -> web.Response:
     await db.enable_user_totp(token.user_id, backup_codes)
 
     logger.info(f"2FA enabled for user {token.user_id}")
+    await security_event("2fa_enabled", request=request, user=user)
 
     return web.json_response({
         "status": "enabled",
@@ -19484,12 +19754,14 @@ async def http_2fa_disable(request: web.Request) -> web.Response:
     # Verify password
     if not verify_password(password, user["password_hash"]):
         logger.warning(f"Failed 2FA disable attempt for user {token.user_id} - wrong password")
+        security_event_nowait("2fa_disable_failed", request=request, user=user, result="bad_password")
         return web.json_response({"error": "Invalid password"}, status=401)
 
     # Disable 2FA
     await db.disable_user_totp(token.user_id)
 
     logger.info(f"2FA disabled for user {token.user_id}")
+    await security_event("2fa_disabled", request=request, user=user)
 
     return web.json_response({
         "status": "disabled",
@@ -19619,6 +19891,11 @@ async def http_update_user_role(request: web.Request) -> web.Response:
                     target_id=user_id, target_type="user",
                     target_name=target_user["username"],
                     details=json.dumps({"old_role": target_role, "new_role": new_role}))
+    await security_event("role_changed", request=request, user_id=token.user_id,
+                         username=actor["username"] if actor else None,
+                         details={"target_user_id": user_id,
+                                  "target_username": target_user["username"],
+                                  "old_role": target_role, "new_role": new_role})
 
     return web.json_response({
         "id": user_id,
@@ -19678,6 +19955,11 @@ async def http_delete_user(request: web.Request) -> web.Response:
         logger.warning(f"Could not close sockets of deleted user {user_id}: {e}")
 
     logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
+    await security_event("user_deleted", request=request, user_id=token.user_id,
+                         username=await _username_of(token.user_id),
+                         details={"target_user_id": user_id,
+                                  "target_username": target_user["username"],
+                                  "target_role": target_role})
 
     return web.json_response({
         "message": f"User '{target_user['username']}' deleted"
@@ -19763,6 +20045,13 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
                     details={"sessions_revoked": revoked,
                              "api_keys_revoked": keys_revoked,
                              "websockets_closed": ws_closed})
+    await security_event("password_reset", request=request, user_id=token.user_id,
+                         username=actor["username"] if actor else None,
+                         details={"target_user_id": user_id,
+                                  "target_username": target_user["username"],
+                                  "sessions_revoked": revoked,
+                                  "api_keys_revoked": keys_revoked,
+                                  "websockets_closed": ws_closed})
 
     return web.json_response({
         "message": f"Password reset for user '{target_user['username']}'"
@@ -19903,7 +20192,7 @@ async def security_headers_middleware(request: web.Request, handler):
             # Catch them so we can add security headers before returning.
             response = exc
         if _is_scanner_probe(request, response.status):
-            _record_probe(client_ip, request.path)
+            _record_probe(client_ip, request.path, secevents.user_agent_of(request))
 
     # HSTS - Enforce HTTPS for 1 year, include subdomains
     response.headers.setdefault('Strict-Transport-Security',
@@ -20713,6 +21002,8 @@ def create_app() -> web.Application:
 
     # Audit Log
     app.router.add_get("/api/admin/audit-log", http_get_audit_log)
+    app.router.add_get("/api/admin/security-events", http_get_security_events)
+    app.router.add_get("/api/admin/security-events/export", http_export_security_events)
 
     # Auto-Moderation
     app.router.add_get("/api/admin/automod", http_get_automod_rules)
@@ -20873,6 +21164,10 @@ class PortalServer:
         vod_leftovers = await asyncio.to_thread(_vod_prepare_staging)
         if vod_leftovers:
             self._start_vod_recovery()
+
+        # Security event log: bind the database and start the aggregate flusher
+        secevents.log.bind(db)
+        secevents.log.start()
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
@@ -21162,6 +21457,17 @@ class PortalServer:
                 except Exception as e:
                     logger.error(f"[Retention] Audit log cleanup failed: {e}")
 
+                # Security events (0 keeps everything)
+                try:
+                    sec_days = int(config.get("retention_security_events_days", 180))
+                    if sec_days > 0:
+                        d = await db.cleanup_old_security_events(days=sec_days)
+                        if d > 0:
+                            logger.info(f"[Retention] Cleaned {d} security events older than {sec_days} days")
+                        total += d
+                except Exception as e:
+                    logger.error(f"[Retention] Security events cleanup failed: {e}")
+
                 # Automod actions
                 try:
                     d = await db.cleanup_old_automod_actions(days=30)
@@ -21367,6 +21673,9 @@ class PortalServer:
         if self.runner:
             await self.runner.cleanup()
 
+        # Write the security events still counted in memory before the database closes
+        await secevents.log.shutdown()
+
         await db.close()
         logger.info("Server stopped")
 
@@ -21395,6 +21704,7 @@ async def init_admin_user() -> None:
     import secrets
 
     await db.connect()
+    secevents.log.bind(db)      # command-line process: events are written directly
 
     password = secrets.token_urlsafe(16)
     creds_file = Path(__file__).parent / "admin_credentials.txt"
@@ -21420,6 +21730,11 @@ async def init_admin_user() -> None:
                         target_name="admin",
                         details={"sessions_revoked": revoked,
                                  "api_keys_revoked": keys_revoked, "via": "cli"})
+        await security_event("password_reset", user=admin,
+                             details={"via": "cli", "target_user_id": admin["id"],
+                                      "target_username": "admin",
+                                      "sessions_revoked": revoked,
+                                      "api_keys_revoked": keys_revoked})
         label = "ADMIN PASSWORD RESET"
 
     creds_file.write_text(f"Username: admin\nPassword: {password}\n")
@@ -21524,6 +21839,7 @@ def show_invite_code() -> None:
 async def set_admin_cli(username: str, remove: bool = False) -> None:
     """Set or remove admin status for a user."""
     await db.connect()
+    secevents.log.bind(db)      # command-line process: events are written directly
 
     user = await db.get_user_by_username(username)
     if not user:
@@ -21549,6 +21865,11 @@ async def set_admin_cli(username: str, remove: bool = False) -> None:
     # Existing sessions carry the old role's scopes; force a fresh login.
     await db.revoke_user_tokens(user["id"])
     await db.revoke_user_api_keys(user["id"])
+    await security_event("role_changed", user=user,
+                         details={"via": "cli", "target_user_id": user["id"],
+                                  "target_username": user["username"],
+                                  "old_role": user.get("role") or ("admin" if user.get("is_admin") else "user"),
+                                  "new_role": new_role})
 
     status_word = "removed from" if remove else "added to"
     print(f"User '{username}' has been {status_word} admin group (role={new_role})")

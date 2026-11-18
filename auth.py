@@ -131,13 +131,19 @@ def decode_jwt(token: str) -> TokenPayload:
         raise AuthError(f"Invalid token: {e}")
 
 
-async def authenticate_user(username: str, password: str) -> Optional[dict]:
-    """Authenticate a user by username and password."""
+async def authenticate_user_reason(username: str, password: str) -> tuple[Optional[dict], Optional[str]]:
+    """Authenticate; returns (user, None) or (None, "unknown_user" | "bad_password")."""
     user = await db.get_user_by_username(username)
     if not user:
-        return None
+        return None, "unknown_user"
     if not verify_password(password, user["password_hash"]):
-        return None
+        return None, "bad_password"
+    return user, None
+
+
+async def authenticate_user(username: str, password: str) -> Optional[dict]:
+    """Authenticate a user by username and password."""
+    user, _ = await authenticate_user_reason(username, password)
     return user
 
 

@@ -1115,6 +1115,29 @@ MIGRATIONS = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_game_storage_roots_default ON game_storage_roots(is_default)",
+    # v1.13.0 -- security event log (see secevents.py). No foreign key to users:
+    # rows outlive the account. ts is 'YYYY-MM-DD HH:MM:SS' UTC. agg_key is set
+    # only on aggregated rows ("ip|event|result|minute") so a flood is one row
+    # per source per minute; immediate rows leave it NULL (NULLs never collide).
+    """CREATE TABLE IF NOT EXISTS security_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        event TEXT NOT NULL,
+        category TEXT NOT NULL,
+        user_id INTEGER,
+        username_tried TEXT,
+        ip TEXT,
+        user_agent TEXT,
+        result TEXT,
+        details TEXT,
+        count INTEGER NOT NULL DEFAULT 1,
+        agg_key TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_security_events_ts ON security_events(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_security_events_event ON security_events(event, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(ip, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_security_events_user ON security_events(user_id, ts)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_security_events_agg ON security_events(agg_key)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -4538,6 +4561,78 @@ class Database:
         return cursor.rowcount
 
     # =============================================
+    # Security events (see secevents.py)
+    # =============================================
+
+    _SEC_COLS = ("ts", "event", "category", "user_id", "username_tried", "ip",
+                 "user_agent", "result", "details", "count", "agg_key")
+
+    async def insert_security_event(self, row: dict) -> int:
+        """Write one security event now."""
+        cursor = await self.conn.execute(
+            f"INSERT INTO security_events ({', '.join(self._SEC_COLS)}) "
+            f"VALUES ({', '.join('?' for _ in self._SEC_COLS)})",
+            tuple(row.get(c) for c in self._SEC_COLS),
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def upsert_security_events(self, rows: list[dict]) -> None:
+        """Write aggregated rows in one transaction; a repeated agg_key adds to its count."""
+        if not rows:
+            return
+        await self.conn.executemany(
+            f"INSERT INTO security_events ({', '.join(self._SEC_COLS)}) "
+            f"VALUES ({', '.join('?' for _ in self._SEC_COLS)}) "
+            "ON CONFLICT(agg_key) DO UPDATE SET count = count + excluded.count",
+            [tuple(r.get(c) for c in self._SEC_COLS) for r in rows],
+        )
+        await self.conn.commit()
+
+    @staticmethod
+    def _security_where(category=None, event=None, ip=None, user_id=None, username=None,
+                        since=None, until=None, before_id=None):
+        conds, params = [], []
+        if category:
+            conds.append("category = ?"); params.append(category)
+        if event:
+            conds.append("event = ?"); params.append(event)
+        if ip:
+            conds.append("ip = ?"); params.append(ip)
+        if user_id:
+            conds.append("user_id = ?"); params.append(user_id)
+        if username:
+            conds.append("username_tried = ?"); params.append(username)
+        if since:
+            conds.append("ts >= ?"); params.append(since)
+        if until:
+            conds.append("ts <= ?"); params.append(until)
+        if before_id:
+            conds.append("id < ?"); params.append(before_id)
+        return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
+    async def get_security_events(self, limit: int = 50, offset: int = 0, **filters) -> list[dict]:
+        where, params = self._security_where(**filters)
+        cursor = await self.conn.execute(
+            f"SELECT * FROM security_events{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset])
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def count_security_events(self, **filters) -> int:
+        where, params = self._security_where(**filters)
+        cursor = await self.conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM security_events{where}", params)
+        row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
+    async def cleanup_old_security_events(self, days: int = 180) -> int:
+        """Delete security events older than N days (same timestamp format as ts)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self.conn.execute("DELETE FROM security_events WHERE ts < ?", (cutoff,))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    # =============================================
     # Auto-moderation operations
     # =============================================
 
@@ -6705,6 +6800,7 @@ class Database:
         "retention_service_logs_max": "1000",
         "retention_device_metrics_days": "14",
         "retention_recordings_days": "30",
+        "retention_security_events_days": "180",
         "cleanup_interval_hours": "6",
         "auto_vacuum": "true",
     }
@@ -6739,6 +6835,7 @@ class Database:
                         "retention_activity_max": 100000, "retention_service_logs_max": 100000,
                         "retention_device_metrics_days": 365,
                         "retention_recordings_days": 3650,
+                        "retention_security_events_days": 3650,
                         "cleanup_interval_hours": 168,  # max 1 week
                     }
                     if key in max_vals and int_val > max_vals[key]:

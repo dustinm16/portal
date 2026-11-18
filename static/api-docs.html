@@ -428,6 +428,7 @@
                         <li><a href="#backups">Backups</a></li>
                         <li><a href="#ip-blocking">IP Blocking</a></li>
                         <li><a href="#audit-log">Audit Log</a></li>
+                        <li><a href="#security-events">Security Events</a></li>
                         <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
                 </div>
@@ -5477,6 +5478,7 @@ Headers:
   "retention_notifications_days": 30,
   "retention_activity_max": 500,
   "retention_service_logs_max": 1000,
+  "retention_security_events_days": 180,
   "cleanup_interval_hours": 6,
   "auto_vacuum": true
 }</pre>
@@ -5489,6 +5491,7 @@ Headers:
                             <tr><td><code>retention_notifications_days</code></td><td>int</td><td>Days to keep notifications (0 = disabled, default: 30)</td></tr>
                             <tr><td><code>retention_activity_max</code></td><td>int</td><td>Maximum activity log entries to keep (0 = disabled, default: 500)</td></tr>
                             <tr><td><code>retention_service_logs_max</code></td><td>int</td><td>Maximum service log entries per service (0 = disabled, default: 1000)</td></tr>
+                            <tr><td><code>retention_security_events_days</code></td><td>int</td><td>Days to keep security events (0 = keep all, default: 180)</td></tr>
                             <tr><td><code>cleanup_interval_hours</code></td><td>int</td><td>Hours between automatic cleanup runs (default: 6)</td></tr>
                             <tr><td><code>auto_vacuum</code></td><td>bool</td><td>Run VACUUM after cleanup to reclaim space (default: true)</td></tr>
                         </table>
@@ -5844,6 +5847,68 @@ Headers:
   <span class="string">"total"</span>: <span class="number">156</span>
 }</pre>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Security Events -->
+                <h2 id="security-events">Security Events <span class="badge-admin">SUPERADMIN</span></h2>
+                <p>A separate log of authentication and credential events. It has its own table because the audit log needs a signed-in actor and cannot hold a failed login for an unknown user; its rows are kept when an account is deleted. Reading and exporting need the superadmin role on a credential with admin scope; others get <code>403</code>. Backup runs, downloads, deletes and settings changes stay in the audit log only.</p>
+                <p><strong>Auth events:</strong> <code>login_success</code>, <code>login_failed</code> (result <code>unknown_user</code> or <code>bad_password</code>), <code>2fa_required</code>, <code>2fa_passed</code>, <code>2fa_failed</code>, <code>2fa_throttled</code>, <code>backup_code_used</code>, <code>logout</code>, <code>session_revoked</code>, <code>register_failed</code>. <strong>Security events:</strong> <code>2fa_enabled</code>, <code>2fa_disabled</code>, <code>2fa_disable_failed</code>, <code>api_key_created</code>, <code>api_key_revoked</code>, <code>api_key_deleted</code>, <code>password_changed</code>, <code>password_change_failed</code>, <code>password_reset</code>, <code>user_created</code>, <code>user_deleted</code>, <code>role_changed</code>, <code>invite_created</code>, <code>invite_deactivated</code>, <code>ip_blocked</code>, <code>ip_unblocked</code>, <code>probe_block</code> (automatic), <code>rate_limited</code>, <code>host_key_accepted</code>, <code>security_log_export</code>.</p>
+                <p><strong>Aggregation:</strong> wrong passwords, bad or missing 2FA codes, failed registrations, wrong current-password attempts, probe blocks and rate-limit trips are counted per (source IP, event, result, minute) and written as one row with a <code>count</code>, every few seconds and at shutdown. An IPv6 source is counted as its /64 network (<code>ip</code> is then written <code>2001:db8:1:2::/64</code>; the <code>ip</code> filter matches the stored text exactly). At most 300 aggregated rows are created per minute across all sources, over every flush; further sources in that minute are added to one shared row per event and result with <code>ip</code> <code>*</code> and no <code>username_tried</code>, <code>user_agent</code> or <code>details</code>. Such a row keeps the first <code>username_tried</code> and <code>user_agent</code> of that minute. Everything else is written at once. Passwords, 2FA and backup codes, tokens, API keys and invite codes are never stored. <code>username_tried</code> is cut to 64 characters and <code>user_agent</code> to 200; control, zero-width and bidirectional override characters are removed.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/security-events</span>
+                        <span class="endpoint-desc">List security events</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Newest first. An invalid <code>category</code>, <code>user_id</code>, <code>since</code> or <code>until</code> gives <code>400</code>.</p>
+                        <h4>Query Parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><code>category</code></td><td>string</td><td><code>auth</code>, <code>security</code> or <code>all</code> (default: every row)</td></tr>
+                            <tr><td><code>event</code></td><td>string</td><td>Exact event name</td></tr>
+                            <tr><td><code>ip</code></td><td>string</td><td>Exact source IP</td></tr>
+                            <tr><td><code>username</code></td><td>string</td><td>Exact match on <code>username_tried</code></td></tr>
+                            <tr><td><code>user_id</code></td><td>int</td><td>Account id (rows stay after the account is deleted)</td></tr>
+                            <tr><td><code>since</code> / <code>until</code></td><td>string</td><td><code>YYYY-MM-DD</code> or a UTC date and time (<code>Z</code> or an offset allowed); an <code>until</code> date covers the whole day</td></tr>
+                            <tr><td><code>limit</code> / <code>offset</code></td><td>int</td><td>Page size (default 50, max 200) and offset</td></tr>
+                        </table>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"events"</span>: [
+    {
+      <span class="string">"id"</span>: <span class="number">12</span>,
+      <span class="string">"ts"</span>: <span class="string">"2026-11-18 16:59:01"</span>,
+      <span class="string">"event"</span>: <span class="string">"login_failed"</span>,
+      <span class="string">"category"</span>: <span class="string">"auth"</span>,
+      <span class="string">"user_id"</span>: <span class="keyword">null</span>,
+      <span class="string">"username_tried"</span>: <span class="string">"ghost"</span>,
+      <span class="string">"ip"</span>: <span class="string">"203.0.113.9"</span>,
+      <span class="string">"user_agent"</span>: <span class="string">"Mozilla/5.0 ..."</span>,
+      <span class="string">"result"</span>: <span class="string">"unknown_user"</span>,
+      <span class="string">"details"</span>: <span class="string">"{\"via\":\"web\"}"</span>,
+      <span class="string">"count"</span>: <span class="number">37</span>
+    }
+  ],
+  <span class="string">"total"</span>: <span class="number">1</span>
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/security-events/export</span>
+                        <span class="endpoint-desc">Export security events as CSV or JSON</span>
+                        <span class="badge-admin">SUPERADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Streams the filtered rows as a download. <code>format=csv</code> (default) or <code>format=json</code>, plus the filters above. At most 50,000 rows, newest first; the headers <code>X-Export-Rows</code> and <code>X-Export-Truncated</code> say what was sent and whether older rows were left out (narrow <code>since</code> and <code>until</code> to get them). JSON is <code>{"events": [...], "count": N, "truncated": false}</code>. CSV columns: <code>id, ts, event, category, user_id, username_tried, ip, user_agent, result, count, details</code>. A text cell that starts with <code>=</code>, <code>+</code>, <code>-</code>, <code>@</code>, tab or carriage return gets a leading apostrophe so a spreadsheet does not run it. Every export is recorded as one <code>security_log_export</code> event; reading the list is not.</p>
                     </div>
                 </div>
 

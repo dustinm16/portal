@@ -21,7 +21,9 @@ same way and only an admin accepts.
 
 import asyncio
 import json
+import os
 import secrets
+import sqlite3
 import shutil
 import tempfile
 
@@ -390,6 +392,15 @@ async def _run(ctx, state, port, root, key_b, fp_a, fp_b):
         prompt = await drive(ctx, {"kind": "mint", "uuid": api_id, "uid": oid, "fp": fp_a})
         async with owner.post(f"{url}/api/connections/{api_id}/host-key/accept", json=accept_body(prompt)) as r:
             ctx.ok("hostkeys: owner accepts a fingerprint", r.status == 200, str(r.status))
+        db = sqlite3.connect(os.path.join(ctx.stage_dir, "portal.db"))
+        try:
+            ev = db.execute("SELECT details, ip, category FROM security_events "
+                            "WHERE event = 'host_key_accepted' AND user_id = ?", (oid,)).fetchall()
+        finally:
+            db.close()
+        ctx.ok("hostkeys: the accept is in the security event log",
+               len(ev) >= 1 and fp_a in ev[0][0] and '"kind":"connection"' in ev[0][0]
+               and ev[0][1] == "127.0.0.1" and ev[0][2] == "security", str(ev)[:200])
         ctx.ok("hostkeys: the pin is shown on the connection",
                (await get_cfg()).get("host_key_fingerprint") == fp_a, "")
 

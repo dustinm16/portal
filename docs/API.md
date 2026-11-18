@@ -3458,6 +3458,7 @@ Get data retention configuration settings.
   "retention_service_logs_max": "1000",
   "retention_device_metrics_days": "14",
   "retention_recordings_days": "30",
+  "retention_security_events_days": "180",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
 }
@@ -3480,6 +3481,7 @@ Update data retention settings.
   "retention_service_logs_max": "1000",
   "retention_device_metrics_days": "14",
   "retention_recordings_days": "30",
+  "retention_security_events_days": "180",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
 }
@@ -3499,6 +3501,7 @@ Setting any value to `0` disables cleanup for that category (keeps forever).
     "retention_service_logs_max": "1000",
     "retention_device_metrics_days": "14",
     "retention_recordings_days": "30",
+    "retention_security_events_days": "180",
     "cleanup_interval_hours": "6",
     "auto_vacuum": "true"
   }
@@ -3723,6 +3726,38 @@ Query audit log with optional filters.
 ```
 
 **Retention:** Configurable, default 90 days.
+
+---
+
+### Security Events (Superadmin)
+
+A separate log of authentication and credential events, in its own table (`security_events`) because the audit log needs a signed-in actor and cannot hold a failed login for an unknown user. Rows are kept when an account is deleted. Reading and exporting need the **superadmin** role on a credential with admin scope; moderators, admins and narrower keys get `403`.
+
+Events (category `auth`): `login_success`, `login_failed` (result `unknown_user` or `bad_password`), `2fa_required`, `2fa_passed`, `2fa_failed`, `2fa_throttled`, `backup_code_used`, `logout`, `session_revoked`, `register_failed`. Events (category `security`): `2fa_enabled`, `2fa_disabled`, `2fa_disable_failed`, `api_key_created`, `api_key_revoked`, `api_key_deleted`, `password_changed`, `password_change_failed`, `password_reset` (admin or command line), `user_created`, `user_deleted`, `role_changed`, `invite_created`, `invite_deactivated`, `ip_blocked`, `ip_unblocked`, `probe_block` (automatic), `rate_limited`, `host_key_accepted`, `security_log_export`. Backup runs, downloads, deletes and settings changes stay in the audit log only.
+
+**Aggregation.** Wrong passwords, bad or missing 2FA codes, failed registrations, wrong current-password attempts, probe blocks and rate-limit trips are counted per (source IP, event, result, minute) and written as one row with `count`, flushed every few seconds and at shutdown. An IPv6 source is counted as its /64 network (`ip` is then written `2001:db8:1:2::/64`; the `ip` filter matches that stored text exactly). At most 300 aggregated rows are created per minute across all sources, counted over every flush; further sources in that minute are added to one shared row per event and result with `ip` `*`, no `username_tried`, `user_agent` or `details`. Such a row keeps the first `username_tried` and `user_agent` seen in that minute. All other events are written at once. A database error never stops the request that caused the event. Passwords, 2FA and backup codes, tokens, API keys and invite codes are never stored; `username_tried` is cut to 64 characters, `user_agent` to 200; control characters, zero-width characters (U+200B to U+200F, U+FEFF) and bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069) are removed.
+
+#### GET /api/admin/security-events
+**Query parameters** (all optional): `category` (`auth`, `security`; omit or `all` for every row), `event`, `ip`, `username` (exact match on `username_tried`), `user_id`, `since` / `until` (`YYYY-MM-DD`, or a date and time in UTC, with `Z` or an offset; an `until` date covers that whole day), `limit` (default 50, max 200), `offset`. Newest first. An invalid `category`, `user_id`, `since` or `until` gives `400`.
+
+**Response:**
+```json
+{
+  "events": [{
+    "id": 12, "ts": "2026-11-18 16:59:01", "event": "login_failed", "category": "auth",
+    "user_id": null, "username_tried": "ghost", "ip": "203.0.113.9",
+    "user_agent": "Mozilla/5.0 ...", "result": "unknown_user",
+    "details": "{\"via\":\"web\"}", "count": 37, "agg_key": "203.0.113.9|login_failed|unknown_user|2026-11-18 16:59"
+  }],
+  "total": 1
+}
+```
+`username_tried` holds the account that was typed (failures) or the account that acted (other events); the target of an admin action is in `details`.
+
+#### GET /api/admin/security-events/export
+Streams the filtered rows as a download. `format=csv` (default) or `format=json`, plus the filters above. At most 50,000 rows, newest first; the headers `X-Export-Rows` and `X-Export-Truncated` say what was sent and whether older rows were left out (narrow `since` / `until` to get them). JSON is `{"events": [...], "count": N, "truncated": false}`. CSV columns: `id, ts, event, category, user_id, username_tried, ip, user_agent, result, count, details`; a text cell that starts with `=`, `+`, `-`, `@`, tab or carriage return gets a leading apostrophe so a spreadsheet does not run it. Every export is recorded as one `security_log_export` event (reading the list is not).
+
+**Retention:** `retention_security_events_days`, default 180, `0` keeps everything.
 
 ---
 
