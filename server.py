@@ -20268,11 +20268,14 @@ async def http_reset_user_password(request: web.Request) -> web.Response:
 # =============================================================================
 
 async def _admin_only(request: web.Request):
-    """(token, error_response) for any credential with admin power."""
+    """(token, error_response) for a credential with admin power whose account is an admin or superadmin now."""
     token = await authenticate_request(request)
     if not token:
         return None, unauthorized_response(request)
     if not token.has_scope("admin") and not token.has_scope("*"):
+        return None, forbidden_response(request)
+    # The role comes from the database: a session made before a demotion keeps its scopes.
+    if get_role_level(await get_user_role_from_token(token)) < get_role_level("admin"):
         return None, forbidden_response(request)
     return token, None
 

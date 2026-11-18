@@ -399,6 +399,58 @@ async def never_ban_audit_cases():
 
 asyncio.run(never_ban_audit_cases())
 
+
+class _Cred:
+    """A full-scope credential for a user id."""
+    def __init__(self, user_id, scopes=("*",)):
+        self.user_id = user_id
+        self.scopes = scopes
+        self.token_id = "t"
+
+    def has_scope(self, s):
+        return "*" in self.scopes or s in self.scopes
+
+
+async def admin_only_cases():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Database(str(Path(tmp) / "ao.db"))
+        await d.connect()
+        saved = (server.db, server.authenticate_request)
+        try:
+            server.db = d
+            uid = await d.create_user("ao_user", "x")
+            holder = {"cred": _Cred(uid)}
+
+            async def fake_auth(request):
+                return holder["cred"]
+            server.authenticate_request = fake_auth
+
+            async def status():
+                token, err = await server._admin_only(_JsonRequest({}))
+                return 200 if err is None else err.status
+
+            await d.set_user_role(uid, "admin")
+            check("_admin_only: an admin passes", await status() == 200)
+            await d.set_user_role(uid, "superadmin")
+            check("_admin_only: a superadmin passes", await status() == 200)
+            await d.set_user_role(uid, "moderator")
+            check("_admin_only: a full-scope session whose account was demoted to moderator is refused", await status() == 403)
+            await d.set_user_role(uid, "user")
+            check("_admin_only: a full-scope session whose account was demoted to user is refused", await status() == 403)
+            await d.set_user_role(uid, "admin")
+            holder["cred"] = _Cred(uid, scopes=("read",))
+            check("_admin_only: an admin's credential without admin scope is still refused", await status() == 403)
+            holder["cred"] = _Cred(uid, scopes=("admin",))
+            check("_admin_only: an admin-scoped credential of an admin passes", await status() == 200)
+            holder["cred"] = _Cred(987654)
+            check("_admin_only: a credential whose account is gone is refused", await status() == 403)
+        finally:
+            server.db, server.authenticate_request = saved
+            await d.close()
+
+
+asyncio.run(admin_only_cases())
+
 # ---------------------------------------------------------------------------
 # CLI: unblock and clear-bans
 # ---------------------------------------------------------------------------
