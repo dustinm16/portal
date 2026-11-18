@@ -76,7 +76,8 @@ def test_join_leave_and_voice_sites_use_the_rule():
     assert "if announce_join:" in src
     assert src.count("if not still_here:") == 2
     # closing a socket must not end a voice call joined on another socket
-    assert re.search(r'vc_users\[user_id\]\.get\("ws"\) is ws', src)
+    # (voice entries are owned by their socket; only the owner's close touches them)
+    assert "_voice_close_safely(ws, user_id)" in src
 
 
 def test_sockets_of_one_user_share_one_state_dict():

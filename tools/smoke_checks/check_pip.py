@@ -279,8 +279,8 @@ async def _voice(ctx, st, key):
                any(u.get("in_voice") for u in _entries_for(got, username="pipvoice")), json.dumps(got)[:300])
         m = bob.mark()
         await v1.close()
-        left = await bob.wait(_is("voice_user_left"), start=m)
-        _check(ctx, "pip: closing the socket that holds the voice call ends it", left is not None)
+        left = await bob.wait(_is("voice_user_reconnecting"), start=m)
+        _check(ctx, "pip: closing the socket that holds the voice call puts it on hold", left is not None)
         await bob.close()
 
 
