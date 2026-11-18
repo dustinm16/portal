@@ -13973,6 +13973,10 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
     penalty_by = automod_result.get("created_by")
     if am_action in ("timeout", "mute") and not is_privileged and not penalty_by:
         logger.warning(f"[AutoMod] Rule {rule_name!r} has no creator account; {am_action} not applied")
+    elif am_action in ("timeout", "mute") and not is_privileged and await db.is_user_timed_out(user_id, channel["id"]):
+        # Already timed out or muted (for example by another socket a moment ago):
+        # no second penalty row and no second announcement; the author is still told.
+        pass
     elif am_action in ("timeout", "mute") and not is_privileged:
         reason = f"AutoMod: {rule_name}"
         display = "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username)
@@ -14019,6 +14023,81 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
             "message": f"Message blocked by auto-moderation ({rule_name})"
         })
     return True
+
+
+async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: str,
+                               msg_times: list, rate_limit: int, rate_window: float) -> bool:
+    """The checks a member's chat message or edit must pass before anything else runs.
+
+    Stream ban, timeout or mute, the per-socket rate limit and slow mode, in that
+    order; the error reply is sent to ws and True is returned when one applies.
+    A send and an edit both go through here, and automod runs only after it, so a
+    member who is timed out, muted, banned or sending too fast never reaches the
+    rules (and never costs them regex work or a new penalty). A passed rate limit
+    check counts against msg_times.
+    """
+    # Check if user is banned from this stream's chat
+    stream = await db.get_stream_by_chat_channel(channel["id"])
+    if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
+        await ws.send_json({
+            "type": "error",
+            "message": "You are banned from this stream's chat"
+        })
+        return True
+
+    # Check if user is timed out or muted
+    timeout_info = await db.is_user_timed_out(user_id, channel["id"])
+    if timeout_info:
+        if timeout_info["type"] == "mute":
+            await ws.send_json({
+                "type": "error",
+                "error_code": "muted",
+                "message": "You are muted in this channel"
+            })
+        else:
+            expires = timeout_info.get("expires_at", "")
+            await ws.send_json({
+                "type": "error",
+                "error_code": "timeout",
+                "message": f"You are timed out until {expires}",
+                "expires_at": expires
+            })
+        return True
+
+    # Rate limit: max N messages per window
+    now = monotonic()
+    msg_times[:] = [t for t in msg_times if now - t < rate_window]
+    if len(msg_times) >= rate_limit:
+        await ws.send_json({
+            "type": "error",
+            "message": "Slow down! You're sending messages too fast."
+        })
+        return True
+    msg_times.append(monotonic())
+
+    # Slowmode check (mods/admins bypass)
+    slowmode_secs = channel.get("slowmode_seconds") or 0
+    if slowmode_secs > 0 and user_role not in ("admin", "superadmin", "moderator"):
+        last_msg_time = _slowmode_last_msg.get((channel["id"], user_id), 0)
+        now_sm = monotonic()
+        if now_sm - last_msg_time < slowmode_secs:
+            remaining = int(slowmode_secs - (now_sm - last_msg_time)) + 1
+            await ws.send_json({
+                "type": "error",
+                "error_code": "slowmode",
+                "message": f"Slowmode active. Wait {remaining}s before sending another message.",
+                "cooldown_remaining": remaining
+            })
+            return True
+    return False
+
+
+async def _dm_participant_blocked(user_id: int, conv_id: int) -> bool:
+    """True if user_id and another participant of the conversation have blocked each other."""
+    for pid in await db.get_dm_participant_ids(conv_id):
+        if pid != user_id and await db.is_blocked_bidirectional(user_id, pid):
+            return True
+    return False
 
 
 def _format_poll_for_client(poll: dict, user_id: int = None) -> dict:
@@ -16118,32 +16197,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not channel:
                             continue
 
-                        # Check if user is banned from this stream's chat
-                        stream = await db.get_stream_by_chat_channel(channel["id"])
-                        if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
-                            await ws.send_json({
-                                "type": "error",
-                                "message": "You are banned from this stream's chat"
-                            })
-                            continue
-
-                        # Check if user is timed out or muted
-                        timeout_info = await db.is_user_timed_out(user_id, channel["id"])
-                        if timeout_info:
-                            if timeout_info["type"] == "mute":
-                                await ws.send_json({
-                                    "type": "error",
-                                    "error_code": "muted",
-                                    "message": "You are muted in this channel"
-                                })
-                            else:
-                                expires = timeout_info.get("expires_at", "")
-                                await ws.send_json({
-                                    "type": "error",
-                                    "error_code": "timeout",
-                                    "message": f"You are timed out until {expires}",
-                                    "expires_at": expires
-                                })
+                        # Ban, timeout/mute, rate limit and slow mode first (shared with edits)
+                        if await _chat_member_blocked(ws, channel, user_id=user_id, user_role=user_role,
+                                                      msg_times=chat_msg_times, rate_limit=chat_rate_limit,
+                                                      rate_window=chat_rate_window):
                             continue
 
                         # Auto-moderation check (applies to all users)
@@ -16152,33 +16209,6 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             if await apply_automod(ws, message_text, user_id=user_id, user_role=user_role,
                                                    channel=channel, channel_name=current_channel,
                                                    username=username, my_state=my_state):
-                                continue
-
-                        # Rate limit: max N messages per window
-                        now = monotonic()
-                        chat_msg_times[:] = [t for t in chat_msg_times if now - t < chat_rate_window]
-                        if len(chat_msg_times) >= chat_rate_limit:
-                            await ws.send_json({
-                                "type": "error",
-                                "message": "Slow down! You're sending messages too fast."
-                            })
-                            continue
-                        chat_msg_times.append(monotonic())
-
-                        # Slowmode check (mods/admins bypass)
-                        slowmode_secs = channel.get("slowmode_seconds") or 0
-                        if slowmode_secs > 0 and user_role not in ("admin", "superadmin", "moderator"):
-                            sm_key = (channel["id"], user_id)
-                            last_msg_time = _slowmode_last_msg.get(sm_key, 0)
-                            now_sm = monotonic()
-                            if now_sm - last_msg_time < slowmode_secs:
-                                remaining = int(slowmode_secs - (now_sm - last_msg_time)) + 1
-                                await ws.send_json({
-                                    "type": "error",
-                                    "error_code": "slowmode",
-                                    "message": f"Slowmode active. Wait {remaining}s before sending another message.",
-                                    "cooldown_remaining": remaining
-                                })
                                 continue
 
                         # Channel permission check (readonly channels: only mod+/channel-mod can send)
@@ -16231,7 +16261,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         )
 
                         # Update slowmode tracker
-                        if slowmode_secs > 0:
+                        if (channel.get("slowmode_seconds") or 0) > 0:
                             _slowmode_last_msg[(channel["id"], user_id)] = monotonic()
 
                         # Broadcast to channel (display: Anon > Nickname > Username)
@@ -16397,6 +16427,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         # refused edit never costs the author an automod penalty.
                         if not db.chat_message_editable(edit_msg, user_id):
                             await ws.send_json({"type": "error", "message": "Cannot edit (5-minute window expired or not your message)"})
+                            continue
+                        # An edit passes the checks a send does (stream ban, timeout, mute, rate
+                        # limit, slow mode) before automod sees it.
+                        if await _chat_member_blocked(ws, edit_ch, user_id=user_id, user_role=user_role,
+                                                      msg_times=chat_msg_times, rate_limit=chat_rate_limit,
+                                                      rate_window=chat_rate_window):
                             continue
                         if await apply_automod(ws, new_text, user_id=user_id, user_role=user_role,
                                                channel=edit_ch, channel_name=current_channel,
@@ -17313,13 +17349,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not await db.is_dm_participant(conv_id, user_id):
                             continue
                         # Block check for DMs
-                        dm_participants = await db.get_dm_participant_ids(conv_id)
-                        dm_blocked = False
-                        for pid in dm_participants:
-                            if pid != user_id and await db.is_blocked_bidirectional(user_id, pid):
-                                dm_blocked = True
-                                break
-                        if dm_blocked:
+                        if await _dm_participant_blocked(user_id, conv_id):
                             await ws.send_json({"type": "error", "message": "Cannot message this user"})
                             continue
                         text = data.get("message", "").strip()
@@ -17481,6 +17511,17 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         edit_msg = await db.get_dm_message(message_id)
                         if not edit_msg or edit_msg.get("conversation_id") != conv_id:
                             continue
+                        # The checks a DM send has: a block between the participants, and the
+                        # rate limit shared with channel chat.
+                        if await _dm_participant_blocked(user_id, conv_id):
+                            await ws.send_json({"type": "error", "message": "Cannot message this user"})
+                            continue
+                        now_mono = monotonic()
+                        chat_msg_times[:] = [t for t in chat_msg_times if now_mono - t < chat_rate_window]
+                        if len(chat_msg_times) >= chat_rate_limit:
+                            await ws.send_json({"type": "error", "message": "Rate limit exceeded"})
+                            continue
+                        chat_msg_times.append(now_mono)
                         updated = await db.edit_dm_message(message_id, user_id, new_text)
                         if updated:
                             await _broadcast_to_dm(conv_id, {

@@ -238,6 +238,27 @@ async def run(ctx):
         ctx.ok("automod: editing another member's message fails on ownership first (no automod error, no penalty)",
                e_obs is not None and e_obs.get("error_code") != "automod" and data["amobs"] not in timed_ids
                and data["amobs"] not in st_c.get("actions", []), json.dumps([e_obs, st_c.get("actions")]))
+        # a member who is already timed out gets the timeout error on an edit, no new penalty and no new broadcast
+        marks = {n: len(ev[n]) for n in NAMES}
+        await ws["amcarl"].send_json({"type": "edit_message", "message_id": ids["amcarl"], "message": "again timeoutword"})
+        e_again = await _wait_for(ev["amcarl"], lambda e: e.get("type") == "error", start=marks["amcarl"])
+        await asyncio.sleep(0.5)
+        st_again = await state(ids["amcarl"], data["amcarl"], [])
+        carl_rows = [t for t in st_again.get("timeouts", []) if t["user_id"] == data["amcarl"]]
+        ctx.ok("automod: a timed-out member's edit gets the timeout error, not an automod penalty",
+               e_again is not None and e_again.get("error_code") == "timeout", json.dumps(e_again))
+        ctx.ok("automod: that edit books no second penalty row and tells the channel nothing",
+               len(carl_rows) == 1 and not any(e.get("type") == "user_timed_out" for e in ev["amobs"][marks["amobs"]:])
+               and not any(e.get("error_code") == "automod" for e in ev["amcarl"][marks["amcarl"]:]),
+               json.dumps({"rows": carl_rows, "obs": ev["amobs"][marks["amobs"]:]})[:400])
+        # sending the blocked word while timed out is refused the same way
+        marks = {n: len(ev[n]) for n in NAMES}
+        await ws["amcarl"].send_json({"type": "message", "message": "send timeoutword"})
+        e_send = await _wait_for(ev["amcarl"], lambda e: e.get("type") == "error", start=marks["amcarl"])
+        await asyncio.sleep(0.3)
+        ctx.ok("automod: a timed-out member's send gets the timeout error and no channel broadcast",
+               e_send is not None and e_send.get("error_code") == "timeout"
+               and not any(e.get("type") == "user_timed_out" for e in ev["amobs"][marks["amobs"]:]), json.dumps(e_send))
         for rid in (rule_blocked, rule_timeout):
             await api("DELETE", f"/api/admin/automod/{rid}")
 
