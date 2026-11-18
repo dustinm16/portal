@@ -408,6 +408,22 @@ async def _restored_instance(ctx, archive_path, work, seed, marker_name):
     return restored
 
 
+def _extra_base(ctx) -> str:
+    """A writable directory that the extra-destination rules accept: not under a private temp
+    folder, not inside the staged install, not inside the source checkout."""
+    private = [os.path.realpath(p) for p in ("/tmp", "/var/tmp", "/dev/shm")]
+    banned = private + [os.path.realpath(str(ctx.stage_dir)), os.path.realpath(str(Path(__file__).resolve().parents[2]))]
+    candidates = [os.environ.get("XDG_RUNTIME_DIR"), os.path.expanduser("~"), str(Path(__file__).resolve().parents[3])]
+    for c in candidates:
+        if not c or not os.path.isdir(c) or not os.access(c, os.W_OK | os.X_OK):
+            continue
+        real = os.path.realpath(c)
+        if any(real == b or real.startswith(b.rstrip(os.sep) + os.sep) for b in banned):
+            continue
+        return real
+    raise RuntimeError("no directory outside /tmp, the stage and the checkout is writable for the extra destination checks")
+
+
 async def run(ctx):
     rc, out = await ctx.run_py(SETUP)
     seed = _result(out)
@@ -420,8 +436,10 @@ async def run(ctx):
     base = ctx.base_url
     work = tempfile.mkdtemp(prefix="bk_work_")
     os.chmod(work, 0o700)
-    # Extra destinations cannot live under /tmp, so use a directory next to the checkout.
-    xwork = tempfile.mkdtemp(prefix="bk_extra_", dir=str(Path(__file__).resolve().parents[2]))
+    # Extra destinations cannot live under /tmp, /var/tmp or /dev/shm (PrivateTmp), nor inside the
+    # install (the stage directory) or a served root, so the stage's own temp area is no use; take
+    # a private scratch folder somewhere else and never one inside the source checkout.
+    xwork = tempfile.mkdtemp(prefix="bk_extra_", dir=_extra_base(ctx))
     os.chmod(xwork, 0o700)
     try:
         async with ctx.http() as admin, ctx.http() as other, ctx.http() as anon:
@@ -703,9 +721,22 @@ async def run(ctx):
             ctx.ok("backups: a bearer token can still edit settings when extra_dir is left as it is",
                    st == 200 and cfg_after["keep"] == 3 and cfg_after["extra_dir"] == extra, f"status={st} {cfg_after}")
             async with ctx.http() as fresh:
-                st, _, _ = await _status(fresh, "PUT", settings_url, json={"keep": 2},
+                st, _, _ = await _status(fresh, "PUT", settings_url, json={"interval_hours": 24},
                                          headers={"Authorization": "Bearer " + bearer})
             ctx.ok("backups: a bearer token can edit settings that do not mention extra_dir", st == 200, f"status={st}")
+            # Lowering keep deletes older archives at the next run: browser session only.
+            for label, kw in (("a bearer token", {"headers": {"Authorization": "Bearer " + bearer}}),
+                              ("an API key", {"headers": {"X-API-Key": api_key}}),
+                              ("a ?token= query value", {"params": {"token": bearer}})):
+                async with ctx.http() as fresh:
+                    st, body, _ = await _status(fresh, "PUT", settings_url, json={"keep": 2}, **kw)
+                cfg_after = json.loads((await _status(admin, "GET", base + "/api/admin/backups"))[1])["config"]
+                ctx.ok(f"backups: {label} cannot lower the number of archives kept",
+                       st == 403 and cfg_after["keep"] == 3, f"status={st} {cfg_after}")
+            st, _, _ = await _status(admin, "PUT", settings_url, json={"keep": 2})
+            cfg_after = json.loads((await _status(admin, "GET", base + "/api/admin/backups"))[1])["config"]
+            ctx.ok("backups: the browser session lowers the number of archives kept", st == 200 and cfg_after["keep"] == 2,
+                   f"status={st} {cfg_after}")
             st, _, _ = await _status(admin, "PUT", settings_url, json={"extra_dir": other_extra})
             cfg_after = json.loads((await _status(admin, "GET", base + "/api/admin/backups"))[1])["config"]
             ctx.ok("backups: the browser session changes the extra destination",

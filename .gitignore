@@ -26,6 +26,7 @@ env/
 *.sqlite
 *.sqlite3
 backups/
+bk_extra_*/
 
 # Certificates & private keys
 certs/
