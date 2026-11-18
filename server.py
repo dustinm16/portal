@@ -20392,11 +20392,13 @@ async def _cf_ranges_view() -> dict:
     saved = bool(await db.get_setting(CF_SETTING_LIST))
     return {
         "enabled": enabled,
-        # A fetched list is saved but the built-in one is in use (the refresh is off, or the
-        # saved list was refused at start); with the refresh off the saved list is not applied.
+        # What is in use is `source`. A saved list that is not the one in use is "ignored": the
+        # refresh was off at start, or the list failed the checks then. The other way round, the
+        # refresh switched off while the fetched list runs keeps that list until the next start.
         "saved_list": saved,
         "saved_list_applied": saved and _cf_source == "fetched",
-        "saved_list_ignored": saved and (not enabled or _cf_source != "fetched"),
+        "saved_list_ignored": saved and _cf_source != "fetched",
+        "fetched_in_use_until_restart": (not enabled) and _cf_source == "fetched",
         "source": _cf_source,
         "fetched_at": _cf_fetched_at,
         "v4": sum(1 for n in _cf_networks if n.version == 4),

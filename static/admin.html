@@ -6174,7 +6174,9 @@
                     <div class="stat-row"><span class="stat-label">In use</span><span class="stat-value">${escapeHtml(c.source)}${c.fetched_at ? ' (fetched ' + escapeHtml(c.fetched_at) + ')' : ''}: ${c.v4} IPv4, ${c.v6} IPv6</span></div>
                     <p style="margin:0.5rem 0;font-size:0.85rem;">${result}</p>
                     ${c.stage_mode ? '<p style="color:var(--text-muted);font-size:0.8rem;">The refresh is off in staged mode.</p>' : ''}
-                    ${c.saved_list_ignored ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but not applied: the built-in list is used' + (c.enabled ? '' : ' while the weekly refresh is off') + '. The saved list is kept, and is used again at the next start once the refresh is on.</p>' : ''}
+                    ${c.saved_list_ignored && !c.enabled ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but not applied: the built-in list is in use while the weekly refresh is off. The saved list is kept, and is used again at the next start once the refresh is on.</p>' : ''}
+                    ${c.saved_list_ignored && c.enabled ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but the built-in list is in use: the saved list failed the checks when the portal started. The next good refresh replaces it.</p>' : ''}
+                    ${c.fetched_in_use_until_restart ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">The weekly refresh is off, but the fetched list stays in use until the portal restarts. Use the built-in list below to switch now.</p>' : ''}
                     <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);margin-top:0.75rem;">
                         <input type="checkbox" id="cf-enabled" data-cfranges-toggle="1" ${c.enabled ? 'checked' : ''}>
                         Refresh weekly

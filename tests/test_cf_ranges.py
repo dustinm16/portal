@@ -428,6 +428,17 @@ async def reset_cases():
         check("the view says a saved list is in use", view["saved_list"] and view["saved_list_applied"]
               and not view["saved_list_ignored"], str(view))
 
+        # switched off at run time: the fetched list stays in use until a restart, and the view says so
+        await d.set_setting(server.CF_SETTING_ENABLED, "false")
+        view = await server._cf_ranges_view()
+        check("refresh switched off while the fetched list runs: the view does not claim the built-in list is in use",
+              view["source"] == "fetched" and view["saved_list_applied"] and not view["saved_list_ignored"]
+              and view["fetched_in_use_until_restart"] is True and view["enabled"] is False, str(view))
+        check("...and the fetched list really is still trusted", server._is_trusted_proxy(probe_ip))
+        await d.set_setting(server.CF_SETTING_ENABLED, "true")
+        view = await server._cf_ranges_view()
+        check("refresh on: nothing is pending", view["fetched_in_use_until_restart"] is False)
+
         server._apply_cloudflare_networks(builtin_nets, "built-in")
         await d.set_setting(server.CF_SETTING_ENABLED, "false")
         await server._load_cloudflare_state()
@@ -437,9 +448,18 @@ async def reset_cases():
         view = await server._cf_ranges_view()
         check("refresh off: the view says the saved list is kept but not applied",
               view["saved_list"] and not view["saved_list_applied"] and view["saved_list_ignored"]
-              and view["enabled"] is False, str(view))
+              and view["enabled"] is False and view["fetched_in_use_until_restart"] is False, str(view))
 
+        # a saved list that fails the checks at start: built-in in use, refresh on
         await d.set_setting(server.CF_SETTING_ENABLED, "true")
+        good_saved = await d.get_setting(server.CF_SETTING_LIST)
+        await d.set_setting(server.CF_SETTING_LIST, json.dumps({"v4": V4 + ["45.0.0.0/8"], "v6": V6, "fetched_at": "x"}))
+        await server._load_cloudflare_state()
+        view = await server._cf_ranges_view()
+        check("a saved list that fails the checks at start: built-in in use, view says ignored and nothing pending",
+              server._cf_source == "built-in" and view["saved_list_ignored"] and not view["saved_list_applied"]
+              and view["enabled"] is True and view["fetched_in_use_until_restart"] is False, str(view))
+        await d.set_setting(server.CF_SETTING_LIST, good_saved)
         await server._load_cloudflare_state()
         check("refresh switched on again: the saved list is applied at the next start",
               server._cf_source == "fetched" and server._is_trusted_proxy(probe_ip))
