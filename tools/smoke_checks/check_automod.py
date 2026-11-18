@@ -308,8 +308,11 @@ async def run(ctx):
             reason = mine.get("not_enforced_reason") or ""
             ctx.ok("automod: the list gives the reason a stale unsafe rule is not enforced",
                    status == 200 and "(a+)+$" in reason and "nested quantifier" in reason, f"{status} {reason!r}")
-            others = [r for rid, r in rules.items() if rid != stale["id"] and r.get("not_enforced_reason")]
-            ctx.ok("automod: rules that are enforced carry no reason", not others, str([r["name"] for r in others]))
+            # Only this check's own rules: a production copy may hold real rules that
+            # legitimately fail the new validation.
+            others = [r for rid, r in rules.items() if rid != stale["id"] and r.get("not_enforced_reason")
+                      and str(r.get("name", "")).endswith(rnd)]
+            ctx.ok("automod: this check's own enforced rules carry no reason", not others, str([r["name"] for r in others]))
             await api("DELETE", f"/api/admin/automod/{stale['id']}")
 
         # ---- a slow regex rule cannot stall other users ----
