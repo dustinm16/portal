@@ -15556,6 +15556,8 @@ async def http_get_automod_rules(request: web.Request) -> web.Response:
             automod.unenforced_reason(rule["type"], cfg) if rule.get("enabled") else None)
         # Budget overruns of the rule's regex patterns in the last hour: each one rejected a message.
         rule["slow_pattern_timeouts"] = automod.slow_pattern_timeouts(_automod_regex, rule["type"], cfg)
+        # Checks of the last hour that failed because the regex worker could not run.
+        rule["regex_worker_failures"] = automod.regex_worker_failures(_automod_regex, rule["type"], cfg)
     return web.json_response({"rules": rules})
 
 

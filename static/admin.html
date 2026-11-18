@@ -6502,7 +6502,7 @@
                 }
 
                 document.getElementById('automod-rules-body').innerHTML = rules.map(r => `<tr>
-                    <td>${escapeHtml(r.name)}${r.not_enforced_reason ? `<div style="color:#f87171;font-size:0.78rem;margin-top:2px;">not enforced: ${escapeHtml(r.not_enforced_reason)}</div>` : ''}${r.slow_pattern_timeouts > 0 ? `<div style="color:#fbbf24;font-size:0.78rem;margin-top:2px;">slow pattern, ${Number(r.slow_pattern_timeouts)} timeout${Number(r.slow_pattern_timeouts) === 1 ? '' : 's'} in the last hour</div>` : ''}</td>
+                    <td>${escapeHtml(r.name)}${r.not_enforced_reason ? `<div style="color:#f87171;font-size:0.78rem;margin-top:2px;">not enforced: ${escapeHtml(r.not_enforced_reason)}</div>` : ''}${r.slow_pattern_timeouts > 0 ? `<div style="color:#fbbf24;font-size:0.78rem;margin-top:2px;">slow pattern, ${Number(r.slow_pattern_timeouts)} timeout${Number(r.slow_pattern_timeouts) === 1 ? '' : 's'} in the last hour</div>` : ''}${r.regex_worker_failures > 0 ? `<div style="color:#f87171;font-size:0.78rem;margin-top:2px;">regex worker could not start, ${Number(r.regex_worker_failures)} failure${Number(r.regex_worker_failures) === 1 ? '' : 's'} in the last hour</div>` : ''}</td>
                     <td>${AUTOMOD_TYPES[r.type] || r.type}</td>
                     <td>${AUTOMOD_ACTIONS[r.action] || r.action}${r.action_duration ? ' (' + r.action_duration + 's)' : ''}</td>
                     <td><label style="cursor:pointer;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleAutomodRule(${r.id}, this.checked)"></label></td>

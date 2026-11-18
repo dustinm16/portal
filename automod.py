@@ -20,7 +20,8 @@ The limits are therefore:
      checked is rejected for its author (see apply_automod in server.py), and
      the pattern is tried again for the next message, so a slow pattern can
      never be used to let content through. Timeouts are counted per pattern
-     (RegexRunner.timeouts_in_last_hour) for the admin rule list. The callers
+     (RegexRunner.timeouts_in_last_hour) for the admin rule list, and worker
+     failures are counted too (RegexRunner.worker_failures_in_last_hour). The callers
      rate limit a member's messages before they reach the rules, which bounds
      the worker time one member can use.
 """
@@ -179,6 +180,15 @@ def slow_pattern_timeouts(runner, rule_type: str, config) -> int:
     return sum(runner.timeouts_in_last_hour(w) for w in words if isinstance(w, str))
 
 
+def regex_worker_failures(runner, rule_type: str, config) -> int:
+    """Worker failures in the last hour that affect this rule: all of them for a regex word_filter, else 0."""
+    if rule_type != "word_filter" or not isinstance(config, dict):
+        return 0
+    if config.get("match_mode", "contains") != "regex":
+        return 0
+    return runner.worker_failures_in_last_hour()
+
+
 def validate_automod_config(rule_type: str, config) -> str | None:
     """Return an error message for an unacceptable rule config, or None."""
     if not isinstance(config, dict):
@@ -243,6 +253,7 @@ class RegexCheckError(Exception):
 _MAX_TRACKED_PATTERNS = 512
 _MAX_TIMEOUTS_PER_PATTERN = 1000
 _LOG_INTERVAL_SECONDS = 60.0
+_MAX_WORKER_FAILURES = 1000
 
 
 class RegexRunner:
@@ -254,6 +265,8 @@ class RegexRunner:
         self._lock = asyncio.Lock()
         self._timeouts: dict[str, deque] = {}     # pattern -> monotonic times of its budget overruns
         self._last_logged: dict[str, float] = {}
+        self._failures: deque = deque(maxlen=_MAX_WORKER_FAILURES)   # monotonic times of worker failures
+        self._last_failure_logged = None
         self.restarts = 0
 
     async def _start(self):
@@ -310,6 +323,19 @@ class RegexRunner:
         cutoff = monotonic() - SLOW_PATTERN_WINDOW_SECONDS
         return sum(1 for t in times if t >= cutoff)
 
+    def worker_failures_in_last_hour(self) -> int:
+        """How many checks failed because the worker could not be started or kept running."""
+        cutoff = monotonic() - SLOW_PATTERN_WINDOW_SECONDS
+        return sum(1 for t in self._failures if t >= cutoff)
+
+    def _note_worker_failure(self, error) -> None:
+        now = monotonic()
+        self._failures.append(now)
+        if self._last_failure_logged is not None and now - self._last_failure_logged < _LOG_INTERVAL_SECONDS:
+            return
+        self._last_failure_logged = now
+        logger.warning("automod regex worker failed: %s (logged once a minute)", error)
+
     def _log_timeout(self, pattern: str) -> None:
         now = monotonic()
         if now - self._last_logged.get(pattern, -_LOG_INTERVAL_SECONDS) < _LOG_INTERVAL_SECONDS:
@@ -349,7 +375,7 @@ class RegexRunner:
                 except (ConnectionError, BrokenPipeError, OSError, ValueError) as e:
                     await self._kill()
                     if attempt == 2:
-                        logger.warning("automod regex worker failed: %s", e)
+                        self._note_worker_failure(e)
                         raise RegexCheckError(pattern, False) from None
         raise RegexCheckError(pattern, False)
 

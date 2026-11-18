@@ -550,6 +550,100 @@ def test_list_flags_only_enabled_rules_as_not_enforced():
     assert reasons[3] is None, reasons
 
 
+class _FakeClock:
+    """Stands in for automod.monotonic so the 60 second window can be crossed without waiting."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_worker_failures_are_counted_and_logged_once_a_minute():
+    import logging
+
+    class Capture(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.lines = []
+
+        def emit(self, record):
+            self.lines.append(record.getMessage())
+
+    async def go():
+        r = automod.RegexRunner()
+        clock = _FakeClock()
+        real = automod.monotonic
+        automod.monotonic = clock
+        cap = Capture()
+        automod.logger.addHandler(cap)
+        old_level = automod.logger.level
+        automod.logger.setLevel(logging.WARNING)
+
+        async def broken_start():
+            raise OSError("cannot start")
+        r._start = broken_start
+        try:
+            for i in range(4):
+                try:
+                    await r.search("x", "text")
+                    raise AssertionError("must fail")
+                except automod.RegexCheckError as e:
+                    assert not e.timed_out
+                clock.now += 10
+            assert r.worker_failures_in_last_hour() == 4
+            assert len([l for l in cap.lines if "regex worker failed" in l]) == 1, cap.lines
+            clock.now += 61
+            try:
+                await r.search("x", "text")
+            except automod.RegexCheckError:
+                pass
+            assert len([l for l in cap.lines if "regex worker failed" in l]) == 2, cap.lines
+            # the hour window
+            assert r.worker_failures_in_last_hour() == 5
+            clock.now += automod.SLOW_PATTERN_WINDOW_SECONDS - 30
+            assert r.worker_failures_in_last_hour() == 1
+            cfg = {"words": ["a"], "match_mode": "regex"}
+            assert automod.regex_worker_failures(r, "word_filter", cfg) == 1
+            assert automod.regex_worker_failures(r, "word_filter", {"words": ["a"], "match_mode": "contains"}) == 0
+            assert automod.regex_worker_failures(r, "link_filter", cfg) == 0
+            assert automod.regex_worker_failures(r, "word_filter", None) == 0
+        finally:
+            automod.monotonic = real
+            automod.logger.removeHandler(cap)
+            automod.logger.setLevel(old_level)
+    asyncio.run(go())
+
+
+def test_admin_list_reports_regex_worker_failures():
+    import server
+    cfg = json.dumps({"words": ["abc"], "match_mode": "regex"})
+    rows = [{"id": 1, "type": "word_filter", "name": "rx", "config": cfg, "enabled": 1},
+            {"id": 2, "type": "word_filter", "name": "plain", "config": json.dumps({"words": ["a"]}), "enabled": 1}]
+
+    async def go():
+        async def auth(request):
+            return type("T", (), {"user_id": 1, "has_scope": lambda self, s: True})()
+
+        async def get_rules(enabled_only=False):
+            return [dict(r) for r in rows]
+
+        saved = (server.authenticate_request, server.db.get_automod_rules, server._automod_regex)
+        server.authenticate_request, server.db.get_automod_rules = auth, get_rules
+        server._automod_regex = automod.RegexRunner()
+        server._automod_regex._failures.extend([automod.monotonic()] * 3)
+        try:
+            resp = await server.http_get_automod_rules(object())
+            return {r["id"]: r["regex_worker_failures"] for r in json.loads(resp.body)["rules"]}
+        finally:
+            server.authenticate_request, server.db.get_automod_rules, server._automod_regex = saved
+
+    assert asyncio.run(go()) == {1: 3, 2: 0}
+    admin = (ROOT / "static" / "admin.html").read_text()
+    assert "regex worker could not start, " in admin and "r.regex_worker_failures" in admin
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
