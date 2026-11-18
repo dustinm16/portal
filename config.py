@@ -48,9 +48,11 @@ class Config:
     # client connecting straight to the origin cannot spoof its IP.
     TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")
 
-    # Temporarily block clients that probe for files the portal never serves
-    # (.env, .git/config, *.php, ...). 0 strikes disables the feature.
-    PROBE_BLOCK_STRIKES: int = int(os.getenv("PROBE_BLOCK_STRIKES", "3"))
+    # Opt-in: temporarily block clients that probe for files the portal never
+    # serves (.env, .git/config, *.php, ...) after this many hits. 0 (the
+    # default) leaves it off. Blocks are per IP, so a shared NAT is blocked
+    # as a whole.
+    PROBE_BLOCK_STRIKES: int = int(os.getenv("PROBE_BLOCK_STRIKES", "0"))
     PROBE_BLOCK_SECONDS: int = int(os.getenv("PROBE_BLOCK_SECONDS", "3600"))
 
     # Session Cookie Settings

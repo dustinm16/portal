@@ -354,6 +354,12 @@ class TerminalPlugin(PluginBase):
                 try:
                     os.close(master_fd)
                     os.close(gate_w)
+                    # Until exec this is still a copy of the portal: detach it
+                    # from the portal's signal handling so a SIGTERM aimed at
+                    # this child cannot trigger the server's shutdown handler.
+                    signal.set_wakeup_fd(-1)
+                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
                     # Create new session and set controlling terminal
                     os.setsid()

@@ -177,14 +177,18 @@ def _is_local_address(ip: str) -> bool:
 def _is_scanner_probe(request: web.Request, status: int) -> bool:
     """True for a failed request to a scanner-only path that no browser made.
 
-    Browsers attach Sec-Fetch-Site to every request they make over HTTPS and
-    page script cannot remove it, so requiring its absence means a web page,
-    an email or a chat message full of <img> tags cannot make a visitor's
-    browser earn strikes (and a block) on that visitor's behalf.
+    Current browsers attach Sec-Fetch-Site to every request they make over
+    HTTPS and page script cannot remove it, so requiring its absence means a
+    web page, an email or a chat message full of <img> tags cannot make a
+    visitor's browser earn strikes (and a block) on that visitor's behalf.
+    Safari before 16.4 sends no such header, so image loads (the way a page
+    triggers requests without user action) are skipped by Accept as well.
+    That exception is best-effort, which is why the feature is opt-in.
     """
     return (
         status in (401, 404, 405)
         and "Sec-Fetch-Site" not in request.headers
+        and not request.headers.get("Accept", "").lower().startswith("image/")
         and not request.path.startswith(_PROBE_EXEMPT_PREFIXES)
         and _PROBE_PATH_RE.search(request.path) is not None
     )
@@ -203,12 +207,15 @@ def _is_probe_blocked(ip: str) -> bool:
 def _record_probe(ip: str, path: str) -> None:
     """Count a scanner-style request; block the client once it repeats."""
     global _probe_last_prune
-    # Never block the proxies themselves or local callers (MediaMTX hooks,
-    # health checks and tunnelled connections all arrive from loopback).
+    # Never block the proxies themselves, local callers, or this server's own
+    # public address: media-server hooks, link previews and tunnelled
+    # connections reach the portal from those, and users can aim them at
+    # probe-like paths.
     if (
         Config.PROBE_BLOCK_STRIKES <= 0
         or _is_trusted_proxy(ip)
         or _is_local_address(ip)
+        or ip in _get_server_own_ips()
     ):
         return
     now = monotonic()
@@ -7595,6 +7602,9 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     ip_address = request.match_info.get("ip", "")
     removed = await db.unblock_ip(ip_address)
     _blocked_ips.pop(ip_address, None)
+    # Unblocking also lifts a temporary scanner-probe block on that address.
+    _probe_blocks.pop(ip_address, None)
+    _probe_strikes.pop(ip_address, None)
 
     if removed:
         admin_user = await db.get_user_by_id(token.user_id)
@@ -12120,7 +12130,10 @@ async def http_upload_chat_image(request: web.Request) -> web.Response:
             return web.json_response({"error": f"File type not allowed: {content_type} ({ext})"}, status=400)
 
         # Determine extension
-        file_ext = ALLOWED_TYPES.get(content_type) or ext or ".bin"
+        # Keep the stored name to a plain extension so the URL always passes
+        # _valid_chat_upload_url; the original filename is returned separately.
+        safe_ext = ext if re.fullmatch(r"\.[a-z0-9]{1,10}", ext or "") else ""
+        file_ext = ALLOWED_TYPES.get(content_type) or safe_ext or ".bin"
         is_image = content_type.startswith("image/")
 
         # Size limits: 5MB for images, 25MB for other files

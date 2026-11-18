@@ -252,7 +252,7 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Proxy isolation** — Embedded browser strips session cookies and auth headers from upstream requests; sandboxed iframe
 - **Rate limiting** — Per-IP request throttling on all endpoints
 - **Trusted proxies** — `CF-Connecting-IP` / `X-Forwarded-For` are honoured only from Cloudflare and `TRUSTED_PROXIES` (add `127.0.0.1,::1` for a reverse proxy on the same host); direct-to-origin clients cannot spoof their address
-- **Scanner blocking** — Non-browser clients probing for `.env`, `.git/config`, `*.php` and similar are blocked for an hour after three hits (`PROBE_BLOCK_STRIKES`, `PROBE_BLOCK_SECONDS`)
+- **Scanner blocking (optional)** — Set `PROBE_BLOCK_STRIKES=3` to block non-browser clients for an hour (`PROBE_BLOCK_SECONDS`) after repeated requests for `.env`, `.git/config`, `*.php` and similar. Off by default because blocks are per IP and shared by everyone behind one NAT
 - **Restart-safe terminal sessions** — Each local web-terminal shell runs in its own systemd scope, so `tmux`/`screen` sessions started from it survive a portal restart (`TERMINAL_OWN_SCOPE`)
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
 
