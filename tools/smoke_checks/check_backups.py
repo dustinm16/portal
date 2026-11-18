@@ -510,8 +510,11 @@ async def run(ctx):
                 ctx.ok(f"backups: {label} cannot list the archives directory through /api/files",
                        st == 400 and name.encode() not in body, f"status={st} {body[:120]!r}")
             st, body, _ = await _status(other, "GET", base + "/api/files/list", params={"path": os.path.dirname(adir)})
-            ctx.ok("backups: the archives directory is not listed next to its parent's files",
-                   st == 200 and b'"archives"' not in body, f"status={st}")
+            ctx.ok("backups: the backups directory as a whole cannot be listed through /api/files",
+                   st == 400 and b'"archives"' not in body and b'"snapshots"' not in body, f"status={st}")
+            st, body, _ = await _status(other, "GET", base + "/api/files/list", params={"path": os.path.dirname(os.path.dirname(adir))})
+            ctx.ok("backups: the backups directory is not listed next to the install's files",
+                   st == 200 and b'"backups"' not in body and b'"server.py"' in body, f"status={st} {body[:150]!r}")
             st, _, _ = await _status(other, "DELETE", base + "/api/files/delete", params={"path": path})
             ctx.ok("backups: a plain admin cannot delete the archive through /api/files",
                    st == 400 and os.path.isfile(path), f"status={st}")
