@@ -589,7 +589,7 @@
                         <span class="endpoint-desc">Revoke an API key</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Revokes the API key. The key will no longer work for authentication but remains in your key list.</p>
+                        <p>Revokes the API key. The key will no longer work for authentication but remains in your key list. WebSockets, voice calls and in-flight proxied downloads opened with the key end at once.</p>
                     </div>
                 </div>
 
@@ -625,7 +625,7 @@
                         <span class="endpoint-desc">Revoke a token</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Users can revoke only their own tokens. Admins can revoke tokens of users they are allowed to manage (the same hierarchy as password resets), and the credential used must carry the <code>admin</code> scope. A token that does not exist or that the caller may not revoke returns 404.</p>
+                        <p>Users can revoke only their own tokens. Admins can revoke tokens of users they are allowed to manage (the same hierarchy as password resets), and the credential used must carry the <code>admin</code> scope. A token that does not exist or that the caller may not revoke returns 404. What was opened with the revoked token (chat sockets, voice call, in-flight proxied downloads) ends with it; the owner's other sessions are not affected.</p>
                         <h4>Request Body</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -1675,7 +1675,7 @@
                     </div>
                     <div class="endpoint-body">
                         <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns static thumbnail (or 404) if stream is offline or encoding. Accepts <code>live_xxx</code> or <code>pub_xxx</code> key.</p>
-                        <p>One capture runs per stream at a time and at most two run at once. When a new frame cannot be made (failure, timeout or all capture slots busy) the last good frame is returned; without one the answer is <code>503</code> with a <code>Retry-After</code> header (all slots busy), <code>504</code> (timeout) or <code>500</code> (failed capture). If MediaMTX is not configured the answer is <code>503</code> without <code>Retry-After</code>.</p>
+                        <p>One capture runs per stream at a time and at most two run at once. When a new frame cannot be made (failure, timeout or all capture slots busy) the last good frame is returned; without one the answer is <code>503</code> with a <code>Retry-After</code> header: all slots busy, failed capture, timeout, or MediaMTX not configured. Never <code>500</code> or <code>504</code>.</p>
                     </div>
                 </div>
 
@@ -3061,7 +3061,7 @@ ws.send(JSON.stringify({
                 </table>
 
                 <h3>Voice Reconnect</h3>
-                <p>When the socket that owns a voice session closes, the session is kept for 20 seconds. Other members receive <code>voice_user_reconnecting</code> instead of <code>voice_user_left</code>, then <code>voice_user_resumed</code> if the same account resumes in time, or <code>voice_user_left</code> after about 20 seconds. Members that are reconnecting show <code>reconnecting: true</code> in <code>voice_state</code> and <code>voice_reconnecting: true</code> in the <code>users</code> list, receive no voice messages and are skipped when broadcasting. A password reset, role change, account delete or anonymous mode ends a session at once, also while it is being held. Closing a second tab does not affect the call. Audio between browsers does not go through the socket, so a short drop often does not interrupt it; the client re-negotiates only the peers that are no longer connected (an offer with <code>fresh: true</code>). iOS suspends background pages, which still ends a call.</p>
+                <p>When the socket that owns a voice session closes, the session is kept for 20 seconds. Other members receive <code>voice_user_reconnecting</code> instead of <code>voice_user_left</code>, then <code>voice_user_resumed</code> if the same account resumes in time, or <code>voice_user_left</code> after about 20 seconds. Members that are reconnecting show <code>reconnecting: true</code> in <code>voice_state</code> and <code>voice_reconnecting: true</code> in the <code>users</code> list, receive no voice messages and are skipped when broadcasting. A password reset, role change, account delete, logout, a revoked session or anonymous mode ends a session at once, also while it is being held; making the channel private removes the members who may not stay. Closing a second tab does not affect the call. Audio between browsers does not go through the socket, so a short drop often does not interrupt it; the client re-negotiates only the peers that are no longer connected (an offer with <code>fresh: true</code>). iOS suspends background pages, which still ends a call.</p>
 
                 <h3>Voice Modes</h3>
                 <p>Users can choose between two voice activation modes (stored in browser localStorage):</p>
@@ -4002,7 +4002,7 @@ Headers:
                             <li>The upstream always receives <code>X-Forwarded-For</code> and <code>X-Real-IP</code> (the client's address, resolved the same way as for rate limiting), <code>X-Forwarded-Proto</code> (the scheme the client used, believed from <code>CF-Visitor</code> / <code>X-Forwarded-Proto</code> only when they come from a trusted proxy), <code>X-Forwarded-Host</code> (the portal's configured host name, never a name the client chose) and <code>X-Forwarded-Prefix</code> (<code>/proxy/{id}</code>). Copies of these headers sent by the client are never passed on, nor are <code>CF-Connecting-IP</code>, <code>True-Client-IP</code>, <code>X-Client-IP</code>, <code>Authorization</code>, the portal session cookie, <code>X-API-Key</code> or <code>X-Stream-Key</code>, even when <code>forward_headers</code> matches them. In browser mode only <code>X-Forwarded-Proto</code> is sent, so the sites a member visits learn nothing about the member or the portal.</li>
                             <li>Upstream redirects are followed by the portal itself (at most 5 hops, every hop dialled through the outbound host policy); a <code>Set-Cookie</code> from an intermediate hop is not passed on. In <code>browser_mode</code> the <code>3xx</code> goes to the browser instead, with its <code>Location</code> kept under that site's own path. A <code>Location</code> that still reaches the browser from a single-site connection is kept under <code>/proxy/{id}/</code>, except one on the upstream's host with another scheme or port, which is returned unchanged</li>
                             <li>Every upstream <code>Set-Cookie</code> is kept: each <code>Path</code> is moved under the proxy path, a missing <code>Path</code> becomes the proxy root, and <code>Domain</code> is removed so the browser stores the cookie. In <code>browser_mode</code> the path is that of the site, so one site's cookies are never sent to another. An upstream cookie named like the portal's own session cookie is dropped</li>
-                            <li>The connection's <code>timeout</code> (5-300 s, default 60) is the longest the upstream may stay silent; connecting is limited to 10 s. A download passed through as it arrives has no total time limit; a response rewritten in memory (HTML, CSS, JavaScript, JSON) must arrive within this time in total. A silent upstream gives <code>504</code>. Revoking the member's sessions ends their in-progress downloads</li>
+                            <li>The connection's <code>timeout</code> (5-300 s, default 60) is the longest the upstream may stay silent; connecting is limited to 10 s. A download passed through as it arrives has no total time limit; a response rewritten in memory (HTML, CSS, JavaScript, JSON) must arrive within this time in total. A silent upstream gives <code>504</code>. Revoking the member's sessions (also signing out, or revoking one session or an API key) ends the in-progress downloads opened with them</li>
                             <li>Requires authentication &mdash; only the connection owner can access their proxy routes</li>
                         </ul>
                     </div>
@@ -5728,7 +5728,7 @@ Headers:
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns all configured auto-moderation rules. Each rule has <code>not_enforced_reason</code>: <code>null</code> when the rule is enforced as written, otherwise why chat skips part of it (a stored regex pattern that no longer passes the checks below is skipped; the rule's other patterns still run). The admin list shows it as "not enforced: &lt;reason&gt;".</p>
+                        <p>Returns all configured auto-moderation rules. Each rule has <code>not_enforced_reason</code>: <code>null</code> when the rule is enforced as written, otherwise why chat skips part of it (a stored regex pattern that no longer passes the checks below is skipped; the rule's other patterns still run). Only enabled rules are reported; a disabled rule has <code>null</code>. The admin list shows it as "not enforced: &lt;reason&gt;".</p>
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{

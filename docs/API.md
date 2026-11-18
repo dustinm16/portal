@@ -178,7 +178,7 @@ List active tokens for the current user.
 #### POST /api/token/revoke
 Revoke a token.
 
-Users can revoke only their own tokens. Admins can revoke tokens of users they are allowed to manage (the same hierarchy as password resets), and the credential used must carry the `admin` scope. A token that does not exist, or that the caller may not revoke, returns `404`.
+Users can revoke only their own tokens. Admins can revoke tokens of users they are allowed to manage (the same hierarchy as password resets), and the credential used must carry the `admin` scope. A token that does not exist, or that the caller may not revoke, returns `404`. What was opened with the revoked token ends with it: its chat sockets (close code 4001), its voice call and its in-flight proxied downloads. The owner's other sessions are not affected, also when an admin revokes one of a member's sessions.
 
 **Request:**
 ```json
@@ -373,7 +373,7 @@ List user's API keys.
 ---
 
 #### POST /api/api-keys/:id/revoke
-Revoke an API key (soft delete).
+Revoke an API key (soft delete). WebSockets, voice calls and in-flight proxied downloads that were opened with that key end at once; the account's sessions and other keys are not affected.
 
 **Response:**
 ```json
@@ -385,7 +385,7 @@ Revoke an API key (soft delete).
 ---
 
 #### DELETE /api/api-keys/:id
-Permanently delete an API key.
+Permanently delete an API key. What was opened with the key (WebSockets, voice calls, in-flight proxied downloads) ends at once, as for a revoke.
 
 **Response:**
 ```json
@@ -924,11 +924,11 @@ Reverse proxy passthrough for HTTP connections. `{connection_id}` is the opaque 
 
 Headers sent to the upstream: `X-Forwarded-For` and `X-Real-IP` carry the client's address (resolved the same way as for rate limiting), `X-Forwarded-Proto` the scheme the client used (`CF-Visitor` / `X-Forwarded-Proto` are believed only from a trusted proxy), `X-Forwarded-Host` the portal's configured host name (the client's own `Host` is used only when it names that host, so a client cannot pick the name) and `X-Forwarded-Prefix` the proxy path (`/proxy/{id}`). Copies of these headers (and of `Forwarded`, `CF-Connecting-IP`, `True-Client-IP` and `X-Client-IP`) sent by the client are never passed on, even when `forward_headers` matches them. Neither are `Authorization`, the portal session cookie, `X-API-Key` or `X-Stream-Key`. In `browser_mode` only `X-Forwarded-Proto` is sent.
 
-Upstream redirects are followed by the portal itself (at most 5 hops, every hop dialled through the outbound host policy, so a redirect to a blocked address is refused); a `Set-Cookie` sent by an intermediate hop is not passed on to the browser. In general-browsing mode the `3xx` goes to the browser instead, with its `Location` kept under that site's own path. A `Location` that still reaches the browser from a single-site connection (a `201`, a `300`) is kept under `/proxy/{id}/`: a value already under it is left as is, an absolute URL on the portal's own host is mapped to its path, and one on the upstream's host with another scheme or port is returned unchanged.
+Upstream redirects are followed by the portal itself (at most 5 hops, every hop dialled through the outbound host policy, so a redirect to a blocked address is refused); a `Set-Cookie` sent by an intermediate hop is not passed on to the browser. No further hop is made once the member's session was revoked. In general-browsing mode the `3xx` goes to the browser instead, with its `Location` kept under that site's own path (a protocol-relative `//host/path` names that host, with the current site's scheme). A `Location` that still reaches the browser from a single-site connection (a `201`, a `300`) is kept under `/proxy/{id}/`: a value already under it is left as is, an absolute URL on the portal's own host is mapped to its path, and one on the upstream's host with another scheme or port is returned unchanged.
 
 Every upstream `Set-Cookie` is kept: each `Path` is moved under the proxy path, a missing `Path` becomes the proxy root (in `browser_mode` the path of that site, `/proxy/{id}/<origin>/`), and `Domain` is removed. An upstream cookie named like the portal session cookie is dropped.
 
-The connection's `timeout` (5-300 seconds, default 60, out-of-range values are adjusted) is the longest the upstream may stay silent; connecting is limited to 10 seconds. A download that is passed through as it arrives has no total limit and continues while data arrives; a response that is rewritten in memory (HTML, CSS, JavaScript, JSON) must arrive within this time in total. A silent upstream gives `504`. Revoking the member's sessions ends their in-progress downloads.
+The connection's `timeout` (5-300 seconds, default 60, out-of-range values are adjusted) is the longest the upstream may stay silent; connecting is limited to 10 seconds. A download that is passed through as it arrives has no total limit and continues while data arrives; a response that is rewritten in memory (HTML, CSS, JavaScript, JSON) must arrive within this time in total. A silent upstream gives `504`. Revoking the member's sessions (password change, admin reset, role change, deletion, signing out, revoking one session or an API key) ends the in-progress downloads opened with them.
 
 In `browser_mode`, the path encodes the full target URL (e.g., `/proxy/{id}/https://example.com/page`), enabling multi-site navigation. Localhost and private IPs are blocked for browser-mode targets.
 
@@ -1240,7 +1240,7 @@ Get a dynamic thumbnail for a live stream. Returns a JPEG image captured from th
 
 **Key Types:** Accepts either `live_xxx` or `pub_xxx` key.
 
-**Response:** `image/jpeg` binary data, or 404 if stream is not live. When a new frame cannot be made (capture failed or timed out, or all capture slots are busy) the last good frame is returned with `Cache-Control: public, max-age=5` if there is one. Without a last frame: `503` with a `Retry-After` header when all capture slots are busy, `504` after a timeout, `500` after a failed capture. If MediaMTX is not configured the answer is `503` without `Retry-After` and no frame is served.
+**Response:** `image/jpeg` binary data, or 404 if stream is not live. When a new frame cannot be made (capture failed or timed out, or all capture slots are busy) the last good frame is returned with `Cache-Control: public, max-age=5` if there is one. Without a last frame the answer is `503` with a `Retry-After` header when all capture slots are busy, when the capture failed, when it timed out, and when MediaMTX is not configured; never `500` or `504`.
 
 ---
 
@@ -2183,7 +2183,7 @@ TURN server is optional — only included if configured via environment variable
 - **Resume:** on the new socket, send `voice_join` with `resume: true`, the `room` from `voice_state.channel` and the `resume_token`. It is accepted only for the caller's own account, only with the matching token, and only while the session is reconnecting or is owned by an older socket of the same account (the older socket then receives `voice_denied`). Room access is checked again (private channel membership, stream bans, DM participation) and a channel room is refused for an anonymous member. No channel `join` is needed first. On success the new socket gets `voice_state` with `resumed: true` and the others get `voice_user_resumed`; otherwise the socket gets `voice_resume_failed` and the session is left as it was. The token stays valid for the lifetime of the session and is never put in broadcasts or logs; clients should keep it in memory only
 - **No grace period** for a `voice_leave`, for a revoked session (password reset, role change, account delete, password change, logout: close code 4001, also when the call is only being held) or for switching anonymous mode on: the session is removed at once and `voice_user_left` is sent. A logout closes only the chat sockets opened with that session and ends that session's call; the account's other sessions stay
 - **Leave while disconnected:** a `voice_leave` that carries `resume_token` (and optionally `room`) ends the account's own voice session from any of its sockets, also while the session is only being held. It is accepted only with the matching token for the caller's own account and removes the session at once; with a wrong token nothing happens. A client whose user clicks Leave while its socket is down sends this on the next socket instead of a resume
-- **Removed from the room:** a member who is banned from the stream chat, removed from a private channel or leaves a group DM while in that room's call is taken out of the call at once (`voice_denied`, then `voice_user_left` for the others)
+- **Removed from the room:** a member who is banned from the stream chat, removed from a private channel, left out when the channel is made private, or leaves a group DM while in that room's call is taken out of the call at once (`voice_denied`, then `voice_user_left` for the others)
 - A `voice_signal` offer may carry `"fresh": true`: the receiver discards its existing connection to the sender and starts over (used when joining and when resuming)
 - `voice_signal`: Targeted relay — only sent to the specified user, never broadcast
 - `voice_speaking`: Rate-limited to 1 broadcast per 100ms per user
@@ -3647,7 +3647,7 @@ Query audit log with optional filters.
 Automated message filtering with 5 rule types and 4 action types. Rules run on new messages and on edits; a blocked message or edit is not stored and only its author is told (`error` with `error_code: "automod"`; for an edit the client also gets `edit_rejected` with the stored text). Moderators and above are still blocked but are exempt from the timeout and mute penalties.
 
 #### GET /api/admin/automod
-List all automod rules. Each rule has `not_enforced_reason`: `null` when it is enforced as written, otherwise why chat skips part of it (a stored regex pattern that no longer passes the checks below is skipped; the rule's other patterns still run). The admin list shows it as "not enforced: <reason>".
+List all automod rules. Each rule has `not_enforced_reason`: `null` when it is enforced as written, otherwise why chat skips part of it (a stored regex pattern that no longer passes the checks below is skipped; the rule's other patterns still run). Only enabled rules are reported: a disabled rule always has `null`. The admin list shows it as "not enforced: <reason>".
 
 #### POST /api/admin/automod
 Create a new rule.
