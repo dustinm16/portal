@@ -238,6 +238,12 @@ async def _admin_checks(ctx, adm, loopback_trusted):
                    ev.get("total") == events_before + 1 and '"entries":3' in (newest.get("details") or "")
                    and newest.get("user_id") is not None and "203.0.113" not in (newest.get("details") or ""),
                    f"{events_before} -> {ev.get('total')} {newest}")
+            async with adm.get(f"{base}/api/admin/audit-log?action=never_ban.update&limit=5", headers=hdr) as ar:
+                audit = (await ar.json(content_type=None)).get("entries") or []
+            top = audit[0] if audit else {}
+            _ok(ctx, "blocking: the never-ban audit entry holds counts only (moderators can read the audit log)",
+                   bool(audit) and "203.0.113" not in str(top.get("details")) and "45.9.9" not in str(top.get("details"))
+                   and '"total": 3' in str(top.get("details")).replace("'", '"'), str(top.get("details")))
             admin_group = next((g for g in saved.get("effective", []) if g["source"] == "admin"), {})
             _ok(ctx, "blocking: the effective list shows the saved entries under the admin source",
                    "45.9.9.0/24" in admin_group.get("entries", []))

@@ -379,9 +379,11 @@ async def never_ban_audit_cases():
             audit = [e for e in await d.get_audit_log(action="never_ban.update")]
             detail = {e["id"]: _json.loads(e["details"]) for e in audit}
             first = detail[min(detail)] if detail else {}
-            check("never-ban update: the audit entry holds the saved entries, not only their number",
-                  r.status == 200 and first.get("entries") == ["203.0.113.0/24", "198.51.100.7/32", "45.9.9.0/24"]
-                  and first.get("count") == 3, str(first))
+            check("never-ban update: the audit entry holds counts only (added, removed, total), not the entries",
+                  r.status == 200 and first == {"added": 3, "removed": 0, "total": 3, "scanner_blocks_cleared": 0}, str(first))
+            check("never-ban update: no audit entry carries an address (moderators can read the audit log)",
+                  not any("203.0.113" in e["details"] or "45.9.9" in e["details"] or "192.0.2" in e["details"]
+                          for e in audit if e.get("details")), str([e.get("details") for e in audit]))
             cur = await d.conn.execute("SELECT * FROM security_events WHERE event = 'never_ban_changed' ORDER BY id")
             ev = [dict(x) for x in await cur.fetchall()]
             second = _json.loads(ev[1]["details"]) if len(ev) == 2 else {}

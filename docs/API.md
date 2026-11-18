@@ -3730,7 +3730,7 @@ The admin-edited never-ban list and the effective list that no automatic block m
 #### PUT /api/admin/never-ban
 Replace the admin list: `{"entries": ["203.0.113.0/24", "198.51.100.7"]}`. A bare address becomes /32 or /128; duplicates are collapsed. Entries must be strict CIDR (no host bits set), at most 100. Refused with `400`: `0.0.0.0/0`, `::/0`, an IPv4 prefix shorter than /8, an IPv6 prefix shorter than /16, anything overlapping the IPv4-mapped range, host bits, anything that is not an address or network, more than 100 entries, a non-list. Saving also drops scanner strikes and blocks already held in memory for covered addresses.
 
-**Auth**: Superadmin. Audited as `never_ban.update` with the saved entries (`entries`, `count`), and recorded as a `never_ban_changed` security event (counts only).
+**Auth**: Superadmin. Audited as `never_ban.update` and recorded as a `never_ban_changed` security event. Both hold counts only (`added`, `removed`, `total`), never the entries: the audit log can be read by moderators, the never-ban list only by superadmins.
 
 **Response (200)**: the same object as GET plus `"saved": true` and `"scanner_blocks_cleared": <n>`.
 

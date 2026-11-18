@@ -20326,13 +20326,14 @@ async def http_put_never_ban(request: web.Request) -> web.Response:
     _never_ban_admin_nets = nets
     cleared = _forget_probe_state(nets)
     saved = [str(n) for n in nets]
+    # Counts only, in both records: moderators can read the audit log, the never-ban list is
+    # for superadmins, and it names the owner's own addresses.
+    added, removed = len(set(saved) - before), len(before - set(saved))
     await audit_log("never_ban.update", user["id"], user.get("username", "unknown"),
-                    details={"count": len(saved), "entries": saved,
+                    details={"added": added, "removed": removed, "total": len(saved),
                              "scanner_blocks_cleared": cleared})
-    # Counts only here (the entries are in the audit entry): a long list would not fit a detail.
     await security_event("never_ban_changed", request=request, user=user,
-                         details={"entries": len(saved), "added": len(set(saved) - before),
-                                  "removed": len(before - set(saved)),
+                         details={"entries": len(saved), "added": added, "removed": removed,
                                   "scanner_blocks_cleared": cleared})
     logger.info(f"Never-ban list set to {len(nets)} entr(ies) by user {user['id']}")
     view = _never_ban_view(request)
