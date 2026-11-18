@@ -300,6 +300,7 @@ def test_check_automod_raises_when_a_pattern_overruns_and_apply_automod_rejects_
                                             "timeout", uid, action_duration=60)
                 server._automod_cache_time = 0
                 for edit_of in (None, {"id": 9, "message": "old text"}):
+                    server._automod_regex._member_overruns.clear()   # each attempt must reach the pattern
                     ws = Ws()
                     t0 = time.monotonic()
                     blocked = await server.apply_automod(ws, "a" * 1999, user_id=uid, user_role="user",
@@ -319,10 +320,12 @@ def test_check_automod_raises_when_a_pattern_overruns_and_apply_automod_rejects_
                 cur = await d.conn.execute("SELECT COUNT(*) AS n FROM automod_actions")
                 assert (await cur.fetchone())["n"] == 0
                 # not skipped for the next message: still rejected, and counted
+                server._automod_regex._member_overruns.clear()
                 assert await server.apply_automod(Ws(), "a" * 1999, user_id=uid, user_role="user", channel=channel,
                                                   channel_name="room3", username="author3", my_state={}) is True
                 assert server._automod_regex.timeouts_in_last_hour(poly) == 3
-                # a short message the rule can finish on is checked normally
+                # a short message the rule can finish on is checked normally (once the breaker is over)
+                server._automod_regex._member_overruns.clear()
                 assert await server.apply_automod(Ws(), "hello", user_id=uid, user_role="user", channel=channel,
                                                   channel_name="room3", username="author3", my_state={}) is False
             finally:
@@ -549,7 +552,6 @@ def test_list_flags_only_enabled_rules_as_not_enforced():
     assert reasons[2] is None, reasons
     assert reasons[3] is None, reasons
 
-
 class _FakeClock:
     """Stands in for automod.monotonic so the 60 second window can be crossed without waiting."""
 
@@ -558,6 +560,133 @@ class _FakeClock:
 
     def __call__(self):
         return self.now
+
+
+def test_member_breaker_refuses_regex_checks_without_running_them_and_expires():
+    async def go():
+        r = automod.RegexRunner(budget=0.25)
+        clock = _FakeClock()
+        real = automod.monotonic
+        automod.monotonic = clock
+        try:
+            poly = "a*a*a*a*a*a*!"
+            # a fast pattern works for everybody before any overrun
+            assert await r.search("hello", "say hello", user_id=1) is True
+            try:
+                await r.search(poly, "a" * 1999, user_id=1)
+                raise AssertionError("the slow pattern must overrun")
+            except automod.RegexCheckError as e:
+                assert e.timed_out
+            assert r.restarts == 1 and r.timeouts_in_last_hour(poly) == 1
+            # now the member is refused, with a pattern that would match instantly, and no regex runs
+            for _ in range(5):
+                clock.now += 5
+                try:
+                    await r.search("hello", "say hello", user_id=1)
+                    raise AssertionError("a member inside the window must be refused")
+                except automod.RegexCheckError as e:
+                    assert e.timed_out
+            assert r._proc is None, "no worker may be started for a refused check"
+            assert r.restarts == 1 and r.timeouts_in_last_hour(poly) == 1, "refusals are not overruns"
+            # another member is not affected, and the breaker is by user id
+            assert await r.search("hello", "say hello", user_id=2) is True
+            # 25 s of refusals did not extend the window: 60 s after the overrun it is over
+            clock.now += 36
+            assert await r.search("hello", "say hello", user_id=1) is True
+            assert not r.member_blocked(1) and 1 not in r._member_overruns
+            # a new overrun starts a new window
+            try:
+                await r.search(poly, "a" * 1999, user_id=1)
+            except automod.RegexCheckError:
+                pass
+            assert r.member_blocked(1)
+            clock.now += 59
+            assert r.member_blocked(1)
+            clock.now += 2
+            assert not r.member_blocked(1)
+            # checks without a member (no user id) are never refused by the breaker
+            assert not r.member_blocked(None)
+        finally:
+            automod.monotonic = real
+            await r.close()
+    asyncio.run(go())
+
+
+def test_member_breaker_state_is_bounded_and_pruned():
+    r = automod.RegexRunner()
+    clock = _FakeClock()
+    real = automod.monotonic
+    automod.monotonic = clock
+    try:
+        for uid in range(automod._MAX_TRACKED_MEMBERS + 50):
+            r._note_member_overrun(uid)
+        assert len(r._member_overruns) <= automod._MAX_TRACKED_MEMBERS
+        clock.now += automod.MEMBER_BREAKER_SECONDS + 1
+        r._note_member_overrun(10_000_000)
+        assert list(r._member_overruns) == [10_000_000]
+    finally:
+        automod.monotonic = real
+
+
+def test_a_member_whose_check_overran_is_refused_on_every_socket_without_a_regex_run():
+    import server
+
+    class Ws:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    async def go():
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Database(str(Path(tmp) / "t.db"))
+            await d.connect()
+            saved = (server.db, server._automod_regex, server._automod_rules_cache, server._automod_cache_time,
+                     server.broadcast_to_channel)
+            server.db = d
+            server._automod_regex = automod.RegexRunner(budget=0.25)
+
+            async def fake_broadcast(*a, **k):
+                pass
+            server.broadcast_to_channel = fake_broadcast
+            try:
+                uid = await d.create_user("breaker1", "x")
+                other = await d.create_user("breaker2", "x")
+                await d.create_chat_channel("breakroom", created_by=uid)
+                channel = await d.get_chat_channel_by_name("breakroom")
+                poly = "a*a*a*a*a*a*!"
+                await d.create_automod_rule("word_filter", "slow", {"words": [poly, "spam"], "match_mode": "regex"},
+                                            "timeout", uid, action_duration=60)
+                server._automod_cache_time = 0
+
+                async def send(user, text, edit_of=None):
+                    ws = Ws()
+                    t0 = time.monotonic()
+                    blocked = await server.apply_automod(ws, text, user_id=user, user_role="admin", channel=channel,
+                                                         channel_name="breakroom", username="u", my_state={},
+                                                         edit_of=edit_of)
+                    return blocked, ws.sent, time.monotonic() - t0
+                blocked, sent, _ = await send(uid, "a" * 1999)
+                assert blocked and sent[0]["error_code"] == "automod_unchecked"
+                assert server._automod_regex.restarts == 1
+                # a second socket of the same member, a plain message and an edit: refused at once, nothing run
+                for edit_of in (None, {"id": 4, "message": "old"}):
+                    blocked, sent, took = await send(uid, "hello", edit_of)
+                    assert blocked is True and sent[0]["error_code"] == "automod_unchecked", sent
+                    if edit_of:
+                        assert sent[1] == {"type": "edit_rejected", "message_id": 4, "message": "old"}
+                assert server._automod_regex.restarts == 1 and server._automod_regex._proc is None
+                assert server._automod_regex.timeouts_in_last_hour(poly) == 1
+                # staff are not exempt, and nobody else is held up
+                blocked, sent, _ = await send(other, "hello")
+                assert blocked is False and not sent
+            finally:
+                await server._automod_regex.close()
+                (server.db, server._automod_regex, server._automod_rules_cache, server._automod_cache_time,
+                 server.broadcast_to_channel) = saved
+                await d.close()
+    asyncio.run(go())
 
 
 def test_worker_failures_are_counted_and_logged_once_a_minute():
@@ -587,13 +716,14 @@ def test_worker_failures_are_counted_and_logged_once_a_minute():
         try:
             for i in range(4):
                 try:
-                    await r.search("x", "text")
+                    await r.search("x", "text", user_id=7)
                     raise AssertionError("must fail")
                 except automod.RegexCheckError as e:
                     assert not e.timed_out
                 clock.now += 10
             assert r.worker_failures_in_last_hour() == 4
             assert len([l for l in cap.lines if "regex worker failed" in l]) == 1, cap.lines
+            assert not r.member_blocked(7), "a worker failure is not a budget overrun"
             clock.now += 61
             try:
                 await r.search("x", "text")
@@ -642,6 +772,79 @@ def test_admin_list_reports_regex_worker_failures():
     assert asyncio.run(go()) == {1: 3, 2: 0}
     admin = (ROOT / "static" / "admin.html").read_text()
     assert "regex worker could not start, " in admin and "r.regex_worker_failures" in admin
+
+
+def test_chat_socket_count_is_capped_per_user_and_the_popout_still_fits():
+    import aiohttp
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from auth import TokenPayload
+
+    assert server_limit() == 20
+
+    async def go():
+        with tempfile.TemporaryDirectory() as tmp:
+            import server
+            d = Database(str(Path(tmp) / "t.db"))
+            await d.connect()
+            uid = await d.create_user("capuser1", "x")
+
+            async def auth(request):
+                return TokenPayload({"sub": str(uid), "jti": "sess-1", "scopes": ["*"], "iat": 0})
+
+            async def valid(token_id):
+                return True
+            d.is_token_valid = valid
+            saved = (server.db, server.authenticate_request, server.check_rate_limit)
+            server.db, server.authenticate_request = d, auth
+            server.check_rate_limit = lambda ip: True
+            app = web.Application()
+            app.router.add_get("/ws/chat", server.handle_chat_websocket)
+            srv = TestServer(app)
+            await srv.start_server()
+            clients = []
+            try:
+                async with aiohttp.ClientSession() as sess:
+                    async def open_one():
+                        ws = await sess.ws_connect(srv.make_url("/ws/chat"))
+                        first = await asyncio.wait_for(ws.receive(), 3)
+                        return ws, first
+                    # main window, voice, pop-out: all fine and all kept
+                    for _ in range(3):
+                        ws, first = await open_one()
+                        assert first.type == aiohttp.WSMsgType.TEXT, first
+                        clients.append(ws)
+                    # fill the registry up to the limit with sockets that are open
+                    while len(server._user_websockets.get(uid, ())) < server._MAX_WS_PER_USER:
+                        ws, first = await open_one()
+                        assert first.type == aiohttp.WSMsgType.TEXT, first
+                        clients.append(ws)
+                    assert len(clients) == server._MAX_WS_PER_USER
+                    ws, first = await open_one()
+                    assert first.type == aiohttp.WSMsgType.CLOSE, first
+                    assert first.data == 1013 and first.extra == "too many connections", (first.data, first.extra)
+                    await ws.close()
+                    assert len(server._user_websockets.get(uid, ())) == server._MAX_WS_PER_USER
+                    # a socket that closes frees a place
+                    await clients.pop().close()
+                    await asyncio.sleep(0.3)
+                    ws, first = await open_one()
+                    assert first.type == aiohttp.WSMsgType.TEXT, first
+                    clients.append(ws)
+                    for c in clients:
+                        await c.close()
+                await asyncio.sleep(0.3)
+                assert not server._user_websockets.get(uid)
+            finally:
+                await srv.close()
+                server.db, server.authenticate_request, server.check_rate_limit = saved
+                await d.close()
+    asyncio.run(go())
+
+
+def server_limit():
+    import server
+    return server._MAX_WS_PER_USER
 
 
 if __name__ == "__main__":

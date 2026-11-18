@@ -21,9 +21,16 @@ The limits are therefore:
      the pattern is tried again for the next message, so a slow pattern can
      never be used to let content through. Timeouts are counted per pattern
      (RegexRunner.timeouts_in_last_hour) for the admin rule list, and worker
-     failures are counted too (RegexRunner.worker_failures_in_last_hour). The callers
-     rate limit a member's messages before they reach the rules, which bounds
-     the worker time one member can use.
+     failures are counted too (RegexRunner.worker_failures_in_last_hour).
+  4. One runner and one lock serve every member, so one member must not be able
+     to queue slow checks ahead of everybody else's. Two things bound the worker
+     time a single member can use. After one of their messages or edits overruns
+     the budget, the member (by user id, over all their sockets) is refused any
+     further regex check without a regex being run, for MEMBER_BREAKER_SECONDS
+     after the last real overrun (RegexRunner.member_blocked). And the chat
+     WebSocket handler caps the sockets one user can hold open (server.py,
+     _MAX_WS_PER_USER). The per-socket rate limit does not bound this: it
+     counts per socket, so more sockets get more checks.
 """
 
 import asyncio
@@ -42,6 +49,7 @@ REGEX_MAX_PATTERNS = 100       # patterns per word_filter rule in regex mode
 REGEX_TEXT_LIMIT = 2000        # characters of a message handed to a regex
 REGEX_BUDGET_SECONDS = 0.25    # hard limit for one pattern against one text
 SLOW_PATTERN_WINDOW_SECONDS = 3600.0   # timeouts are counted over this long for the admin list
+MEMBER_BREAKER_SECONDS = 60.0  # a member who overran the budget gets no regex check for this long
 
 MATCH_MODES = ("contains", "exact", "regex")
 
@@ -254,6 +262,7 @@ _MAX_TRACKED_PATTERNS = 512
 _MAX_TIMEOUTS_PER_PATTERN = 1000
 _LOG_INTERVAL_SECONDS = 60.0
 _MAX_WORKER_FAILURES = 1000
+_MAX_TRACKED_MEMBERS = 1024
 
 
 class RegexRunner:
@@ -267,6 +276,7 @@ class RegexRunner:
         self._last_logged: dict[str, float] = {}
         self._failures: deque = deque(maxlen=_MAX_WORKER_FAILURES)   # monotonic times of worker failures
         self._last_failure_logged = None
+        self._member_overruns: dict[int, float] = {}   # user id -> monotonic time of the last real overrun
         self.restarts = 0
 
     async def _start(self):
@@ -323,6 +333,30 @@ class RegexRunner:
         cutoff = monotonic() - SLOW_PATTERN_WINDOW_SECONDS
         return sum(1 for t in times if t >= cutoff)
 
+    def member_blocked(self, user_id) -> bool:
+        """True while this member's last budget overrun is less than MEMBER_BREAKER_SECONDS old."""
+        if user_id is None:
+            return False
+        last = self._member_overruns.get(user_id)
+        if last is None:
+            return False
+        if monotonic() - last < MEMBER_BREAKER_SECONDS:
+            return True
+        del self._member_overruns[user_id]
+        return False
+
+    def _note_member_overrun(self, user_id) -> None:
+        if user_id is None:
+            return
+        now = monotonic()
+        if user_id not in self._member_overruns and len(self._member_overruns) >= _MAX_TRACKED_MEMBERS:
+            cutoff = now - MEMBER_BREAKER_SECONDS
+            for u in [u for u, t in self._member_overruns.items() if t < cutoff]:
+                del self._member_overruns[u]
+            if len(self._member_overruns) >= _MAX_TRACKED_MEMBERS:
+                self._member_overruns.pop(next(iter(self._member_overruns)))
+        self._member_overruns[user_id] = now
+
     def worker_failures_in_last_hour(self) -> int:
         """How many checks failed because the worker could not be started or kept running."""
         cutoff = monotonic() - SLOW_PATTERN_WINDOW_SECONDS
@@ -347,14 +381,23 @@ class RegexRunner:
         logger.warning("automod regex %r exceeded %.2fs; worker restarted, the message was rejected "
                        "(logged once a minute per pattern)", shown, self.budget)
 
-    async def search(self, pattern: str, text: str) -> bool:
+    async def search(self, pattern: str, text: str, user_id=None) -> bool:
         """True if pattern matches text (case-insensitive).
 
         Raises RegexCheckError when the pattern overruns the budget or the worker
         fails twice: the caller must then treat the text as not checked.
+
+        user_id is the member whose text this is. A budget overrun starts the
+        member's breaker (MEMBER_BREAKER_SECONDS); while it is open the check is
+        refused with RegexCheckError without running any regex.
         """
         text = text[:REGEX_TEXT_LIMIT]
+        if self.member_blocked(user_id):
+            raise RegexCheckError(pattern, True)
         async with self._lock:
+            # A check that queued behind this member's own overrun must not run either.
+            if self.member_blocked(user_id):
+                raise RegexCheckError(pattern, True)
             for attempt in (1, 2):
                 try:
                     if self._proc is None or self._proc.returncode is not None:
@@ -370,6 +413,7 @@ class RegexRunner:
                     await self._kill()
                     self.restarts += 1
                     self._note_timeout(pattern)
+                    self._note_member_overrun(user_id)
                     self._log_timeout(pattern)
                     raise RegexCheckError(pattern, True) from None
                 except (ConnectionError, BrokenPipeError, OSError, ValueError) as e:

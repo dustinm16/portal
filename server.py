@@ -318,6 +318,10 @@ _online_users: dict[int, int] = {}
 # the sockets that were opened with them.
 _user_websockets: dict[int, dict] = {}
 
+# Open WebSockets one user may hold at once (prevents resource exhaustion). The
+# generic handler counts its own sockets; the chat handler counts the registry above.
+_MAX_WS_PER_USER = 20
+
 
 def _register_user_ws(user_id: int, ws, token_id: str) -> None:
     _user_websockets.setdefault(user_id, {})[ws] = token_id
@@ -11443,7 +11447,6 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     logger.info(f"WebSocket connection from {client_ip} (user {token.user_id}) to {path}")
 
     # Per-user WebSocket connection limit (prevents resource exhaustion)
-    _MAX_WS_PER_USER = 20
     user_ws_count = _online_users.get(token.user_id, 0)
     if user_ws_count >= _MAX_WS_PER_USER:
         logger.warning(f"User {token.user_id} exceeded max WebSocket connections ({_MAX_WS_PER_USER})")
@@ -13922,7 +13925,7 @@ _automod_regex = automod.RegexRunner()
 _automod_warned_patterns: set = set()
 
 
-async def _check_word_filter(text: str, config: dict) -> bool:
+async def _check_word_filter(text: str, config: dict, user_id=None) -> bool:
     """Check if message matches a word filter rule."""
     words = config.get("words", [])
     match_mode = config.get("match_mode", "contains")
@@ -13942,7 +13945,7 @@ async def _check_word_filter(text: str, config: dict) -> bool:
                     _automod_warned_patterns.add(word)
                     logger.warning(f"[AutoMod] Skipping unsafe stored regex pattern: {problem}")
                 continue
-            if await _automod_regex.search(word, text):
+            if await _automod_regex.search(word, text, user_id=user_id):
                 return True
         else:  # contains
             if word_lower in text_lower:
@@ -13997,7 +14000,7 @@ async def check_automod(text: str, user_id: int, channel_id: int, channel_name: 
         triggered = False
         rule_type = rule["type"]
         if rule_type == "word_filter":
-            triggered = await _check_word_filter(text, config)
+            triggered = await _check_word_filter(text, config, user_id=user_id)
         elif rule_type == "link_filter":
             triggered = _check_link_filter(text, config)
         elif rule_type == "caps_filter":
@@ -15971,6 +15974,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
         # Everything that holds a reference is taken inside this try, with no
         # suspension point before it, so a cancellation later on still runs the finally.
         my_state = _chat_state_acquire(user_id, chat_fresh_state)
+        # One member's sockets share one regex worker through automod, so the number
+        # of them is capped like the generic handler's. Counted in the registry,
+        # with no await between this check and the registration below, so sockets
+        # opened together cannot all pass it. The pop-out chat adds one or two.
+        if len(_user_websockets.get(user_id, ())) >= _MAX_WS_PER_USER:
+            logger.warning(f"User {user_id} exceeded max WebSocket connections ({_MAX_WS_PER_USER})")
+            await raw_ws.close(code=1013, message=b"too many connections")
+            return raw_ws
         _register_user_ws(user_id, raw_ws, token.token_id)
         # Authentication and the upgrade awaited before this point; a revocation in that
         # window did not see this socket, so check the credential once it is registered.
