@@ -442,17 +442,19 @@ async def close_user_websockets(user_id: int, except_token_id: str = None,
         ws for ws, tid in list(_user_websockets.get(user_id, {}).items())
         if not _spared(tid)
     ]
-    # Close first: a socket that is still open while the voice entries are removed
-    # could join a call in between, and that entry would then be held for the
-    # reconnect grace instead of ending.
+    # A revoked session ends its voice call at once, with no reconnect grace,
+    # also when the socket is already gone and the call is only being held.
+    # Removing the entries before the sockets close keeps the room from seeing a
+    # "reconnecting" state (a socket that closes with a live entry holds it for the
+    # grace); it is done again after the close, because a socket that was still
+    # open could have joined a call in between and that entry would otherwise be held.
+    await _voice_revoke_user(user_id, _spared)
     if targets:
         await asyncio.gather(
             *(ws.close(code=4001, message=b"session revoked") for ws in targets),
             return_exceptions=True
         )
-    # A revoked session ends its voice call at once, with no reconnect grace,
-    # also when the socket is already gone and the call is only being held.
-    await _voice_revoke_user(user_id, _spared)
+        await _voice_revoke_user(user_id, _spared)
     return len(targets)
 
 # Server start time for uptime tracking
