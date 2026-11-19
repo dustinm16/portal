@@ -18,7 +18,8 @@ Two write paths, chosen by event name:
   IMMEDIATE_PER_MINUTE rows per (user id or address, event) and minute: a member
   who loops a sign-in or a sign-out cannot grow the table without bound. Further
   events of that kind in the minute are counted in the aggregate buffer, one
-  counted row per minute.
+  counted row per minute. Admin and configuration events (CAP_EXEMPT) are not
+  capped: they need a staff session, and their details must not be lost.
 
 Nothing here raises into a caller, and a database error never stops a login.
 Secrets (passwords, 2FA and backup codes, tokens, API keys, invite codes) are
@@ -72,6 +73,8 @@ EVENTS = {
     "never_ban_changed": "security",
     "cf_ranges_refreshed": "security",
     "cf_ranges_reset": "security",
+    "cf_ranges_approved": "security",
+    "cf_ranges_dismissed": "security",
     "cf_refresh_toggled": "security",
     "security_retention_changed": "security",
     "security_events_pruned": "security",
@@ -87,6 +90,19 @@ AGGREGATED = frozenset({
     "register_failed", "password_change_failed", "2fa_disable_failed",
     "probe_block", "rate_limited",
 })
+
+# Admin and configuration actions. They need an authenticated staff session (or run from
+# the weekly job or the command line), so a flood from outside cannot reach them, and each
+# one must keep its details: they are never held to the per-minute cap and never go into
+# the aggregate buffer. ip_blocked and ip_unblocked are exempt only with a user id (an
+# administrator's action); without one they take the capped path like any other event.
+CAP_EXEMPT = frozenset({
+    "role_changed", "user_deleted", "password_reset", "never_ban_changed",
+    "cf_ranges_refreshed", "cf_ranges_reset", "cf_refresh_toggled",
+    "cf_ranges_approved", "cf_ranges_dismissed",
+    "security_retention_changed", "security_events_pruned", "security_log_export",
+})
+CAP_EXEMPT_WITH_USER = frozenset({"ip_blocked", "ip_unblocked"})
 
 CATEGORIES = ("auth", "security")
 
@@ -340,10 +356,16 @@ class SecurityEventLog:
                     # event and result so rows per minute and memory stay bounded.
                     row["ip"] = OVERFLOW_IP
                     row["user_agent"] = None
-                    row["username_tried"] = None
-                    row["user_id"] = None
                     row["details"] = None
-                    key = (OVERFLOW_IP, event, row["result"] or "", minute)
+                    if event not in AGGREGATED and row["user_id"] is not None:
+                        # An over-cap row of a signed-in account is folded per account
+                        # (still bounded: accounts times events), never into the
+                        # bucket that has no actor.
+                        key = (OVERFLOW_IP, event, row["result"] or "", minute, f"u{row['user_id']}")
+                    else:
+                        row["username_tried"] = None
+                        row["user_id"] = None
+                        key = (OVERFLOW_IP, event, row["result"] or "", minute)
                     entry = self._agg.get(key)
                 else:
                     known.add(key)
@@ -432,6 +454,14 @@ class SecurityEventLog:
         self._immediate_counts[key] = used + 1
         return True
 
+    @staticmethod
+    def _cap_exempt(event: str, user_id) -> bool:
+        """True for an admin or configuration event that is never capped (see CAP_EXEMPT)."""
+        if event in CAP_EXEMPT:
+            return True
+        return (event in CAP_EXEMPT_WITH_USER
+                and isinstance(user_id, int) and not isinstance(user_id, bool))
+
     async def write(self, event: str, *, ip=None, user_agent=None, user_id=None, username=None,
                     result=None, details=None) -> None:
         """Write one event now. Never raises; waits at most IMMEDIATE_TIMEOUT."""
@@ -439,7 +469,8 @@ class SecurityEventLog:
             if self._db is None:
                 return
             now = _clock()
-            if not self._immediate_allowed(event, user_id, ip, now_ts(now)[:16]):
+            if not self._cap_exempt(event, user_id) and not self._immediate_allowed(
+                    event, user_id, ip, now_ts(now)[:16]):
                 self.note(event, ip=ip, user_agent=user_agent, user_id=user_id, username=username,
                           result=result, details=details, now=now)
                 return

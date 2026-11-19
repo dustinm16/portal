@@ -18,6 +18,7 @@ passes on a copy of a production database (--from-db).
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 
 MARKER = "smoke-blocking-marker"
@@ -169,7 +170,7 @@ async def run(ctx):
     # ------------------------------------------------------------------
     # The unit tests, against the staged copy of the code
     # ------------------------------------------------------------------
-    for name in ("test_blocking", "test_cf_ranges"):
+    for name in ("test_blocking", "test_cf_ranges", "test_cf_pending"):
         rc, out = await ctx.run_py(f"import runpy; runpy.run_path('tests/{name}.py', run_name='__main__')", timeout=170)
         results = [l for l in out.splitlines() if l.startswith(("ok:   ", "FAIL: "))]
         bad = [l for l in results if l.startswith("FAIL")]
@@ -304,6 +305,7 @@ async def _admin_checks(ctx, adm, loopback_trusted):
         _ok(ctx, "blocking: the reset is a security event and an audit entry",
                ev.get("total") == ev_before + 1 and au.get("total") == au_before + 1
                and (ev.get("events") or [{}])[0].get("user_id") is not None, f"{ev.get('total')} {au.get('total')}")
+        await _cf_pending_checks(ctx, adm, hdr, _events, _audits)
     else:
         ctx.skip("blocking: PUT cf-ranges", "the admin account is not a superadmin")
 
@@ -360,6 +362,106 @@ async def _admin_checks(ctx, adm, loopback_trusted):
             st = await r.json(content_type=None)
         _ok(ctx, "blocking: the proxy-trust note clears once ordinary requests dominate again",
                r.status == 200 and st.get("suspect") is False, str(st))
+
+
+PENDING_CODE = """
+import json, sqlite3, sys
+import ipguard
+nets = ipguard.cf_builtin_networks()
+extra = int(sys.argv_extra)
+v4 = [str(n) for n in nets if n.version == 4] + ['46.%d.0.0/16' % i for i in range(extra)]
+v6 = [str(n) for n in nets if n.version == 6]
+parsed = [__import__('ipaddress').ip_network(n) for n in v4 + v6]
+lid = ipguard.cf_list_id(parsed)
+pending = {'id': lid, 'fetched_at': '2026-01-01 00:00:00', 'reason': 'smoke: %d new IPv4 ranges in one refresh' % extra,
+           'v4': sorted(v4), 'v6': sorted(v6),
+           'added': sorted('46.%d.0.0/16' % i for i in range(extra)), 'removed': []}
+c = sqlite3.connect('portal.db', timeout=30)
+c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('cf_ranges_pending', ?)", (json.dumps(pending),))
+c.commit()
+c.close()
+print('ID=' + lid)
+"""
+
+
+async def _cf_pending_checks(ctx, adm, hdr, events, audits):
+    """A list held for approval: shown to an admin, refused without the browser session, approved and
+    dismissed by a superadmin, each recorded as a security event and an audit entry with counts only.
+    The held list is written straight into the staged database (a stage never fetches)."""
+    base = ctx.base_url
+
+    async def hold(extra):
+        rc, out = await ctx.run_py(PENDING_CODE.replace("sys.argv_extra", str(extra)))
+        line = next((l for l in out.splitlines() if l.startswith("ID=")), "")
+        return line[3:] if rc == 0 else ""
+
+    async def view():
+        async with adm.get(f"{base}/api/admin/cf-ranges", headers=hdr) as r:
+            return await r.json(content_type=None)
+
+    try:
+        lid = await hold(8)
+        _ok(ctx, "blocking: a pending Cloudflare list can be placed in the staged database", bool(lid))
+        v = await view()
+        p = v.get("pending") or {}
+        _ok(ctx, "blocking: GET cf-ranges shows the pending list with reason and the exact differences",
+            p.get("id") == lid and "8 new IPv4" in (p.get("reason") or "") and len(p.get("added", [])) == 8
+            and p.get("removed") == [] and p.get("diff_is_current") is True and v.get("source") == "built-in", str(p))
+        async with ctx.http() as anon:
+            for path in ("approve", "dismiss"):
+                async with anon.post(f"{base}/api/admin/cf-ranges/pending/{path}", json={"id": lid}, headers=hdr) as r:
+                    await r.read()
+                    _ok(ctx, f"blocking: anonymous POST pending/{path} is refused", r.status in (401, 403), str(r.status))
+            async with anon.post(f"{base}/api/token", json={"username": ctx.admin_user, "password": ctx.admin_password}) as r:
+                bearer = (await r.json(content_type=None)).get("token", "") if r.status == 200 else ""
+            _ok(ctx, "blocking: a full-scope bearer token exists for the superadmin", bool(bearer))
+            for path in ("approve", "dismiss"):
+                async with anon.post(f"{base}/api/admin/cf-ranges/pending/{path}", json={"id": lid},
+                                     headers={"Authorization": "Bearer " + bearer, **hdr}) as r:
+                    await r.read()
+                    _ok(ctx, f"blocking: a full-scope API token cannot POST pending/{path} (browser session only)",
+                        r.status in (401, 403), str(r.status))
+        _ok(ctx, "blocking: the refusals changed nothing", (await view()).get("pending", {}).get("id") == lid)
+        async with adm.post(f"{base}/api/admin/cf-ranges/pending/approve", json={}, headers=hdr) as r:
+            await r.read()
+            _ok(ctx, "blocking: approve without a list id is a 400", r.status == 400, str(r.status))
+        async with adm.post(f"{base}/api/admin/cf-ranges/pending/approve", json={"id": "0" * 16}, headers=hdr) as r:
+            await r.read()
+            _ok(ctx, "blocking: approving a list id that is not the pending one is a 409", r.status == 409, str(r.status))
+
+        ev0 = (await events("cf_ranges_approved")).get("total", 0)
+        au0 = (await audits("cf_ranges.approve")).get("total", 0)
+        async with adm.post(f"{base}/api/admin/cf-ranges/pending/approve", json={"id": lid}, headers=hdr) as r:
+            done = await r.json(content_type=None)
+        _ok(ctx, "blocking: the superadmin's approval puts the list in use at once and clears the pending list",
+            r.status == 200 and done.get("source") == "fetched" and done.get("pending") is None
+            and done.get("approved") is True and done.get("saved_list_applied") is True, str(done))
+        ev = await events("cf_ranges_approved")
+        au = await audits("cf_ranges.approve")
+        row = (ev.get("events") or [{}])[0]
+        _ok(ctx, "blocking: the approval is a security event and an audit entry holding counts only",
+            ev.get("total") == ev0 + 1 and au.get("total") == au0 + 1 and row.get("user_id") is not None
+            and "46.1.0.0/16" not in json.dumps(row) and "46.1.0.0/16" not in json.dumps((au.get("entries") or au.get("logs") or au)),
+            f"{ev.get('total')} {au.get('total')} {row}")
+        async with adm.post(f"{base}/api/admin/cf-ranges/pending/approve", json={"id": lid}, headers=hdr) as r:
+            await r.read()
+            _ok(ctx, "blocking: approving again (nothing pending) is a 404", r.status == 404, str(r.status))
+
+        # dismissal
+        lid2 = await hold(9)
+        ev0 = (await events("cf_ranges_dismissed")).get("total", 0)
+        au0 = (await audits("cf_ranges.dismiss")).get("total", 0)
+        async with adm.post(f"{base}/api/admin/cf-ranges/pending/dismiss", json={"id": lid2}, headers=hdr) as r:
+            gone = await r.json(content_type=None)
+        _ok(ctx, "blocking: the superadmin's dismissal drops the pending list",
+            r.status == 200 and gone.get("pending") is None and gone.get("dismissed") is True, str(gone))
+        _ok(ctx, "blocking: the dismissal is a security event and an audit entry",
+            (await events("cf_ranges_dismissed")).get("total") == ev0 + 1
+            and (await audits("cf_ranges.dismiss")).get("total") == au0 + 1)
+    finally:
+        async with adm.post(f"{base}/api/admin/cf-ranges/reset", headers=hdr) as r:
+            await r.read()
+            _ok(ctx, "blocking: the built-in list is back in use after the pending-list checks", r.status == 200, str(r.status))
 
 
 async def _lockout_recovery(ctx):

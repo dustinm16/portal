@@ -10,7 +10,8 @@ transaction, when the database already has the security event table.
 
 `server.py cf-ranges-reset` works the same way: it deletes the saved fetched
 Cloudflare list (setting `cf_ranges_list`) so the next start uses the built-in
-list, and records a ``cf_ranges_reset`` security event with the source ``cli``.
+list, and records a ``cf_ranges_reset`` security event with the source ``cli``. A list
+held for approval (setting `cf_ranges_pending`) and a dismissal are cleared with it.
 It writes no audit_log entry: that table needs an account as its actor and
 holds encrypted details, and this tool has neither.
 """
@@ -158,6 +159,8 @@ def cf_ranges_reset(db_path: str) -> int:
         removed = 0
         if has_table:
             removed = conn.execute("DELETE FROM settings WHERE key = 'cf_ranges_list'").rowcount
+            # A held (pending) list and a dismissal belong to the list that is being reset.
+            conn.execute("DELETE FROM settings WHERE key IN ('cf_ranges_pending', 'cf_ranges_dismissed')")
         if removed:
             _record_event(conn, {"removed": removed}, event="cf_ranges_reset")
         conn.commit()

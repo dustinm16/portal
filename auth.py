@@ -90,6 +90,11 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+# A fixed hash that a login for an unknown account is checked against, so the answer takes
+# as long as one for a real account and the time does not tell the two apart.
+_DUMMY_PASSWORD_HASH = ph.hash("no-such-account-placeholder")
+
+
 def generate_token_id() -> str:
     """Generate a unique token ID."""
     return secrets.token_urlsafe(32)
@@ -137,6 +142,10 @@ async def authenticate_user_reason(username: str, password: str) -> tuple[Option
     """Authenticate; returns (user, None) or (None, "unknown_user" | "bad_password")."""
     user = await db.get_user_by_username(username)
     if not user:
+        try:
+            verify_password(password, _DUMMY_PASSWORD_HASH)     # same work as for a real account
+        except Exception:
+            pass
         return None, "unknown_user"
     if not verify_password(password, user["password_hash"]):
         return None, "bad_password"
@@ -386,12 +395,14 @@ def log_invite_code_usage(username: str, success: bool, client_ip: str) -> None:
     """Log invite code usage attempt.
 
     Args:
-        username: Username attempting registration
+        username: Username attempting registration (logged only when success is true)
         success: Whether the code was valid
         client_ip: Client IP address
     """
     status = "SUCCESS" if success else "FAILED"
-    log_message = f"INVITE_CODE_USAGE user={username} status={status} ip={client_ip}"
+    # A refused attempt never logs the typed name (people paste passwords into the name box).
+    who = username if success else "an unknown account"
+    log_message = f"INVITE_CODE_USAGE user={who} status={status} ip={client_ip}"
     print(f"[PORTAL] {log_message}")
     logger.info(log_message)
 

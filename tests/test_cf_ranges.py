@@ -516,6 +516,8 @@ async def make_cli_db(path, saved=True):
     if saved:
         await d.set_setting(server.CF_SETTING_LIST, json.dumps({"v4": V4, "v6": V6, "fetched_at": "x"}))
         await d.set_setting(server.CF_SETTING_ENABLED, "true")
+        await d.set_setting("cf_ranges_pending", json.dumps({"id": "abc", "v4": [], "v6": []}))
+        await d.set_setting("cf_ranges_dismissed", "abc")
     await d.close()
 
 
@@ -528,9 +530,12 @@ with tempfile.TemporaryDirectory() as tmp:
     left = c.execute("SELECT COUNT(*) FROM settings WHERE key = ?", (server.CF_SETTING_LIST,)).fetchone()[0]
     kept = c.execute("SELECT value FROM settings WHERE key = ?", (server.CF_SETTING_ENABLED,)).fetchone()
     ev = c.execute("SELECT event, category, ip, result, details, count FROM security_events").fetchall()
+    held = c.execute("SELECT COUNT(*) FROM settings WHERE key IN (?, ?)",
+                     ("cf_ranges_pending", "cf_ranges_dismissed")).fetchone()[0]
     c.close()
     check("cf-ranges-reset clears the saved list, leaves the other settings and says to restart",
           rc == 0 and left == 0 and kept and kept[0] == "true" and "Restart the portal" in out, out)
+    check("cf-ranges-reset also clears a pending list and a dismissal", held == 0)
     check("cf-ranges-reset records one cf_ranges_reset security event from the command line",
           len(ev) == 1 and ev[0][0] == "cf_ranges_reset" and ev[0][1] == "security" and ev[0][2] == "cli"
           and json.loads(ev[0][4]).get("kind") == "cli" and ev[0][5] == 1, str(ev))

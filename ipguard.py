@@ -4,6 +4,7 @@ Pure functions plus one small fetcher; nothing here touches the database or the
 running server. server.py owns the state and calls these to validate input.
 """
 
+import hashlib
 import ipaddress
 import re
 from typing import Iterable, Optional
@@ -181,19 +182,31 @@ def _covers(new_nets, old) -> bool:
     return any(n.version == old.version and old.subnet_of(n) for n in new_nets)
 
 
-def validate_cf_lists(v4_text: str, v6_text: str, current: Optional[Iterable] = None,
-                      compare_new: bool = True) -> list:
-    """Parse both lists, enforce the size, breadth and shrink rules, return the combined networks.
+class ListLimitError(ListError):
+    """A list passed every hard rule but failed an automatic limit: too many new ranges,
+    or too many built-in or current ranges dropped.
 
-    * No range may be broader than the broadest built-in range of its family
-      (/13 IPv4, /29 IPv6 today): the list may not widen what is trusted.
-    * Per family, at most CF_MAX_NEW_PER_REFRESH ranges may be new compared with
-      `current`, the list trusted now (the built-in list until a refresh has
-      worked). A range that is inside a current range is not new. Skipped with
-      compare_new=False, for a list saved earlier that is checked again at start.
-    * Per family, the list must still cover at least half of the built-in
-      ranges, and (when `current` is given) at least half of the current ones.
-      A range that equals or contains one counts as covering it.
+    A superadmin may approve such a list (it is held as pending). `networks` is the
+    parsed list. Hard-rule failures stay plain ListError and can never be approved.
+    """
+
+    def __init__(self, message, networks):
+        super().__init__(message)
+        self.networks = list(networks)
+
+
+def cf_list_id(nets: Iterable) -> str:
+    """A short stable id of a list of networks (order and duplicates do not matter)."""
+    text = "\n".join(sorted({str(n) for n in nets}))
+    return hashlib.sha256(text.encode("ascii")).hexdigest()[:16]
+
+
+def validate_cf_hard(v4_text: str, v6_text: str) -> list:
+    """The rules no one may override, an approval included. Returns the combined networks.
+
+    Every line is a public network of its family, no range is broader than the broadest
+    built-in range of its family (/13 IPv4, /29 IPv6; the absolute floor), and each family
+    holds CF_MIN_V4/CF_MIN_V6 to CF_MAX_PER_FAMILY ranges.
     """
     builtin = cf_builtin_networks()
     v4 = parse_cf_list(v4_text, 4)
@@ -204,29 +217,56 @@ def validate_cf_lists(v4_text: str, v6_text: str, current: Optional[Iterable] = 
         raise ListError(f"IPv6 list has {len(v6)} ranges, at least {CF_MIN_V6} are required")
     if len(v4) > CF_MAX_PER_FAMILY or len(v6) > CF_MAX_PER_FAMILY:
         raise ListError(f"a list has more than {CF_MAX_PER_FAMILY} ranges")
-    current = list(current or []) or builtin
     for version, nets in ((4, v4), (6, v6)):
-        base = _cf_family(builtin, version)
-        floor = min(n.prefixlen for n in base)
+        floor = min(n.prefixlen for n in _cf_family(builtin, version))
         for n in nets:
             if n.prefixlen < floor:
                 raise ListError(
                     f"{n} is broader than any range Cloudflare publishes today: "
                     f"IPv{version} ranges must be /{floor} or narrower")
+    return v4 + v6
+
+
+def validate_cf_lists(v4_text: str, v6_text: str, current: Optional[Iterable] = None,
+                      compare_new: bool = True) -> list:
+    """Parse both lists, enforce the size, breadth and shrink rules, return the combined networks.
+
+    * The hard rules of validate_cf_hard (public ranges only, no range broader than
+      the broadest built-in range of its family, list sizes). A failure is a ListError.
+    * Per family, at most CF_MAX_NEW_PER_REFRESH ranges may be new compared with
+      `current`, the list trusted now (the built-in list until a refresh has
+      worked). A range that is inside a current range is not new. Skipped with
+      compare_new=False, for a list saved earlier that is checked again at start.
+    * Per family, the list must still cover at least half of the built-in
+      ranges, and (when `current` is given) at least half of the current ones.
+      A range that equals or contains one counts as covering it.
+
+    The last two kinds of failure are a ListLimitError (a ListError that carries the
+    parsed list), which an administrator may approve. A list that equals `current`
+    changes nothing and passes them.
+    """
+    nets = validate_cf_hard(v4_text, v6_text)
+    builtin = cf_builtin_networks()
+    current = list(current or []) or builtin
+    if set(nets) == set(current):
+        return nets
+    for version in (4, 6):
+        mine = _cf_family(nets, version)
+        base = _cf_family(builtin, version)
         if compare_new:
             have = _cf_family(current, version)
-            new = [n for n in nets if not any(n.subnet_of(c) for c in have)]
+            new = [n for n in mine if not any(n.subnet_of(c) for c in have)]
             if len(new) > CF_MAX_NEW_PER_REFRESH:
-                raise ListError(
+                raise ListLimitError(
                     f"{len(new)} new IPv{version} ranges in one refresh; at most "
-                    f"{CF_MAX_NEW_PER_REFRESH} are accepted")
+                    f"{CF_MAX_NEW_PER_REFRESH} are accepted", nets)
         for label, ref in (("built-in", base), ("current", _cf_family(current, version))):
-            dropped = [r for r in ref if not _covers(nets, r)]
+            dropped = [r for r in ref if not _covers(mine, r)]
             if len(dropped) * 2 > len(ref):
-                raise ListError(
+                raise ListLimitError(
                     f"the new IPv{version} list drops {len(dropped)} of {len(ref)} {label} ranges; "
-                    f"refusing it")
-    return v4 + v6
+                    f"refusing it", nets)
+    return nets
 
 
 class FetchError(Exception):

@@ -271,6 +271,21 @@ async def run(ctx):
            rc == 0 and len(cli) == 1 and '"via":"cli"' in cli[0]["details"]
            and '"new_role":"admin"' in cli[0]["details"], f"rc={rc} {out[-200:]} {cli}"[:300])
 
+    # ---- a refused registration does not put the typed name in the journal
+    typed = f"smkreg{secrets.token_hex(5)}"
+    async with ctx.http() as reg:
+        async with reg.post(ctx.base_url + "/api/register", json={
+                "username": typed, "password": "Smk-reg-" + secrets.token_hex(6) + "!",
+                "invite_code": "bad-bad-code-" + secrets.token_hex(3)}) as r:
+            await r.read()
+            reg_status = r.status
+    await asyncio.sleep(1.0)
+    log_text = ctx.server_log()
+    ctx.ok("secevents: a refused registration is answered 403 or 429 (invite or address limit)", reg_status in (403, 429),
+           str(reg_status))
+    ctx.ok("secevents: the typed name of a refused registration is nowhere in the server log",
+           typed not in log_text and ("an unknown account" in log_text), f"found={typed in log_text}")
+
     # ---- no secret in any row
     blob = "\n".join(json.dumps(r) for r in _rows(ctx, "ts >= ?", (start,)))
     leaked = [x for x in secrets_used if x and x in blob]
@@ -357,3 +372,51 @@ async def run(ctx):
             ret = await r.json(content_type=None)
         ctx.ok("secevents: the retention setting is listed",
                r.status == 200 and "retention_security_events_days" in ret, str(ret)[:200])
+
+        # ---- admin and configuration events are not capped at 30 a minute -------------------
+        name = f"smk_cap_{secrets.token_hex(4)}"
+        pw = "Smk-cap-" + secrets.token_hex(6) + "!"
+        async with admin.post(base + "/api/users", json={"username": name, "password": pw}) as r:
+            made = await r.json(content_type=None)
+        victim = made.get("id")
+        ctx.ok("secevents: create an account for the admin-action checks", r.status in (200, 201) and bool(victim),
+               f"{r.status} {made}"[:200])
+        if not victim:
+            return
+        rounds = 36                  # more than the 30 a minute that capped events get
+        statuses = []
+        for i in range(rounds):
+            async with admin.put(base + f"/api/users/{victim}/role",
+                                 json={"role": "moderator" if i % 2 == 0 else "user"}) as r:
+                await r.read()
+                statuses.append(r.status)
+        for i in range(rounds):
+            async with admin.post(base + f"/api/users/{victim}/reset-password",
+                                  json={"new_password": f"Reset-{i}-" + secrets.token_hex(6)}) as r:
+                await r.read()
+                statuses.append(r.status)
+        marker = f'%"target_user_id":{victim},%'
+        role_rows = _rows(ctx, "event = 'role_changed' AND details LIKE ?", (marker,))
+        reset_rows = _rows(ctx, "event = 'password_reset' AND details LIKE ?", (marker,))
+        ctx.ok(f"secevents: {rounds} role changes and {rounds} password resets in a row all succeeded",
+               statuses.count(200) == 2 * rounds, str(sorted(set(statuses))))
+        ctx.ok(f"secevents: every one of the {rounds} role changes is its own row with its details (no cap)",
+               len(role_rows) == rounds and all('"new_role"' in (r["details"] or "") for r in role_rows),
+               f"{len(role_rows)} rows")
+        ctx.ok(f"secevents: every one of the {rounds} admin password resets is its own row",
+               len(reset_rows) == rounds and all('"sessions_revoked"' in (r["details"] or "") for r in reset_rows),
+               f"{len(reset_rows)} rows")
+        ctx.ok("secevents: none of them is an overflow row (they keep the acting account and its address)",
+               all(r["user_id"] is not None and r["ip"] != "*" for r in role_rows + reset_rows))
+        async with admin.delete(base + f"/api/users/{victim}") as r:
+            await r.read()
+            ctx.ok("secevents: delete the account", r.status == 200, str(r.status))
+        deleted = _rows(ctx, "event = 'user_deleted' AND details LIKE ?", (marker,))
+        ctx.ok("secevents: the deletion is a security event", len(deleted) == 1 and deleted[0]["user_id"] is not None,
+               str(deleted)[:200])
+        async with admin.get(base + "/api/admin/audit-log?action=user_delete&limit=100") as r:
+            audit = await r.json(content_type=None)
+        entry = [e for e in audit.get("entries", []) if e.get("target_name") == name]
+        ctx.ok("secevents: the deletion is also an audit log entry naming the actor and the account",
+               r.status == 200 and len(entry) == 1 and entry[0].get("target_id") == victim
+               and entry[0].get("actor_username") == ctx.admin_user, f"{r.status} {entry}"[:300])

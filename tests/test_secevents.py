@@ -278,6 +278,93 @@ async def immediate_cap_unit():
         secevents._clock = real_clock
 
 
+async def exempt_events_unit():
+    """Admin and configuration events keep every row: no per-minute cap, no overflow bucket."""
+    db = _ImmediateDB()
+    buf = secevents.SecurityEventLog(db)
+    clock = {"t": 1_900_000_020.0}
+    real_clock = secevents._clock
+    secevents._clock = lambda: clock["t"]
+    try:
+        exempt = ["role_changed", "user_deleted", "password_reset", "never_ban_changed", "cf_ranges_refreshed",
+                  "cf_ranges_reset", "cf_refresh_toggled", "cf_ranges_approved", "cf_ranges_dismissed",
+                  "security_retention_changed", "security_events_pruned", "security_log_export"]
+        cap_exempt = set(getattr(secevents, "CAP_EXEMPT", ()))
+        check("every cf_* event of the table is on the exempt list",
+              {e for e in secevents.EVENTS if e.startswith("cf_")} <= cap_exempt)
+        check("every exempt name is a real event", set(exempt) <= set(secevents.EVENTS)
+              and cap_exempt == set(exempt)
+              and set(getattr(secevents, "CAP_EXEMPT_WITH_USER", ())) == {"ip_blocked", "ip_unblocked"})
+        check("sign-ins and sign-outs are not exempt", not ({"login_success", "logout", "session_revoked",
+              "api_key_created", "password_changed", "invite_created"} & cap_exempt))
+        for ev in exempt:
+            for i in range(secevents.IMMEDIATE_PER_MINUTE + 15):
+                await buf.write(ev, ip="198.51.100.40", user_id=9, username="staff", result="x",
+                                details={"target_user_id": i})
+        for ev in ("ip_blocked", "ip_unblocked"):
+            for i in range(secevents.IMMEDIATE_PER_MINUTE + 15):
+                await buf.write(ev, ip="198.51.100.40", user_id=9, username="staff", details={"target_ip": f"203.0.113.{i}"})
+        await buf.flush()
+        for ev in exempt + ["ip_blocked", "ip_unblocked"]:
+            got = [r for r in db.inserted if r["event"] == ev]
+            check(f"{ev}: all {secevents.IMMEDIATE_PER_MINUTE + 15} rows are written with their details",
+                  len(got) == secevents.IMMEDIATE_PER_MINUTE + 15 and all(r["details"] for r in got), str(len(got)))
+        check("none of them went into the aggregate buffer", not db.rows, str(db.rows))
+        # without a user id an ip_blocked is not an administrator's action: it is capped like any event
+        before = len([r for r in db.inserted if r["event"] == "ip_blocked"])
+        for i in range(60):
+            await buf.write("ip_blocked", ip="198.51.100.41", details={"target_ip": "203.0.113.9"})
+        await buf.flush()
+        check("ip_blocked without a user id stays under the cap",
+              len([r for r in db.inserted if r["event"] == "ip_blocked"]) - before == secevents.IMMEDIATE_PER_MINUTE)
+        # exempt events never use up the budget of a capped event of the same user
+        for i in range(secevents.IMMEDIATE_PER_MINUTE):
+            await buf.write("logout", ip="198.51.100.40", user_id=9)
+        check("the budget of a capped event is not spent by exempt ones",
+              len([r for r in db.inserted if r["event"] == "logout"]) == secevents.IMMEDIATE_PER_MINUTE)
+        # a flood of distinct keys does not turn exempt events into counted ones
+        for i in range(secevents.IMMEDIATE_MAX_KEYS + 50):
+            await buf.write("login_success", ip="203.0.113.1", user_id=200000 + i, result="web")
+        before = len([r for r in db.inserted if r["event"] == "role_changed"])
+        await buf.write("role_changed", ip="203.0.113.1", user_id=7, details={"target_user_id": 1})
+        check("an exempt event is still written when the per-minute key table is full",
+              len([r for r in db.inserted if r["event"] == "role_changed"]) == before + 1)
+    finally:
+        secevents._clock = real_clock
+
+
+async def overflow_keeps_user_unit():
+    """An over-cap row that has a user id is never folded into the bucket without an actor."""
+    db = _ImmediateDB()
+    buf = secevents.SecurityEventLog(db)
+    clock = {"t": 1_900_000_020.0}
+    real_clock = secevents._clock
+    secevents._clock = lambda: clock["t"]
+    try:
+        for i in range(secevents.MINUTE_MAX_KEYS + 20):      # spend the minute's distinct rows
+            buf.note("login_failed", ip=f"10.{i >> 8}.{i & 255}.1", result="bad_password", now=clock["t"])
+        check("(setup) the minute's row budget is spent",
+              len(buf._minute_keys[secevents.now_ts(clock["t"])[:16]]) >= secevents.MINUTE_MAX_KEYS)
+        for _ in range(secevents.IMMEDIATE_PER_MINUTE + 10):
+            await buf.write("login_success", ip="198.51.100.50", user_id=31, username="member_a", result="web")
+            await buf.write("login_success", ip="198.51.100.51", user_id=32, username="member_b", result="web")
+        await buf.flush()
+        mine = [(k, v) for k, v in db.rows.items() if "|login_success|" in k]
+        check("over-cap rows of two accounts are kept apart, not in one bucket without an actor",
+              sorted(k.rsplit("|", 1)[-1] for k, _ in mine) == ["u31", "u32"] and all(v == 10 for _, v in mine), str(mine))
+        buf.note("login_success", ip="198.51.100.52", user_id=33, username="member_c", result="web", now=clock["t"])
+        entry = [e for k, e in buf._agg.items() if k[1] == "login_success" and k[-1] == "u33"]
+        check("the folded row keeps the account (user id and name) and drops the address, agent and details",
+              len(entry) == 1 and entry[0]["user_id"] == 33 and entry[0]["username_tried"] == "member_c"
+              and entry[0]["ip"] == secevents.OVERFLOW_IP and entry[0]["details"] is None, str(entry))
+        buf.note("login_failed", ip="203.0.113.77", result="bad_password", now=clock["t"])
+        entry = [e for k, e in buf._agg.items() if k[0] == secevents.OVERFLOW_IP and k[1] == "login_failed"]
+        check("an actor-less flood still shares the one overflow bucket",
+              len(entry) == 1 and entry[0]["user_id"] is None, str(entry))
+    finally:
+        secevents._clock = real_clock
+
+
 async def probe_and_rate_unit():
     secevents.log._agg.clear()
     saved = (Config.PROBE_BLOCK_STRIKES, Config.RATE_LIMIT_REQUESTS)
@@ -393,6 +480,11 @@ async def main_async(tmp):
     unused_import_unit()
     await rows_per_minute_unit()
     await immediate_cap_unit()
+    for unit in (exempt_events_unit, overflow_keeps_user_unit):
+        try:
+            await unit()
+        except Exception as e:
+            check(f"{unit.__name__} ran to the end", False, f"{type(e).__name__}: {e}")
     server.db.db_path = str(Path(tmp) / "t.db")
     await server.db.connect()
     secevents.log.bind(server.db)
@@ -667,6 +759,13 @@ async def main_async(tmp):
             check("manual unblock works", r.status == 200)
         async with sa.delete(base + f"/api/users/{made['id']}") as r:
             check("user delete works", r.status == 200)
+        audits = await server.db.get_audit_log(action="user_delete")
+        check("deleting a user is an audit log entry with the actor, the target and the role, like a role change",
+              len(audits) == 1 and audits[0]["actor_id"] == ids["sa"] and audits[0]["target_id"] == made["id"]
+              and audits[0]["target_name"] == "madeby" and audits[0]["target_type"] == "user"
+              and "moderator" in json.dumps(audits[0].get("details")), str(audits))
+        audits = await server.db.get_audit_log(action="role_change")
+        check("(control) the role change is audited the same way", len(audits) == 1 and audits[0]["target_name"] == "madeby")
 
         # changes that weaken the log are events themselves
         async with sa.put(base + "/api/admin/retention", json={"retention_chat_days": 7}) as r:

@@ -2060,6 +2060,7 @@
                         <option value="channel_delete">Channel Delete</option>
                         <option value="channel_clear">Channel Clear</option>
                         <option value="role_change">Role Change</option>
+                        <option value="user_delete">User Delete</option>
                         <option value="automod_trigger">AutoMod Trigger</option>
                         <option value="automod_rule_create">AutoMod Rule Create</option>
                         <option value="automod_rule_update">AutoMod Rule Update</option>
@@ -6081,6 +6082,7 @@
                         line = '<span style="color:var(--text-muted);">Built-in list in use; no refresh yet' + (c.stage_mode ? ' (off in staged mode)' : '') + '</span>';
                     }
                     html += `<div class="stat-row"><span class="stat-label">Cloudflare ranges</span><span class="stat-value">${c.v4} IPv4, ${c.v6} IPv6</span></div><p style="margin:0.25rem 0 0 0;font-size:0.85rem;">${line}</p>`;
+                    if (c.pending) html += '<p style="margin:0.25rem 0 0 0;font-size:0.85rem;color:var(--accent-yellow, #eab308);">A fetched list is waiting for approval under Settings, Cloudflare ranges.</p>';
                 }
                 el.innerHTML = html || '<p style="color:var(--text-muted);">Unavailable</p>';
             } catch (e) {
@@ -6169,13 +6171,14 @@
                 el.innerHTML = `
                     <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
                         Once a week the portal fetches Cloudflare's two published address lists (two GET requests over HTTPS to cloudflare.com; nothing about this portal or its users is sent).
-                        A list that is empty, malformed, too small, too broad or that drops most known ranges is ignored and the current list stays.
+                        A list that is empty, malformed, too small or too broad is ignored. A list that adds more than 5 ranges or drops most known ranges is held here for a superadmin to approve; the current list stays until then.
                     </p>
                     <div class="stat-row"><span class="stat-label">In use</span><span class="stat-value">${escapeHtml(c.source)}${c.fetched_at ? ' (fetched ' + escapeHtml(c.fetched_at) + ')' : ''}: ${c.v4} IPv4, ${c.v6} IPv6</span></div>
                     <p style="margin:0.5rem 0;font-size:0.85rem;">${result}</p>
                     ${c.stage_mode ? '<p style="color:var(--text-muted);font-size:0.8rem;">The refresh is off in staged mode.</p>' : ''}
-                    ${c.saved_list_ignored && !c.enabled ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but not applied: the built-in list is in use while the weekly refresh is off. The saved list is kept, and is used again at the next start once the refresh is on.</p>' : ''}
-                    ${c.saved_list_ignored && c.enabled ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but the built-in list is in use: the saved list failed the checks when the portal started. The next good refresh replaces it.</p>' : ''}
+                    ${c.saved_list_ignored && c.saved_list_ignored_reason === 'refresh_off' ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but not applied: the weekly refresh was off when the portal started, so the built-in list is in use. The saved list is kept, and is used again at the next start once the refresh is on.</p>' : ''}
+                    ${c.saved_list_ignored && c.saved_list_ignored_reason !== 'refresh_off' ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">A fetched list is saved but the built-in list is in use: the saved list failed the checks when the portal started. The next good refresh replaces it.</p>' : ''}
+                    ${renderCfPending(c.pending)}
                     ${c.fetched_in_use_until_restart ? '<p style="color:var(--accent-yellow, #eab308);font-size:0.8rem;margin:0.5rem 0;">The weekly refresh is off, but the fetched list stays in use until the portal restarts. Use the built-in list below to switch now.</p>' : ''}
                     <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);margin-top:0.75rem;">
                         <input type="checkbox" id="cf-enabled" data-cfranges-toggle="1" ${c.enabled ? 'checked' : ''}>
@@ -6184,11 +6187,53 @@
                     <p style="color:var(--text-muted);font-size:0.8rem;margin:0.25rem 0 0 0;">Switching the refresh off stops the weekly fetch. A saved fetched list is no longer applied from the next start.</p>
                     <div style="margin-top:0.75rem;">
                         <button class="btn btn-secondary" data-cfranges-action="reset">Use the built-in list</button>
-                        <span style="color:var(--text-muted);font-size:0.8rem;">Superadmin. Clears the saved fetched list and switches to the built-in list at once.</span>
+                        <span style="color:var(--text-muted);font-size:0.8rem;">Superadmin. Clears the saved fetched list and switches to the built-in list at once. With the weekly refresh on, a fetched list returns at the next scheduled refresh.</span>
                     </div>`;
             } catch (e) {
                 el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
             }
+        }
+
+        function cfRangeList(items) {
+            if (!items || !items.length) return '<span style="color:var(--text-muted);">none</span>';
+            return items.map(x => `<code>${escapeHtml(x)}</code>`).join(' ');
+        }
+
+        function renderCfPending(p) {
+            if (!p) return '';
+            const stale = p.diff_is_current ? '' : '<p style="color:var(--text-muted);font-size:0.8rem;margin:0.25rem 0;">The list in use has changed since this list was fetched, so the differences below are against the list in use then.</p>';
+            return `
+                <div data-cf-pending-id="${escapeHtml(p.id)}" style="border:1px solid var(--accent-yellow, #eab308);border-radius:6px;padding:0.75rem;margin:0.75rem 0;">
+                    <p style="margin:0 0 0.5rem 0;font-size:0.85rem;"><strong>A fetched list is waiting for approval</strong> (fetched ${escapeHtml(p.fetched_at || '')}, ${parseInt(p.v4) || 0} IPv4, ${parseInt(p.v6) || 0} IPv6). The list in use stays until it is approved.</p>
+                    <p style="margin:0 0 0.5rem 0;font-size:0.8rem;color:var(--text-muted);">Why it was held: ${escapeHtml(p.reason || '')}</p>
+                    ${stale}
+                    <p style="margin:0.25rem 0;font-size:0.8rem;"><strong>Added (${(p.added || []).length}):</strong> ${cfRangeList(p.added)}</p>
+                    <p style="margin:0.25rem 0;font-size:0.8rem;"><strong>Removed (${(p.removed || []).length}):</strong> ${cfRangeList(p.removed)}</p>
+                    <p style="margin:0.5rem 0;font-size:0.8rem;color:var(--text-muted);">Approving applies it at once and checks again that every range is public, none is broader than Cloudflare publishes today and the sizes are in bounds. Superadmin, browser session only.</p>
+                    <button class="btn btn-primary" data-cfranges-action="approve">Approve this list</button>
+                    <button class="btn btn-secondary" data-cfranges-action="dismiss">Dismiss</button>
+                </div>`;
+        }
+
+        async function cfPendingAction(kind, el) {
+            const holder = el.closest('[data-cf-pending-id]');
+            const id = holder ? holder.getAttribute('data-cf-pending-id') : '';
+            if (!id) return;
+            if (kind === 'approve' && !confirm('Trust this fetched Cloudflare list now? Visitors from the listed ranges will be treated as Cloudflare.')) return;
+            try {
+                const res = await Portal.fetch('/api/admin/cf-ranges/pending/' + kind, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) Portal.toast(kind === 'approve' ? 'The list is approved and in use' : 'The pending list is dismissed', 'success');
+                else Portal.toast(data.error || 'Failed', 'error');
+            } catch (e) {
+                Portal.toast('Failed', 'error');
+            }
+            loadCfRanges();
+            loadNetworkTrust();
         }
 
         async function saveCfRangesEnabled(enabled) {
@@ -6208,7 +6253,7 @@
         }
 
         async function resetCfRanges() {
-            if (!confirm('Clear the saved Cloudflare list and use the built-in list now?')) return;
+            if (!confirm('Clear the saved Cloudflare list and use the built-in list now? With the weekly refresh on, a fetched list returns at the next scheduled refresh.')) return;
             try {
                 const res = await Portal.fetch('/api/admin/cf-ranges/reset', { method: 'POST' });
                 const data = await res.json().catch(() => ({}));
@@ -6226,6 +6271,7 @@
             if (act && act.getAttribute('data-neverban-action') === 'save') saveNeverBan();
             const cf = e.target.closest('[data-cfranges-action]');
             if (cf && cf.getAttribute('data-cfranges-action') === 'reset') resetCfRanges();
+            if (cf && ['approve', 'dismiss'].includes(cf.getAttribute('data-cfranges-action'))) cfPendingAction(cf.getAttribute('data-cfranges-action'), cf);
         });
         document.addEventListener('change', function(e) {
             const t = e.target.closest('[data-cfranges-toggle]');
@@ -6759,7 +6805,7 @@
             '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'password_changed',
             'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
             'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
-            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export'
+            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export'
         ];
         let auditView = 'audit';
         let secOffset = 0;

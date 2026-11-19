@@ -816,6 +816,9 @@ def _parse_extra_trusted() -> list:
 _cf_networks: list = [ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS]
 _cf_source: str = "built-in"
 _cf_fetched_at: Optional[str] = None
+# Why a saved fetched list is not in use: "refresh_off" (the refresh was off at start) or
+# "failed_checks" (it failed the checks at start). Set at start, cleared when a fetched list is applied.
+_cf_saved_ignored: Optional[str] = None
 _extra_trusted_networks: list = _parse_extra_trusted()
 
 
@@ -1086,18 +1089,40 @@ def _log_proxy_trust_at_startup() -> None:
 CF_SETTING_ENABLED = "cf_ranges_refresh"     # "false" turns the weekly job off; anything else is on
 CF_SETTING_LIST = "cf_ranges_list"           # last good fetched list (JSON)
 CF_SETTING_LAST = "cf_ranges_last"           # result of the last attempt (JSON)
+CF_SETTING_PENDING = "cf_ranges_pending"     # a list refused by an automatic limit, held for approval (JSON)
+CF_SETTING_DISMISSED = "cf_ranges_dismissed" # id of the pending list a superadmin dismissed
 CF_REFRESH_INTERVAL = 7 * 86400
 CF_RETRY_INTERVAL = 86400
 CF_STARTUP_DELAY = 300
 CF_CHECK_EVERY = 6 * 3600
 
 
+# Serialises everything that changes the Cloudflare list (a refresh swapping in its result, a
+# reset, an approval, a dismissal). _cf_generation counts the resets: a refresh that started
+# before one is discarded, so a reset during a fetch wins. The lock is per event loop.
+_cf_lock_holder: list = [None, None]
+_cf_generation: int = 0
+
+
+class _CfDiscarded(Exception):
+    """A refresh result was dropped because the list was reset while it ran."""
+
+
+def _cf_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if _cf_lock_holder[0] is not loop:
+        _cf_lock_holder[0], _cf_lock_holder[1] = loop, asyncio.Lock()
+    return _cf_lock_holder[1]
+
+
 def _apply_cloudflare_networks(nets, source: str, fetched_at: Optional[str] = None) -> None:
     """Replace the Cloudflare part of the trusted list in one step and drop the peer cache."""
-    global _cf_networks, _cf_source, _cf_fetched_at
+    global _cf_networks, _cf_source, _cf_fetched_at, _cf_saved_ignored
     _cf_networks = list(nets)
     _cf_source = source
     _cf_fetched_at = fetched_at
+    if source == "fetched":
+        _cf_saved_ignored = None
     _trusted_proxy_networks[:] = _build_trusted_proxies()
     _trusted_peer_cache.clear()
 
@@ -1121,17 +1146,59 @@ def _cf_refresh_due(last: dict, now: datetime) -> bool:
     return (now - at).total_seconds() >= wait
 
 
+async def _cf_load_json(key: str) -> dict:
+    raw = await db.get_setting(key)
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+async def _cf_hold_pending(refusal: "ipguard.ListLimitError", now: str) -> bool:
+    """Store a list refused by an automatic limit as the pending list (caller holds the lock).
+
+    Returns True when this is a list not seen before, so a failure event is due. The same
+    list fetched again (still pending, or one a superadmin dismissed) writes nothing.
+    """
+    nets = refusal.networks
+    list_id = ipguard.cf_list_id(nets)
+    existing = await _cf_load_json(CF_SETTING_PENDING)
+    if existing.get("id") == list_id:
+        return False
+    if (await db.get_setting(CF_SETTING_DISMISSED)) == list_id:
+        return False
+    old_set, new_set = set(_cf_networks), set(nets)
+    await db.set_setting(CF_SETTING_PENDING, json.dumps({
+        "id": list_id,
+        "fetched_at": now,
+        "reason": str(refusal),
+        "v4": sorted(str(n) for n in nets if n.version == 4),
+        "v6": sorted(str(n) for n in nets if n.version == 6),
+        "added": sorted(str(n) for n in new_set - old_set),
+        "removed": sorted(str(n) for n in old_set - new_set),
+    }))
+    return True
+
+
 async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> dict:
     """Fetch (or take injected) Cloudflare lists, validate, swap, persist. Never raises.
 
     `texts` is a (v4_text, v6_text) pair that replaces the fetch; `urls` and
     `ssl_context` let a test point the fetch at a local server. Without any of
     them a staged instance refuses to go out at all.
+
+    A list refused only by an automatic limit (too many new ranges, too many known
+    ranges dropped) is kept as the pending list for a superadmin to approve. A reset
+    while the fetch is running wins: the result is discarded.
     """
+    generation = _cf_generation
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     prev = await _cf_load_last()
     status = {"ok": False, "at": now, "last_ok_at": prev.get("last_ok_at")}
     changed = (0, 0)
+    announce = True
+    pending_id = None
     try:
         if texts is None:
             if Config.STAGE_MODE and urls is None:
@@ -1141,16 +1208,29 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
             v6_text = await ipguard.fetch_text(u6, ssl_context)
         else:
             v4_text, v6_text = texts
-        new = ipguard.validate_cf_lists(v4_text, v6_text, _cf_networks)
-        old_set, new_set = set(_cf_networks), set(new)
-        changed = (len(new_set - old_set), len(old_set - new_set))
-        payload = {
-            "v4": [str(n) for n in new if n.version == 4],
-            "v6": [str(n) for n in new if n.version == 6],
-            "fetched_at": now,
-        }
-        await db.set_setting(CF_SETTING_LIST, json.dumps(payload))     # persist first, then swap
-        _apply_cloudflare_networks(new, "fetched", now)
+        async with _cf_lock():
+            if generation != _cf_generation:
+                raise _CfDiscarded()
+            try:
+                new = ipguard.validate_cf_lists(v4_text, v6_text, _cf_networks)
+            except ipguard.ListLimitError as e:
+                pending_id = ipguard.cf_list_id(e.networks)
+                announce = await _cf_hold_pending(e, now)
+                raise
+            old_set, new_set = set(_cf_networks), set(new)
+            changed = (len(new_set - old_set), len(old_set - new_set))
+            payload = {
+                "v4": [str(n) for n in new if n.version == 4],
+                "v6": [str(n) for n in new if n.version == 6],
+                "fetched_at": now,
+            }
+            if not (new_set == old_set and _cf_source == "fetched"):
+                # Persist first, then swap. The same list again leaves the saved one alone
+                # (it may be an approved list, which carries its own flag).
+                await db.set_setting(CF_SETTING_LIST, json.dumps(payload))
+                _apply_cloudflare_networks(new, "fetched", now)
+            await db.delete_setting(CF_SETTING_PENDING)
+            await db.delete_setting(CF_SETTING_DISMISSED)
         status.update({
             "ok": True, "last_ok_at": now,
             "message": "Cloudflare ranges refreshed",
@@ -1159,6 +1239,17 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
             "removed": sorted(str(n) for n in old_set - new_set)[:20],
         })
         logger.info(f"Cloudflare ranges refreshed: {len(payload['v4'])} IPv4, {len(payload['v6'])} IPv6")
+    except _CfDiscarded:
+        announce = False
+        status["message"] = ("the list was reset while the refresh ran; the fetched result was discarded "
+                             "and comes back at a later scheduled refresh")
+        status["discarded"] = True
+        logger.warning("Cloudflare range refresh discarded: the list was reset while it ran")
+    except ipguard.ListLimitError as e:
+        status["message"] = str(e)
+        if pending_id:
+            status["pending_id"] = pending_id
+        logger.warning(f"Cloudflare range refresh refused by a limit, held for approval: {e}")
     except (ipguard.ListError, ipguard.FetchError) as e:
         status["message"] = str(e)
         logger.warning(f"Cloudflare range refresh failed, keeping the current list: {e}")
@@ -1174,8 +1265,12 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
                   "added": changed[0], "removed": changed[1]}
     else:
         detail = {"reason": status.get("message")}
-    await security_event("cf_ranges_refreshed", ip="system",
-                         result="ok" if status["ok"] else "failed", details=detail)
+        if pending_id:
+            detail["pending"] = True
+            detail["list_id"] = pending_id
+    if announce:
+        await security_event("cf_ranges_refreshed", ip="system",
+                             result="ok" if status["ok"] else "failed", details=detail)
     return status
 
 
@@ -1184,31 +1279,127 @@ async def _load_cloudflare_state() -> None:
 
     With the weekly refresh switched off the saved list is not applied (it is kept,
     and used again when the refresh is switched back on and the portal restarts).
+    A list a superadmin approved is checked by the hard rules only, as it was when approved.
     """
+    global _cf_saved_ignored
+    _cf_saved_ignored = None
     raw = await db.get_setting(CF_SETTING_LIST)
     if not raw:
         return
     if (await db.get_setting(CF_SETTING_ENABLED)) == "false":
+        _cf_saved_ignored = "refresh_off"
         logger.info("The Cloudflare range refresh is off: using the built-in list, the saved list is kept but not applied")
         return
     try:
         data = json.loads(raw)
-        nets = ipguard.validate_cf_lists("\n".join(data["v4"]), "\n".join(data["v6"]),
-                                           compare_new=False)
+        v4_text, v6_text = "\n".join(data["v4"]), "\n".join(data["v6"])
+        if data.get("approved") is True:
+            nets = ipguard.validate_cf_hard(v4_text, v6_text)
+        else:
+            nets = ipguard.validate_cf_lists(v4_text, v6_text, compare_new=False)
         _apply_cloudflare_networks(nets, "fetched", data.get("fetched_at"))
         logger.info(f"Using the saved Cloudflare ranges from {data.get('fetched_at')}")
     except Exception as e:
+        _cf_saved_ignored = "failed_checks"
         logger.warning(f"Ignoring the saved Cloudflare ranges, using the built-in list: {e}")
 
 
+def _cf_counts(nets) -> dict:
+    return {"v4": sum(1 for n in nets if n.version == 4), "v6": sum(1 for n in nets if n.version == 6)}
+
+
 async def reset_cloudflare_ranges() -> dict:
-    """Use the built-in list: clear the saved fetched list and swap at once. Returns the counts."""
-    before = {"source": _cf_source,
-              "v4": sum(1 for n in _cf_networks if n.version == 4),
-              "v6": sum(1 for n in _cf_networks if n.version == 6)}
-    await db.delete_setting(CF_SETTING_LIST)
-    _apply_cloudflare_networks([ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS], "built-in")
+    """Use the built-in list: clear the saved fetched list and swap at once. Returns the counts.
+
+    Wins over a refresh that is running: it counts the reset, so that refresh's result is
+    discarded. The pending list and a dismissal are cleared too (a pending diff would no
+    longer match the list in use).
+    """
+    global _cf_generation, _cf_saved_ignored
+    async with _cf_lock():
+        _cf_generation += 1
+        before = {"source": _cf_source, **_cf_counts(_cf_networks)}
+        await db.delete_setting(CF_SETTING_LIST)
+        await db.delete_setting(CF_SETTING_PENDING)
+        await db.delete_setting(CF_SETTING_DISMISSED)
+        _apply_cloudflare_networks([ipaddress.ip_network(n) for n in _CLOUDFLARE_NETWORKS], "built-in")
+        _cf_saved_ignored = None
     return before
+
+
+async def _cf_pending_view() -> Optional[dict]:
+    """The pending list as the admin page shows it, or None."""
+    data = await _cf_load_json(CF_SETTING_PENDING)
+    if not data.get("id"):
+        return None
+    try:
+        nets = [ipaddress.ip_network(n) for n in data["v4"] + data["v6"]]
+    except (KeyError, TypeError, ValueError):
+        return None
+    now_set, new_set = set(_cf_networks), set(nets)
+    added = sorted(str(n) for n in new_set - now_set)
+    removed = sorted(str(n) for n in now_set - new_set)
+    return {
+        "id": data["id"],
+        "fetched_at": data.get("fetched_at"),
+        "reason": data.get("reason"),
+        "v4": len(data["v4"]), "v6": len(data["v6"]),
+        "added": data.get("added", []), "removed": data.get("removed", []),
+        # False when the list in use has changed since the list was refused.
+        "diff_is_current": added == data.get("added") and removed == data.get("removed"),
+    }
+
+
+async def approve_cloudflare_pending(list_id) -> tuple:
+    """Apply the pending list after checking the hard rules again. Returns (status code, body).
+
+    The page names the list it showed (`list_id`); a different pending list since is a 409.
+    The list is saved with an `approved` flag, so a restart loads it by the hard rules only.
+    """
+    async with _cf_lock():
+        data = await _cf_load_json(CF_SETTING_PENDING)
+        if not data.get("id"):
+            return 404, {"error": "There is no pending list"}
+        if list_id != data["id"]:
+            return 409, {"error": "The pending list has changed; reload the page"}
+        try:
+            nets = ipguard.validate_cf_hard("\n".join(data.get("v4", [])), "\n".join(data.get("v6", [])))
+        except ipguard.ListError as e:
+            return 400, {"error": f"The pending list fails a rule that cannot be overridden: {e}"}
+        old_set, new_set = set(_cf_networks), set(nets)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        counts = _cf_counts(nets)
+        result = {**counts, "added": len(new_set - old_set), "removed": len(old_set - new_set)}
+        await db.set_setting(CF_SETTING_LIST, json.dumps({
+            "v4": [str(n) for n in nets if n.version == 4],
+            "v6": [str(n) for n in nets if n.version == 6],
+            "fetched_at": data.get("fetched_at") or now,
+            "approved": True,
+        }))
+        _apply_cloudflare_networks(nets, "fetched", data.get("fetched_at") or now)
+        await db.delete_setting(CF_SETTING_PENDING)
+        await db.delete_setting(CF_SETTING_DISMISSED)
+        await db.set_setting(CF_SETTING_LAST, json.dumps({
+            "ok": True, "at": now, "last_ok_at": now,
+            "message": "Cloudflare ranges refreshed (list approved by a superadmin)",
+            "v4": counts["v4"], "v6": counts["v6"],
+            "added": sorted(str(n) for n in new_set - old_set)[:20],
+            "removed": sorted(str(n) for n in old_set - new_set)[:20],
+        }))
+        return 200, result
+
+
+async def dismiss_cloudflare_pending(list_id) -> tuple:
+    """Drop the pending list and remember its id, so fetching it again does not hold it again."""
+    async with _cf_lock():
+        data = await _cf_load_json(CF_SETTING_PENDING)
+        if not data.get("id"):
+            return 404, {"error": "There is no pending list"}
+        if list_id != data["id"]:
+            return 409, {"error": "The pending list has changed; reload the page"}
+        await db.set_setting(CF_SETTING_DISMISSED, data["id"])
+        await db.delete_setting(CF_SETTING_PENDING)
+        return 200, {"v4": len(data.get("v4", [])), "v6": len(data.get("v6", []))}
 
 
 async def _cf_refresh_loop() -> None:
@@ -3184,7 +3375,7 @@ async def http_register(request: web.Request) -> web.Response:
     )
     row = await cursor.fetchone()
     if row and row[0] > 0:
-        logger.warning(f"Registration rate limit: {username} from {client_ip} (already registered in last 24h)")
+        logger.warning(f"Registration rate limit: an unknown account from {client_ip} (already registered in last 24h)")
         security_event_nowait("register_failed", request=request, ip=client_ip,
                               username=await _existing_username(username), result="ip_limit")
         return web.json_response(
@@ -3196,7 +3387,7 @@ async def http_register(request: web.Request) -> web.Response:
     is_valid, code_id = await validate_invite_code(invite_code, db)
     if not is_valid:
         log_invite_code_usage(username, False, client_ip)
-        logger.warning(f"Invalid invite code used for registration attempt: {username} from {client_ip}")
+        logger.warning(f"Invalid invite code used for registration attempt: an unknown account from {client_ip}")
         security_event_nowait("register_failed", request=request, ip=client_ip,
                               username=await _existing_username(username), result="invalid_invite")
         return web.json_response(
@@ -3228,7 +3419,7 @@ async def http_register(request: web.Request) -> web.Response:
             "message": "Registration successful"
         }, status=201)
     except Exception as e:
-        logger.warning(f"Failed to register user '{username}': {e}")
+        logger.warning(f"Failed to register an unknown account: {e}")
         return web.json_response({"error": safe_error_message(e)}, status=400)
 
 
@@ -20490,8 +20681,13 @@ async def http_delete_user(request: web.Request) -> web.Response:
         logger.warning(f"Could not close sockets of deleted user {user_id}: {e}")
 
     logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
+    actor_name = await _username_of(token.user_id)
+    await audit_log("user_delete", token.user_id, actor_name or "unknown",
+                    target_id=user_id, target_type="user",
+                    target_name=target_user["username"],
+                    details={"target_role": target_role})
     await security_event("user_deleted", request=request, user_id=token.user_id,
-                         username=await _username_of(token.user_id),
+                         username=actor_name,
                          details={"target_user_id": user_id,
                                   "target_username": target_user["username"],
                                   "target_role": target_role})
@@ -20694,12 +20890,18 @@ async def _cf_ranges_view() -> dict:
         "saved_list": saved,
         "saved_list_applied": saved and _cf_source == "fetched",
         "saved_list_ignored": saved and _cf_source != "fetched",
+        # Why: "refresh_off" (the refresh was off when the portal started) or "failed_checks"
+        # (the saved list failed the checks then); null when nothing is ignored.
+        "saved_list_ignored_reason": (
+            (_cf_saved_ignored or ("refresh_off" if not enabled else "failed_checks"))
+            if saved and _cf_source != "fetched" else None),
         "fetched_in_use_until_restart": (not enabled) and _cf_source == "fetched",
         "source": _cf_source,
         "fetched_at": _cf_fetched_at,
         "v4": sum(1 for n in _cf_networks if n.version == 4),
         "v6": sum(1 for n in _cf_networks if n.version == 6),
         "last": await _cf_load_last() or None,
+        "pending": await _cf_pending_view(),
         "stage_mode": bool(Config.STAGE_MODE),
     }
 
@@ -20746,6 +20948,53 @@ async def http_reset_cf_ranges(request: web.Request) -> web.Response:
     logger.warning(f"Cloudflare ranges reset to the built-in list by user {user['id']}")
     view = await _cf_ranges_view()
     view["reset"] = True
+    return web.json_response(view)
+
+
+async def _cf_pending_request(request: web.Request):
+    """Shared start of the approve and dismiss routes: (user, list id, error response)."""
+    user, err = await _backup_superadmin(request, cookie_only=True)
+    if err:
+        return None, None, err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None, None, web.json_response({"error": "Invalid JSON"}, status=400)
+    list_id = data.get("id") if isinstance(data, dict) else None
+    if not isinstance(list_id, str) or not list_id:
+        return None, None, web.json_response({"error": "id of the pending list required"}, status=400)
+    return user, list_id, None
+
+
+async def http_approve_cf_pending(request: web.Request) -> web.Response:
+    """POST /api/admin/cf-ranges/pending/approve - {"id": ...} apply the pending list (superadmin, browser session)."""
+    user, list_id, err = await _cf_pending_request(request)
+    if err:
+        return err
+    code, result = await approve_cloudflare_pending(list_id)
+    if code != 200:
+        return web.json_response(result, status=code)
+    await audit_log("cf_ranges.approve", user["id"], user.get("username", "unknown"), details=result)
+    await security_event("cf_ranges_approved", request=request, user=user, details=result)
+    logger.warning(f"Pending Cloudflare ranges approved by user {user['id']}")
+    view = await _cf_ranges_view()
+    view["approved"] = True
+    return web.json_response(view)
+
+
+async def http_dismiss_cf_pending(request: web.Request) -> web.Response:
+    """POST /api/admin/cf-ranges/pending/dismiss - {"id": ...} drop the pending list (superadmin, browser session)."""
+    user, list_id, err = await _cf_pending_request(request)
+    if err:
+        return err
+    code, result = await dismiss_cloudflare_pending(list_id)
+    if code != 200:
+        return web.json_response(result, status=code)
+    await audit_log("cf_ranges.dismiss", user["id"], user.get("username", "unknown"), details=result)
+    await security_event("cf_ranges_dismissed", request=request, user=user, details=result)
+    logger.info(f"Pending Cloudflare ranges dismissed by user {user['id']}")
+    view = await _cf_ranges_view()
+    view["dismissed"] = True
     return web.json_response(view)
 
 
@@ -21475,6 +21724,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/cf-ranges", http_get_cf_ranges)
     app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
+    app.router.add_post("/api/admin/cf-ranges/pending/approve", http_approve_cf_pending)
+    app.router.add_post("/api/admin/cf-ranges/pending/dismiss", http_dismiss_cf_pending)
 
     # File Manager (admin only)
     app.router.add_get("/api/files/list", http_list_files)
