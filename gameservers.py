@@ -1513,6 +1513,9 @@ async def destroy(db, gs_id: int, delete_files: bool = False) -> None:
     if not gs:
         raise ValueError("no such game server")
     unit = gs["unit_name"]
+    # The portal's own stop is not a crash: flag it before the unit goes down, so a health poll
+    # that sees it end (possibly "failed") before the service row is deleted raises nothing.
+    await _mark_expected_stop(gs)
     await _run_cmd(_sudo("systemctl", "disable", "--now", f"{unit}.service"), timeout=120)
     await _run_cmd(_sudo("rm", "-f", f"{SYSTEMD_DIR}/{unit}.service"))
     try:

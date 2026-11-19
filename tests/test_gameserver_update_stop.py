@@ -1,4 +1,4 @@
-"""A game server stopped by the portal itself for a SteamCMD update is not a crash.
+"""A game server stopped by the portal itself for a SteamCMD update, or destroyed, is not a crash.
 
 The update path stops the unit with a direct systemctl call. The fake systemctl used here
 leaves the unit in the "failed" state after the stop (a server that exits non-zero on SIGTERM),
@@ -40,6 +40,7 @@ echo "$*" >> "$FAKE_STATE.calls"
 case "$1" in
   is-active) cat "$FAKE_STATE"; exit 0 ;;
   stop) echo failed > "$FAKE_STATE" ;;
+  disable) echo failed > "$FAKE_STATE" ;;
   start) echo active > "$FAKE_STATE" ;;
 esac
 exit 0
@@ -56,6 +57,9 @@ class FakeDb:
 
     async def game_server_update(self, gs_id, **kw):
         self.updates.append(kw)
+
+    async def game_server_delete(self, gs_id):
+        self.deleted = gs_id
 
 
 class Handler(GameServerService):
@@ -82,6 +86,10 @@ class FakeManager:
 
     async def get_service(self, sid):
         return self.handler if sid == 7 else None
+
+    async def delete_service(self, sid):
+        # The health monitor can poll between the unit going down and the row being deleted.
+        await self.handler.sync_status()
 
 
 async def scenario(gs_mod):
@@ -133,6 +141,39 @@ async def scenario(gs_mod):
             gs_mod._sudo, gs_mod._latest_build, gs_mod._run, gs_mod._steam_update_cmd, services.service_manager = saved
 
 
+async def destroy_scenario(gs_mod):
+    """Destroy a running game server; the unit ends 'failed' on the stop. Returns the events the
+    service handler emitted and the systemctl calls."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        fake = bindir / "systemctl"
+        fake.write_text(FAKE_SYSTEMCTL)
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        state = tmp / "state"
+        state.write_text("active\n")
+        os.environ["FAKE_STATE"] = str(state)
+        gs = {"id": 3, "steam_app_id": 4242, "install_dir": str(tmp / "srv"), "unit_name": "portal-gs-pal",
+              "start_cmd": "./run.sh", "service_id": 7}
+        handler = Handler(str(state))
+        saved = (gs_mod._sudo, gs_mod.UNITS_DIR, services.service_manager)
+
+        def fake_sudo(*args):
+            return [str(fake), *args[1:]] if args and args[0] == "systemctl" else ["true"]
+
+        gs_mod._sudo, gs_mod.UNITS_DIR = fake_sudo, tmp
+        services.service_manager = FakeManager(handler)
+        try:
+            await handler.sync_status()          # baseline: running
+            db = FakeDb(gs)
+            await gs_mod.destroy(db, 3)
+            calls = Path(str(state) + ".calls").read_text().splitlines()
+            return handler, calls, db
+        finally:
+            gs_mod._sudo, gs_mod.UNITS_DIR, services.service_manager = saved
+
+
 async def main():
     handler, calls, emitted, job = await scenario(gameservers)
     check("the update stopped and restarted the unit through systemctl",
@@ -141,6 +182,11 @@ async def main():
     check("the requested-stop flag is cleared once the unit runs again", handler._expected_stop is False)
     check("a real crash after the update is still announced",
           [e for e, _ in handler.emitted] == ["gameserver.crashed"], str(handler.emitted))
+
+    handler, calls, db = await destroy_scenario(gameservers)
+    check("destroy stopped the unit with 'systemctl disable --now' and deleted the row",
+          any(c.startswith("disable --now ") for c in calls) and getattr(db, "deleted", None) == 3, str(calls))
+    check("destroying a running game server announces no crash", handler.emitted == [], str(handler.emitted))
 
 
 if __name__ == "__main__":
