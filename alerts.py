@@ -33,7 +33,7 @@ moderator, admin or superadmin, or whose subject is a staff account, and every o
 bypasses them and is limited by its own cooldown or transition rule and the global cap. The
 global cap also keeps a reserve (``MEMBER_RESERVE`` of the ``CAP_ALERTS``) that an alert subject
 to a sub-cap can never use. The one exception is a failed sign-in burst against a staff account name (a
-stranger can set it off): at most ``STAFF_BURST_CAP`` per window, so at most half of the reserve.
+stranger can set it off): it may use at most ``STAFF_BURST_RESERVE_USE`` of the reserved slots.
 
 ``emit`` never blocks and never raises: it schedules the delivery as a background task
 whose errors are logged. A failure to deliver an alert cannot break the action that
@@ -134,10 +134,11 @@ MEMBER_RESERVE = 10
 NOTICE_DELAY = 30.0
 NOTICE_INTERVAL = 600.0
 # Staff-subject sign-in bursts (a stranger can set one off by guessing a staff account name) have no
-# sub-cap of the ordinary kind, but may use at most this many slots per window, which is at most half
-# of the MEMBER_RESERVE slots that operations alerts and staff-actor alerts keep.
+# sub-cap of the ordinary kind, but may use at most this many of the MEMBER_RESERVE reserved slots per
+# window (they are held back once CAP_ALERTS - MEMBER_RESERVE + this many slots are used), so the rest
+# of the reserve stays for operations alerts and staff-actor alerts.
 STAFF_BURST_BUCKET = "auth.login_failed_burst:staff"
-STAFF_BURST_CAP = 5
+STAFF_BURST_RESERVE_USE = 5
 STAFF_ROLES = frozenset(("moderator", "admin", "superadmin"))
 STAFF_REFRESH = 30.0
 COOLDOWN_MAX_KEYS = 2000
@@ -267,7 +268,7 @@ def _cap_refusal(now: float, bucket: str, capped: bool = True) -> Optional[str]:
     if len(_sent) >= CAP_ALERTS:
         return WHY_GLOBAL
     if bucket == STAFF_BURST_BUCKET:
-        return WHY_KIND if _ring_full(now, bucket, STAFF_BURST_CAP) else None
+        return WHY_RESERVE if len(_sent) >= CAP_ALERTS - MEMBER_RESERVE + STAFF_BURST_RESERVE_USE else None
     limit = SUB_CAPS.get(bucket)
     if not capped or limit is None:
         return None
@@ -287,7 +288,7 @@ def _ring_full(now: float, bucket: str, limit: int) -> bool:
 
 def _count_sent(now: float, bucket: Optional[str], capped: bool = True) -> None:
     _sent.append(now)
-    if bucket == STAFF_BURST_BUCKET or (capped and bucket in SUB_CAPS):
+    if capped and bucket in SUB_CAPS:
         _sent_by.setdefault(bucket, deque()).append(now)
 
 
@@ -463,8 +464,8 @@ def _why_sentence(why: str) -> str:
     if why == WHY_GLOBAL:
         return f"Limit of {CAP_ALERTS} alerts in {int(CAP_WINDOW // 60)} minutes reached"
     if why == WHY_RESERVE:
-        return (f"Reserve reached: only staff and operations alerts may use the last {MEMBER_RESERVE} of "
-                f"{CAP_ALERTS} slots in {int(CAP_WINDOW // 60)} minutes")
+        return (f"Reserve reached: the last slots of the {CAP_ALERTS} in {int(CAP_WINDOW // 60)} minutes "
+                "are kept for staff and operations alerts")
     return "Per-kind limit reached (a cap on what strangers or members can set off)"
 
 

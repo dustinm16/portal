@@ -402,29 +402,38 @@ async def main():
     env.close()
 
     # --- strangers hammering staff account names cannot fill the reserve
+    use = getattr(alerts, "STAFF_BURST_RESERVE_USE", 5)
+    names = [f"staff{i}" for i in range(40)]
     env = Env()
-    names = [f"staff{i}" for i in range(30)]
     alerts.set_staff(ids=(), names=names)
     for n_ in names:
         for _ in range(alerts.BURST_THRESHOLD):
             alerts.note_login_failure("198.51.100.1", n_)
     staff_bursts = sum(1 for _, e in env.times if e == "auth.login_failed_burst")
-    check("staff-subject sign-in bursts are limited to STAFF_BURST_CAP per window",
-          staff_bursts == alerts.STAFF_BURST_CAP == 5, str(staff_bursts))
-    check("the cap is within the reserve", alerts.STAFF_BURST_CAP <= alerts.MEMBER_RESERVE // 2)
+    check("staff-subject bursts use at most STAFF_BURST_RESERVE_USE (5) of the reserved slots",
+          use == 5 and staff_bursts == alerts.CAP_ALERTS - alerts.MEMBER_RESERVE + use, str(staff_bursts))
     ok = sum(1 for i in range(alerts.CAP_ALERTS) if alerts.emit("service.health_changed", key=("s", i), summary="x"))
-    check("operations alerts keep every other slot of the window", ok == alerts.CAP_ALERTS - staff_bursts, str(ok))
+    check("operations alerts keep the other reserved slots", ok == alerts.MEMBER_RESERVE - use, str(ok))
     env.close()
     env = Env()
     alerts.set_staff(ids=(), names=names)
     for n_ in names:
         for _ in range(alerts.BURST_THRESHOLD):
             alerts.note_login_failure("198.51.100.2", n_)
-    for i in range(alerts.CAP_ALERTS):
-        alerts.moderation_action("ban", actor="boss", target=f"t{i}", anonymous=False, actor_id=1,
-                                 target_id=100 + i, actor_role="admin")
-    check("staff-actor alerts keep the rest of the window",
-          sum(1 for _, e in env.times if e == "moderation.action") == alerts.CAP_ALERTS - alerts.STAFF_BURST_CAP)
+    ok = sum(1 for i in range(alerts.CAP_ALERTS)
+             if alerts.moderation_action("ban", actor="boss", target=f"t{i}", anonymous=False, actor_id=1,
+                                         target_id=100 + i, actor_role="admin"))
+    check("staff-actor alerts keep the other reserved slots", ok == alerts.MEMBER_RESERVE - use, str(ok))
+    env.close()
+    env = Env()
+    alerts.set_staff(ids=(), names=names)
+    for i in range(alerts.CAP_ALERTS - alerts.MEMBER_RESERVE):
+        alerts.emit("role.changed", key=("pre", i), summary="x")
+    for n_ in names:
+        for _ in range(alerts.BURST_THRESHOLD):
+            alerts.note_login_failure("198.51.100.4", n_)
+    bursts = sum(1 for _, e in env.times if e == "auth.login_failed_burst")
+    check("with the open slots already used, only 5 reserved slots go to staff-subject bursts", bursts == use, str(bursts))
     env.close()
     env = Env()
     alerts.set_staff(ids=(), names=["boss"])
