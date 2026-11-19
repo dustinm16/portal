@@ -3167,9 +3167,12 @@ ws.send(JSON.stringify({
                 <h3>Voice Modes</h3>
                 <p>Users can choose between two voice activation modes (stored in browser localStorage):</p>
                 <ul>
-                    <li><strong>VAD (Voice Activity Detection)</strong> &mdash; Automatically detects speech using AudioContext analysis with configurable dBFS threshold</li>
-                    <li><strong>PTT (Push-to-Talk)</strong> &mdash; Transmit only while holding a configurable key (default: Space)</li>
+                    <li><strong>VAD (Voice Activity Detection)</strong> &mdash; Detects speech using AudioContext analysis with a configurable dBFS threshold. The track sent to the other members is disabled while the member is silent and enabled when the level passes the threshold, staying open for 750 ms after the last loud moment. A disabled track carries silence; some browsers still send keep-alive packets.</li>
+                    <li><strong>PTT (Push-to-Talk)</strong> &mdash; Transmit only while holding a configurable key (default: Space), plus an optional release delay of 0 to 1000 ms that keeps the microphone open after the key is released.</li>
                 </ul>
+
+                <h3>Voice Setup (Client Only)</h3>
+                <p>The voice settings window in chat chooses the microphone and, where the browser can set the speaker of an audio context (Chromium browsers), the speaker; it shows a live level meter with the VAD threshold on it, and has an opt-in loopback test that plays the member's own microphone through their own speakers (not available during a call, never sent to anyone). The choices are stored in that browser's <code>localStorage</code> as <code>voice_prefs</code> (<code>mode</code>, <code>pttKey</code>, <code>vadThreshold</code>, <code>pttDelay</code>, <code>inputDeviceId</code>, <code>outputDeviceId</code>), plus the marker <code>voice_gate_notice_seen</code> (value <code>1</code>) that records that the one-time notice about a strict saved threshold (above -35 dBFS) has been shown, and are never sent to the server: there is no endpoint and no WebSocket message for them, and <code>voice_join</code>, <code>voice_speaking</code> and <code>voice_signal</code> are unchanged. The chosen microphone is used on the next join; changing it during a call replaces the track in each connection with <code>replaceTrack</code>, without a new offer, a <code>voice_leave</code> or a new join, so the resume token stays valid. Outside a call the meter opens the microphone while the settings window is open and releases it when it is closed; during a call it reads the call's own microphone. With a push-to-talk release delay, <code>voice_speaking</code> with <code>speaking: false</code> is sent when the delay ends.</p>
 
                 <!-- Direct Messages -->
                 <h2 id="direct-messages">Direct Messages</h2>

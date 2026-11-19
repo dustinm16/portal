@@ -221,7 +221,7 @@ async function scenario(name, fn) {
     const env = await joined(makeEnv(), 7, [2, 3]);
     [0, 1].forEach(i => giveAudio(env, i));
     env.VC.setPeerVolume(2, 40); env.VC.setPeerMuted(3, true);
-    const keys = Object.keys(env.storage).filter(k => k !== 'voice_prefs');
+    const keys = Object.keys(env.storage).filter(k => k !== 'voice_prefs' && k !== 'voice_gate_notice_seen');
     check('preferences live under one key per own account', keys.length === 1 && keys[0] === 'voice_peer_prefs_7', keys.join(','));
     const saved = JSON.parse(env.storage[keys[0]]);
     check('only peers with a non-default setting are stored', Object.keys(saved).sort().join() === '2,3' && saved[2].vol === 40 && saved[3].muted === true, JSON.stringify(saved));

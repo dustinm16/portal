@@ -2056,6 +2056,44 @@
             border-color: var(--accent-color, #5865f2);
             color: var(--accent-color, #5865f2);
         }
+        .voice-settings-content .voice-meter {
+            position: relative;
+            height: 14px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color, #3a3d41);
+            background: var(--bg-secondary, #2f3136);
+            overflow: hidden;
+        }
+        .voice-meter-fill {
+            height: 100%;
+            width: 0;
+            background: var(--accent-green, #43b581);
+        }
+        .voice-meter-fill.over { background: var(--accent-color, #5865f2); }
+        .voice-meter-line {
+            position: absolute;
+            top: 0; bottom: 0;
+            width: 2px;
+            margin-left: -1px;
+            background: var(--accent-red, #f04747);
+            display: none;
+        }
+        .voice-settings-content .voice-note {
+            min-height: 1.1em;
+            margin-top: 0.25rem;
+            font-size: 0.75rem;
+            color: var(--text-muted, #72767d);
+        }
+        .voice-settings-content .voice-note.notice { font-size: 0.85rem; color: inherit; margin-bottom: 0.5rem; }
+        .voice-settings-content .voice-note.error { color: var(--accent-red, #f04747); }
+        .voice-settings-content label.voice-check {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            cursor: pointer;
+        }
+        .voice-settings-content label.voice-check input { width: auto; }
         .voice-settings-actions {
             margin-top: 1rem;
             display: flex;
@@ -3123,7 +3161,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=45"></script>
-    <script src="/static/js/voice.js?v=10"></script>
+    <script src="/static/js/voice.js?v=13"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -7009,6 +7047,71 @@
             }
         }
 
+        let _voiceDevicesUnwatch = null;
+
+        // dBFS (-80 .. 0) as a percentage of the meter width
+        function voiceMeterPct(db) {
+            const n = Number(db);
+            if (!Number.isFinite(n)) return 0;
+            return Math.max(0, Math.min(100, (n + 80) / 80 * 100));
+        }
+
+        function updateVoiceThresholdLine() {
+            const line = document.getElementById('voice-meter-line');
+            const prefs = VoiceChat.getPrefs();
+            line.style.left = voiceMeterPct(prefs.vadThreshold) + '%';
+            line.style.display = prefs.mode === 'vad' ? 'block' : 'none';
+        }
+
+        // Called about 20 times a second while the settings window is open
+        function onVoiceMeterLevel(info) {
+            const fill = document.getElementById('voice-meter-fill');
+            const meter = document.getElementById('voice-meter');
+            const note = document.getElementById('voice-meter-note');
+            const loop = document.getElementById('voice-loopback');
+            if (!fill || !meter) return;
+            const db = info.error ? -100 : info.db;
+            fill.style.width = voiceMeterPct(db) + '%';
+            fill.classList.toggle('over', db > VoiceChat.getPrefs().vadThreshold);
+            meter.setAttribute('aria-valuenow', String(Math.round(Math.max(-80, db))));
+            if (info.error) note.textContent = info.error;
+            else if (info.inCall) note.textContent = 'Showing the microphone of your current call.';
+            else note.textContent = '';
+            note.classList.toggle('error', !!info.error);
+            loop.disabled = !!info.inCall;
+            loop.checked = !!info.loopback;
+        }
+
+        function fillVoiceDeviceSelect(select, items, savedId, label) {
+            while (select.options.length) select.remove(0);
+            const def = document.createElement('option');
+            def.value = '';
+            def.textContent = 'Default';
+            select.appendChild(def);
+            items.forEach((d, i) => {
+                const opt = document.createElement('option');
+                opt.value = d.id;
+                opt.textContent = d.label || (label + ' ' + (i + 1));
+                select.appendChild(opt);
+            });
+            select.value = items.some(d => d.id === savedId) ? savedId : '';
+        }
+
+        async function refreshVoiceDevices() {
+            const d = await VoiceChat.listDevices();
+            if (!document.getElementById('voice-settings-modal').classList.contains('active')) return;
+            fillVoiceDeviceSelect(document.getElementById('voice-input-device'), d.inputs, d.inputId, 'Microphone');
+            document.getElementById('voice-input-note').textContent = d.inputMissing
+                ? 'The microphone you chose is not connected. The default one is used.' : '';
+            const box = document.getElementById('voice-output-settings');
+            box.style.display = d.outputSupported ? '' : 'none';
+            if (d.outputSupported) {
+                fillVoiceDeviceSelect(document.getElementById('voice-output-device'), d.outputs, d.outputId, 'Speaker');
+                document.getElementById('voice-output-note').textContent = d.outputMissing
+                    ? 'The speaker you chose is not connected. The default one is used.' : '';
+            }
+        }
+
         function openVoiceSettings() {
             const modal = document.getElementById('voice-settings-modal');
             const prefs = VoiceChat.getPrefs();
@@ -7016,39 +7119,64 @@
             document.getElementById('vad-threshold-slider').value = prefs.vadThreshold;
             document.getElementById('vad-threshold-value').textContent = prefs.vadThreshold;
             document.getElementById('ptt-key-display').textContent = prefs.pttKey;
+            document.getElementById('ptt-delay-slider').value = prefs.pttDelay;
+            document.getElementById('ptt-delay-value').textContent = prefs.pttDelay;
             document.getElementById('vad-settings').style.display = prefs.mode === 'vad' ? '' : 'none';
             document.getElementById('ptt-settings').style.display = prefs.mode === 'ptt' ? '' : 'none';
-
-            // Populate audio input devices
-            if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-                navigator.mediaDevices.enumerateDevices().then(devices => {
-                    const select = document.getElementById('voice-input-device');
-                    select.innerHTML = '<option value="">Default</option>';
-                    devices.filter(d => d.kind === 'audioinput').forEach(d => {
-                        const opt = document.createElement('option');
-                        opt.value = d.deviceId;
-                        opt.textContent = d.label || `Microphone ${select.options.length}`;
-                        select.appendChild(opt);
-                    });
-                });
-            }
+            document.getElementById('voice-loopback').checked = false;
+            document.getElementById('voice-meter-note').textContent = '';
+            // Shown the first time only, as plain text (set with textContent)
+            const gateNotice = VoiceChat.takeGateNotice();
+            const gateEl = document.getElementById('voice-gate-notice');
+            gateEl.textContent = gateNotice;
+            gateEl.style.display = gateNotice ? '' : 'none';
+            updateVoiceThresholdLine();
 
             modal.classList.add('active');
+            // The level meter reads the call's own microphone in a call and
+            // opens (and later releases) one outside a call
+            VoiceChat.startMeter(onVoiceMeterLevel);
+            if (_voiceDevicesUnwatch) _voiceDevicesUnwatch();
+            _voiceDevicesUnwatch = VoiceChat.onDevicesChanged(refreshVoiceDevices);
+            refreshVoiceDevices();
         }
 
+        // Every way of closing the window (button, backdrop, Escape) ends here
         function closeVoiceSettings() {
             document.getElementById('voice-settings-modal').classList.remove('active');
+            VoiceChat.stopMeter();
+            if (_voiceDevicesUnwatch) { _voiceDevicesUnwatch(); _voiceDevicesUnwatch = null; }
+            document.getElementById('voice-loopback').checked = false;
+        }
+
+        function handleVoiceInputChange(value) {
+            VoiceChat.setInputDevice(value);
+        }
+
+        function handleVoiceOutputChange(value) {
+            VoiceChat.setOutputDevice(value);
+        }
+
+        function handleVoiceLoopback(box) {
+            if (!VoiceChat.setLoopback(box.checked)) box.checked = false;
+        }
+
+        function handlePttDelayChange(value) {
+            document.getElementById('ptt-delay-value').textContent = value;
+            VoiceChat.setPttDelay(parseInt(value, 10));
         }
 
         function handleVoiceModeChange(mode) {
             VoiceChat.setMode(mode);
             document.getElementById('vad-settings').style.display = mode === 'vad' ? '' : 'none';
             document.getElementById('ptt-settings').style.display = mode === 'ptt' ? '' : 'none';
+            updateVoiceThresholdLine();
         }
 
         function handleVadThresholdChange(value) {
             document.getElementById('vad-threshold-value').textContent = value;
-            VoiceChat.setVadThreshold(parseInt(value));
+            VoiceChat.setVadThreshold(parseInt(value, 10));
+            updateVoiceThresholdLine();
         }
 
         let _capturingPttKey = false;
@@ -7569,10 +7697,20 @@
                 <option value="ptt">Push-to-Talk (PTT)</option>
             </select>
 
+            <label id="voice-meter-label">Microphone level</label>
+            <div class="voice-meter" id="voice-meter" role="meter" aria-labelledby="voice-meter-label"
+                 aria-valuemin="-80" aria-valuemax="0" aria-valuenow="-80">
+                <div class="voice-meter-fill" id="voice-meter-fill"></div>
+                <div class="voice-meter-line" id="voice-meter-line"></div>
+            </div>
+            <div class="voice-note" id="voice-meter-note" role="status"></div>
+            <div class="voice-note notice" id="voice-gate-notice" role="status" style="display:none;"></div>
+
             <div id="vad-settings">
-                <label>VAD Sensitivity: <span id="vad-threshold-value">-50</span> dBFS</label>
+                <label for="vad-threshold-slider">VAD Sensitivity: <span id="vad-threshold-value">-50</span> dBFS</label>
                 <input type="range" id="vad-threshold-slider" min="-80" max="-20" value="-50"
                        oninput="handleVadThresholdChange(this.value)">
+                <div class="voice-note">Others hear you only while the bar passes the red line.</div>
             </div>
 
             <div id="ptt-settings" style="display:none;">
@@ -7581,12 +7719,31 @@
                     <span id="ptt-key-display">Space</span>
                     <br><small>Click to rebind</small>
                 </div>
+                <label for="ptt-delay-slider">Release delay: <span id="ptt-delay-value">0</span> ms</label>
+                <input type="range" id="ptt-delay-slider" min="0" max="1000" step="50" value="0"
+                       oninput="handlePttDelayChange(this.value)">
+                <div class="voice-note">Keeps the microphone open a moment after you let go, so the end of a word is not cut off.</div>
             </div>
 
-            <label>Input Device</label>
-            <select id="voice-input-device">
+            <label for="voice-input-device">Input Device</label>
+            <select id="voice-input-device" onchange="handleVoiceInputChange(this.value)">
                 <option value="">Default</option>
             </select>
+            <div class="voice-note" id="voice-input-note"></div>
+
+            <div id="voice-output-settings" style="display:none;">
+                <label for="voice-output-device">Output Device</label>
+                <select id="voice-output-device" onchange="handleVoiceOutputChange(this.value)">
+                    <option value="">Default</option>
+                </select>
+                <div class="voice-note" id="voice-output-note"></div>
+            </div>
+
+            <label class="voice-check" for="voice-loopback">
+                <input type="checkbox" id="voice-loopback" onchange="handleVoiceLoopback(this)">
+                Hear my own microphone (test)
+            </label>
+            <div class="voice-note" id="voice-loopback-note">Use headphones: through speakers this makes an echo. Not available during a call; it is never sent to other people.</div>
 
             <div class="voice-settings-actions">
                 <button class="voice-ctrl-btn" onclick="closeVoiceSettings()">Close</button>
