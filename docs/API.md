@@ -3859,7 +3859,7 @@ The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.clou
 
 Outgoing webhooks send an event to a URL; incoming webhooks post a message into a chat channel. Management needs an admin; owners and admins reach `/api/webhooks/{id}` (a **system** webhook is never reachable there, see below). Destinations and credentials are encrypted at rest.
 
-Credentials: a stream key is refused with `403` on every webhook route, user and system. Creating, changing or deleting a user webhook and getting a new signing secret need a credential that carries its user's whole authority (a browser session, or a token or API key with the `*` scope); a narrowly scoped key can still list, read, view the delivery log of and test its own hooks. Acting on a hook of another user (list all, read, change) needs the administrator role and a credential with the `admin` or `*` scope; a narrowly scoped key of an administrator sees and reaches only its own hooks. System webhook routes need a superadmin and a credential with the `admin` scope.
+Credentials: a stream key is refused with `403` on every webhook route, user and system. Creating, changing or deleting a user webhook and getting a new signing secret need a credential that carries its user's whole authority (a browser session, or a token or API key with the `*` scope); a narrowly scoped key can still list, read and view the delivery log of its own hooks. Testing a hook (`POST /api/webhooks/{id}/test`) triggers a delivery, so it needs a full-scope credential too. Acting on a hook of another user (list all, read, change) needs the administrator role and a credential with the `admin` or `*` scope; a narrowly scoped key of an administrator sees and reaches only its own hooks. System webhook routes need a superadmin and a credential with the `admin` scope.
 
 #### POST /api/webhooks
 
@@ -3891,13 +3891,15 @@ The destination URL of a non-generic hook, and every credential, is never return
 
 List (admins see every user hook with `owner_username`), read, update (same fields as create) and delete. `PUT` also takes `enabled`.
 
+The URL `token` of an incoming hook (the `{token}` in `POST /api/webhooks/incoming/{token}`, a credential: whoever holds it can post into the channel) is returned by `POST /api/webhooks` at creation, and afterwards by these read and update routes only to the hook's own owner using a full-scope credential (a browser session or an all-scope token or key). An administrator reading another user's hook, a narrowly scoped key and an admin-only scope get `has_token: true` and no `token`.
+
 #### GET /api/webhooks/{id}/logs
 
 Delivery records (`event`, `response_status`, `success`, `attempt`, `duration_ms`). Records of non-generic hooks hold no payload and no response body.
 
 #### POST /api/webhooks/{id}/test
 
-Sends one sample message in the hook's format (event `webhook.test`) and waits for the receiver. Answers `{"message", "format", "sent", "success", "status", "error"}`: `status` is the receiver's HTTP status code (a 429 is reported at once, without waiting). The Test button of a hook that is disabled answers 400.
+Needs a full-scope credential (a browser session or an all-scope token or key; a narrowly scoped key gets `403`), because it triggers a delivery. Sends one sample message in the hook's format (event `webhook.test`) and waits for the receiver. Answers `{"message", "format", "sent", "success", "status", "error"}`: `status` is the receiver's HTTP status code (a 429 is reported at once, without waiting). The Test button of a hook that is disabled answers 400.
 
 #### POST /api/webhooks/{id}/regenerate-secret
 

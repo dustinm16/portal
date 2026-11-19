@@ -208,6 +208,42 @@ async def main():
         st, e = await call(plain, "POST", "/api/webhooks", routes[1][2], keys[("adm", "full")])
         check("an all-scope key creates its own hook", st == 201, str((st, e)))
 
+        # the URL token of an incoming hook: once at creation, then only to its owner with a full credential
+        chan = await db.create_chat_channel("whook-chan", None, ids["adm"], None)
+        st, inc = await call(adm, "POST", "/api/webhooks", {"name": "inc", "type": "incoming", "channel_id": chan})
+        check("creating an incoming hook returns its token once", st == 201 and inc.get("token"), str((st, inc)))
+        tok = inc["token"]
+        uinc = await db.create_webhook(ids["u1"], "uinc", "incoming", channel_id=chan)
+        utok = uinc["token"]
+        st, e = await call(adm, "GET", f"/api/webhooks/{inc['id']}")
+        check("the owner's browser session reads the token of its own hook", st == 200 and e.get("token") == tok, str((st, e)))
+        st, e = await call(plain, "GET", f"/api/webhooks/{inc['id']}", None, keys[("adm", "full")])
+        check("the owner's all-scope key reads it too", st == 200 and e.get("token") == tok, str((st, e)))
+        st, e = await call(plain, "GET", f"/api/webhooks/{inc['id']}", None, narrow)
+        check("a narrowly scoped key of the owner does not get the token", st == 200 and "token" not in e and e.get("has_token") is True, str((st, e)))
+        st, e = await call(plain, "GET", "/api/webhooks", None, narrow)
+        check("... nor in the list", st == 200 and all("token" not in w for w in e["webhooks"]), str((st, e)))
+        st, e = await call(adm, "GET", "/api/webhooks")
+        mine = {w["id"]: w for w in e["webhooks"]}
+        check("the owner's list shows the token of its incoming hook and of no other", mine[inc["id"]].get("token") == tok
+              and mine[uinc["id"]].get("token") is None and "token" not in mine[uinc["id"]], str(mine.get(uinc["id"])))
+        check("an administrator reading another user's hook gets no token, in a list or a read",
+              utok not in json.dumps(e) and "token" not in mine[uinc["id"]])
+        st, e = await call(adm, "GET", f"/api/webhooks/{uinc['id']}")
+        check("an administrator reading another user's hook directly gets no token", st == 200 and "token" not in e and e.get("has_token") is True, str((st, e)))
+        st, e = await call(plain, "GET", "/api/webhooks", None, keys[("adm", "admin")])
+        check("an admin-scope key lists no token", st == 200 and tok not in json.dumps(e) and utok not in json.dumps(e), str(e)[:200])
+        st, e = await call(adm, "PUT", f"/api/webhooks/{inc['id']}", {"name": "inc2"})
+        check("an edit by the owner answers with the token, an edit by another administrator without",
+              st == 200 and e.get("token") == tok, str((st, e)))
+        st, e = await call(sa, "PUT", f"/api/webhooks/{inc['id']}", {"name": "inc3"})
+        check("an edit of another user's hook shows no token", st == 200 and "token" not in e, str((st, e)))
+        # the Test route triggers a delivery: a full-scope credential only
+        st, e = await call(plain, "POST", f"/api/webhooks/{oid}/test", None, narrow)
+        check("a narrowly scoped key cannot test a hook", st == 403, str((st, e)))
+        st, e = await call(plain, "POST", f"/api/webhooks/{oid}/test", None, keys[("adm", "full")])
+        check("an all-scope key can reach the test route", st != 403, str((st, e)))
+
         # system hook routes
         sysh = await db.create_webhook(None, "sys", "outgoing", url="https://93.184.216.34/s", events=["webhook.test"], kind="system")
         sid = sysh["id"]

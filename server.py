@@ -7512,6 +7512,17 @@ def _webhook_may_cross(token, user) -> bool:
                 and (token.has_scope("admin") or token.has_scope("*")))
 
 
+async def _webhook_show_token(webhook: dict, token) -> dict:
+    """Add the URL token of an incoming hook to a read response, only for the hook's own owner
+    using a credential that carries the whole authority of the account (a browser session or an
+    all-scope token or key). Not for an administrator reading another user's hook, and not for a
+    narrowly scoped key: the token is the credential of the hook. Creation returns it once."""
+    if (webhook.get("has_token") and webhook.get("user_id") == token.user_id
+            and has_full_user_scope(token)):
+        webhook["token"] = await db.get_webhook_token(webhook["id"])
+    return webhook
+
+
 async def http_create_webhook(request: web.Request) -> web.Response:
     """Create a new webhook (admin+ only)."""
     token, err = await _webhook_route_token(request, write=True)
@@ -7586,6 +7597,7 @@ async def http_list_webhooks(request: web.Request) -> web.Response:
         webhooks = await db.get_all_webhooks()
     else:
         webhooks = await db.get_webhooks_for_user(token.user_id)
+    webhooks = [await _webhook_show_token(w, token) for w in webhooks]
     return web.json_response({"webhooks": webhooks})
 
 
@@ -7608,7 +7620,7 @@ async def http_get_webhook(request: web.Request) -> web.Response:
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
-    return web.json_response(webhook)
+    return web.json_response(await _webhook_show_token(webhook, token))
 
 
 async def http_update_webhook(request: web.Request) -> web.Response:
@@ -7668,7 +7680,7 @@ async def http_update_webhook(request: web.Request) -> web.Response:
             await _webhook_private_changed(request, user, webhook, bool(updates["allow_private"]))
 
     updated = await db.get_webhook(webhook_id)
-    return web.json_response(updated)
+    return web.json_response(await _webhook_show_token(updated, token))
 
 
 async def http_delete_webhook(request: web.Request) -> web.Response:
@@ -7725,8 +7737,8 @@ async def http_get_webhook_logs(request: web.Request) -> web.Response:
 
 
 async def http_test_webhook(request: web.Request) -> web.Response:
-    """Send a test event to the webhook."""
-    token, err = await _webhook_route_token(request, write=False)
+    """Send a test event to the webhook. Needs a full-scope credential: it triggers a delivery."""
+    token, err = await _webhook_route_token(request, write=True)
     if err:
         return err
     try:

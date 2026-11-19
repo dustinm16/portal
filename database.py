@@ -7605,14 +7605,19 @@ class Database:
 
     @classmethod
     def _webhook_public(cls, row) -> dict:
-        """A webhook row as an API may show it. Never carries the HMAC secret or
-        the per-format credentials; for a non-generic format never the URL either
+        """A webhook row as an API may show it. Never carries the HMAC secret, the URL
+        token of an incoming hook or the per-format credentials; for a non-generic format never the URL either
         (a Discord or Slack webhook URL, an ntfy topic, a Gotify server are
         credentials), only whether one is set and its scheme and host."""
         d = dict(row)
         url = decrypt_config(d["url"]) if d.get("url") else None
         d["has_secret"] = bool(d.get("secret"))
         d.pop("secret", None)
+        # The URL token of an incoming hook is a credential (anyone holding it can post into the
+        # channel): not part of a public row. The creation response carries it once; a read route
+        # adds it for the hook's owner only (get_webhook_token).
+        d["has_token"] = bool(d.get("token"))
+        d.pop("token", None)
         d["events"] = json.loads(d["events"]) if d.get("events") else []
         if d.get("last_failure_reason"):
             d["last_failure_reason"] = decrypt_config(d["last_failure_reason"])
@@ -7675,6 +7680,12 @@ class Database:
             "SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
         row = await cursor.fetchone()
         return self._webhook_public(row) if row else None
+
+    async def get_webhook_token(self, webhook_id: int) -> Optional[str]:
+        """The URL token of an incoming hook (None for any other). For the owner's own read only."""
+        cursor = await self.conn.execute("SELECT token FROM webhooks WHERE id = ?", (webhook_id,))
+        row = await cursor.fetchone()
+        return (row[0] or None) if row else None
 
     async def get_webhook_for_delivery(self, webhook_id: int) -> Optional[dict]:
         """Full webhook for the delivery engine: decrypted url, HMAC secret and
