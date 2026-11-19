@@ -3562,6 +3562,7 @@ ws.send(JSON.stringify({
                     </div>
                     <div class="endpoint-body">
                         <p>Rebuilds the FTS5 search index from scratch. This decrypts all stored messages and re-indexes them. Use this if the search index becomes corrupted or out of sync. <strong>Superadmin only.</strong></p>
+                        <p><code>409</code> when the search index is being backfilled or rebuilt (the one-time backfill can run for minutes on a large history): the answer comes at once, nothing is changed, try again when it has finished.</p>
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{

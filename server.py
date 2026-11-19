@@ -48,7 +48,7 @@ from multidict import CIMultiDict
 
 from config import Config, ALLOWED_SHELLS
 from session_devices import parse_user_agent, public_session_id, matches_public_id
-from database import db, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
+from database import db, SearchIndexBusy, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
 from auth import (
     AuthError,
     TokenPayload,
@@ -19533,7 +19533,14 @@ async def http_rebuild_search_index(request: web.Request) -> web.Response:
     user = await db.get_user_by_id(token.user_id)
     if not user or user.get("role") != "superadmin":
         return web.json_response({"error": "Superadmin required"}, status=403)
-    counts = await db.rebuild_search_index()
+    # While the index is being backfilled (minutes on a large history) or rebuilt, answer at
+    # once instead of holding the request until it is done
+    try:
+        counts = await db.rebuild_search_index(wait=False)
+    except SearchIndexBusy:
+        return web.json_response(
+            {"error": "The search index is being built right now (backfill or rebuild); try again when it has finished"},
+            status=409)
     return web.json_response({"rebuilt": True, "indexed": counts})
 
 

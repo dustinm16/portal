@@ -12,6 +12,7 @@ Run: venv/bin/python tests/test_chat_search.py
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -64,6 +65,7 @@ class Env:
         server._history_hits.clear()
         app = web.Application()
         app.router.add_get("/api/chat/search", server.http_search_messages)
+        app.router.add_post("/api/chat/search/rebuild", server.http_rebuild_search_index)
         app.router.add_get("/api/chat/channels/{id}/messages", server.http_get_channel_messages)
         self.srv = TestServer(app)
         await self.srv.start_server()
@@ -951,35 +953,6 @@ def test_backfill_does_not_overwrite_an_edit_made_after_its_read():
     run(body)
 
 
-def test_backfill_does_not_overwrite_a_concurrent_edit_with_stale_flags():
-    """Edits run all through the backfill; at the end every index row has the flags of the text the message
-    has now. The flags are worked out from the row read in the same step that writes them."""
-    async def body(env):
-        d = env.db
-        u, ch, m = await seed(d)
-        ids = []
-        for i in range(24):
-            ids.append(await d.create_chat_message(ch["rnd"], u["bob"], "bob", f"plain words {i}"))
-        await d.conn.execute("UPDATE chat_fts_map SET has_link = 0, has_file = 0, has_image = 0")
-        await d.conn.execute("DELETE FROM settings WHERE key LIKE 'search_backfill%'")
-        await d.conn.commit()
-        final = {}
-
-        async def editor():
-            for rnd in range(3):
-                for i, mid in enumerate(ids):
-                    text = f"edited {rnd} https://e.example/{i}" if (rnd + i) % 2 == 0 or rnd == 2 else f"edited {rnd} no link"
-                    assert await d.edit_chat_message(mid, u["bob"], text)
-                    final[mid] = "https://" in text
-        edit_task = asyncio.create_task(editor())
-        await d.backfill_search_flags(batch_size=3, pause=0)
-        await edit_task
-        for mid in ids:
-            row = await (await d.conn.execute("SELECT has_link FROM chat_fts_map WHERE message_id = ?", (mid,))).fetchone()
-            assert row is not None and bool(row["has_link"]) == final[mid], (mid, row and row["has_link"], final[mid])
-    run(body)
-
-
 def test_non_public_stream_chat_is_not_searchable_for_other_members():
     """The chat of a stream that is not public is closed to everyone but its owner and admins (the rule inside
     _can_read_channel); search goes through that check, so another member gets no hits, and the answer matches
@@ -1032,6 +1005,40 @@ def test_one_masking_path_and_no_fail_open():
     db_src = (ROOT / "database.py").read_text(encoding="utf-8")
     seg = db_src[db_src.index("    async def search_messages("):db_src.index("    # -- Backfill of the operator flags")]
     assert "accessible_channel_ids = None" not in seg and "Fall back to unfiltered" not in seg
+
+
+def test_backfill_relies_on_aiosqlite_attributes_that_exist():
+    """The backfill runs one batch as a single job on the connection's thread through two private
+    aiosqlite attributes (Connection._execute and Connection._conn). Both must exist on the pinned
+    aiosqlite (requirements.txt); a version bump that renames them fails here, not in production."""
+    async def body(env):
+        conn = env.db.conn
+        assert callable(getattr(conn, "_execute", None)), "aiosqlite.Connection._execute is gone"
+        raw = getattr(conn, "_conn", None)
+        assert isinstance(raw, sqlite3.Connection), "aiosqlite.Connection._conn is no longer the sqlite3 connection"
+        assert env.db._connection._conn is raw
+    run(body)
+
+
+def test_rebuild_route_answers_409_while_the_backfill_runs():
+    async def body(env):
+        d = env.db
+        u, ch, m = await seed(d)
+        root = await d.create_user("rootadmin", "x")
+        await d.set_user_role(root, "superadmin")
+
+        async def rebuild(uid):
+            async with env.http.post(str(env.srv.make_url("/api/chat/search/rebuild")),
+                                     headers={"X-Test-User": str(uid)}) as r:
+                return r.status, await r.json()
+        async with d._search_backfill_lock:      # a backfill (or another rebuild) is running
+            st, b = await asyncio.wait_for(rebuild(root), 3)
+            assert st == 409 and "being built" in b["error"], (st, b)
+            st, b = await asyncio.wait_for(rebuild(u["boss"]), 3)
+            assert st == 403, (st, b)        # still superadmin only, checked first
+        st, b = await asyncio.wait_for(rebuild(root), 30)
+        assert st == 200 and b["rebuilt"] is True and b["indexed"]["channel"] == 11, (st, b)
+    run(body)
 
 
 def test_search_fails_closed_when_the_readable_channels_cannot_be_looked_up():

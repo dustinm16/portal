@@ -187,6 +187,10 @@ def encrypt_message(plaintext: str) -> str:
     return f.encrypt(plaintext.encode()).decode()
 
 
+class SearchIndexBusy(Exception):
+    """The search index is being backfilled or rebuilt and the caller would not wait."""
+
+
 class MessageDecryptError(Exception):
     """A stored chat message looks encrypted but neither key opens it."""
 
@@ -7017,8 +7021,9 @@ class Database:
         if not rows:
             return None
         added = 0
-        # a savepoint, so a failure undoes only this batch and not the work other
-        # coroutines have pending on the shared connection
+        # a savepoint, so a failure undoes only this batch, not what was pending
+        # on the shared connection before it. The commit at the end is the
+        # connection's own, though: it also commits whatever else is pending there.
         raw.execute("SAVEPOINT search_backfill")
         try:
             for row in rows:
@@ -7064,12 +7069,16 @@ class Database:
         raw.commit()
         return new_last, len(rows), added
 
-    async def rebuild_search_index(self) -> dict:
+    async def rebuild_search_index(self, wait: bool = True) -> dict:
         """Rebuild all FTS indexes from encrypted messages. Returns counts.
 
         Holds the backfill's lock for the whole rebuild, so the two never
         interleave (a backfill that is running finishes its batch loop first;
-        one that starts meanwhile finds the lock taken and returns)."""
+        one that starts meanwhile finds the lock taken and returns). With
+        wait=False a held lock raises SearchIndexBusy at once instead of
+        waiting for the backfill (which can take minutes) to finish."""
+        if not wait and self._search_backfill_lock.locked():
+            raise SearchIndexBusy("the search index is being built")
         async with self._search_backfill_lock:
             return await self._rebuild_search_index_locked()
 

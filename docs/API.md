@@ -2238,6 +2238,8 @@ Rebuild the FTS5 search index from encrypted messages. Decrypts all messages, to
 ```
 The rebuild writes the operator flags itself and marks the backfill as done.
 
+**Errors:** `403` for anyone but a superadmin. `409` when the search index is being backfilled or rebuilt (the one-time backfill can run for minutes on a large history): the answer comes at once and nothing is changed; try again when it has finished.
+
 **Security Notes:**
 - FTS5 index stores plaintext tokens alongside encrypted message data (contentless tables — no raw message text stored in the index)
 - The rebuild endpoint is restricted to superadmin to prevent abuse
