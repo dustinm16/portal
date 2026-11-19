@@ -124,12 +124,13 @@ async def main():
     for i in range(alerts.CAP_ALERTS + 10):
         if alerts.emit("role.changed", key=i, summary=f"r{i}"):
             admitted += 1
-    await env.settle()
     check("the global cap admits exactly CAP_ALERTS", admitted == alerts.CAP_ALERTS, str(admitted))
-    sup = [e for e in env.events() if e == "alerts.suppressed"]
-    check("one 'alerts suppressed' alert on the first refused alert", len(sup) == 1, str(env.events()[-3:]))
-    check("the suppressed alert did not use a slot or recurse", len(env.events()) == alerts.CAP_ALERTS + 1)
     check("refused alerts are counted", alerts.suppressed_count() == 10)
+    await env.settle()
+    sup = [e for e in env.events() if e == "alerts.suppressed"]
+    check("one 'alerts suppressed' alert for the refused alerts", len(sup) == 1, str(env.events()[-3:]))
+    check("the suppressed alert did not use a slot or recurse", len(env.events()) == alerts.CAP_ALERTS + 1)
+    check("the notice cleared the counts", alerts.suppressed_count() == 0)
     env.t += alerts.CAP_WINDOW + 1
     check("after the window the cap has room", alerts.emit("role.changed", key="later", summary="x") is True)
     for i in range(alerts.CAP_ALERTS):

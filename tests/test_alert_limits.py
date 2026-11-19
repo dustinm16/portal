@@ -28,9 +28,11 @@ def check(name, passed, detail=""):
 
 
 class Env:
-    def __init__(self, slow_settings=False):
+    def __init__(self, slow_settings=False, virtual=False):
         self.t = 1000.0
         self.fired = []
+        self.payloads = []       # (time, event, payload) of every hook delivery
+        self.timers = []         # (due, future) of the virtual sleeps
         self.times = []          # (time, event) of every delivery, recorded synchronously
         self.settings = {}
         self.slow = slow_settings
@@ -40,7 +42,12 @@ class Env:
         async def quick_sleep(_seconds):
             await asyncio.sleep(0)
 
-        alerts._sleep = quick_sleep
+        async def virtual_sleep(seconds):
+            fut = asyncio.get_running_loop().create_future()
+            self.timers.append((self.t + seconds, fut))
+            await fut
+
+        alerts._sleep = virtual_sleep if virtual else quick_sleep
         real_deliver = alerts._deliver
 
         def deliver(alert):
@@ -54,7 +61,26 @@ class Env:
 
     async def fire(self, event, payload):
         self.fired.append(event)
+        self.payloads.append((self.t, event, payload))
         return 1
+
+    async def pump(self):
+        for _ in range(8):
+            await asyncio.sleep(0)
+
+    async def advance(self, t):
+        """Move the fake clock to t, waking every virtual sleep that falls due on the way."""
+        await self.pump()           # let freshly spawned tasks register their sleeps at the current time
+        while True:
+            due = sorted((d, i) for i, (d, f) in enumerate(self.timers) if d <= t and not f.done())
+            if not due:
+                break
+            d, i = due[0]
+            self.t = max(self.t, d)
+            self.timers[i][1].set_result(None)
+            await self.pump()
+        self.t = t
+        await self.pump()
 
     async def get(self, key):
         if self.slow:
@@ -117,46 +143,52 @@ async def main():
     await env.settle()
     env.close()
 
-    # --- the notice is counted and sent once per trip
-    env = Env()
+    # --- a notice is due whenever anything is held back, at most one per NOTICE_INTERVAL
+    env = Env(virtual=True)
     rng = random.Random(7)
     t = 0.0
     n = 0
     while t < 6000:
         t += rng.expovariate(1 / 5.0)
-        env.t = 1000.0 + t
+        await env.advance(1000.0 + t)
         n += 1
         alerts.emit("role.changed", key=f"k{n}", summary="x")
-    await env.settle()
-    notices = [t for t, e in env.times if e == "alerts.suppressed"]
+    await env.advance(1000.0 + 6000 + 700)
+    notice_times = [t for t, e in env.times if e == "alerts.suppressed"]
     regular = [(t, e) for t, e in env.times if e != "alerts.suppressed"]
-    check("under sustained load there is one notice for the one trip", len(notices) == 1, str(len(notices)))
+    check("under sustained load there is a notice about every NOTICE_INTERVAL, never closer",
+          len(notice_times) >= 8 and all(b - a >= alerts.NOTICE_INTERVAL - 1e-6
+                                         for a, b in zip(notice_times, notice_times[1:])), str(notice_times))
+    check("the first notice follows the first refusal by about NOTICE_DELAY",
+          abs(notice_times[0] - (env.times[alerts.CAP_ALERTS - 1][0] + 0)) < 60 if notice_times else False,
+          str(notice_times[:2]))
     check("no window holds more than CAP_ALERTS regular alerts",
           worst_window(regular, alerts.CAP_WINDOW) <= alerts.CAP_ALERTS, str(worst_window(regular, alerts.CAP_WINDOW)))
     check("no window holds more than CAP_ALERTS plus the notice in all",
           worst_window(env.times, alerts.CAP_WINDOW) <= alerts.CAP_ALERTS + 1,
           str(worst_window(env.times, alerts.CAP_WINDOW)))
-    await env.settle()
     env.close()
 
-    env = Env()
+    env = Env(virtual=True)
     for i in range(alerts.CAP_ALERTS + 3):
         alerts.emit("role.changed", key=i, summary="x")
-    env.t += alerts.CAP_WINDOW / 2
+    await env.advance(1000.0 + 10)
+    check("no notice before NOTICE_DELAY", not any(e == "alerts.suppressed" for _, e in env.times))
+    await env.advance(1000.0 + alerts.NOTICE_DELAY + 1)
+    check("the first notice goes out NOTICE_DELAY after the first refusal",
+          [e for _, e in env.times].count("alerts.suppressed") == 1)
+    first = [p for _, e, p in env.payloads if e == "alerts.suppressed"][0]
+    check("the notice lists the kind with its count and says the global limit held it back",
+          "role.changed: 3" in first["summary"] and "Limit of" in first["summary"], first["summary"])
+    await env.advance(1000.0 + alerts.CAP_WINDOW / 2)
     alerts.emit("role.changed", key="mid", summary="x")
-    env.t += alerts.CAP_WINDOW * 0.6
+    await env.advance(1000.0 + alerts.CAP_WINDOW + 5)
     for i in range(alerts.CAP_ALERTS + 3):
         alerts.emit("role.changed", key=f"b{i}", summary="x")
-    await env.settle()
-    check("a refusal inside the window does not end the trip, so no second notice yet",
-          sum(1 for _, e in env.times if e == "alerts.suppressed") == 1)
-    env.t += alerts.CAP_WINDOW + 5
-    for i in range(alerts.CAP_ALERTS + 3):
-        alerts.emit("role.changed", key=f"c{i}", summary="x")
-    await env.settle()
-    check("a quiet window ends the trip, and the next trip sends its own notice",
-          sum(1 for _, e in env.times if e == "alerts.suppressed") == 2)
-    await env.settle()
+    await env.advance(env.t + alerts.NOTICE_DELAY + 1)
+    check("a refusal after the interval gets its own notice about NOTICE_DELAY later",
+          [e for _, e in env.times].count("alerts.suppressed") == 2)
+    await env.pump()
     env.close()
 
     # --- strangers cannot use up the room of the other alerts
@@ -309,6 +341,64 @@ async def main():
     check("every burst is recorded, also when the cap holds its alert back",
           recs.count("login_failed_burst") == SUB_CAPS["auth.login_failed_burst"] + 3, str(recs))
     alerts.bind_record(None)
+    env.close()
+
+    # --- the reviewed scenario: a member keeps one cap tripped, later refusals are still reported
+    env = Env(virtual=True)
+    t0 = env.t
+    cap = SUB_CAPS["apikey.created"]
+    for r in range(3):
+        await env.advance(t0 + r * 540)
+        for i in range(cap + 1):
+            alerts.on_security_event("api_key_created", user_id=500 + r * 10 + i, username=f"m{r}{i}",
+                                     details={"name": "k"})
+    await env.advance(t0 + 20 * 60)
+    for i in range(alerts.CAP_ALERTS):
+        alerts.emit("role.changed", key=("fill", i), summary="x")
+    held_before = len([1 for _, e in env.times if e == "alerts.suppressed"])
+    for i in range(10):
+        alerts.emit("service.health_changed", key=("svc", i), summary="x")
+    alerts.moderation_action("ban", actor="boss", target="troll", anonymous=False, actor_id=1, target_id=2,
+                             actor_role="admin")
+    await env.advance(t0 + 20 * 60 + 11 * 60)
+    notices = [(t, p) for t, e, p in env.payloads if e == "alerts.suppressed"]
+    late = [p for t, p in notices if t > t0 + 20 * 60]
+    text = " | ".join(p["summary"] + " " + str(p["details"]) for p in late)
+    check("a member who trips a cap every 9 minutes did not mute the notices (one per interval)",
+          len(notices) >= 3 and all(b[0] - a[0] >= alerts.NOTICE_INTERVAL - 1e-6
+                                    for a, b in zip(notices, notices[1:])), str([t - t0 for t, _ in notices]))
+    check("the notice after the outage names the ten service alerts", "service.health_changed: 10" in text, text)
+    check("and the staff moderation alert", "moderation.action: 1" in text, text)
+    check("and says the global limit held them back", "global" in text.lower() or "Limit of" in text, text)
+    check("the counts were cleared by that notice, the next is quiet",
+          held_before >= 1 and alerts.suppressed_count() == 0, str(alerts.suppressed_count()))
+    first_kind = notices[0][1]
+    check("the first notice (the member's cap) says it was a per-kind limit",
+          "per-kind" in first_kind["summary"].lower() and "apikey.created" in first_kind["summary"],
+          first_kind["summary"])
+    env.close()
+
+    # --- the reason is accurate: reserve, and mixed reasons per kind
+    env = Env(virtual=True)
+    for i in range(alerts.CAP_ALERTS - alerts.MEMBER_RESERVE):
+        alerts.emit("role.changed", key=("r", i), summary="x")
+    alerts.moderation_action("ban", actor="m", target="x", anonymous=False, actor_id=900, target_id=901)
+    await env.advance(env.t + alerts.NOTICE_DELAY + 1)
+    reserve = [p for _, e, p in env.payloads if e == "alerts.suppressed"]
+    check("an alert held back by the reserve says so", reserve and "Reserve" in reserve[0]["summary"]
+          and "Limit of" not in reserve[0]["summary"], str(reserve))
+    env.close()
+    env = Env(virtual=True)
+    for i in range(alerts.CAP_ALERTS - alerts.MEMBER_RESERVE):
+        alerts.emit("role.changed", key=("r", i), summary="x")
+    alerts.moderation_action("ban", actor="m", target="x", anonymous=False, actor_id=900, target_id=901)
+    for i in range(alerts.MEMBER_RESERVE):
+        alerts.emit("role.changed", key=("g", i), summary="x")
+    alerts.emit("backup.failed", key="late", summary="x")
+    await env.advance(env.t + alerts.NOTICE_DELAY + 1)
+    mixed = [p for _, e, p in env.payloads if e == "alerts.suppressed"]
+    s_ = mixed[0]["summary"] if mixed else ""
+    check("mixed reasons are named per kind", "moderation.action: 1 (reserve)" in s_ and "backup.failed: 1 (global limit)" in s_, s_)
     env.close()
 
     # --- update.available once per version, also for overlapping checks

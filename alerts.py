@@ -18,10 +18,12 @@ What an alert is:
 
 Every emitter has a cooldown or a transition rule, and all of them share one safety cap:
 at most ``CAP_ALERTS`` alerts in ``CAP_WINDOW`` seconds over all events, then one
-"alerts suppressed" alert (counted in the window like any other, sent ``NOTICE_DELAY`` seconds
-after the trip so that it can name each kind held back with its count) and silence until the
-window has room again. The notice is sent once per trip: a trip ends after a whole window
-without a refused alert. Events that a stranger or an ordinary member can trigger have a
+"alerts suppressed" alert (counted in the window like any other, but never refused by a cap itself)
+and silence until the window has room again. Whenever anything is held back a notice is due: the first is
+sent ``NOTICE_DELAY`` seconds after the first refusal, then at most one per ``NOTICE_INTERVAL``; each
+names every kind held back since the previous notice with its count and why (the global limit, the
+reserve or a per-kind limit), then clears those counts. There is no per-trip state a refusal could
+extend, so a member who keeps one cap tripped cannot keep later refusals from being reported. Events that a stranger or an ordinary member can trigger have a
 smaller cap of their own (``SUB_CAPS``), so they can never use up the room the other alerts
 need: failed sign-in bursts and automatic blocks (strangers), and moderation actions, automod
 hits (any member, ``BUCKET_OF``: one shared bucket), new API keys and turned-off two-factor
@@ -126,8 +128,10 @@ BUCKET_OF = {
 # CAP_ALERTS - MEMBER_RESERVE slots are used, so a staff alert or an operations alert still
 # has room however many members act.
 MEMBER_RESERVE = 10
-# The notice of a trip is sent this long after it, so that it can say what was held back.
+# A notice is sent this long after the first alert is held back, so that it can say what was held back,
+# and then at most once per NOTICE_INTERVAL.
 NOTICE_DELAY = 30.0
+NOTICE_INTERVAL = 600.0
 STAFF_ROLES = frozenset(("moderator", "admin", "superadmin"))
 STAFF_REFRESH = 30.0
 COOLDOWN_MAX_KEYS = 2000
@@ -187,10 +191,11 @@ def bound() -> bool:
 _cooldowns: "OrderedDict[tuple, float]" = OrderedDict()
 _sent: deque = deque()                       # times of delivered alerts (the notice too) inside the cap window
 _sent_by: "dict[str, deque]" = {}            # the same per sub-cap bucket
-_suppressed = 0                              # alerts held back since the cap last tripped
-_held: "dict[str, int]" = {}                 # the same per event name
-_suppress_notice_at: Optional[float] = None  # when the "suppressed" alert of this trip was sent
-_last_refused_at: Optional[float] = None     # when an alert was last held back by a cap
+_held: "dict[str, int]" = {}                 # alerts held back since the last notice, per event name
+_held_why: "dict[str, set]" = {}             # the limits that held each kind back (WHY_TEXT keys)
+_notice_scheduled = False                    # a notice is waiting to be sent
+_notice_sent_at: Optional[float] = None      # when the last notice was sent
+_notice_gen = 0                              # bumped by reset_state: older notice tasks do nothing
 _burst: "OrderedDict[tuple, deque]" = OrderedDict()
 _auto_blocks: dict = {"count": 0, "addresses": [], "scheduled": False}
 _announced: set = set()                      # (component, version) of update alerts sent since start
@@ -198,9 +203,10 @@ _announced: set = set()                      # (component, version) of update al
 
 def reset_state() -> None:
     """Forget every cooldown, the cap and all counters (tests, and the stage-only reset route)."""
-    global _suppressed, _suppress_notice_at, _last_refused_at, _staff_at
+    global _notice_scheduled, _notice_sent_at, _notice_gen, _staff_at
     _cooldowns.clear()
     _held.clear()
+    _held_why.clear()
     _staff_ids.clear()
     _staff_names.clear()
     _staff_at = None
@@ -208,14 +214,15 @@ def reset_state() -> None:
     _sent_by.clear()
     _burst.clear()
     _announced.clear()
-    _suppressed = 0
-    _suppress_notice_at = None
-    _last_refused_at = None
+    _notice_scheduled = False
+    _notice_sent_at = None
+    _notice_gen += 1
     _auto_blocks.update(count=0, addresses=[], scheduled=False)
 
 
 def suppressed_count() -> int:
-    return _suppressed
+    """Alerts held back since the last notice."""
+    return sum(_held.values())
 
 
 def _keys_of(key) -> tuple:
@@ -242,25 +249,32 @@ def _stamp(name: str, keys: tuple, now: float) -> None:
         _cooldowns.popitem(last=False)
 
 
-def _cap_room(now: float, bucket: str, capped: bool = True) -> bool:
-    """True when the global cap has room and, for an alert subject to the sub-caps (``capped``:
-    a non-staff actor, an event with a bucket in SUB_CAPS), the reserve is untouched and the
-    bucket's own cap has room."""
+WHY_GLOBAL, WHY_RESERVE, WHY_KIND = "global", "reserve", "kind"
+
+
+def _cap_refusal(now: float, bucket: str, capped: bool = True) -> Optional[str]:
+    """None when the alert may be sent, else which limit holds it back: WHY_GLOBAL (the cap over all
+    alerts), WHY_RESERVE (for an alert subject to the sub-caps: a non-staff actor, an event with a
+    bucket in SUB_CAPS, the reserve is untouched) or WHY_KIND (the bucket's own cap)."""
     while _sent and now - _sent[0] >= CAP_WINDOW:
         _sent.popleft()
     if len(_sent) >= CAP_ALERTS:
-        return False
+        return WHY_GLOBAL
     limit = SUB_CAPS.get(bucket)
     if not capped or limit is None:
-        return True
+        return None
     if len(_sent) >= CAP_ALERTS - MEMBER_RESERVE:
-        return False
+        return WHY_RESERVE
+    return WHY_KIND if _ring_full(now, bucket, limit) else None
+
+
+def _ring_full(now: float, bucket: str, limit: int) -> bool:
     ring = _sent_by.get(bucket)
     if ring is None:
-        return True
+        return False
     while ring and now - ring[0] >= CAP_WINDOW:
         ring.popleft()
-    return len(ring) < limit
+    return len(ring) >= limit
 
 
 def _count_sent(now: float, bucket: Optional[str], capped: bool = True) -> None:
@@ -343,14 +357,15 @@ def _clean(value, limit: int = DETAIL_LIMIT) -> str:
     return secevents.clean_text(" ".join(str(value if value is not None else "").split()), limit) or ""
 
 
-def _spawn(coro) -> None:
+def _spawn(coro) -> bool:
     try:
         task = asyncio.get_running_loop().create_task(coro)
     except RuntimeError:
         coro.close()
-        return
+        return False
     _tasks.add(task)
     task.add_done_callback(_task_done)
+    return True
 
 
 def _task_done(task: "asyncio.Future") -> None:
@@ -384,7 +399,6 @@ def emit(name: str, *, summary: str, details: Optional[dict] = None, key="",
     the summary and details (a private channel's name stays out of them). ``result`` is a future
     set to whether a hook was sent the alert or the in-portal notice was raised.
     """
-    global _suppressed, _suppress_notice_at, _last_refused_at
     try:
         if _fire is None or name not in EVENT_NAMES:
             return False
@@ -399,18 +413,9 @@ def emit(name: str, *, summary: str, details: Optional[dict] = None, key="",
             return False
         bucket = bucket or BUCKET_OF.get(name, name)
         capped = not staff and bucket in SUB_CAPS
-        if not _cap_room(now, bucket, capped):
-            # A trip ends after a whole window without a refusal; each trip sends one notice,
-            # after NOTICE_DELAY, naming what was held back until then.
-            if _suppress_notice_at is None or _last_refused_at is None or now - _last_refused_at >= CAP_WINDOW:
-                _suppressed = 0
-                _held.clear()
-                _suppress_notice_at = now
-                _count_sent(now, None, False)
-                _spawn(_send_notice())
-            _suppressed += 1
-            _held[name] = _held.get(name, 0) + 1
-            _last_refused_at = now
+        why = _cap_refusal(now, bucket, capped)
+        if why:
+            _hold_back(name, why, now)
             if record:
                 _spawn(_record_security_event(record))
             return False
@@ -430,41 +435,83 @@ def emit(name: str, *, summary: str, details: Optional[dict] = None, key="",
         return False
 
 
-async def _send_notice() -> None:
-    """The one "alerts suppressed" alert of a trip, naming each kind held back so far."""
+def _hold_back(name: str, why: str, now: float) -> None:
+    """Count one alert held back by a cap and make sure a notice is due."""
+    global _notice_scheduled
+    _held[name] = _held.get(name, 0) + 1
+    _held_why.setdefault(name, set()).add(why)
+    if _notice_scheduled:
+        return
+    delay = NOTICE_DELAY
+    if _notice_sent_at is not None:
+        delay = max(delay, _notice_sent_at + NOTICE_INTERVAL - now)
+    _notice_scheduled = _spawn(_send_notice(delay, _notice_gen))
+
+
+WHY_LABEL = {WHY_GLOBAL: "global limit", WHY_RESERVE: "reserve", WHY_KIND: "per-kind limit"}
+
+
+def _why_sentence(why: str) -> str:
+    if why == WHY_GLOBAL:
+        return f"Limit of {CAP_ALERTS} alerts in {int(CAP_WINDOW // 60)} minutes reached"
+    if why == WHY_RESERVE:
+        return (f"Reserve reached: only staff and operations alerts may use the last {MEMBER_RESERVE} of "
+                f"{CAP_ALERTS} slots in {int(CAP_WINDOW // 60)} minutes")
+    return "Per-kind limit reached (a cap on what strangers or members can set off)"
+
+
+async def _send_notice(delay: float, gen: int) -> None:
+    """The "alerts suppressed" alert: every kind held back since the previous notice, with its count
+    and the limit that held it back, then the counts are cleared."""
+    global _notice_scheduled, _notice_sent_at
     try:
-        await _sleep(NOTICE_DELAY)
+        await _sleep(delay)
     except asyncio.CancelledError:
+        if gen == _notice_gen:
+            _notice_scheduled = False
         raise
-    held = dict(_held)
+    if gen != _notice_gen:
+        return                      # the state was reset meanwhile
+    _notice_scheduled = False
+    held, why = dict(_held), {k: set(v) for k, v in _held_why.items()}
+    _held.clear()
+    _held_why.clear()
     if not held:
         return
+    now = _clock()
+    _notice_sent_at = now
+    _count_sent(now, None, False)       # counted in the window, never refused by a cap
     ranked = sorted(held.items(), key=lambda kv: (-kv[1], kv[0]))
-    kinds = ", ".join(f"{k}: {n}" for k, n in ranked)
-    tail = f". Limit of {CAP_ALERTS} alerts in {int(CAP_WINDOW // 60)} minutes reached"
-    _deliver(_build("alerts.suppressed", _notice_summary(ranked, sum(held.values()), tail),
-                    {"Held back": kinds}, None))
+    reasons = set().union(*why.values()) if why else set()
+    mixed = len(reasons) > 1
+
+    def label(k):
+        return f" ({' and '.join(WHY_LABEL[w] for w in (WHY_GLOBAL, WHY_RESERVE, WHY_KIND) if w in why.get(k, ()))})"
+
+    items = [f"{k}: {n}" + (label(k) if mixed else "") for k, n in ranked]
+    tail = "" if mixed or not reasons else ". " + _why_sentence(next(iter(reasons)))
+    _deliver(_build("alerts.suppressed", _notice_summary(items, sum(held.values()), tail),
+                    {"Held back": ", ".join(items)}, None))
 
 
-def _notice_summary(ranked, total: int, tail: str) -> str:
+def _notice_summary(items, total: int, tail: str) -> str:
     """The kinds held back come first so the summary limit cuts the fixed text, not the list;
     kinds that still do not fit are given as a count."""
     head = f"Held back ({total}): "
-    full = ", ".join(f"{k}: {n}" for k, n in ranked)
+    full = ", ".join(items)
     if len(head) + len(full) + len(tail) > SUMMARY_LIMIT:
         tail = ""       # the list matters more than the reason
     budget = SUMMARY_LIMIT - len(head) - len(tail)
     shown = []
     used = 0
-    for i, (k, n) in enumerate(ranked):
-        item = f"{k}: {n}"
-        more = len(ranked) - i - 1
+    for i, item in enumerate(items):
+        more = len(items) - i - 1
         extra = len(f", and {more} more kinds") if more else 0
         if used + (2 if shown else 0) + len(item) + extra > budget and shown:
             break
         used += (2 if shown else 0) + len(item)
         shown.append(item)
-    rest = len(ranked) - len(shown)
+    rest = len(items) - len(shown)
     text = ", ".join(shown) + (f", and {rest} more kinds" if rest else "")
     return head + text + tail
 
