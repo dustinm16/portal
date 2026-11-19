@@ -334,6 +334,17 @@ Permission Hierarchy:
                         └─ Profile management
 ```
 
+### 4. Alerts and notification channels
+
+Two modules, no database access and no network of their own:
+
+- `webhook_formats.py` (pure functions) turns one event into the body and headers of one delivery. `generic` is the original signed JSON (HMAC-SHA256); `ntfy`, `gotify`, `discord` and `slack` get a minimal message (title, one-line summary, portal name) built from a fixed catalogue, with payload fields added only for hooks with `include_details` and only from an allow-list. Format credentials (a Gotify token, an ntfy token or login) go into request headers only.
+- `alerts.py` decides whether an ops, security or moderation alert may be sent. `server.py` binds the delivery functions at start (`alerts.bind`); until then every emitter does nothing. Each emitter has a cooldown or a transition rule, and all share a global cap of 30 alerts per 10 minutes. Events that a stranger or an ordinary member can set off also have smaller per-kind caps, the global cap keeps a reserve of 10 slots they can never use, and a notice names what was held back. The counters are in memory.
+
+**System hooks** are outgoing webhooks with `kind = 'system'` and no owner, managed by superadmins only (`/api/admin/webhooks`, Admin > Webhooks). Alert events and `webhook.test` go to system hooks only and are never matched by `*`; user hooks never receive them. Destination URLs and format credentials are stored encrypted and are write-only in the API: they are never returned (a generic hook's URL is the one exception). That is a property of the API, not of the database, which an administrator with terminal access can read.
+
+**allow_private** lets a hook reach loopback and private (LAN) addresses for a self-hosted ntfy or Gotify. Link-local, metadata and this portal's own listening ports stay blocked, a plain-http destination must resolve to a non-public address, and only a superadmin in a browser session can switch it on or change the URL or format of such a hook (security event and audit entry `webhook_allow_private`). Delivery runs through the same checked connector as every outbound request, so a rebinding hostname is refused at connect time.
+
 ---
 
 ## Directory Structure
