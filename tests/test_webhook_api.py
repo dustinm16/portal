@@ -236,7 +236,17 @@ async def main():
         check("switching to generic with a new url works, the new url is the generic one",
               st == 200 and e["url"] == "https://93.184.216.34/new-generic" and "DISCORDSECRETTOKEN" not in json.dumps(e), str((st, e)))
         st, e = await call(adm, "PUT", f"/api/webhooks/{did}", {"format": "slack"})
-        check("the other direction keeps the stored url, masked", st == 200 and e["url"] is None and e["url_host"], str((st, e)))
+        check("any format change without a new url is refused (the stored address is never reused for another service)",
+              st == 400 and "url" in (e.get("error") or ""), str((st, e)))
+        st, e = await call(adm, "PUT", f"/api/webhooks/{did}", {"format": "slack", "url": "https://93.184.216.34/slack-hook"})
+        check("a format change with a new url works, the address is masked", st == 200 and e["url"] is None and e["url_host"], str((st, e)))
+        st, e = await call(adm, "PUT", f"/api/webhooks/{did}", {"format": "slack", "name": "renamed"})
+        check("an edit that repeats the unchanged format needs no url", st == 200, str((st, e)))
+        sid2 = (await call(sa, "POST", "/api/admin/webhooks", {"name": "fmt-sys", "events": ["webhook.test"], "format": "ntfy",
+                                                               "url": "https://93.184.216.34/fmt"}))[1]["id"]
+        st, e = await call(sa, "PUT", f"/api/admin/webhooks/{sid2}", {"format": "discord"})
+        check("the system hook route refuses a format change without a url too", st == 400, str((st, e)))
+        await call(sa, "DELETE", f"/api/admin/webhooks/{sid2}")
         st, e = await call(adm, "DELETE", f"/api/webhooks/{did}")
 
         # ---------------- system hooks

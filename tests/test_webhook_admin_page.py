@@ -46,8 +46,22 @@ check("a new hook starts with no events selected, not '*'",
       "url: '', events: [], enabled: 1" in js and "events: ['*']" not in js)
 check("the form says '*' leaves out the presence events in third-party formats",
       "user.connected or user.disconnected" in js)
-check("a plain sentence under the format select warns what a generic hook receives",
-      re.search(r'id="wh-format".*?</select>\s*<div[^>]*>A generic hook receives full event payloads, including the text of messages in private channels, so point it only at a receiver you control\.</div>', js, re.S) is not None)
+check("the generic-hook warning is one constant shown only while Generic is selected",
+      "A generic hook receives full event payloads, including the text of messages in private channels, so point it only at a receiver you control." in js
+      and "q('wh-format-note').textContent = f === 'generic' ? WH_GENERIC_WARNING : ''" in js
+      and re.search(r'id="wh-format-note"[^>]*></div>', js) is not None)
+check("a changed format on edit needs a url (client check)",
+      "isEdit && f !== w.format && !url" in js and "Enter the URL for the new format" in js)
+check("the Webhooks section uses the defined border variable", "var(--border-color)" not in js and "var(--card-border)" in js
+      and 'id="wh-secret-box"' in html and "var(--border-color)" not in re.search(r'<div id="wh-secret-box".*?</div>', html, re.S).group(0))
+check("the signing-secret box has a Dismiss button and is hidden on a tab change",
+      'id="wh-secret-dismiss"' in html and "whHideSecret" in js
+      and re.search(r"function showTab\(.*?whHideSecret\(\);", html, re.S) is not None)
+check("the audit filter offers the webhook and alert actions",
+      all(f'<option value="{a}"' in html for a in ("webhook_system_create", "webhook_system_update", "webhook_system_delete", "webhook_allow_private", "alert_notify_change")))
+check("the modal is a dialog that closes on Escape and labels its fields with for=",
+      'role="dialog" aria-modal="true"' in js and "e.key === 'Escape'" in js and "removeEventListener('keydown'" in js
+      and all(f'for="{i}"' in js for i in ("wh-name", "wh-format", "wh-url", "wh-token", "wh-user", "wh-pass")))
 check("no inline onclick for data in the section", "onclick" not in js)
 check("no emoji", not re.search("[\U0001F000-\U0001FFFF☀-➿]", js))
 node = shutil.which("node")

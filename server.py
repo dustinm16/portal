@@ -7392,10 +7392,11 @@ async def _outgoing_webhook_fields(body: dict, *, kind: str, existing: dict | No
         return None, _bad_request("URL required for outgoing webhooks")
     # A generic hook's URL is shown by the API; the stored address of any other format
     # (a Discord or Slack webhook URL, an ntfy topic) is a credential that is never
-    # returned. Switching to generic therefore never keeps it: a new URL is required.
-    if fmt_changed and fmt == "generic" and old_fmt != "generic" and not url_in_body:
+    # returned. Switching to generic therefore never keeps it, and a format change never reuses
+    # the stored address for another service: a new URL is required.
+    if not creating and "format" in body and fmt_changed and not url_in_body:
         return None, _bad_request(
-            "Switching to the generic format needs a new url: the stored address of this format is never shown")
+            "Changing the format needs a new url: the stored address of the old format is never reused or shown")
     # An existing allow_private hook's destination is the superadmin's decision
     if (not creating and old_private and new_private and not may_private
             and (url_in_body and out.get("url") != existing["url"] or fmt_changed)):

@@ -2069,6 +2069,11 @@
                         <option value="channel_member_add">Member Add</option>
                         <option value="channel_member_remove">Member Remove</option>
                         <option value="channel_member_role">Member Role</option>
+                        <option value="webhook_system_create">System Webhook Create</option>
+                        <option value="webhook_system_update">System Webhook Update</option>
+                        <option value="webhook_system_delete">System Webhook Delete</option>
+                        <option value="webhook_allow_private">Webhook Private Addresses</option>
+                        <option value="alert_notify_change">Alert Notice Change</option>
                     </select>
                     <button class="range-btn" onclick="loadAuditLog()">Refresh</button>
                     <span id="audit-count" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
@@ -2150,8 +2155,9 @@
                     ntfy, Gotify, Discord and Slack messages carry only a title, a one-line summary and the portal name unless "Include details" is on.
                     Destination addresses and tokens are stored encrypted and are never shown again.
                 </p>
-                <div id="wh-secret-box" style="display:none;margin:0 0 10px;padding:10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);">
+                <div id="wh-secret-box" style="display:none;margin:0 0 10px;padding:10px;border:1px solid var(--card-border);border-radius:8px;background:var(--bg-secondary);">
                     <strong>Signing secret (shown once):</strong> <code id="wh-secret-value" style="word-break:break-all;"></code>
+                    <button type="button" class="range-btn" id="wh-secret-dismiss" style="margin-left:10px;">Dismiss</button>
                 </div>
                 <div class="sys-table-scroll">
                     <table class="sysmon-table">
@@ -2359,6 +2365,7 @@
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('tab-' + tabName).classList.add('active');
+            whHideSecret();
             const btn = (evt && evt.target) || document.querySelector(`.tab-btn[onclick*="'${tabName}'"]`);
             if (btn) btn.classList.add('active');
 
@@ -6775,6 +6782,7 @@
         // =================================================================
         let whState = { webhooks: [], formats: [], events: [], systemOnly: [] };
         const WH_FORMAT_LABELS = { generic: 'Generic (signed JSON)', ntfy: 'ntfy', gotify: 'Gotify', discord: 'Discord', slack: 'Slack' };
+        const WH_GENERIC_WARNING = 'A generic hook receives full event payloads, including the text of messages in private channels, so point it only at a receiver you control.';
         const WH_URL_HINT = {
             generic: 'https://example.com/hook',
             ntfy: 'https://ntfy.sh/your-topic (the topic acts as a password)',
@@ -6917,6 +6925,14 @@
             document.getElementById('wh-logs-panel').style.display = '';
         }
 
+        function whHideSecret() {
+            const box = document.getElementById('wh-secret-box');
+            if (!box) return;
+            box.style.display = 'none';
+            document.getElementById('wh-secret-value').textContent = '';
+        }
+        document.getElementById('wh-secret-dismiss').addEventListener('click', whHideSecret);
+
         function whShowSecret(secret) {
             document.getElementById('wh-secret-value').textContent = secret;
             document.getElementById('wh-secret-box').style.display = '';
@@ -6925,7 +6941,7 @@
         function showWebhookModal(hook) {
             const isEdit = !!hook;
             const w = hook || { name: '', format: 'ntfy', url: '', events: [], enabled: 1, include_details: false, allow_private: false };
-            const inputCss = 'width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);box-sizing:border-box;';
+            const inputCss = 'width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);box-sizing:border-box;';
             const modal = document.createElement('div');
             modal.id = 'wh-modal';
             modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;';
@@ -6945,36 +6961,36 @@
             }).join('');
             const evBoxes = plainBoxes + groupBoxes;
             modal.innerHTML = `
-                <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:480px;max-width:94vw;max-height:88vh;overflow-y:auto;">
-                    <h3 style="margin:0 0 12px;">${isEdit ? 'Edit' : 'New'} system webhook</h3>
-                    <label>Name</label>
+                <div role="dialog" aria-modal="true" aria-labelledby="wh-modal-title" style="background:var(--bg-primary);border:1px solid var(--card-border);border-radius:12px;padding:20px;width:480px;max-width:94vw;max-height:88vh;overflow-y:auto;">
+                    <h3 id="wh-modal-title" style="margin:0 0 12px;">${isEdit ? 'Edit' : 'New'} system webhook</h3>
+                    <label for="wh-name">Name</label>
                     <input type="text" id="wh-name" maxlength="100" style="${inputCss}">
-                    <label>Format</label>
+                    <label for="wh-format">Format</label>
                     <select id="wh-format" style="${inputCss}">${whState.formats.map(f => `<option value="${escapeHtml(f)}">${escapeHtml(WH_FORMAT_LABELS[f] || f)}</option>`).join('')}</select>
-                    <div id="wh-format-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;">A generic hook receives full event payloads, including the text of messages in private channels, so point it only at a receiver you control.</div>
-                    <label id="wh-url-label">URL</label>
+                    <div id="wh-format-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;"></div>
+                    <label id="wh-url-label" for="wh-url">URL</label>
                     <input type="text" id="wh-url" maxlength="2048" autocomplete="off" style="${inputCss}">
                     <div id="wh-url-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;"></div>
                     <div id="wh-cred-fields">
-                        <label id="wh-token-label">Token</label>
+                        <label id="wh-token-label" for="wh-token">Token</label>
                         <input type="password" id="wh-token" autocomplete="new-password" style="${inputCss}">
                         <div id="wh-basic-fields">
-                            <label>Basic auth user (ntfy, optional)</label>
+                            <label for="wh-user">Basic auth user (ntfy, optional)</label>
                             <input type="text" id="wh-user" autocomplete="off" style="${inputCss}">
-                            <label>Basic auth password</label>
+                            <label for="wh-pass">Basic auth password</label>
                             <input type="password" id="wh-pass" autocomplete="new-password" style="${inputCss}">
                         </div>
                         <div id="wh-cred-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;"></div>
                     </div>
-                    <label>Events</label>
-                    <div style="margin-bottom:8px;font-size:0.9rem;">${evBoxes}</div>
+                    <div id="wh-events-label" style="font-weight:600;">Events</div>
+                    <div role="group" aria-labelledby="wh-events-label" style="margin-bottom:8px;font-size:0.9rem;">${evBoxes}</div>
                     <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:8px;">In ntfy, Gotify, Discord and Slack formats "*" never includes message.created, user.connected or user.disconnected: list them by name. A member who appears offline is never announced in these formats. Chat messages of private channels and non-public streams are never sent.</div>
                     <label style="display:block;cursor:pointer;margin-bottom:6px;"><input type="checkbox" id="wh-details" style="width:auto;"> Include details (names, stream titles, message text up to 200 characters; never IP addresses, email addresses or tokens)</label>
                     <label style="display:block;cursor:pointer;margin-bottom:6px;"><input type="checkbox" id="wh-private" style="width:auto;"> May reach loopback and private (LAN) addresses (for a self-hosted ntfy or Gotify; link-local, metadata and this portal's own ports stay blocked)</label>
                     ${isEdit ? '<label style="display:block;cursor:pointer;margin-bottom:6px;"><input type="checkbox" id="wh-enabled" style="width:auto;"> Enabled</label>' : ''}
                     <div id="wh-error" style="color:#f87171;font-size:0.85rem;min-height:1.2em;margin:6px 0;"></div>
                     <div style="display:flex;gap:8px;justify-content:flex-end;">
-                        <button type="button" id="wh-cancel" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;">Cancel</button>
+                        <button type="button" id="wh-cancel" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);cursor:pointer;">Cancel</button>
                         <button type="button" id="wh-save" style="padding:6px 14px;background:var(--accent-color);border:none;border-radius:6px;color:white;cursor:pointer;">${isEdit ? 'Save' : 'Create'}</button>
                     </div>
                 </div>`;
@@ -6989,9 +7005,11 @@
 
             const syncFormat = () => {
                 const f = q('wh-format').value;
+                q('wh-format-note').textContent = f === 'generic' ? WH_GENERIC_WARNING : '';
                 q('wh-url').placeholder = (isEdit && f !== 'generic' && w.format === f && w.url_set) ? 'leave empty to keep the stored address' : (WH_URL_HINT[f] || '');
                 q('wh-url-label').textContent = f === 'gotify' ? 'Gotify server URL' : (f === 'discord' || f === 'slack') ? 'Webhook URL' : (f === 'ntfy' ? 'ntfy topic URL' : 'URL');
-                q('wh-url-note').textContent = f === 'generic' ? ((isEdit && w.format !== 'generic') ? 'Required: the stored address of the old format is never shown, enter the new URL.' : '') : 'Stored encrypted and never shown again. A new scheme, host or port does not keep the stored token or login: enter them again.';
+                const changed = isEdit && f !== w.format;
+                q('wh-url-note').textContent = changed ? 'Required when the format changes: the stored address of the old format is never shown, enter the new URL.' : (f === 'generic' ? '' : 'Stored encrypted and never shown again. A new scheme, host or port does not keep the stored token or login: enter them again.');
                 const showCred = f === 'ntfy' || f === 'gotify';
                 q('wh-cred-fields').style.display = showCred ? '' : 'none';
                 q('wh-basic-fields').style.display = f === 'ntfy' ? '' : 'none';
@@ -7014,7 +7032,10 @@
             });
             syncGroups();
 
-            const close = () => modal.remove();
+            const onKey = (e) => { if (e.key === 'Escape') close(); };
+            const close = () => { document.removeEventListener('keydown', onKey); modal.remove(); };
+            document.addEventListener('keydown', onKey);
+            q('wh-name').focus();
             q('wh-cancel').addEventListener('click', close);
             modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
             q('wh-save').addEventListener('click', async () => {
@@ -7025,6 +7046,10 @@
                     include_details: q('wh-details').checked, allow_private: q('wh-private').checked
                 };
                 const url = q('wh-url').value.trim();
+                if (isEdit && f !== w.format && !url) {
+                    q('wh-error').textContent = 'Enter the URL for the new format: the stored address of the old format is never reused.';
+                    return;
+                }
                 if (url || !isEdit) payload.url = url;
                 if (f === 'gotify' || f === 'ntfy') {
                     const cfg = {};
