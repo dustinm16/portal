@@ -6885,17 +6885,39 @@ async def _third_party_may_see(event: str, meta: dict | None) -> bool:
     if event in webhook_formats.STREAM_EVENTS:
         return bool(meta.get("stream_public"))
     if event in webhook_formats.PRESENCE_EVENTS:
-        # A member who chose to appear offline is not announced to a third party
-        uid = meta.get("user_id")
-        if not isinstance(uid, int):
-            return False
-        try:
-            st = await db.get_user_status(uid)
-        except Exception as e:
-            logger.warning(f"Webhook presence check failed: {type(e).__name__}")
-            return False
-        return bool(st) and st.get("status_preference") != "offline"
+        return await _presence_announceable(meta)
     return True
+
+
+async def _presence_announceable(meta: dict | None) -> bool:
+    """Whether a user.connected / user.disconnected event may be sent to any hook: a member
+    who chose to appear offline is not announced. Fails closed."""
+    uid = (meta or {}).get("user_id")
+    if not isinstance(uid, int):
+        return False
+    try:
+        st = await db.get_user_status(uid)
+    except Exception as e:
+        logger.warning(f"Webhook presence check failed: {type(e).__name__}")
+        return False
+    return bool(st) and st.get("status_preference") != "offline"
+
+
+def _message_webhook_payload(message_id: int, channel: str, user_id: int, display_name: str,
+                             text: str, created_at: str, *, anonymous: bool) -> dict:
+    """Body of message.created for every format: an anonymous post carries no user id (the
+    name is already "Anonymous"), as chat masks it for members."""
+    return {"message_id": message_id, "channel": channel,
+            "user_id": None if anonymous else user_id, "username": display_name,
+            "message": text, "created_at": created_at}
+
+
+def _message_deleted_webhook_payload(message_id: int, channel: str, deleted_by: int, message: dict) -> dict:
+    """Body of message.deleted: when the author deleted their own anonymous post, deleted_by
+    would name the author, so it is empty."""
+    own_anonymous = bool(message.get("anonymous")) and deleted_by == message.get("user_id")
+    return {"message_id": message_id, "channel": channel,
+            "deleted_by": None if own_anonymous else deleted_by}
 
 
 async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = None) -> int:
@@ -6907,6 +6929,8 @@ async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = N
     whether a stream is public).
     """
     try:
+        if event in webhook_formats.PRESENCE_EVENTS and not await _presence_announceable(meta):
+            return 0        # appear-offline: no hook of any format is told
         webhooks = await db.get_enabled_outgoing_webhooks_for_event(event)
         visible = None
         if any(w.get("format") != "generic" for w in webhooks):
@@ -18726,12 +18750,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                                    anon_subject=user_id if my_state["anonymous"] else None)
 
                         # Fire webhook event
-                        asyncio.create_task(fire_webhook_event("message.created", {
-                            "message_id": msg_id, "channel": current_channel,
-                            "user_id": user_id, "username": display_name,
-                            "message": message_text,
-                            "created_at": broadcast_payload["created_at"]
-                        },
+                        asyncio.create_task(fire_webhook_event("message.created", _message_webhook_payload(
+                            msg_id, current_channel, user_id, display_name, message_text,
+                            broadcast_payload["created_at"], anonymous=bool(my_state["anonymous"])),
                             meta={"channel_id": channel["id"], "anonymous": bool(my_state["anonymous"])}))
 
                         # Send @mention notifications
@@ -18805,10 +18826,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "message_id": message_id,
                                 "deleted_by": user_id
                             }, anon_subject=del_msg["user_id"] if del_msg.get("anonymous") else None)
-                            asyncio.create_task(fire_webhook_event("message.deleted", {
-                                "message_id": message_id, "channel": current_channel,
-                                "deleted_by": user_id
-                            },
+                            asyncio.create_task(fire_webhook_event("message.deleted", _message_deleted_webhook_payload(
+                                message_id, current_channel, user_id, del_msg),
                                 meta={"channel_id": del_ch["id"]}))
                             if is_mod:
                                 channel_obj = await db.get_chat_channel_by_name(current_channel)

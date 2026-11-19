@@ -218,6 +218,83 @@ async def main():
         check("the refused system calls changed nothing", (await db.get_webhook(sid))["name"] == "sys")
         db.get_stream_by_key = real_by_key
 
+        # ---------------- 3, 4, 5: payloads, bounded answer, alerts dropped by a 429
+        # no hook but the ones below may exist: the earlier sections aimed some at public addresses
+        await db.conn.execute("DELETE FROM webhooks")
+        await db.conn.commit()
+        got = []
+        big = {"written": 0}
+
+        async def receiver(request):
+            body = await request.read()
+            got.append((request.path, body))
+            if request.path == "/big":
+                resp = web.StreamResponse(status=200)
+                await resp.prepare(request)
+                chunk = b"A" * 65536
+                try:
+                    for _ in range(640):                   # 40 MB on offer
+                        await resp.write(chunk)
+                        big["written"] += len(chunk)
+                except Exception:
+                    pass
+                return resp
+            return web.Response(status=204)
+
+        rapp = web.Application()
+        rapp.router.add_route("*", "/{tail:.*}", receiver)
+        rsrv = TestServer(rapp, host="127.0.0.1")
+        await rsrv.start_server()
+        rbase = f"http://127.0.0.1:{rsrv.port}"
+
+        async def settle(n, secs=5.0):
+            for _ in range(int(secs * 20)):
+                if len(got) >= n:
+                    break
+                await asyncio.sleep(0.05)
+
+        gen = await db.create_webhook(ids["adm"], "gen", "outgoing", url=rbase + "/gen",
+                                      events=["message.created", "message.deleted", "user.connected", "user.disconnected"],
+                                      allow_private=True)
+        # 3. anonymous posts carry no user id in the generic body
+        anon = server._message_webhook_payload(5, "general", ids["u1"], "Anonymous", "hi", "2026-01-01T00:00:00Z", anonymous=True)
+        named = server._message_webhook_payload(6, "general", ids["u1"], "u1", "hi", "2026-01-01T00:00:00Z", anonymous=False)
+        check("anonymous message.created has user_id null and no real name", anon["user_id"] is None and "u1" not in json.dumps(anon), str(anon))
+        check("a named message.created keeps the user id", named["user_id"] == ids["u1"])
+        check("message.deleted by the anonymous author names nobody",
+              server._message_deleted_webhook_payload(5, "general", ids["u1"], {"anonymous": 1, "user_id": ids["u1"]})["deleted_by"] is None)
+        check("message.deleted by a moderator keeps the moderator, a named author's delete keeps deleted_by",
+              server._message_deleted_webhook_payload(5, "general", ids["adm"], {"anonymous": 1, "user_id": ids["u1"]})["deleted_by"] == ids["adm"]
+              and server._message_deleted_webhook_payload(5, "general", ids["u1"], {"anonymous": 0, "user_id": ids["u1"]})["deleted_by"] == ids["u1"])
+        n = await server.fire_webhook_event("message.created", anon, meta={"channel_id": 1, "anonymous": True})
+        await settle(1)
+        body = json.loads(got[-1][1]) if got else {}
+        check("the generic body of an anonymous post has user_id null on the wire", n == 1 and body.get("data", {}).get("user_id", "x") is None
+              and str(ids["u1"]) not in json.dumps(body.get("data", {}).get("username")), str(body))
+
+        src = (Path(__file__).resolve().parent.parent / "server.py").read_text()
+        check("the chat socket builds both message events through the masking helpers",
+              'fire_webhook_event("message.created", _message_webhook_payload(' in src
+              and 'fire_webhook_event("message.deleted", _message_deleted_webhook_payload(' in src)
+
+        # presence: appear-offline is announced to no hook, generic included
+        got.clear()
+        await db.set_user_status(ids["u1"], "online", update_preference=True)
+        n_on = await server.fire_webhook_event("user.connected", {"user_id": ids["u1"], "username": "u1"}, meta={"user_id": ids["u1"]})
+        await settle(1)
+        check("an online member's user.connected reaches a generic hook", n_on == 1 and len(got) == 1, str((n_on, len(got))))
+        got.clear()
+        await db.set_user_status(ids["u1"], "offline", update_preference=True)
+        for ev in ("user.connected", "user.disconnected"):
+            n_off = await server.fire_webhook_event(ev, {"user_id": ids["u1"], "username": "u1"}, meta={"user_id": ids["u1"]})
+            check(f"{ev} of an appear-offline member is sent to no hook (generic included)", n_off == 0, str(n_off))
+        await asyncio.sleep(0.3)
+        check("nothing reached the receiver for the appear-offline member", len(got) == 0, str(got))
+        check("presence without a user id in meta fails closed",
+              await server.fire_webhook_event("user.connected", {"user_id": ids["u1"]}, meta=None) == 0)
+
+        await rsrv.close()
+
     check("admin form says a new destination needs the credentials again",
           "does not keep the stored token or login" in (Path(__file__).resolve().parent.parent / "static" / "admin.html").read_text())
 
