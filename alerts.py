@@ -490,17 +490,17 @@ def _notice_undelivered(retry_in: Optional[float]) -> None:
     if last is None or last[0] != _notice_gen:
         return                      # already put back, or the state was reset meanwhile
     _, held, why = last
-    for k, n in held.items():
-        _held[k] = _held.get(k, 0) + n
-        _held_why.setdefault(k, set()).update(why.get(k, ()))
     _notice_retries += 1
     if _notice_retries > NOTICE_RETRY_MAX:
-        _held.clear()               # a receiver that keeps refusing: give up, do not grow forever
-        _held_why.clear()
+        # A receiver that keeps refusing: give up on this notice's counts. Counts held back since
+        # (never refused) are left alone.
         _notice_retries = 0
         logger.warning("[Alerts] a held-back notice was refused %d times in a row; its counts were dropped",
                        NOTICE_RETRY_MAX + 1)
         return
+    for k, n in held.items():
+        _held[k] = _held.get(k, 0) + n
+        _held_why.setdefault(k, set()).update(why.get(k, ()))
     if _notice_scheduled:
         return                      # a notice is already pending and will carry the counts
     delay = min(max(float(retry_in or 0.0), NOTICE_DELAY), NOTICE_RETRY_LIMIT)

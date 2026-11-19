@@ -488,6 +488,17 @@ async def main():
           and alerts.suppressed_count() == 0 and before <= 2 + alerts.NOTICE_RETRY_MAX + 1, str(before))
     env.close()
 
+    # giving up on a notice drops only its own counts, never those held back since
+    env = Env(virtual=True)
+    alerts._notice_retries = alerts.NOTICE_RETRY_MAX
+    alerts._last_notice = (alerts._notice_gen, {"role.changed": 2}, {"role.changed": {alerts.WHY_SLOW}})
+    alerts._held["moderation.action"] = 3
+    alerts._held_why["moderation.action"] = {alerts.WHY_GLOBAL}
+    alerts.note_dropped("alerts.suppressed", 10.0)
+    check("giving up on a refused notice keeps the counts held back since, and does not add its own back",
+          alerts._held == {"moderation.action": 3} and alerts._notice_retries == 0, str(alerts._held))
+    env.close()
+
 
 asyncio.run(main())
 if failures:
