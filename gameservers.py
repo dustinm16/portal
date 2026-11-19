@@ -1438,6 +1438,10 @@ async def _mark_expected_stop(gs) -> None:
         svc = await mgr.get_service(sid) if mgr is not None and sid else None
         if svc is not None:
             svc._expected_stop = True
+            # Also quiet for the health alerts: the portal took it down itself.
+            quiet = getattr(mgr, "_stopped_on_purpose", None)
+            if quiet is not None:
+                quiet.add(sid)
     except Exception as e:
         logger.warning("could not mark the stop of %s as expected: %s", gs.get("unit_name"), type(e).__name__)
 
@@ -1494,6 +1498,12 @@ async def _update_job(db, gs_id, job):
 
     if was_running:
         jobs.log(job, "restarting service")
+        # From here on a unit that does not come back is a real outage again.
+        try:
+            if _services.service_manager is not None and gs.get("service_id"):
+                getattr(_services.service_manager, "_stopped_on_purpose", set()).discard(gs["service_id"])
+        except Exception:
+            pass
         await _run_cmd(_sudo("systemctl", "start", f"{unit}.service"), timeout=120)
     if rc != 0:
         jobs.log(job, f"SteamCMD exited {rc}")

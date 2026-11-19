@@ -45,6 +45,9 @@ class FakeManager:
 
     stop_service = restart_service = start_service
 
+    async def get_service_status(self, sid):
+        return {"id": sid, "status": "running"}
+
 
 async def main():
     tmp = tempfile.mkdtemp()
@@ -93,6 +96,13 @@ async def main():
                 check(f"systemd-bound {action} answers 200", r.status == 200, str(r.status))
             es = [e for e in await entries() if e["action"] == f"service.{action}" and e["target_id"] == sid]
             check(f"systemd-bound {action} is audited", len(es) == 1 and es[0]["target_name"] == "sysd", str(es))
+        # The admin panel's own buttons use a second set of routes; they must leave the same record.
+        for action in ("start", "stop", "restart"):
+            before = len([e for e in await entries() if e["action"] == f"service.{action}" and e["target_id"] == mid])
+            async with s.post(base + f"/api/managed-services/{mid}/{action}") as r:
+                check(f"panel route {action} answers 200", r.status == 200, str(r.status))
+            es = [e for e in await entries() if e["action"] == f"service.{action}" and e["target_id"] == mid]
+            check(f"panel route {action} is audited", len(es) == before + 1 and es[0]["actor_username"] == "adm", str(es))
         n = len(await entries())
         mgr.ok = False
         async with s.post(base + f"/api/services/{mid}/stop") as r:

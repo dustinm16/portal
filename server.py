@@ -12364,6 +12364,9 @@ async def http_start_managed_service(request: web.Request) -> web.Response:
     success, error = await _service_manager.start_service(int(service_id))
     if success:
         logger.info(f"Managed service {service_id} started by user {token.user_id}")
+        managed_row = await db.get_service_by_id(int(service_id))
+        if managed_row:
+            await _audit_service_control(token, managed_row, "start")
         status = await _service_manager.get_service_status(int(service_id))
         return web.json_response({"success": True, "service": status})
     else:
@@ -12389,6 +12392,9 @@ async def http_stop_managed_service(request: web.Request) -> web.Response:
     success, error = await _service_manager.stop_service(int(service_id))
     if success:
         logger.info(f"Managed service {service_id} stopped by user {token.user_id}")
+        managed_row = await db.get_service_by_id(int(service_id))
+        if managed_row:
+            await _audit_service_control(token, managed_row, "stop")
         status = await _service_manager.get_service_status(int(service_id))
         return web.json_response({"success": True, "service": status})
     else:
@@ -12414,6 +12420,9 @@ async def http_restart_managed_service(request: web.Request) -> web.Response:
     success, error = await _service_manager.restart_service(int(service_id))
     if success:
         logger.info(f"Managed service {service_id} restarted by user {token.user_id}")
+        managed_row = await db.get_service_by_id(int(service_id))
+        if managed_row:
+            await _audit_service_control(token, managed_row, "restart")
         status = await _service_manager.get_service_status(int(service_id))
         return web.json_response({"success": True, "service": status})
     else:
