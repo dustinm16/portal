@@ -628,6 +628,7 @@ POST /api/chat/channels/:id/clear    - Clear history (superadmin)
 POST /api/chat/upload                - Upload chat image
 GET  /api/chat/link-preview          - Fetch OpenGraph metadata for URL
 GET  /api/chat/thread/:id            - Get reply chain for a message
+GET  /api/chat/channels/:id/messages - Older messages / a window around a message (before_id, around_id, limit)
 WS   /ws/chat                        - Chat WebSocket (text + voice signaling)
 ```
 

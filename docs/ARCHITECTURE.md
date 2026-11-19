@@ -1063,6 +1063,7 @@ GET  /api/chat/users                 - Search users for DMs (all auth users)
 POST /api/chat/upload                - Upload chat image
 GET  /api/chat/link-preview          - Fetch OpenGraph metadata for URL
 GET  /api/chat/thread/:id            - Get reply chain for a message
+GET  /api/chat/channels/:id/messages - Older messages / a window around a message (before_id, around_id, limit)
 GET  /api/users/blocked              - List blocked users
 POST /api/users/:id/block            - Block a user
 DELETE /api/users/:id/block          - Unblock a user

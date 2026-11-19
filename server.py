@@ -14854,15 +14854,22 @@ async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: st
     slowmode=False skips the slow-mode wait (edits: fixing a typo right after
     posting is not a new message; the rate limit still applies).
 
-    Stream ban, timeout or mute, the per-socket rate limit and slow mode, in that
+    A stream chat closed to this member (not public, not the owner or an admin),
+    stream ban, timeout or mute, the per-socket rate limit and slow mode, in that
     order; the error reply is sent to ws and True is returned when one applies.
     A send and an edit both go through here, and automod runs only after it, so a
     member who is timed out, muted, banned or sending too fast never reaches the
     rules (and never costs them regex work or a new penalty). A passed rate limit
     check counts against msg_times.
     """
-    # Check if user is banned from this stream's chat
+    # The chat of a stream that is not public is closed to everyone but its
+    # owner and admins (same answer as for a missing channel)
     stream = await db.get_stream_by_chat_channel(channel["id"])
+    if _stream_chat_hidden(stream, user_id, user_role):
+        await ws.send_json({"type": "error", "message": "Channel not found"})
+        return True
+
+    # Check if user is banned from this stream's chat
     if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
         await ws.send_json({
             "type": "error",
@@ -16085,55 +16092,98 @@ def _chat_users_list(users_info: list, channel: str, viewer_id, viewer_role) -> 
     return out
 
 
-async def http_get_chat_thread(request: web.Request) -> web.Response:
-    """Get reply chain for a message (thread view)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+# =============================================================================
+# Reading channel history: join, WebSocket history_page, GET .../messages
+#
+# Every way of reading messages of a channel goes through the two helpers
+# below, so access rules (stream ban, private membership, removed member) and
+# anonymous masking cannot differ between them.
+# =============================================================================
 
-    try:
-        message_id = int(request.match_info["id"])
-    except (ValueError, TypeError):
-        return web.json_response({"error": "Invalid message ID"}, status=400)
+HISTORY_PAGE_DEFAULT = 50
+HISTORY_PAGE_MAX = 100
+HISTORY_NO_STORE = {"Cache-Control": "private, no-store"}   # message text must not sit in a shared or browser cache
+HISTORY_ID_MAX = 2**63 - 1      # largest id SQLite can hold; anything above is refused before it reaches the database
+# Page requests per user and window, over all sockets and the HTTP route.
+HISTORY_RATE_LIMIT = 30
+HISTORY_RATE_WINDOW = 60.0
+_history_hits: dict[int, list[float]] = {}
 
-    # Check the user can access the channel containing this message
-    root_msg = await db.get_chat_message(message_id)
-    if not root_msg:
-        return web.json_response({"error": "Message not found"}, status=404)
+_STREAM_UNSET = object()
 
-    user = await db.get_user_by_id(token.user_id)
-    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
-    ch_id = root_msg.get("channel_id")
-    if ch_id:
-        channel = await db.get_chat_channel(ch_id)
-        if channel and channel.get("visibility") == "private":
-            if user_role not in ("admin", "superadmin"):
-                is_member = await db.is_channel_member(ch_id, token.user_id)
-                if not is_member:
-                    return web.json_response({"error": "Access denied"}, status=403)
 
-    chain = await db.get_reply_chain(message_id)
-    if not chain:
-        return web.json_response({"error": "Message not found"}, status=404)
+class _ReadAccess:
+    """Result of _can_read_channel: true when the viewer may read the channel,
+    otherwise `reason` says why ("missing", "hidden", "banned" or "private") and
+    `message` is the text the join path has always sent for it."""
+    __slots__ = ("allowed", "reason", "message")
 
-    # Filter out messages from private channels the user can't access
-    if user_role not in ("admin", "superadmin"):
-        filtered_chain = []
-        for m in chain:
-            m_ch_id = m.get("channel_id")
-            if m_ch_id and m_ch_id != ch_id:
-                m_channel = await db.get_chat_channel(m_ch_id)
-                if m_channel and m_channel.get("visibility") == "private":
-                    if not await db.is_channel_member(m_ch_id, token.user_id):
-                        continue
-            filtered_chain.append(m)
-        chain = filtered_chain
+    def __init__(self, allowed: bool, reason: str = None, message: str = None):
+        self.allowed = allowed
+        self.reason = reason
+        self.message = message
 
-    # Enrich with user data
-    user_ids = list(set(m["user_id"] for m in chain if m.get("user_id")))
-    users_info = await db.get_users_status(user_ids)
+    def __bool__(self) -> bool:
+        return self.allowed
+
+
+def _stream_chat_hidden(stream, user_id: int, user_role: str) -> bool:
+    """True when the chat of this stream is closed to this member: the stream is
+    not public and the member is neither its owner nor an admin (the rule of the
+    stream detail route). A channel without a stream is never hidden by this."""
+    if not stream or stream.get("is_public"):
+        return False
+    return stream.get("user_id") != user_id and user_role not in ("admin", "superadmin")
+
+
+async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREAM_UNSET) -> _ReadAccess:
+    """The one decision on whether a member may read a channel's messages.
+
+    False for a missing channel, for the chat of a stream that is not public
+    (only its owner and admins read it; everyone else gets the answer for a
+    missing channel), for a member banned from the chat of the stream the
+    channel belongs to, and for a private channel the member does not belong
+    to (admins and superadmins read every channel, moderators do not). The
+    stream is the one whose chat_channel_id is this channel. Callers pass
+    `stream` when they already have it (None means the channel has no stream).
+    The answer is looked up each time: a member removed from a private channel
+    loses access on the next request, even on a socket that joined while still
+    a member.
+    """
+    if not channel:
+        return _ReadAccess(False, "missing", "Channel not found")
+    if stream is _STREAM_UNSET:
+        stream = await db.get_stream_by_chat_channel(channel["id"])
+    if _stream_chat_hidden(stream, user_id, user_role):
+        return _ReadAccess(False, "hidden", "Channel not found")
+    if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
+        return _ReadAccess(False, "banned", "You are banned from this stream's chat")
+    if channel.get("visibility", "public") == "private" and user_role not in ("admin", "superadmin"):
+        if not await db.is_channel_member(channel["id"], user_id):
+            return _ReadAccess(False, "private", "This channel is private")
+    return _ReadAccess(True)
+
+
+async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, channel_id) -> list:
+    """Add display data to channel messages (in place) for one viewer.
+
+    Author name, nickname, avatar and role; anonymous authors are masked for
+    this viewer (see _mask_anonymous_author); reply previews (one query for
+    all targets, restricted to this channel; a deleted original falls back to
+    the preview stored with the reply); reactions with anonymous reactors
+    dropped from the id lists; polls with an anonymous creator's id removed.
+    Join, history_page and the HTTP route all use this and nothing else.
+    """
+    if not messages:
+        return messages
+    reply_ids = {m["reply_to"] for m in messages if m.get("reply_to")}
+    targets = {t["id"]: t for t in await db.get_chat_messages_by_ids(reply_ids, channel_id)}
+    # Authors of the messages and of the messages they answer, so a preview
+    # shows the same name whichever page it is on.
+    author_ids = {m["user_id"] for m in messages if m.get("user_id")}
+    author_ids |= {t["user_id"] for t in targets.values() if t.get("user_id")}
     users_map = {}
-    for u in users_info:
+    for u in await db.get_users_status(list(author_ids)):
         u_avatar = {}
         if u.get("avatar"):
             try:
@@ -16146,20 +16196,216 @@ async def http_get_chat_thread(request: web.Request) -> web.Response:
             "role": u.get("role", "user"),
             "anonymous": bool(u.get("chat_anonymous"))
         }
-
-    for m in chain:
+    # Display priority: Anon > Nickname > Username, from the per-message flag
+    for m in messages:
         ui = users_map.get(m.get("user_id"), {})
         was_anonymous = bool(m.get("anonymous"))
         m["nickname"] = ui.get("nickname") if not was_anonymous else None
         m["avatar"] = ui.get("avatar", {}) if not was_anonymous else {}
         m["role"] = ui.get("role", "user")
+        m["anonymous"] = was_anonymous
         if was_anonymous:
             m["username"] = "Anonymous"
         elif ui.get("nickname"):
             m["username"] = ui["nickname"]
-        _mask_anonymous_author(m, token.user_id, user_role)
+        _mask_anonymous_author(m, viewer_id, viewer_role)
+        if m.get("reply_to"):
+            rmsg = targets.get(m["reply_to"])
+            if rmsg:
+                r_ui = users_map.get(rmsg.get("user_id"), {})
+                r_username = "Anonymous" if rmsg.get("anonymous") else (r_ui.get("nickname") or rmsg["username"])
+                r_text = rmsg["message"]
+                if len(r_text) > 100:
+                    r_text = r_text[:100] + "..."
+                m["reply_preview"] = {"id": m["reply_to"], "username": r_username, "message": r_text}
+            elif m.get("reply_preview_username"):
+                # Original message was deleted: use the stored preview
+                m["reply_preview"] = {
+                    "id": m["reply_to"],
+                    "username": m["reply_preview_username"],
+                    "message": m.get("reply_preview_text") or "",
+                    "deleted": True
+                }
+    msg_ids = [m["id"] for m in messages]
+    all_reactions = await db.get_bulk_reactions(msg_ids)
+    await _mask_reactor_ids(all_reactions, viewer_id, viewer_role)
+    all_polls = await db.get_polls_by_message_ids(msg_ids)
+    for m in messages:
+        m["reactions"] = all_reactions.get(m["id"], [])
+        if m["id"] in all_polls:
+            m["poll"] = _format_poll_for_client(all_polls[m["id"]], viewer_id)
+            if m.get("anonymous") and not _viewer_sees_identity(
+                    viewer_id, viewer_role, all_polls[m["id"]].get("user_id")):
+                m["poll"]["user_id"] = None
+    return messages
 
-    return web.json_response({"thread": chain})
+
+def _parse_history_request(before_id, around_id, limit) -> tuple:
+    """Validate the cursor and page size of a history request. Returns
+    (before_id, around_id, limit); raises ValueError with a message for the
+    caller to send back. The size defaults to 50 and is capped at 100."""
+    def as_id(value, name):
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be a message id")
+        try:
+            number = int(value)
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError(f"{name} must be a message id")
+        # SQLite integers are 64 bit; a larger id would raise inside the driver
+        if number < 1 or number > HISTORY_ID_MAX:
+            raise ValueError(f"{name} must be a message id")
+        return number
+    before_id = as_id(before_id, "before_id")
+    around_id = as_id(around_id, "around_id")
+    if before_id is not None and around_id is not None:
+        raise ValueError("Give before_id or around_id, not both")
+    if limit is None or limit == "":
+        limit = HISTORY_PAGE_DEFAULT
+    else:
+        if isinstance(limit, bool):
+            raise ValueError("limit must be a number")
+        try:
+            limit = int(limit)
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError("limit must be a number")
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        limit = min(limit, HISTORY_PAGE_MAX)
+    return before_id, around_id, limit
+
+
+def _history_rate_wait(user_id: int) -> int:
+    """Count one history request for this user (all sockets and the HTTP route
+    share the budget). Returns 0 if it is allowed, else the seconds to wait."""
+    now = monotonic()
+    hits = [t for t in _history_hits.get(user_id, ()) if now - t < HISTORY_RATE_WINDOW]
+    if len(hits) >= HISTORY_RATE_LIMIT:
+        _history_hits[user_id] = hits
+        return max(1, int(HISTORY_RATE_WINDOW - (now - hits[0])) + 1)
+    hits.append(now)
+    _history_hits[user_id] = hits
+    if len(_history_hits) > 2000:
+        for uid in [u for u, h in _history_hits.items() if not h or now - h[-1] >= HISTORY_RATE_WINDOW]:
+            _history_hits.pop(uid, None)
+    return 0
+
+
+async def _channel_history(channel: dict, viewer_id, viewer_role, *, before_id=None,
+                           around_id=None, limit=HISTORY_PAGE_DEFAULT) -> dict:
+    """One page of a channel's messages for one viewer, already enriched and
+    masked. The caller has checked _can_read_channel.
+
+    No cursor: the newest page. before_id: the page of older messages.
+    around_id: a window centred on that message; `found` is False when it is
+    not a message of this channel (the list is then empty). `has_more` says
+    whether older messages exist, `has_newer` whether newer ones do. Nothing
+    here marks anything as read."""
+    found = True
+    has_newer = False
+    if around_id is not None:
+        window = await db.get_chat_messages_around(channel["id"], around_id, limit)
+        if window is None:
+            messages, has_more, found = [], False, False
+        else:
+            messages, has_more, has_newer = window
+    else:
+        messages, has_more = await db.get_chat_messages_page(channel["id"], limit, before_id)
+    await _enrich_channel_messages(messages, viewer_id, viewer_role, channel["id"])
+    return {"channel_id": channel["id"], "messages": messages, "has_more": has_more,
+            "has_newer": has_newer, "found": found}
+
+
+async def http_get_channel_messages(request: web.Request) -> web.Response:
+    """GET /api/chat/channels/{id}/messages?before_id=|around_id=&limit=
+
+    Older messages of a channel, or a window around one message (for links to
+    a message). Same authentication as the other chat routes; a channel the
+    caller cannot read answers 404, the same as one that does not exist."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    try:
+        channel_id = int(request.match_info["id"])
+        if channel_id < 1 or channel_id > HISTORY_ID_MAX:
+            raise ValueError("out of range")
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Channel not found"}, status=404)
+    q = request.query
+    try:
+        before_id, around_id, limit = _parse_history_request(
+            q.get("before_id"), q.get("around_id"), q.get("limit"))
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    wait = _history_rate_wait(token.user_id)
+    if wait:
+        return web.json_response({"error": "Too many history requests"}, status=429,
+                                 headers={"Retry-After": str(wait)})
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    channel = await db.get_chat_channel(channel_id)
+    if not await _can_read_channel(channel, token.user_id, user_role):
+        return web.json_response({"error": "Channel not found"}, status=404, headers=HISTORY_NO_STORE)
+    return web.json_response(await _channel_history(
+        channel, token.user_id, user_role, before_id=before_id, around_id=around_id, limit=limit),
+        headers=HISTORY_NO_STORE)
+
+
+async def http_get_chat_thread(request: web.Request) -> web.Response:
+    """Get reply chain for a message (thread view).
+
+    Readable under the same rule as the channel's history (_can_read_channel:
+    stream ban, removed member, closed stream chat, private channel); a message
+    the caller may not read answers 404, the same as one that does not exist."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+
+    try:
+        message_id = int(request.match_info["id"])
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid message ID"}, status=400)
+
+    def not_found():
+        return web.json_response({"error": "Message not found"}, status=404, headers=HISTORY_NO_STORE)
+
+    if message_id < 1 or message_id > HISTORY_ID_MAX:
+        return not_found()
+    root_msg = await db.get_chat_message(message_id)
+    if not root_msg:
+        return not_found()
+
+    user = await db.get_user_by_id(token.user_id)
+    user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
+    ch_id = root_msg.get("channel_id")
+    if ch_id:
+        channel = await db.get_chat_channel(ch_id)
+        if not await _can_read_channel(channel, token.user_id, user_role):
+            return not_found()
+
+    chain = await db.get_reply_chain(message_id)
+    if not chain:
+        return not_found()
+
+    # A reply chain stays in one channel; drop anything that sits in a channel
+    # the caller may not read, then enrich one channel at a time.
+    by_channel: dict = {}
+    for m in chain:
+        m_ch_id = m.get("channel_id")
+        if m_ch_id not in by_channel:
+            if m_ch_id == ch_id:
+                allowed = True
+            else:
+                allowed = bool(await _can_read_channel(
+                    await db.get_chat_channel(m_ch_id) if m_ch_id else None, token.user_id, user_role))
+            by_channel[m_ch_id] = allowed
+    chain = [m for m in chain if by_channel.get(m.get("channel_id"))]
+    for m_ch_id in {m.get("channel_id") for m in chain}:
+        await _enrich_channel_messages([m for m in chain if m.get("channel_id") == m_ch_id],
+                                       token.user_id, user_role, m_ch_id)
+
+    return web.json_response({"thread": chain}, headers=HISTORY_NO_STORE)
 
 
 # =============================================================================
@@ -16924,24 +17170,15 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             # Broadcast updated users list to remaining users
                             await broadcast_users_list(current_channel)
 
-                        # Check if user is banned from this stream's chat
-                        if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
-                            await ws.send_json({
-                                "type": "error",
-                                "message": "You are banned from this stream's chat"
-                            })
+                        # Stream ban and private-channel membership: the same check
+                        # every way of reading a channel's messages uses
+                        access = await _can_read_channel(channel, user_id, user_role, stream)
+                        if not access:
+                            # The old room is already left and the client has switched
+                            # its view: later sends must not go to the room it left
+                            current_channel = None
+                            await ws.send_json({"type": "error", "message": access.message})
                             continue
-
-                        # Check channel visibility (private channels require membership or mod+)
-                        ch_visibility = channel.get("visibility", "public")
-                        if ch_visibility == "private" and user_role not in ("admin", "superadmin"):
-                            is_member = await db.is_channel_member(channel["id"], user_id)
-                            if not is_member:
-                                await ws.send_json({
-                                    "type": "error",
-                                    "message": "This channel is private"
-                                })
-                                continue
 
                         # Join new channel (use channel name from DB)
                         current_channel = channel["name"]
@@ -16974,110 +17211,28 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 channel_info["stream_public_key"] = ""
                         await ws.send_json(channel_info)
 
-                        # Send message history enriched with user data
-                        messages = await db.get_chat_messages(channel["id"], limit=50)
-                        if messages:
-                            # Collect unique user IDs and fetch their profiles
-                            msg_user_ids = list(set(m["user_id"] for m in messages if m.get("user_id")))
-                            msg_users_info = await db.get_users_status(msg_user_ids)
-                            msg_users_map = {}
-                            for u in msg_users_info:
-                                u_avatar = {}
-                                if u.get("avatar"):
-                                    try:
-                                        u_avatar = json.loads(u["avatar"])
-                                    except (json.JSONDecodeError, TypeError):
-                                        pass
-                                msg_users_map[u["id"]] = {
-                                    "nickname": u.get("nickname"),
-                                    "avatar": u_avatar,
-                                    "role": u.get("role", "user"),
-                                    "anonymous": bool(u.get("chat_anonymous"))
-                                }
-                            # Enrich each message using per-message anonymous flag
-                            # Display priority: Anon > Nickname > Username
-                            for m in messages:
-                                ui = msg_users_map.get(m.get("user_id"), {})
-                                was_anonymous = bool(m.get("anonymous"))
-                                m["nickname"] = ui.get("nickname") if not was_anonymous else None
-                                m["avatar"] = ui.get("avatar", {}) if not was_anonymous else {}
-                                m["role"] = ui.get("role", "user")
-                                m["anonymous"] = was_anonymous
-                                if was_anonymous:
-                                    m["username"] = "Anonymous"
-                                elif ui.get("nickname"):
-                                    m["username"] = ui["nickname"]
-                                _mask_anonymous_author(m, user_id, user_role)
-
-                            # Enrich reply previews
-                            reply_ids = [m["reply_to"] for m in messages if m.get("reply_to")]
-                            if reply_ids:
-                                reply_msgs = {}
-                                for rid in set(reply_ids):
-                                    rmsg = await db.get_chat_message(rid)
-                                    if rmsg:
-                                        r_ui = msg_users_map.get(rmsg.get("user_id"), {})
-                                        r_anon = bool(rmsg.get("anonymous"))
-                                        r_username = "Anonymous" if r_anon else (r_ui.get("nickname") or rmsg["username"])
-                                        r_text = rmsg["message"]
-                                        if len(r_text) > 100:
-                                            r_text = r_text[:100] + "..."
-                                        reply_msgs[rid] = {
-                                            "id": rid,
-                                            "username": r_username,
-                                            "message": r_text
-                                        }
-                                for m in messages:
-                                    if m.get("reply_to"):
-                                        if m["reply_to"] in reply_msgs:
-                                            m["reply_preview"] = reply_msgs[m["reply_to"]]
-                                        elif m.get("reply_preview_username"):
-                                            # Original message was deleted — use stored preview
-                                            m["reply_preview"] = {
-                                                "id": m["reply_to"],
-                                                "username": m["reply_preview_username"],
-                                                "message": m.get("reply_preview_text") or "",
-                                                "deleted": True
-                                            }
-
-                        # Enrich messages with reactions and polls
-                        if messages:
-                            msg_ids = [m["id"] for m in messages]
-                            all_reactions = await db.get_bulk_reactions(msg_ids)
-                            await _mask_reactor_ids(all_reactions, user_id, user_role)
-                            all_polls = await db.get_polls_by_message_ids(msg_ids)
-                            for m in messages:
-                                m["reactions"] = all_reactions.get(m["id"], [])
-                                if m["id"] in all_polls:
-                                    m["poll"] = _format_poll_for_client(all_polls[m["id"]], user_id)
-                                    if m.get("anonymous") and not _viewer_sees_identity(
-                                            user_id, user_role, all_polls[m["id"]].get("user_id")):
-                                        m["poll"]["user_id"] = None
-
+                        # Send message history (enriched and masked for this viewer)
+                        page = await _channel_history(channel, user_id, user_role,
+                                                      limit=HISTORY_PAGE_DEFAULT)
+                        messages = page["messages"]
                         await ws.send_json({
                             "type": "history",
-                            "messages": messages
+                            "channel_id": channel["id"],
+                            "messages": messages,
+                            "has_more": page["has_more"]
                         })
 
                         # Send pinned messages
-                        if channel:
-                            pinned = await db.get_pinned_messages(channel["id"])
-                            if pinned:
-                                # Enrich pinned messages with user info
-                                for p in pinned:
-                                    p_ui = msg_users_map.get(p.get("user_id"), {}) if messages else {}
-                                    if p.get("anonymous"):
-                                        p["username"] = "Anonymous"
-                                    elif p_ui.get("nickname"):
-                                        p["username"] = p_ui["nickname"]
-                                    _mask_anonymous_author(p, user_id, user_role)
-                                await ws.send_json({
-                                    "type": "pinned_messages",
-                                    "messages": pinned
-                                })
+                        pinned = await db.get_pinned_messages(channel["id"])
+                        if pinned:
+                            await _enrich_channel_messages(pinned, user_id, user_role, channel["id"])
+                            await ws.send_json({
+                                "type": "pinned_messages",
+                                "messages": pinned
+                            })
 
                         # Mark channel as read
-                        if messages and channel:
+                        if messages:
                             last_msg_id = messages[-1]["id"]
                             await db.update_read_position(user_id, channel["id"], last_msg_id)
 
@@ -17127,6 +17282,41 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                                 break
                             except Exception as e:
                                 logger.debug(f"Auto-online status update failed: {e}")
+
+                    elif msg_type == "history_page":
+                        # Older messages (before_id), a window around one message
+                        # (around_id) or, with neither, the newest page again. The
+                        # channel is the one this socket joined, looked up here;
+                        # nothing the client sends names a channel. Never marks
+                        # anything as read.
+                        req = data.get("req")
+                        if not isinstance(req, (int, str)) or isinstance(req, bool) or len(str(req)) > 40:
+                            req = None
+                        try:
+                            h_before, h_around, h_limit = _parse_history_request(
+                                data.get("before_id"), data.get("around_id"), data.get("limit"))
+                        except ValueError as e:
+                            await ws.send_json({"type": "history_error", "error_code": "invalid",
+                                                "message": str(e), "req": req})
+                            continue
+                        wait = _history_rate_wait(user_id)
+                        if wait:
+                            await ws.send_json({"type": "history_error", "error_code": "rate_limited",
+                                                "message": "Too many history requests, try again shortly",
+                                                "retry_after": wait, "req": req})
+                            continue
+                        h_channel = await db.get_chat_channel_by_name(current_channel) if current_channel else None
+                        if not await _can_read_channel(h_channel, user_id, user_role):
+                            await ws.send_json({"type": "history_error", "error_code": "not_found",
+                                                "message": "Channel not found", "req": req})
+                            continue
+                        page = await _channel_history(h_channel, user_id, user_role,
+                                                      before_id=h_before, around_id=h_around, limit=h_limit)
+                        await ws.send_json({
+                            "type": "history_around" if (h_around is not None or h_before is None) else "history_older",
+                            "req": req,
+                            **page
+                        })
 
                     elif msg_type == "message":
                         if not current_channel:
@@ -17362,6 +17552,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if not channel or msg["channel_id"] != channel["id"]:
+                            continue
+                        # Closed since the socket joined (stream made private, ban,
+                        # removed from a private channel): the same check as a send
+                        access = await _can_read_channel(channel, user_id, user_role)
+                        if not access:
+                            await ws.send_json({"type": "error", "message": access.message})
                             continue
                         added, count = await db.toggle_reaction(message_id, user_id, emoji)
                         await broadcast_to_channel(current_channel, {
@@ -17677,6 +17873,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if not channel:
                             continue
+                        # Closed since the socket joined: the same check as a send
+                        access = await _can_read_channel(channel, user_id, user_role)
+                        if not access:
+                            await ws.send_json({"type": "error", "message": access.message})
+                            continue
                         timeout_info = await db.is_user_timed_out(user_id, channel["id"])
                         if timeout_info:
                             await ws.send_json({"type": "error", "message": "You are timed out or muted"})
@@ -17761,6 +17962,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         poll_ch = await db.get_chat_channel(poll["channel_id"])
                         if not poll_ch or poll_ch["name"] != current_channel:
                             await ws.send_json({"type": "error", "message": "Poll not found"})
+                            continue
+                        # Closed since the socket joined: the same check as a send
+                        access = await _can_read_channel(poll_ch, user_id, user_role)
+                        if not access:
+                            await ws.send_json({"type": "error", "message": access.message})
                             continue
                         if poll.get("is_closed"):
                             await ws.send_json({"type": "error", "message": "Poll is closed"})
@@ -21251,6 +21457,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/chat/upload", http_upload_chat_image)
     app.router.add_get("/api/chat/link-preview", http_link_preview)
     app.router.add_get("/api/chat/thread/{id}", http_get_chat_thread)
+    app.router.add_get("/api/chat/channels/{id}/messages", http_get_channel_messages)
 
     # Custom Emotes
     app.router.add_get("/api/emotes", http_list_emotes)

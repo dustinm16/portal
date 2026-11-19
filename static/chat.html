@@ -1763,6 +1763,33 @@
             white-space: nowrap;
         }
 
+        /* Scrollback: status line and the way back to the present */
+        .history-bar {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.35rem 1rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .history-bar.show {
+            display: flex;
+        }
+
+        .history-bar button {
+            background: var(--accent-blue);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+
         /* Message highlight animation for scroll-to */
         .message.highlight {
             animation: messageHighlight 2s ease-out;
@@ -2836,6 +2863,10 @@
             <div class="chat-messages" id="chat-messages">
                 <!-- Messages populated by JS -->
             </div>
+            <div class="history-bar" id="history-bar" role="status">
+                <span id="history-status"></span>
+                <button type="button" id="history-jump-btn" style="display:none;">Jump to present</button>
+            </div>
             <div class="typing-indicator">
                 <span class="typing-text" id="typing-indicator"></span>
                 <div class="channel-notifications" id="channel-notifications"></div>
@@ -3063,7 +3094,7 @@
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=44"></script>
+    <script src="/static/js/portal.js?v=45"></script>
     <script src="/static/js/voice.js?v=10"></script>
     <script>
         // Mobile sidebar toggle
@@ -3251,6 +3282,24 @@
             await loadCustomEmotes();
             await loadChannels();
             await loadBlockedUsers();
+            // Link to one message: /chat?channel_id=<id>&message_id=<id> (notifications)
+            {
+                const jp = new URLSearchParams(location.search);
+                const jc = parseInt(jp.get('channel_id'), 10);
+                const jm = parseInt(jp.get('message_id'), 10);
+                if (jp.has('channel_id') || jp.has('message_id')) {
+                    const ch = (jc && jm) ? channelsList.find(c => c.id === jc) : null;
+                    if (ch) {
+                        currentChannel = ch.name;
+                        HistoryView.pendingJump = { channelId: ch.id, messageId: jm };
+                        renderChannels(channelsList);
+                    }
+                    jp.delete('channel_id');
+                    jp.delete('message_id');
+                    const rest = jp.toString();
+                    history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
+                }
+            }
             connectWebSocket();
 
             // Keyboard handler — mention autocomplete navigation + Enter to send
@@ -3589,6 +3638,7 @@
             currentView = 'channel';
             currentDmConversationId = null;
             _lastReadMessageId = 0;
+            resetHistoryState();
 
             // Restore channel UI elements
             document.getElementById('voice-join-btn').style.display = '';
@@ -3664,11 +3714,21 @@
         function handleMessage(data) {
             switch (data.type) {
                 case 'message':
-                    appendMessage(data);
+                    appendLiveMessage(data);
                     if (_subscribedChannels.has(currentChannel)) _sendChannelDesktopNotification(data);
                     break;
                 case 'history':
                     renderHistory(data.messages);
+                    onJoinHistory(data);
+                    break;
+                case 'history_older':
+                    onHistoryOlder(data);
+                    break;
+                case 'history_around':
+                    onHistoryAround(data);
+                    break;
+                case 'history_error':
+                    onHistoryError(data);
                     break;
                 case 'channel_info':
                     updateChannelInfo(data);
@@ -3739,6 +3799,7 @@
                     break;
                 case 'channel_cleared':
                     // Clear messages and show system message
+                    resetHistoryState();
                     document.getElementById('chat-messages').innerHTML = '';
                     appendSystemMessage(`Channel cleared by ${data.cleared_by} (${data.message_count} messages removed)`);
                     break;
@@ -3852,7 +3913,7 @@
                     blockedUsers.delete(data.user_id);
                     break;
                 case 'poll_created':
-                    appendPollMessage(data);
+                    appendLivePoll(data);
                     break;
                 case 'poll_updated':
                     updatePollDisplay(data.poll);
@@ -3869,7 +3930,9 @@
             }
         }
 
-        function renderHistory(messages) {
+        // opts.fetched: the rows come from a scrollback request (around a message, or the
+        // newest page after "Jump to present"); they are shown but never marked as read.
+        function renderHistory(messages, opts) {
             const container = document.getElementById('chat-messages');
             container.innerHTML = '';
             // Collect known names from history for @mention matching
@@ -3877,11 +3940,14 @@
                 if (msg.username) knownChatNames.add(msg.username);
                 if (msg.nickname) knownChatNames.add(msg.nickname);
             });
-            messages.forEach(msg => { try { appendMessage(msg, false); } catch (e) { console.error('Failed to render message', msg?.id, e); } });
+            const rowOpts = opts && opts.fetched ? { fetched: true } : null;
+            messages.forEach(msg => { try { appendMessage(msg, false, rowOpts); } catch (e) { console.error('Failed to render message', msg?.id, e); } });
             container.scrollTop = container.scrollHeight;
         }
 
-        function appendMessage(data, scroll = true) {
+        // opts.before: insert above this element instead of at the end (older pages);
+        // opts.fetched: a row from a scrollback request, not observed for read tracking.
+        function appendMessage(data, scroll = true, opts = null) {
             // Track names for @mention matching
             if (data.username) knownChatNames.add(data.username);
             if (data.nickname) knownChatNames.add(data.nickname);
@@ -3926,7 +3992,7 @@
                     `;
                 } else {
                     replyHtml = `
-                        <div class="message-reply-preview" onclick="openThread(${data.id})" title="View thread">
+                        <div class="message-reply-preview" data-reply-id="${escapeHtml(String(rp.id))}" title="Jump to the message (Shift-click: view thread)">
                             <span class="message-reply-author">${escapeHtml(rp.username)}</span>
                             <span class="message-reply-text">${escapeHtml(rp.message)}</span>
                         </div>
@@ -3962,7 +4028,11 @@
                 </div>
             `;
 
-            container.appendChild(div);
+            if (opts && opts.before) {
+                container.insertBefore(div, opts.before);
+            } else {
+                container.appendChild(div);
+            }
 
             // Syntax highlighting for code blocks
             if (typeof hljs !== 'undefined') {
@@ -3980,7 +4050,7 @@
             }
 
             // Observe for read tracking (IntersectionObserver marks read when scrolled into view)
-            if (data.id) observeMessageForRead(div);
+            if (data.id && !(opts && opts.fetched)) observeMessageForRead(div);
 
             // Fetch link previews for URLs in message (skip poll messages)
             if (data.message && !data.poll) {
@@ -3997,6 +4067,7 @@
             if (scroll) {
                 container.scrollTop = container.scrollHeight;
             }
+            return div;
         }
 
         function appendSystemMessage(text) {
@@ -4387,6 +4458,7 @@
         }
 
         function handleReactionUpdate(data) {
+            bufferApplyReaction(data);
             const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             const contentEl = msgEl.querySelector('.message-content');
@@ -4459,6 +4531,7 @@
         // === Message Editing ===
 
         function handleMessageEdited(data) {
+            bufferApplyEdit(data);
             const msgEl = document.querySelector(`.message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
             if (!msgEl) return;
             // Update message text
@@ -4902,6 +4975,7 @@
             }
 
             ws.send(JSON.stringify(payload));
+            jumpToPresentAfterSend();
 
             input.value = '';
             cancelReply();
@@ -5724,10 +5798,12 @@
             const el = document.querySelector(`.message[data-message-id="${messageId}"]`);
             if (el) el.remove();
             // Mark any reply previews pointing to deleted message as deleted
-            document.querySelectorAll(`.message-reply-preview[onclick*="scrollToMessage(${messageId})"]`).forEach(rp => {
+            document.querySelectorAll(`.message-reply-preview[data-reply-id="${CSS.escape(String(messageId))}"]`).forEach(rp => {
                 rp.classList.add('reply-deleted');
-                rp.removeAttribute('onclick');
+                rp.removeAttribute('data-reply-id');
             });
+            HistoryView.buffer = HistoryView.buffer.filter(m => m.id !== messageId);
+            updateHistoryBar();
             // Remove from pinned messages panel if present
             const wasPinned = pinnedMessages.some(m => m.id === messageId);
             if (wasPinned) {
@@ -5736,16 +5812,369 @@
             }
         }
 
+        // =====================================================================
+        // Scrollback: older pages on scroll, jump to a message, back to the present
+        //
+        // The server answers history_page with history_older (rows above the first
+        // one shown) or history_around (a window around one message, or the newest
+        // page when no message is named). Fetched rows are never marked as read and
+        // never raise a notification. While the view is not at the present (an
+        // around window, or after far pages were dropped) live messages are held in
+        // a buffer and "Jump to present" reloads the newest page.
+        // =====================================================================
+        const HISTORY_TOP_PX = 200;       // load older rows when scrolled this close to the top
+        const DOM_MAX_ROWS = 500;         // most message rows kept in the page
+        const DOM_KEEP_ROWS = 400;        // rows left after dropping the far end
+        const LIVE_BUFFER_MAX = 300;
+        const HistoryView = {
+            channelId: null,   // channel of the rows shown (from the join reply)
+            hasMore: false,    // older messages exist on the server
+            loading: false,
+            pending: null,     // {req, kind, target} of the request in flight
+            reqCounter: 0,
+            detached: false,   // not showing the present: live messages go to the buffer
+            buffer: [],
+            pendingJump: null, // {channelId, messageId} to show once that channel's history arrives
+            blockedUntil: 0,
+            retryTimer: null
+        };
+
+        function resetHistoryState() {
+            HistoryView.channelId = null;
+            HistoryView.hasMore = false;
+            HistoryView.loading = false;
+            HistoryView.pending = null;
+            HistoryView.detached = false;
+            HistoryView.buffer = [];
+            HistoryView.pendingJump = null;
+            HistoryView.blockedUntil = 0;
+            if (HistoryView.retryTimer) { clearTimeout(HistoryView.retryTimer); HistoryView.retryTimer = null; }
+            updateHistoryBar();
+        }
+
+        function updateHistoryBar() {
+            const bar = document.getElementById('history-bar');
+            if (!bar) return;
+            const status = document.getElementById('history-status');
+            const jump = document.getElementById('history-jump-btn');
+            let text = '';
+            if (HistoryView.loading) {
+                text = 'Loading messages...';
+            } else if (Date.now() < HistoryView.blockedUntil) {
+                text = 'Too many requests, older messages load again in a moment';
+            } else if (HistoryView.detached) {
+                text = 'You are viewing older messages';
+            }
+            status.textContent = text;
+            const n = HistoryView.buffer.length;
+            jump.style.display = HistoryView.detached ? '' : 'none';
+            jump.textContent = n ? `Jump to present (${n} new)` : 'Jump to present';
+            bar.classList.toggle('show', !!text || HistoryView.detached);
+        }
+
+        function messageRows(container) {
+            return container.querySelectorAll('.message[data-message-id]');
+        }
+
+        function findMessageEl(messageId) {
+            return document.querySelector(`#chat-messages .message[data-message-id="${CSS.escape(String(messageId))}"]`);
+        }
+
+        function sendHistoryRequest(kind, payload, target) {
+            if (!ws || ws.readyState !== WebSocket.OPEN || currentView !== 'channel') return false;
+            const req = ++HistoryView.reqCounter;
+            HistoryView.pending = { req, kind, target: target || null, channelId: HistoryView.channelId };
+            HistoryView.loading = true;
+            updateHistoryBar();
+            ws.send(JSON.stringify({ type: 'history_page', req, ...payload }));
+            return true;
+        }
+
+        function maybeLoadOlder() {
+            if (currentView !== 'channel' || !HistoryView.hasMore || HistoryView.loading) return;
+            if (Date.now() < HistoryView.blockedUntil) return;
+            const container = document.getElementById('chat-messages');
+            if (container.scrollTop > HISTORY_TOP_PX) return;
+            const first = messageRows(container)[0];
+            if (!first) return;
+            sendHistoryRequest('older', { before_id: parseInt(first.dataset.messageId, 10) });
+        }
+
+        function clearHistoryPending(reply) {
+            // True if the reply answers the request in flight for the channel on screen.
+            const p = HistoryView.pending;
+            if (!p || reply.req !== p.req || reply.channel_id !== HistoryView.channelId || p.channelId !== HistoryView.channelId) return null;
+            HistoryView.pending = null;
+            HistoryView.loading = false;
+            return p;
+        }
+
+        function onJoinHistory(data) {
+            // The join reply replaces everything; start the scrollback state from it.
+            const jump = HistoryView.pendingJump;
+            resetHistoryState();
+            HistoryView.channelId = data.channel_id;
+            HistoryView.hasMore = !!data.has_more;
+            if (jump && jump.channelId === data.channel_id) {
+                scrollToMessage(jump.messageId);
+            } else {
+                requestAnimationFrame(maybeLoadOlder);
+            }
+        }
+
+        function onHistoryOlder(data) {
+            const p = clearHistoryPending(data);
+            if (!p) return;
+            const container = document.getElementById('chat-messages');
+            const anchor = messageRows(container)[0] || null;
+            const before = anchor ? anchor.getBoundingClientRect().top : 0;
+            for (const m of data.messages || []) {
+                if (m.id && findMessageEl(m.id)) continue;   // never twice
+                if (m.username) knownChatNames.add(m.username);
+                if (m.nickname) knownChatNames.add(m.nickname);
+                try { appendMessage(m, false, { before: anchor, fetched: true }); }
+                catch (e) { console.error('Failed to render message', m?.id, e); }
+            }
+            HistoryView.hasMore = !!data.has_more;
+            // Keep what the reader was looking at where it was
+            if (anchor) container.scrollTop += anchor.getBoundingClientRect().top - before;
+            trimFarRows('bottom');
+            updateHistoryBar();
+            requestAnimationFrame(maybeLoadOlder);
+        }
+
+        function onHistoryAround(data) {
+            const p = clearHistoryPending(data);
+            if (!p) return;
+            if (p.kind === 'around' && !data.found) {
+                if (!HistoryView.detached) flushLiveBuffer();
+                updateHistoryBar();
+                showToast('That message is no longer available', 'info');
+                return;
+            }
+            const container = document.getElementById('chat-messages');
+            renderHistory(data.messages || [], { fetched: true });
+            HistoryView.hasMore = !!data.has_more;
+            HistoryView.detached = !!data.has_newer;
+            if (p.kind === 'around') {
+                const el = findMessageEl(p.target);
+                if (el) {
+                    el.scrollIntoView({ block: 'center' });
+                    el.classList.add('highlight');
+                    setTimeout(() => el.classList.remove('highlight'), 2000);
+                }
+            } else {
+                container.scrollTop = container.scrollHeight;
+            }
+            if (!HistoryView.detached) flushLiveBuffer();
+            if (p.kind === 'latest' && !HistoryView.detached) markNewestPageRead(data.messages);
+            updateHistoryBar();
+            requestAnimationFrame(maybeLoadOlder);
+        }
+
+        function onHistoryError(data) {
+            const p = HistoryView.pending;
+            if (!p || data.req !== p.req) return;
+            HistoryView.pending = null;
+            HistoryView.loading = false;
+            if (data.error_code === 'rate_limited') {
+                const wait = Math.max(1, data.retry_after || 5);
+                HistoryView.blockedUntil = Date.now() + wait * 1000;
+                if (HistoryView.retryTimer) clearTimeout(HistoryView.retryTimer);
+                HistoryView.retryTimer = setTimeout(() => { HistoryView.retryTimer = null; updateHistoryBar(); maybeLoadOlder(); }, wait * 1000);
+                if (p.kind !== 'older') showToast('Too many requests, try again in a moment', 'error');
+            } else {
+                HistoryView.hasMore = false;
+                showToast(data.message || 'Could not load messages', 'error');
+            }
+            if (!HistoryView.detached) flushLiveBuffer();
+            updateHistoryBar();
+        }
+
+        // Drop rows from the far end when the page holds too many. Dropping the newest
+        // rows means the present is no longer on screen: switch to the detached state.
+        function trimFarRows(side) {
+            const container = document.getElementById('chat-messages');
+            const rows = Array.from(messageRows(container));
+            if (rows.length <= DOM_MAX_ROWS) return;
+            const drop = rows.length - DOM_KEEP_ROWS;
+            const gone = side === 'bottom' ? rows.slice(rows.length - drop) : rows.slice(0, drop);
+            for (const el of gone) {
+                _readObserver.unobserve(el);
+                el.remove();
+            }
+            if (side === 'bottom') {
+                HistoryView.detached = true;
+            } else {
+                HistoryView.hasMore = true;
+            }
+        }
+
+        // True while live messages must wait: the view is not at the present, or a window
+        // or the newest page is on its way (the reply replaces the rows, and a message
+        // appended now could be missing from it).
+        function liveMustWait() {
+            return HistoryView.detached || (HistoryView.pending && HistoryView.pending.kind !== 'older');
+        }
+
+        function bufferLive(item) {
+            if (item.id && HistoryView.buffer.some(m => m.id === item.id)) return;
+            HistoryView.buffer.push(item);
+            if (HistoryView.buffer.length > LIVE_BUFFER_MAX) HistoryView.buffer.shift();
+            updateHistoryBar();
+        }
+
+        // Live updates of a message that is still waiting in the buffer: the page has no
+        // row for it yet, so the entry itself is changed. Otherwise a flushed buffer would
+        // show the text, reactions or poll as they were when the message arrived.
+        function bufferedEntry(messageId) {
+            return HistoryView.buffer.find(m => m.id === messageId) || null;
+        }
+
+        function bufferApplyEdit(data) {
+            const m = bufferedEntry(data.message_id);
+            if (!m) return;
+            m.message = data.message;
+            m.edited_at = data.edited_at || m.edited_at || new Date().toISOString();
+        }
+
+        function bufferApplyReaction(data) {
+            const m = bufferedEntry(data.message_id);
+            if (!m) return;
+            const list = (m.reactions || []).filter(r => r.emoji !== data.emoji || data.count > 0);
+            let r = list.find(x => x.emoji === data.emoji);
+            if (data.count > 0) {
+                if (!r) { r = { emoji: data.emoji, count: 0, user_ids: [] }; list.push(r); }
+                r.count = data.count;
+                r.user_ids = (r.user_ids || []).filter(u => u !== data.user_id);
+                if (data.added && data.user_id != null) r.user_ids.push(data.user_id);
+            }
+            m.reactions = list;
+        }
+
+        function bufferApplyPoll(poll) {
+            if (!poll) return;
+            for (const m of HistoryView.buffer) {
+                if (m.poll && m.poll.id === poll.id) m.poll = poll;
+            }
+        }
+
+        // A new poll is announced by its own event (not as a message); it waits like one.
+        function appendLivePoll(data) {
+            const id = data.message_id;
+            if (liveMustWait()) {
+                bufferLive({ ...data, id, _poll: true });
+                return;
+            }
+            if (id && findMessageEl(id)) return;
+            appendPollMessage(data);
+        }
+
+        // A message that arrived live. At the present it is appended (unless it is
+        // already shown); anywhere else it waits in the buffer.
+        function appendLiveMessage(data) {
+            if (liveMustWait()) {
+                bufferLive(data);
+                return;
+            }
+            if (data.id && findMessageEl(data.id)) return;
+            const container = document.getElementById('chat-messages');
+            // Do not pull a reader of older rows down to the bottom
+            const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+            appendMessage(data, nearBottom || (data.user_id != null && data.user_id === currentUser?.id));
+            if (nearBottom) trimFarRows('top');
+        }
+
+        // Back at the present: show the buffered messages that are newer than the newest
+        // row on the page. One that is not newer is either on the page already or older
+        // than it (more arrived while detached than one page holds); appended below the
+        // newest row it would be out of order.
+        function flushLiveBuffer() {
+            const container = document.getElementById('chat-messages');
+            const buffered = HistoryView.buffer;
+            HistoryView.buffer = [];
+            let newest = 0;
+            for (const row of messageRows(container)) {
+                const rowId = parseInt(row.dataset.messageId, 10);
+                if (rowId > newest) newest = rowId;
+            }
+            for (const m of buffered) {
+                if (m.id && m.id <= newest) continue;
+                try {
+                    if (m._poll) appendPollMessage(m); else appendMessage(m, false);
+                } catch (e) { console.error('Failed to render message', m?.id, e); }
+            }
+            if (buffered.length) container.scrollTop = container.scrollHeight;
+        }
+
+        function jumpToPresent() {
+            sendHistoryRequest('latest', {});
+        }
+
+        // The member sent a message while the view was not at the present: bring the
+        // view back so the message and what follows it are seen. The request goes out
+        // after the message, so the newest page already holds it.
+        function jumpToPresentAfterSend() {
+            if (HistoryView.detached) jumpToPresent();
+        }
+
+        // The newest page was shown: mark it read, as joining the channel does, so the
+        // unread count clears. (Pages scrolled into by hand are never marked.)
+        function markNewestPageRead(messages) {
+            const last = messages && messages.length ? messages[messages.length - 1].id : 0;
+            if (!last) return;
+            if (last > _lastReadMessageId) _lastReadMessageId = last;
+            markAsRead(last);
+        }
+
+        // Show one message of the current channel: scroll to it if it is on the page,
+        // otherwise load a window around it from the server.
         function scrollToMessage(messageId) {
-            const el = document.querySelector(`.message[data-message-id="${messageId}"]`);
+            const el = findMessageEl(messageId);
             if (el) {
                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 el.classList.add('highlight');
                 setTimeout(() => el.classList.remove('highlight'), 2000);
-            } else {
+                return;
+            }
+            if (!sendHistoryRequest('around', { around_id: messageId }, messageId)) {
                 Portal.toast('Original message was deleted', 'info');
             }
         }
+
+        // Show a message of any channel the member can read: switch to the channel
+        // first when it is not the one on screen.
+        function jumpToChannelMessage(channelId, messageId) {
+            const ch = channelsList.find(c => c.id === channelId);
+            if (!ch) {
+                showToast('That channel is not available', 'error');
+                return;
+            }
+            if (currentView === 'channel' && ch.name === currentChannel && HistoryView.channelId === ch.id) {
+                scrollToMessage(messageId);
+                return;
+            }
+            switchToChannel(ch.name);
+            HistoryView.pendingJump = { channelId: ch.id, messageId };
+        }
+        window.chatJumpToMessage = jumpToChannelMessage;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const container = document.getElementById('chat-messages');
+            container.addEventListener('scroll', maybeLoadOlder, { passive: true });
+            container.addEventListener('click', (e) => {
+                const rp = e.target.closest('.message-reply-preview[data-reply-id]');
+                if (!rp) return;
+                if (e.shiftKey) {
+                    const row = rp.closest('.message[data-message-id]');
+                    if (row) openThread(parseInt(row.dataset.messageId, 10));
+                    return;
+                }
+                const target = parseInt(rp.dataset.replyId, 10);
+                if (target) scrollToMessage(target);
+            });
+            document.getElementById('history-jump-btn').addEventListener('click', jumpToPresent);
+        });
 
         // Channel management functions
         function renameChannel() {
@@ -6092,6 +6521,7 @@
         }
 
         function updatePollDisplay(poll) {
+            bufferApplyPoll(poll);
             const card = document.querySelector(`.poll-card[data-poll-id="${poll.id}"]`);
             if (card) {
                 const parentMsg = card.closest('.message');
@@ -6686,6 +7116,7 @@
         }
 
         function renderDmView(conversation, messages) {
+            resetHistoryState();
             // Switch header to DM mode
             const others = (conversation.participants || []).filter(p => p.user_id !== currentUser?.id);
             const displayName = conversation.name || others.map(p => p.nickname || p.username).join(', ') || 'DM';
@@ -6924,9 +7355,7 @@
         function navigateToSearchResult(source, sourceId, messageId) {
             closeSearchPanel();
             if (source === 'channel') {
-                // Find channel name from channelsList
-                const ch = channelsList.find(c => c.id === sourceId);
-                if (ch) switchToChannel(ch.name);
+                jumpToChannelMessage(sourceId, messageId);
             } else if (source === 'dm') {
                 openDmConversation(sourceId);
             }

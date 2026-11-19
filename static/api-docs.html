@@ -2833,17 +2833,50 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                         <span class="endpoint-desc">Get reply chain for a message</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns the full reply chain (thread) for a given message, walking backwards through <code>reply_to</code> references up to 20 messages deep. Messages are returned in chronological order (oldest first).</p>
+                        <p>Returns the full reply chain (thread) for a given message, walking backwards through <code>reply_to</code> references up to 20 messages deep. Messages are returned in chronological order (oldest first), in the same shape as the channel history (reactions, polls, reply previews, anonymous posts masked for ordinary members).</p>
+                        <p>Readable under the same rule as the channel's history. <code>404</code> <code>{"error": "Message not found"}</code> for a message that does not exist and for one the caller may not read (private channel and not a member, removed member, banned from the stream chat, or the chat of a stream that is not public and the caller is neither its owner nor an admin). <code>400</code> when the id is not a number. The answer carries <code>Cache-Control: private, no-store</code>.</p>
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{
-  <span class="string">"messages"</span>: [
+  <span class="string">"thread"</span>: [
     {<span class="string">"id"</span>: <span class="number">10</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Original message"</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>},
     {<span class="string">"id"</span>: <span class="number">15</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>, <span class="string">"message"</span>: <span class="string">"Reply"</span>, <span class="string">"reply_to"</span>: <span class="number">10</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>},
     {<span class="string">"id"</span>: <span class="number">20</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Reply to reply"</span>, <span class="string">"reply_to"</span>: <span class="number">15</span>, <span class="string">"created_at"</span>: <span class="string">"..."</span>}
   ]
 }</pre>
                         </div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/messages</span>
+                        <span class="endpoint-desc">Older messages of a channel, or a window around one message</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Reads more of a channel's history, for scrolling back and for links to a message. Same authentication as the other chat routes. Direct messages are not served here. Messages are oldest first and have the same shape as the WebSocket <code>history</code> reply: join, <code>history_page</code> and this route build them in one shared function, so the same viewer gets identical message objects from each, and anonymous posts are masked for ordinary members everywhere (no account id, role, nickname, avatar or name, also in reactions, reply previews and polls; moderators, admins and the author keep the id).</p>
+                        <h4>Query parameters</h4>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Description</th></tr>
+                            <tr><td><code>before_id</code></td><td>Return the messages older than this message id. Exclusive with <code>around_id</code>; with neither, the newest page is returned.</td></tr>
+                            <tr><td><code>around_id</code></td><td>Return a window centred on this message.</td></tr>
+                            <tr><td><code>limit</code></td><td>Page size, default 50, at most 100. <code>0</code> or a non-number is a 400.</td></tr>
+                        </table>
+                        <p>A <code>before_id</code> or <code>around_id</code> that is not a whole number from 1 to 9223372036854775807 is a 400, and a channel id outside that range is a 404.</p>
+                        <h4>Response</h4>
+                        <div class="code-block">
+<pre>{
+  <span class="string">"channel_id"</span>: <span class="number">3</span>,
+  <span class="string">"messages"</span>: [...],
+  <span class="string">"has_more"</span>: <span class="keyword">true</span>,
+  <span class="string">"has_newer"</span>: <span class="keyword">false</span>,
+  <span class="string">"found"</span>: <span class="keyword">true</span>
+}</pre>
+                        </div>
+                        <p><code>has_more</code>: older messages exist. <code>has_newer</code>: newer messages than the window shows (<code>around_id</code> only). <code>found</code> is <code>false</code>, with an empty list, when <code>around_id</code> is not a message of this channel (deleted, removed by the chat retention, or elsewhere). Messages older than the chat retention (<code>retention_chat_days</code>, one setting for all channels) no longer exist. Reading marks nothing as read. The chat of a stream that is not public can be read, joined and written to only by the stream's owner and admins. The answer carries <code>Cache-Control: private, no-store</code>.</p>
+                        <h4>Errors</h4>
+                        <p><code>400</code> bad parameter. <code>401</code> not authenticated. <code>404</code> <code>{"error": "Channel not found"}</code> for a channel the caller cannot read (private and not a member, banned from the stream chat, removed member, the chat of a stream that is not public and the caller is neither owner nor admin) and for one that does not exist. <code>429</code> with <code>Retry-After</code> after 30 history requests in a minute; the budget is shared with the WebSocket <code>history_page</code> message and all of the caller's sockets.</p>
                     </div>
                 </div>
 
@@ -2883,6 +2916,16 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 <span class="comment">// Mark channel as read (for unread tracking)</span>
 {<span class="string">"type"</span>: <span class="string">"mark_read"</span>, <span class="string">"message_id"</span>: <span class="number">50</span>}
 
+<span class="comment">// Older messages (page before a message), a window around a message, or the newest page again.
+// The channel is the one this socket joined; "req" is echoed in the reply. 30 per minute per member.</span>
+{<span class="string">"type"</span>: <span class="string">"history_page"</span>, <span class="string">"before_id"</span>: <span class="number">101</span>, <span class="string">"limit"</span>: <span class="number">50</span>, <span class="string">"req"</span>: <span class="number">7</span>}
+{<span class="string">"type"</span>: <span class="string">"history_page"</span>, <span class="string">"around_id"</span>: <span class="number">42</span>, <span class="string">"req"</span>: <span class="number">8</span>}
+{<span class="string">"type"</span>: <span class="string">"history_page"</span>, <span class="string">"req"</span>: <span class="number">9</span>}
+
+<span class="comment">// Access is checked again on every action: message, edit_message, react, create_poll, vote_poll and
+// history_page are refused with "Channel not found" (or the stream-ban / private-channel text) once the channel
+// has been closed to the member since the socket joined. A refused "join" leaves the socket in no channel.</span>
+
 <span class="comment">// Typing indicator</span>
 {<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}
 
@@ -2905,8 +2948,14 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 <pre><span class="comment">// Channel info (after joining)</span>
 {<span class="string">"type"</span>: <span class="string">"channel_info"</span>, <span class="string">"name"</span>: <span class="string">"general"</span>, <span class="string">"topic"</span>: <span class="string">"..."</span>}
 
-<span class="comment">// Message history</span>
-{<span class="string">"type"</span>: <span class="string">"history"</span>, <span class="string">"messages"</span>: [...]}
+<span class="comment">// Message history (newest 50; has_more: older messages exist)</span>
+{<span class="string">"type"</span>: <span class="string">"history"</span>, <span class="string">"channel_id"</span>: <span class="number">3</span>, <span class="string">"messages"</span>: [...], <span class="string">"has_more"</span>: <span class="keyword">true</span>}
+
+<span class="comment">// Answers to history_page (same message shape as history; see GET /api/chat/channels/{id}/messages)</span>
+{<span class="string">"type"</span>: <span class="string">"history_older"</span>, <span class="string">"req"</span>: <span class="number">7</span>, <span class="string">"channel_id"</span>: <span class="number">3</span>, <span class="string">"messages"</span>: [...], <span class="string">"has_more"</span>: <span class="keyword">true</span>, <span class="string">"has_newer"</span>: <span class="keyword">false</span>, <span class="string">"found"</span>: <span class="keyword">true</span>}
+{<span class="string">"type"</span>: <span class="string">"history_around"</span>, <span class="string">"req"</span>: <span class="number">8</span>, <span class="string">"channel_id"</span>: <span class="number">3</span>, <span class="string">"messages"</span>: [...], <span class="string">"has_more"</span>: <span class="keyword">true</span>, <span class="string">"has_newer"</span>: <span class="keyword">true</span>, <span class="string">"found"</span>: <span class="keyword">true</span>}
+{<span class="string">"type"</span>: <span class="string">"history_error"</span>, <span class="string">"req"</span>: <span class="number">7</span>, <span class="string">"error_code"</span>: <span class="string">"rate_limited"</span>, <span class="string">"retry_after"</span>: <span class="number">12</span>}
+<span class="comment">// error_code: invalid, rate_limited, or not_found (the channel is not readable any more, e.g. removed member)</span>
 
 <span class="comment">// New message (includes avatar, nickname, anonymous flag)</span>
 {<span class="string">"type"</span>: <span class="string">"message"</span>, <span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"user_id"</span>: <span class="number">1</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"nickname"</span>: <span class="string">"Ali"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"anonymous"</span>: <span class="keyword">false</span>, <span class="string">"avatar"</span>: {<span class="string">"color"</span>: <span class="string">"#3b82f6"</span>, <span class="string">"emoji"</span>: <span class="string">"🚀"</span>}, <span class="string">"message"</span>: <span class="string">"Hello!"</span>}
@@ -3399,7 +3448,7 @@ ws.send(JSON.stringify({
                         <span class="endpoint-desc">Search messages</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user.</p>
+                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user. Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (<code>is_public</code> off) is searched only for the stream's owner and admins, the rule of the channel history.</p>
                         <h4>Query Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
@@ -6138,7 +6187,7 @@ X-RateLimit-Reset: 1704067200</pre>
         </div>
     </div>
 
-    <script src="/static/js/portal.js?v=44"></script>
+    <script src="/static/js/portal.js?v=45"></script>
     <script>
         function toggleEndpoint(header) {
             const endpoint = header.closest('.endpoint');

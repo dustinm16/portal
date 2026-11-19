@@ -1707,6 +1707,39 @@ Get the reply chain for a message (thread view). Walks the `reply_to` chain back
 
 Messages are returned in chronological order with user enrichment (nickname, avatar, role).
 
+The message shape is the one of the channel history (`GET /api/chat/channels/:id/messages`: reactions, polls, reply previews, anonymous posts masked for ordinary members), and the chain is readable under the same rule as the channel's history. **Errors:** `400` (message id is not a number), `401`, `404 {"error": "Message not found"}` for a message that does not exist and for one the caller may not read (private channel and not a member, removed member, banned from the stream chat, or the chat of a stream that is not public and the caller is neither its owner nor an admin). The answer carries `Cache-Control: private, no-store`.
+
+---
+
+#### GET /api/chat/channels/:id/messages
+Read older messages of a channel, or a window around one message (for a link to a message). Same authentication as the other chat routes. DMs are not served here.
+
+**Query parameters** (`before_id` and `around_id` are exclusive; with neither, the newest page is returned):
+- `before_id`: return the messages older than this message id (the next page up).
+- `around_id`: return a window centred on this message (about `limit` messages, half before it, half after).
+- `limit`: page size, default 50, at most 100 (larger values are cut to 100). `0` or a non-number is a `400`.
+- A `before_id` or `around_id` that is not a whole number from 1 to 9223372036854775807 is a `400`; a channel id outside that range is a `404`.
+
+**Response:**
+```json
+{
+  "channel_id": 3,
+  "messages": [{"id": 101, "user_id": 1, "username": "alice", "message": "...", "reply_preview": {...}, "reactions": [...], "created_at": "..."}],
+  "has_more": true,
+  "has_newer": false,
+  "found": true
+}
+```
+
+- `messages` are oldest first, in the same shape as the `history` reply of the WebSocket (user enrichment, reactions, polls, reply previews). The three ways to read a channel (join, `history_page`, this route) build them in one shared function, so the same viewer gets byte-identical message objects from each.
+- `has_more`: older messages exist. `has_newer`: newer messages exist than the window shows (only for `around_id`). `found` is `false`, with an empty list, when `around_id` is not a message of this channel (deleted, removed by the chat retention, or in another channel).
+- Anonymous posts are masked for ordinary members exactly as in the join history: no account id, role, nickname, avatar or name, in the message, its reactions, reply previews and poll. Moderators, admins and the author keep the id.
+- Messages older than the chat retention (`retention_chat_days`, one setting for every channel) no longer exist and are never returned.
+- Reading never marks anything as read and sends no notification.
+- The chat of a stream that is not public (`is_public` off) can be read, joined and written to only by the stream's owner and admins; everyone else gets the answer for a missing channel. The answer carries `Cache-Control: private, no-store`.
+
+**Errors:** `400` (bad parameter), `401` (not authenticated), `404 {"error": "Channel not found"}` for a channel the caller cannot read (private and not a member, banned from the stream chat, removed member, the chat of a stream that is not public and the caller is neither owner nor admin) and for one that does not exist, `429` with `Retry-After` when the caller made more than 30 history requests in a minute (this budget is shared with the WebSocket `history_page` message and all of the caller's sockets).
+
 ---
 
 ### Direct Messages
@@ -2097,6 +2130,8 @@ Full-text search across chat messages (both channel messages and DMs). Uses SQLi
 #### GET /api/chat/search
 Search messages across channels and/or DMs.
 
+Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (`is_public` off) is searched only for the stream's owner and admins, the rule of the channel history.
+
 **Rate Limit:** 10 requests per minute per user.
 
 **Query Parameters:**
@@ -2293,6 +2328,9 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 {"type": "pin_message", "message_id": 42}
 {"type": "unpin_message", "message_id": 42}
 {"type": "mark_read", "message_id": 50}
+{"type": "history_page", "before_id": 101, "limit": 50, "req": 7}
+{"type": "history_page", "around_id": 42, "req": 8}
+{"type": "history_page", "req": 9}
 ```
 
 - `reply_to` (optional): Message ID to reply to. Must be in the same channel.
@@ -2301,11 +2339,16 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 - `edit_message`: Edit own message within 5-minute window. Re-encrypted before storage.
 - `pin_message` / `unpin_message`: Moderator/admin only. Pin or unpin a message in the current channel.
 - `mark_read`: Update the user's read position for unread tracking.
+- `history_page`: Read more of the channel this socket joined (the channel is never taken from the request). `before_id` asks for the page older than that message, `around_id` for a window around a message, neither for the newest page again (used by "Jump to present"). `limit` defaults to 50 and is capped at 100; an id outside 1 to 9223372036854775807 is a `history_error` with `invalid` and the socket stays open; `req` (a number or short string, optional) is echoed in the reply so a client can drop replies it no longer wants. The access check runs on every request, so a member removed from a private channel, or banned from the stream chat, gets `history_error` with `not_found` even on a socket that joined earlier. At most 30 requests per minute per member over all sockets (and the HTTP route): then `history_error` with `rate_limited` and `retry_after` seconds. Never marks anything as read.
+- **Access is checked again on every action.** `message`, `edit_message`, `react`, `create_poll`, `vote_poll` and `history_page` are refused with the error of a missing channel (`Channel not found`, or the stream-ban or private-channel text) when the socket's channel has been closed to the member since it joined: the stream was made private, the member was banned from its chat or removed from the private channel. A `join` that is refused (same checks) leaves the socket in no channel, so its next `message`, `react`, `create_poll` or `history_page` is dropped or answered as above; the client must send a successful `join` first.
 
 **Messages (Server → Client):**
 ```json
 {"type": "channel_info", "name": "general", "description": "..."}
-{"type": "history", "messages": [...]}
+{"type": "history", "channel_id": 3, "messages": [...], "has_more": true}
+{"type": "history_older", "req": 7, "channel_id": 3, "messages": [...], "has_more": true, "has_newer": false, "found": true}
+{"type": "history_around", "req": 8, "channel_id": 3, "messages": [...], "has_more": true, "has_newer": true, "found": true}
+{"type": "history_error", "req": 7, "error_code": "rate_limited", "message": "Too many history requests, try again shortly", "retry_after": 12}
 {"type": "users", "users": [{"user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {...}}]}
 {"type": "message", "id": 43, "user_id": 1, "username": "john", "nickname": "Johnny", "role": "user", "anonymous": false, "avatar": {"color": "#3b82f6", "emoji": "🚀"}, "message": "Reply!", "reply_to": 42, "reply_preview": {"id": 42, "username": "alice", "message": "Hello!"}}
 {"type": "user_joined", "username": "newuser", "role": "user", "anonymous": false}
@@ -2324,6 +2367,7 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 ```
 
 - `reply_to` / `reply_preview`: Present on messages that are replies. Preview includes parent message's username and text (truncated to 100 chars). Anonymous parent messages show "Anonymous" as username.
+- `history`, `history_older` and `history_around` carry messages in one shape (see `GET /api/chat/channels/:id/messages`); `has_more` says older messages exist. `error_code` of `history_error` is `invalid`, `rate_limited` or `not_found`. A `history_around` with `found: false` has no messages.
 - `reactions`: Array of `{emoji, count, user_ids}` included in history messages. Real-time updates sent as `reaction_update`.
 - `message_edited`: Broadcast when a message is edited (includes new plaintext).
 - `message_pinned` / `message_unpinned`: Broadcast when a mod pins/unpins a message.

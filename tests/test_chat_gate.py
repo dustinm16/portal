@@ -86,10 +86,28 @@ def test_timed_out_and_muted_members_get_the_send_path_errors():
     with_db(body)
 
 
-def test_stream_ban_is_refused():
+def test_chat_of_a_stream_that_is_not_public_is_refused_for_everyone_but_owner_and_admins():
     async def body(d):
         owner, member, ch = await setup(d)
         sid = await d.create_user_stream(owner, "s1", "live_" + "a" * 24, public_key="pub_" + "b" * 24)
+        await d.conn.execute("UPDATE user_streams SET chat_channel_id = ? WHERE id = ?", (ch["id"], sid))
+        await d.conn.commit()
+        for role in ("user", "moderator"):
+            ws = FakeWs()
+            assert await gate(ws, ch, member, role=role) is True, role
+            assert ws.sent == [{"type": "error", "message": "Channel not found"}], role
+        for uid, role in ((owner, "user"), (member, "admin"), (member, "superadmin")):
+            ws = FakeWs()
+            assert await gate(ws, ch, uid, role=role) is False, (uid, role)
+        await d.update_user_stream(sid, is_public=1)
+        assert await gate(FakeWs(), ch, member) is False
+    with_db(body)
+
+
+def test_stream_ban_is_refused():
+    async def body(d):
+        owner, member, ch = await setup(d)
+        sid = await d.create_user_stream(owner, "s1", "live_" + "a" * 24, public_key="pub_" + "b" * 24, is_public=True)
         await d.conn.execute("UPDATE user_streams SET chat_channel_id = ? WHERE id = ?", (ch["id"], sid))
         await d.conn.commit()
         assert await d.create_stream_ban(sid, member, owner, "r")

@@ -196,7 +196,7 @@ async def run(ctx):
                 await ws.send_json({"type": "join", "channel_id": channel_id})
                 for _ in range(30):
                     msg = await asyncio.wait_for(ws.receive_json(), 10)
-                    if msg.get("type") == "channel_info":
+                    if msg.get("type") in ("channel_info", "error"):
                         return msg
             return {}
 
@@ -208,9 +208,15 @@ async def run(ctx):
             except Exception as e:
                 info = {"error": str(e)}
             got = info.get("stream_public_key")
-            ctx.ok(f"streams: chat join channel_info for {label} " + ("has" if want_key else "has no") + " private-stream key",
-                   info.get("type") == "channel_info" and ((got == priv["public_key"]) if want_key else not got),
-                   json.dumps(info)[:120] if info.get("type") != "channel_info" else "")
+            if want_key:
+                ctx.ok("streams: chat join channel_info for owner has private-stream key",
+                       info.get("type") == "channel_info" and got == priv["public_key"],
+                       json.dumps(info)[:120] if info.get("type") != "channel_info" else "")
+            else:
+                # the chat of a private stream is closed to other members: the answer of a missing channel, no key
+                ctx.ok("streams: chat join of a private stream's channel for other user is refused as a missing channel, with no key",
+                       info.get("type") == "error" and info.get("message") == "Channel not found"
+                       and priv["public_key"] not in json.dumps(info), json.dumps(info)[:120])
 
         # --- stream API
         status, _, text = await _get_json(other, ctx, f"/api/streams/{priv['id']}")

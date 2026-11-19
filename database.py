@@ -441,6 +441,8 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_id ON chat_messages(channel_id)",
     "CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)",
+    # Scrollback pages read (channel_id, id) ranges
+    "CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_id_id ON chat_messages(channel_id, id)",
     # Insert default channels
     "INSERT OR IGNORE INTO chat_channels (name, description, is_default) VALUES ('general', 'General discussion', 1)",
     "INSERT OR IGNORE INTO chat_channels (name, description) VALUES ('random', 'Off-topic chat')",
@@ -5112,6 +5114,16 @@ class Database:
         )
         return msg_id
 
+    @staticmethod
+    def _decrypt_chat_row(row) -> dict:
+        """One chat_messages row as a dict with the message and the stored
+        reply preview text decrypted."""
+        msg = dict(row)
+        msg["message"] = decrypt_message(msg.get("message", ""))
+        if msg.get("reply_preview_text"):
+            msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
+        return msg
+
     async def get_chat_messages(
         self,
         channel_id: int,
@@ -5135,14 +5147,65 @@ class Database:
             )
         rows = await cursor.fetchall()
         # Decrypt messages and return in chronological order
-        messages = []
-        for row in reversed(rows):
-            msg = dict(row)
-            msg["message"] = decrypt_message(msg.get("message", ""))
-            if msg.get("reply_preview_text"):
-                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
-            messages.append(msg)
-        return messages
+        return [self._decrypt_chat_row(row) for row in reversed(rows)]
+
+    async def get_chat_messages_page(self, channel_id: int, limit: int,
+                                     before_id: int = None) -> tuple[list[dict], bool]:
+        """The newest `limit` messages of a channel, or the newest `limit`
+        older than before_id, oldest first, and whether still older ones exist."""
+        rows = await self.get_chat_messages(channel_id, limit=limit + 1, before_id=before_id)
+        if len(rows) > limit:
+            return rows[1:], True
+        return rows, False
+
+    async def get_chat_messages_around(self, channel_id: int, around_id: int,
+                                       limit: int) -> Optional[tuple[list[dict], bool, bool]]:
+        """A window of about `limit` messages of one channel centred on
+        around_id, oldest first, as (messages, has_older, has_newer). None when
+        around_id is not a message of this channel (another channel, deleted,
+        or removed by retention)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM chat_messages WHERE id = ? AND channel_id = ?",
+            (around_id, channel_id)
+        )
+        target = await cursor.fetchone()
+        if target is None:
+            return None
+        before_n = limit // 2
+        after_n = max(limit - 1 - before_n, 0)
+        cursor = await self.conn.execute(
+            """SELECT * FROM chat_messages WHERE channel_id = ? AND id < ?
+               ORDER BY id DESC LIMIT ?""",
+            (channel_id, around_id, before_n + 1)
+        )
+        older = list(await cursor.fetchall())
+        cursor = await self.conn.execute(
+            """SELECT * FROM chat_messages WHERE channel_id = ? AND id > ?
+               ORDER BY id ASC LIMIT ?""",
+            (channel_id, around_id, after_n + 1)
+        )
+        newer = list(await cursor.fetchall())
+        has_older = len(older) > before_n
+        has_newer = len(newer) > after_n
+        rows = list(reversed(older[:before_n])) + [target] + newer[:after_n]
+        return [self._decrypt_chat_row(r) for r in rows], has_older, has_newer
+
+    async def get_chat_messages_by_ids(self, message_ids, channel_id: int) -> list[dict]:
+        """Messages of one channel by id in a single query (decrypted). Ids
+        that belong to another channel, or no longer exist, are not returned."""
+        ids = list({int(i) for i in message_ids})
+        if not ids:
+            return []
+        out = []
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            cursor = await self.conn.execute(
+                f"SELECT * FROM chat_messages WHERE channel_id = ? AND id IN ({placeholders})",
+                [channel_id] + chunk
+            )
+            out.extend(self._decrypt_chat_row(r) for r in await cursor.fetchall())
+        return out
 
     async def get_chat_message(self, message_id: int) -> Optional[dict]:
         """Get a single chat message by ID (decrypted)."""
@@ -5150,13 +5213,7 @@ class Database:
             "SELECT * FROM chat_messages WHERE id = ?", (message_id,)
         )
         row = await cursor.fetchone()
-        if row:
-            msg = dict(row)
-            msg["message"] = decrypt_message(msg.get("message", ""))
-            if msg.get("reply_preview_text"):
-                msg["reply_preview_text"] = decrypt_message(msg["reply_preview_text"])
-            return msg
-        return None
+        return self._decrypt_chat_row(row) if row else None
 
     async def delete_chat_message(self, message_id: int, user_id: int = None) -> bool:
         """Delete a chat message (optionally verify ownership)."""
@@ -6655,6 +6712,18 @@ class Database:
                 accessible_channel_ids = {ch["id"] for ch in accessible}
             except Exception:
                 accessible_channel_ids = None  # Fall back to unfiltered on error
+            if accessible_channel_ids:
+                # The chat of a stream that is not public is closed to everyone
+                # but the stream's owner and admins (server._stream_chat_hidden),
+                # so its messages are not searchable either. This is kept out of
+                # get_accessible_channels, which also feeds the channel list.
+                cursor = await self.conn.execute(
+                    """SELECT chat_channel_id FROM user_streams
+                       WHERE chat_channel_id IS NOT NULL
+                         AND COALESCE(is_public, 0) = 0 AND user_id != ?""",
+                    (user_id,)
+                )
+                accessible_channel_ids -= {row[0] for row in await cursor.fetchall()}
 
         # Search channel messages
         if scope in ("all", "channels"):

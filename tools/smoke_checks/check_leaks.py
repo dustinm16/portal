@@ -47,7 +47,8 @@ async def body():
     await db.set_user_status(a, "busy", "%(status)s")
     # a stream owned by leakowner (plain user role) with its own chat channel
     owner = out["leakowner"]
-    sid = await db.create_user_stream(owner, "leakownerstream", "live_LeakOwnerKey1" + "x" * 8, public_key="pub_LeakOwnerKey1" + "x" * 8)
+    sid = await db.create_user_stream(owner, "leakownerstream", "live_LeakOwnerKey1" + "x" * 8, public_key="pub_LeakOwnerKey1" + "x" * 8,
+                                    is_public=True)   # a non-public stream's chat is closed to other members
     sch = await db.create_chat_channel("leakownerchat", "stream chat", owner)
     await db.update_user_stream(sid, chat_channel_id=sch)
     out["stream_channel"] = sch

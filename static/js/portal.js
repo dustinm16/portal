@@ -965,6 +965,17 @@ const NotificationBell = {
             const data = JSON.parse(dataStr);
             if (data.stream_id) {
                 window.open('/watch/' + data.stream_id, '_blank');
+            } else if (data.channel_id && data.message_id) {
+                // A message in a channel (a mention): show it in context
+                if (typeof window.chatJumpToMessage === 'function') {
+                    window.chatJumpToMessage(data.channel_id, data.message_id);
+                    if (this._dropdown) this._dropdown.style.display = 'none';
+                } else {
+                    // Not on the chat page: open it in a new tab, like a stream notification,
+                    // so a stream page being watched is not replaced
+                    window.open('/chat?channel_id=' + encodeURIComponent(data.channel_id) +
+                        '&message_id=' + encodeURIComponent(data.message_id), '_blank', 'noopener');
+                }
             }
         } catch (e) { /* ignore */ }
     },
