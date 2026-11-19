@@ -74,6 +74,14 @@ class ServiceManager:
         self._db = db
         self._on_event = on_event
         self._health_state: Dict[int, dict] = {}
+        # Services stopped on purpose through stop_service: a stop someone asked for is not an
+        # outage. Cleared by the next start_service (a start that then fails does count).
+        self._stopped_on_purpose: set[int] = set()
+        # Services found enabled and not running at the first check after the portal started:
+        # the state found at startup is the baseline, not news. A service leaves this set once
+        # it is seen running (or started through start_service), after which a stop counts.
+        self._baseline_quiet: set[int] = set()
+        self._first_pass_done = False
         self._services: Dict[int, ManagedService] = {}
         self._health_task: Optional[asyncio.Task] = None
         self._shutdown = False
@@ -252,6 +260,8 @@ class ServiceManager:
             await service.cleanup()
             del self._services[service_id]
         self._health_state.pop(service_id, None)
+        self._stopped_on_purpose.discard(service_id)
+        self._baseline_quiet.discard(service_id)
 
         # Delete from unified services table
         success = await self._db.delete_service(service_id)
@@ -303,6 +313,8 @@ class ServiceManager:
             return False, "Service already running"
 
         logger.info(f"Starting service: {service.name}")
+        self._stopped_on_purpose.discard(service_id)
+        self._baseline_quiet.discard(service_id)
         return await service.start()
 
     async def stop_service(self, service_id: int) -> tuple[bool, str]:
@@ -322,7 +334,10 @@ class ServiceManager:
             return False, "Service not running"
 
         logger.info(f"Stopping service: {service.name}")
-        return await service.stop()
+        result = await service.stop()
+        if result[0]:
+            self._stopped_on_purpose.add(service_id)
+        return result
 
     async def restart_service(self, service_id: int) -> tuple[bool, str]:
         """Restart a managed service.
@@ -502,6 +517,13 @@ class ServiceManager:
 
     async def _check_services_once(self):
         """One pass of the health monitor over all services."""
+        if not self._first_pass_done:
+            # Baseline: an enabled service that is already stopped when the portal starts raises
+            # no alert for that state; only a stop seen after it was running does.
+            self._first_pass_done = True
+            self._baseline_quiet = {
+                sid for sid, sv in self._services.items()
+                if sv.enabled and sv.status not in ('running', 'starting', 'stopping')}
         for service in list(self._services.values()):
             # Services that wrap an external process (systemd units)
             # reconcile their status from the outside world here — they
@@ -513,12 +535,19 @@ class ServiceManager:
                     logger.error(f"sync_status failed for {service.name}: {e}")
 
             # A service that is not enabled is not expected to run: no state, no alerts
+            if service.status == 'running':
+                self._baseline_quiet.discard(service.id)
+                self._stopped_on_purpose.discard(service.id)
             if not service.enabled:
                 self._health_state.pop(service.id, None)
             elif service.status in ('starting', 'stopping'):
                 pass
             elif service.status != 'running':
-                self._track_health(service, False)
+                if service.id in self._stopped_on_purpose or service.id in self._baseline_quiet:
+                    # stopped through the portal, or already stopped at startup: not failing
+                    self._health_state.pop(service.id, None)
+                else:
+                    self._track_health(service, False)
 
             if service.status != 'running':
                 continue

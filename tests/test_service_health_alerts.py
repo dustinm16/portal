@@ -45,6 +45,18 @@ class Fake:
     async def health_check(self):
         return self.healthy
 
+    start_ok = True
+
+    async def start(self):
+        if not self.start_ok:
+            return False, "boom"
+        self.status = "running"
+        return True, ""
+
+    async def stop(self):
+        self.status = "stopped"
+        return True, ""
+
 
 async def main():
     events = []
@@ -108,6 +120,73 @@ async def main():
     check("disabling a down service forgets its state", 3 not in mgr._health_state)
     mgr._services.pop(4)
 
+    # a service stopped on purpose through the portal is not failing
+    events.clear()
+    p = Fake(8)
+    mgr._services[8] = p
+    await passes(2)
+    ok, _ = await mgr.stop_service(8)
+    check("stop_service stops the fake", ok and p.status == "stopped")
+    await passes(10)
+    check("a service stopped through the portal sends no down alert", [x for x in events if x[1]["id"] == 8] == [], str(events))
+    check("and keeps no failure count", 8 not in mgr._health_state)
+    p.start_ok = False
+    await mgr.start_service(8)
+    await passes(2)
+    check("a failed start after that counts from zero", [x for x in events if x[1]["id"] == 8] == [])
+    await passes(1)
+    check("and the third failed check alerts", [x[1]["state"] for x in events if x[1]["id"] == 8] == ["down"], str(events))
+    p.start_ok = True
+    await mgr.start_service(8)
+    await passes(2)
+    check("a good start recovers", [x[1]["state"] for x in events if x[1]["id"] == 8] == ["down", "up"], str(events))
+    events.clear()
+    await mgr.stop_service(8)
+    await passes(1)
+    await mgr.start_service(8)
+    p.status = "stopped"
+    await passes(3)
+    check("stopped on purpose, started, then dying alerts again",
+          [x[1]["state"] for x in events if x[1]["id"] == 8] == ["down"], str(events))
+    mgr._services.pop(8)
+
+    # a restart of the portal: enabled and already stopped at the first check is the baseline
+    events.clear()
+    m3 = svc.ServiceManager(FakeDb(), on_event=lambda e, d: events.append((e, d)))
+    q = Fake(9, status="stopped")
+    r = Fake(10)
+    m3._services[9], m3._services[10] = q, r
+    for _ in range(8):
+        await m3._check_services_once()
+    check("a service already stopped at the first check sends nothing", events == [], str(events))
+    r.status = "stopped"
+    for _ in range(3):
+        await m3._check_services_once()
+    check("a service seen running that then stops alerts", [x[1]["id"] for x in events] == [10], str(events))
+    q.status = "running"
+    await m3._check_services_once()
+    q.status = "stopped"
+    for _ in range(3):
+        await m3._check_services_once()
+    check("the baseline service alerts once it was seen running and then stops",
+          sorted(x[1]["id"] for x in events) == [9, 10], str(events))
+    events.clear()
+    n = Fake(11, status="stopped")
+    m3._services[11] = n
+    for _ in range(3):
+        await m3._check_services_once()
+    check("a service added after startup that is stopped does count", [x[1]["id"] for x in events] == [11], str(events))
+    events.clear()
+    m4 = svc.ServiceManager(FakeDb(), on_event=lambda e, d: events.append((e, d)))
+    z = Fake(12, status="stopped")
+    m4._services[12] = z
+    await m4._check_services_once()
+    z.start_ok = False
+    await m4.start_service(12)
+    for _ in range(3):
+        await m4._check_services_once()
+    check("a start that fails on a baseline service alerts", [x[1]["id"] for x in events] == [12], str(events))
+
     # a broken hook is swallowed
     bad = svc.ServiceManager(FakeDb(), on_event=lambda e, d: 1 / 0)
     bad._services[5] = Fake(5, status="stopped")
@@ -125,8 +204,10 @@ async def main():
     alerts.reset_state()
     alerts.bind(fire=fire)
     m2 = svc.ServiceManager(FakeDb(), on_event=alerts.service_event)
-    t = Fake(6, status="stopped")
+    t = Fake(6)
     m2._services[6] = t
+    await m2._check_services_once()
+    t.status = "stopped"
     for _ in range(3):
         await m2._check_services_once()
     t.status = "running"
