@@ -1187,6 +1187,8 @@ Update stream settings.
 }
 ```
 
+Only `name`, `description`, `is_public`, `allow_unauthenticated` and `rtmp_enabled` are taken from the request; server-owned fields (`chat_channel_id`, `is_live`, `viewer_count`, `started_at`, `ended_at`) are ignored, and a request with none of the editable fields answers `400`. Setting `is_public` to `false` also removes members who can no longer read the stream's chat from its room.
+
 Changing `is_public` from `true` to `false` rotates the stream's playback key automatically; the old key stops resolving at once. The response then also carries the new key as `public_key` (alongside the updated `stream` object).
 
 ---
