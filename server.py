@@ -7076,6 +7076,7 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     # A receiver that answered 429 is left alone until its Retry-After is over
     if not single and monotonic() < _webhook_paused_until.get(webhook_id, 0.0):
         result["error"] = "receiver asked to slow down"
+        alerts.note_dropped(event)      # an alert dropped here is counted into the "held back" notice
         return result
 
     # Per-webhook rate limit

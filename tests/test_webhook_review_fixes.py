@@ -300,6 +300,26 @@ async def main():
         logs = await db.get_webhook_logs(bighook["id"], limit=5, offset=0)
         check("the logged answer is at most 4096 bytes", logs and len(logs[0]["response_body"] or "") <= 4096, str(logs[:1])[:200])
 
+        # 5. an alert dropped for a hook paused by a 429 is counted into the held-back notice
+        import alerts
+        alerts.reset_state()
+        sent_alerts = []
+        alerts._deliver = sent_alerts.append
+        syshook = await db.create_webhook(None, "sysp", "outgoing", url=rbase + "/sys", events=["role.changed"], kind="system", allow_private=True)
+        w = await db.get_webhook_for_delivery(syshook["id"])
+        server._webhook_paused_until[syshook["id"]] = server.monotonic() + 100
+        got.clear()
+        r = await server._deliver_webhook(w, "role.changed", {"title": "t"})
+        check("a paused hook drops the delivery", r["error"] == "receiver asked to slow down" and not got)
+        check("the dropped alert is counted as held back", alerts._held == {"role.changed": 1} and alerts.suppressed_count() == 1, str(alerts._held))
+        await server._deliver_webhook(w, "stream.live", {"x": 1})
+        await server._deliver_webhook(w, "alerts.suppressed", {"x": 1})
+        check("a dropped event that is not an alert, and the notice itself, are not counted", alerts.suppressed_count() == 1, str(alerts._held))
+        await alerts._send_notice(0, alerts._notice_gen)
+        check("the notice names the kind and the reason", sent_alerts and "role.changed: 1" in sent_alerts[0]["summary"]
+              and "slow down" in sent_alerts[0]["summary"], str(sent_alerts))
+        alerts.reset_state()
+        server._webhook_paused_until.pop(syshook["id"], None)
         await rsrv.close()
 
     check("admin form says a new destination needs the credentials again",

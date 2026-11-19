@@ -22,7 +22,7 @@ at most ``CAP_ALERTS`` alerts in ``CAP_WINDOW`` seconds over all events, then on
 and silence until the window has room again. Whenever anything is held back a notice is due: the first is
 sent ``NOTICE_DELAY`` seconds after the first refusal, then at most one per ``NOTICE_INTERVAL``; each
 names every kind held back since the previous notice with its count and why (the global limit, the
-reserve or a per-kind limit), then clears those counts. There is no per-trip state a refusal could
+reserve, a per-kind limit, or a receiver that asked to slow down and so had alerts dropped), then clears those counts. There is no per-trip state a refusal could
 extend, so a member who keeps one cap tripped cannot keep later refusals from being reported. Events that a stranger or an ordinary member can trigger have a
 smaller cap of their own (``SUB_CAPS``), so they can never use up the room the other alerts
 need: failed sign-in bursts and automatic blocks (strangers), and moderation actions, automod
@@ -257,6 +257,7 @@ def _stamp(name: str, keys: tuple, now: float) -> None:
 
 
 WHY_GLOBAL, WHY_RESERVE, WHY_KIND = "global", "reserve", "kind"
+WHY_SLOW = "slow"          # not a cap: a receiver answered 429 and an alert for it was dropped
 
 
 def _cap_refusal(now: float, bucket: str, capped: bool = True) -> Optional[str]:
@@ -457,7 +458,16 @@ def _hold_back(name: str, why: str, now: float) -> None:
     _notice_scheduled = _spawn(_send_notice(delay, _notice_gen))
 
 
-WHY_LABEL = {WHY_GLOBAL: "global limit", WHY_RESERVE: "reserve", WHY_KIND: "per-kind limit"}
+def note_dropped(name: str) -> None:
+    """An alert event was dropped for a hook that is paused after a 429 ("receiver asked to slow
+    down"): count it into the next "alerts held back" notice so a receiver cannot swallow
+    alerts unseen. The notice itself is never counted (it would announce itself forever)."""
+    if name in EVENT_NAMES and name != "alerts.suppressed":
+        _hold_back(name, WHY_SLOW, _clock())
+
+
+WHY_LABEL = {WHY_GLOBAL: "global limit", WHY_RESERVE: "reserve", WHY_KIND: "per-kind limit",
+             WHY_SLOW: "receiver asked to slow down"}
 
 
 def _why_sentence(why: str) -> str:
@@ -466,6 +476,8 @@ def _why_sentence(why: str) -> str:
     if why == WHY_RESERVE:
         return (f"Reserve reached: the last slots of the {CAP_ALERTS} in {int(CAP_WINDOW // 60)} minutes "
                 "are kept for staff and operations alerts")
+    if why == WHY_SLOW:
+        return "A receiver asked to slow down, so alerts for it were dropped"
     return "Per-kind limit reached (a cap on what strangers or members can set off)"
 
 
@@ -495,7 +507,7 @@ async def _send_notice(delay: float, gen: int) -> None:
     mixed = len(reasons) > 1
 
     def label(k):
-        return f" ({' and '.join(WHY_LABEL[w] for w in (WHY_GLOBAL, WHY_RESERVE, WHY_KIND) if w in why.get(k, ()))})"
+        return f" ({' and '.join(WHY_LABEL[w] for w in (WHY_GLOBAL, WHY_RESERVE, WHY_KIND, WHY_SLOW) if w in why.get(k, ()))})"
 
     items = [f"{k}: {n}" + (label(k) if mixed else "") for k, n in ranked]
     tail = "" if mixed or not reasons else ". " + _why_sentence(next(iter(reasons)))
