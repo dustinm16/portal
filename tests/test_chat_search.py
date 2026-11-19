@@ -1034,6 +1034,46 @@ def test_one_masking_path_and_no_fail_open():
     assert "accessible_channel_ids = None" not in seg and "Fall back to unfiltered" not in seg
 
 
+def test_search_fails_closed_when_the_readable_channels_cannot_be_looked_up():
+    async def body(env):
+        d = env.db
+        u, ch, m = await seed(d)
+        st, ok = await env.search(u["member"], q="dinner")
+        assert st == 200 and ok["total"] > 0, ok
+        # the check on one channel raises: no search at all, never one without the filter
+        real = server._can_read_channel
+
+        async def broken(*a, **k):
+            raise RuntimeError("lookup failed")
+        server._can_read_channel = broken
+        try:
+            for who in ("member", "boss"):
+                st, b = await env.search(u[who], q="dinner")
+                assert st == 503 and "results" not in b and "unavailable" in b["error"], (st, b)
+        finally:
+            server._can_read_channel = real
+        # the lookup of the accessible channels raises
+        real_acc = d.get_accessible_channels
+
+        async def broken_acc(*a, **k):
+            raise RuntimeError("lookup failed")
+        d.get_accessible_channels = broken_acc
+        try:
+            st, b = await env.search(u["member"], q="dinner")
+            assert st == 503 and "results" not in b, (st, b)
+            # a search with no read check of its own (channel_ids not given) searches no channel
+            res = await d.search_messages("dinner", u["boss"], user_role="superadmin", scope="channels")
+            assert res["results"] == [] and res["total"] == 0, res
+            res = await d.search_messages("dinner", u["boss"], user_role="superadmin", scope="all")
+            assert all(r["source"] != "channel" for r in res["results"]), res
+        finally:
+            d.get_accessible_channels = real_acc
+        # (control) the same call with the lookup working finds the channel messages
+        res = await d.search_messages("dinner", u["boss"], user_role="superadmin", scope="channels")
+        assert res["total"] > 0, res
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -3458,7 +3458,7 @@ ws.send(JSON.stringify({
                         <span class="endpoint-desc">Search messages</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user (a request refused for a bad query or parameter does not count). Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (<code>is_public</code> off) is searched only for the stream's owner and admins, the rule of the channel history. The text of <code>q</code> holds words and operators.</p>
+                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user (a request refused for a bad query or parameter does not count). The search fails closed: if the readable channels cannot be worked out, the answer is <code>503</code> <code>{"error": "Search is unavailable right now"}</code> and nothing is searched. Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (<code>is_public</code> off) is searched only for the stream's owner and admins, the rule of the channel history. The text of <code>q</code> holds words and operators.</p>
                         <h4>Query Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>

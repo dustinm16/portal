@@ -19473,11 +19473,18 @@ async def http_search_messages(request: web.Request) -> web.Response:
     user = await db.get_user_by_id(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
 
+    # Fail closed: if the channels this member may read cannot be worked out, there
+    # is no search at all (never one over every channel)
+    try:
+        readable = await _search_readable_channels(token.user_id, user_role, scope)
+    except Exception as e:
+        logger.error(f"Search: the readable channels could not be looked up: {e}")
+        return web.json_response({"error": "Search is unavailable right now"}, status=503)
     results = await db.search_messages(
         query=query, user_id=token.user_id, scope=scope,
         channel_id=channel_id, conversation_id=conversation_id,
         limit=limit, offset=offset, user_role=user_role, parsed=parsed,
-        channel_ids=await _search_readable_channels(token.user_id, user_role, scope),
+        channel_ids=readable,
         include_anonymous_authors=user_role in _CHAT_STAFF_ROLES
     )
     results["results"] = await _finish_search_results(results["results"], token.user_id, user_role)

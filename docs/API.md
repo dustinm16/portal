@@ -2130,7 +2130,7 @@ Full-text search across chat messages (both channel messages and DMs) with searc
 #### GET /api/chat/search
 Search messages across channels and/or DMs.
 
-Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (`is_public` off) is searched only for the stream's owner and admins, the rule of the channel history.
+Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (`is_public` off) is searched only for the stream's owner and admins, the rule of the channel history. The search fails closed: if the readable channels cannot be worked out, the answer is `503 {"error": "Search is unavailable right now"}` and nothing is searched.
 
 **Rate Limit:** 10 requests per minute per user (a request refused for a bad query or parameter does not count).
 

@@ -6743,8 +6743,18 @@ class Database:
 
         ch_hits, ch_total, dm_hits, dm_total = [], 0, [], 0
         if search_channels:
-            accessible = set(channel_ids) if channel_ids is not None else {
-                c["id"] for c in await self.get_accessible_channels(user_id, user_role)}
+            if channel_ids is not None:
+                accessible = set(channel_ids)
+            else:
+                # No read check from the caller: the channels visible to the role.
+                # If even that lookup fails the search fails closed: no channel is
+                # searched, never all of them.
+                try:
+                    accessible = {c["id"] for c in await self.get_accessible_channels(user_id, user_role)}
+                except Exception as e:
+                    logger.error(f"Search: the accessible channels could not be looked up, "
+                                 f"no channel is searched: {e}")
+                    accessible = set()
             if parsed.in_channels or parsed.not_in_channels:
                 wanted, unwanted = set(parsed.in_channels), set(parsed.not_in_channels)
                 cur = await self.conn.execute("SELECT id, name FROM chat_channels")
