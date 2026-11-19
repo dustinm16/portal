@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
 import gameservers  # noqa: E402
-import jobs  # noqa: E402
 import services  # noqa: E402
 from services.gameserver import GameServerService  # noqa: E402
 

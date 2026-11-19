@@ -148,7 +148,6 @@ async def main():
     got.clear()
 
     # ---- a delivery failure cannot break the action
-    real_fire = server.fire_webhook_event
 
     async def broken(*a, **k):
         raise RuntimeError("boom")
@@ -219,7 +218,7 @@ async def main():
 
     src = (Path(__file__).resolve().parent.parent / "server.py").read_text()
     for kind in ("timeout", "mute", "ban", "kick"):
-        check(f"a {kind} calls the moderation alert", f'alerts.moderation_action(\n' in src and
+        check(f"a {kind} calls the moderation alert", 'alerts.moderation_action(\n' in src and
               (f'"{kind}", actor=' in src))
     check("automod calls the automod alert", "alerts.automod_triggered(" in src)
     ban_src = src[src.index("async def http_create_stream_ban"):src.index("async def http_remove_stream_ban(")]

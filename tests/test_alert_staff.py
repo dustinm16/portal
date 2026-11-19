@@ -12,7 +12,6 @@ Run: venv/bin/python tests/test_alert_staff.py
 
 import asyncio
 import datetime as dt
-import json
 import os
 import sys
 from pathlib import Path
@@ -103,7 +102,6 @@ async def main():
           and env.count("auth.login_failed_burst") == alerts.SUB_CAPS["auth.login_failed_burst"])
     check("member-caused alerts never use the reserve",
           member_total <= alerts.CAP_ALERTS - alerts.MEMBER_RESERVE, str(member_total))
-    before = len(env.fired)
     check("a moderator's action still alerts", mod("timeout", 901, 5, role="moderator") is True)
     check("an admin's action (role known only from the registry) still alerts", mod("ban", 900, 6) is True)
     check("a moderator's automod hit still alerts",

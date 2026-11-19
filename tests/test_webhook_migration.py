@@ -21,7 +21,7 @@ import outbound_guard  # noqa: E402
 outbound_guard.install()  # a fixture URL that is not loopback can never be dialled
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
-from database import Database, encrypt_config, decrypt_config  # noqa: E402
+from database import Database, encrypt_config  # noqa: E402
 import webhook_formats  # noqa: E402
 
 failures = []

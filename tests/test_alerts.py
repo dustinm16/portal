@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
 import alerts  # noqa: E402
-import secevents  # noqa: E402
 import webhook_formats as wf  # noqa: E402
 
 failures = []

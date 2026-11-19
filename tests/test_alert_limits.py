@@ -343,7 +343,7 @@ async def main():
     alerts.bind_record(None)
     env.close()
 
-    # --- the reviewed scenario: a member keeps one cap tripped, later refusals are still reported
+    # --- a member keeps one cap tripped, later refusals are still reported
     env = Env(virtual=True)
     t0 = env.t
     cap = SUB_CAPS["apikey.created"]
