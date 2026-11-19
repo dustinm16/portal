@@ -10,6 +10,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()  # a fixture URL that is not loopback can never be dialled
+
 import host_check  # noqa: E402
 from host_check import HostBlockedError, is_blocked_address_lan, resolve_checked_host  # noqa: E402
 
@@ -127,4 +131,5 @@ check("is_private_or_loopback_address",
       host_check.is_private_or_loopback_address("10.0.0.1") and host_check.is_private_or_loopback_address("::1")
       and not host_check.is_private_or_loopback_address(PUBLIC) and not host_check.is_private_or_loopback_address("nonsense"))
 
+outbound_guard.report("test_webhook_host_policy")
 sys.exit(1 if failures else 0)

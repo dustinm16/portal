@@ -15,6 +15,10 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()  # a fixture URL that is not loopback can never be dialled
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
 import aiohttp  # noqa: E402
@@ -354,6 +358,7 @@ async def secevents_rows():
 
 
 asyncio.run(main())
+outbound_guard.report("test_webhook_api")
 if failures:
     print(f"{len(failures)} failed")
 sys.exit(1 if failures else 0)

@@ -3,7 +3,7 @@ credential scope on the user webhook routes, anonymous and appear-offline events
 generic format, the receiver's answer is read in a bounded way, and an event dropped
 while a hook is paused by a 429 still counts into the alerts notice.
 
-Receivers are local aiohttp servers on 127.0.0.1; validation-only cases use 93.184.216.34
+Receivers are local aiohttp servers on 127.0.0.1; validation-only cases use 93.184.216.34 (the shared outbound guard in tests/outbound_guard.py refuses any dial to a non-loopback address)
 and 198.51.100.x names, which are never connected to.
 
 Run: venv/bin/python tests/test_webhook_review_fixes.py
@@ -17,6 +17,10 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()  # a fixture URL that is not loopback can never be dialled
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 
 import aiohttp  # noqa: E402
@@ -333,4 +337,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    _rc = asyncio.run(main())
+    outbound_guard.report("test_webhook_review_fixes")
+    sys.exit(_rc)
