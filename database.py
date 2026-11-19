@@ -4302,11 +4302,28 @@ class Database:
             """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
                FROM user_streams us
                JOIN users u ON us.user_id = u.id
-               WHERE us.chat_channel_id = ?""",
+               WHERE us.chat_channel_id = ?
+               ORDER BY us.id""",
             (channel_id,)
         )
+        rows = await cursor.fetchall()
+        if not rows:
+            return None
+        stream = self._decrypt_stream_keys(dict(rows[0]))
+        # A default channel, or one several streams point at, is not the chat of
+        # this stream (see _stream_chat_hidden)
+        cursor = await self.conn.execute(
+            "SELECT is_default FROM chat_channels WHERE id = ?", (channel_id,))
+        ch = await cursor.fetchone()
+        stream["chat_channel_shared"] = len(rows) > 1 or bool(ch and ch["is_default"])
+        return stream
+
+    async def count_streams_for_chat_channel(self, channel_id: int) -> int:
+        """How many streams use this chat channel."""
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM user_streams WHERE chat_channel_id = ?", (channel_id,))
         row = await cursor.fetchone()
-        return self._decrypt_stream_keys(dict(row)) if row else None
+        return row[0] if row else 0
 
     # Chat timeout/mute operations
     async def create_chat_timeout(self, user_id: int, moderator_id: int,

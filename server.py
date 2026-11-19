@@ -4964,6 +4964,11 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     return web.json_response({"stream": stream})
 
 
+# The stream fields a client may change (what the stream settings screen sends)
+_STREAM_CLIENT_FIELDS = frozenset({"name", "description", "is_public",
+                                   "allow_unauthenticated", "rtmp_enabled"})
+
+
 async def http_update_user_stream(request: web.Request) -> web.Response:
     """Update a stream (owner only)."""
     token = await authenticate_request(request)
@@ -4988,6 +4993,16 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
 
     if stream["user_id"] is not None and stream["user_id"] != token.user_id:
         return web.json_response({"error": "Stream not found"}, status=404)
+
+    # Only what the stream settings screen sends is taken from the client. The
+    # chat channel, live state, viewer count and start/end times belong to the
+    # server: a client that could name them could bind its stream to another
+    # channel (hiding it, and deleting it with the stream) or fake being live.
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    data = {k: v for k, v in data.items() if k in _STREAM_CLIENT_FIELDS}
+    if not data:
+        return web.json_response({"error": "No editable stream fields given"}, status=400)
 
     # Create chat channel if one doesn't exist (for legacy streams)
     if not stream.get("chat_channel_id"):
@@ -5014,8 +5029,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             if not await db.regenerate_public_key(stream_id, rotated_key, user_id=token.user_id):
                 rotated_key = None
                 logger.error(f"Failed to rotate playback key for stream {stream_id} after it became private")
+        if "is_public" in data and not data["is_public"]:
             # Sockets already in the chat room (and its voice call) belong to members
-            # who can no longer read it: put them out now, not at their next request
+            # who can no longer read it: put them out now, not at their next request.
+            # Also when the stream was private already: the room may still hold
+            # sockets from before.
             await _evict_unreadable_by_id(stream.get("chat_channel_id") or data.get("chat_channel_id"))
         # Revoke all RTMP tokens if rtmp_enabled was toggled off
         if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
@@ -5058,8 +5076,9 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Delete associated chat channel after successful stream deletion
-    if stream.get("chat_channel_id"):
+    # Delete the chat channel with its stream, unless it is a default channel or
+    # another stream still uses it (delete_chat_channel refuses default channels)
+    if stream.get("chat_channel_id") and not await db.count_streams_for_chat_channel(stream["chat_channel_id"]):
         await db.delete_chat_channel(stream["chat_channel_id"])
 
     return web.json_response({"success": True})
@@ -16359,6 +16378,10 @@ def _stream_chat_hidden(stream, user_id: int, user_role: str) -> bool:
     stream detail route). A channel without a stream is never hidden by this."""
     if not stream or stream.get("is_public"):
         return False
+    # A default channel, or one that several streams point at, is not the chat of
+    # this stream: a stream's binding never hides it
+    if stream.get("chat_channel_shared"):
+        return False
     return stream.get("user_id") != user_id and user_role not in ("admin", "superadmin")
 
 
@@ -17357,6 +17380,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
     chat_rate_limit = 5
     chat_rate_window = 5.0
     chat_msg_times: list[float] = []
+    # Typing signals: at most one per second is handled on a socket
+    chat_typing_last = [None]
 
     logger.info(f"[Chat] User {username} connected")
 
@@ -17787,17 +17812,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     channel_viewer_ids = set()
                                     if current_channel in chat_rooms:
                                         channel_viewer_ids = {entry[1] for entry in chat_rooms[current_channel]}
-                                    is_private = channel.get("visibility") == "private"
                                     for mid in mentioned_ids:
                                         if mid == user_id or mid in channel_viewer_ids:
                                             continue
-                                        # Don't notify users who can't access private channels
-                                        if is_private:
-                                            m_user = await db.get_user_by_id(mid)
-                                            m_role = (m_user.get("role") or "user") if m_user else "user"
-                                            if m_role not in ("admin", "superadmin"):
-                                                if not await db.is_channel_member(channel["id"], mid):
-                                                    continue
+                                        # Don't notify members who cannot read the channel
+                                        m_user = await db.get_user_by_id(mid)
+                                        if not m_user:
+                                            continue
+                                        m_role = m_user.get("role") or ("superadmin" if m_user.get("is_admin") else "user")
+                                        if not await _can_read_channel(channel, mid, m_role):
+                                            continue
                                         await send_notification(
                                             mid, "mention",
                                             f"{display_name} mentioned you in #{current_channel}",
@@ -17808,6 +17832,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 logger.error(f"Mention notification error: {e}")
 
                     elif msg_type == "typing":
+                        now_typing = monotonic()
+                        if chat_typing_last[0] is not None and now_typing - chat_typing_last[0] < 1.0:
+                            continue    # dropped before any lookup
+                        chat_typing_last[0] = now_typing
                         typing_ch = await db.get_chat_channel_by_name(current_channel) if current_channel else None
                         if typing_ch and await _socket_may_act_in(ws, typing_ch, user_id, user_role, notify=False):
                             typing_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)

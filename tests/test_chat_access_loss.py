@@ -122,6 +122,7 @@ class Env:
         app.router.add_put("/api/chat/channels/{id}", server.http_update_chat_channel)
         app.router.add_delete("/api/chat/channels/{id}/members/{user_id}", server.http_remove_channel_member)
         app.router.add_put("/api/streams/{id}", server.http_update_user_stream)
+        app.router.add_delete("/api/streams/{id}", server.http_delete_user_stream)
         app.router.add_post("/api/streams/{id}/bans", server.http_create_stream_ban)
         self.srv = TestServer(app)
         await self.srv.start_server()
