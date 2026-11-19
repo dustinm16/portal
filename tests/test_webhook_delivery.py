@@ -270,7 +270,13 @@ async def main():
         match_info = {"id": str(cap["id"])}
     _real_auth, _real_get_user = server.authenticate_request, db.get_user_by_id
     async def _fake_auth(request):
-        class T: user_id = uid
+        class T:
+            user_id = uid
+            token_id = "web-session"
+            scopes = ["*"]
+
+            def has_scope(self, scope):
+                return True
         return T()
     async def _fake_user(i):
         return {"id": uid, "is_admin": True, "role": "admin", "username": "owner"}
@@ -531,11 +537,11 @@ async def main():
         del received[:]
         await fire(ev, {"user_id": uid, "username": "owner"}, {"user_id": uid})
         paths = sorted(r[0] for r in received)
-        check(f"{ev}: an appear-offline member is not announced to a non-generic hook (generic unchanged)",
-              paths == ["/gen"], str(paths))
+        check(f"{ev}: an appear-offline member is announced to no hook, generic included",
+              paths == [], str(paths))
     del received[:]
     await fire("user.connected", {"user_id": uid, "username": "owner"}, None)
-    check("presence event without a member id fails closed for non-generic", [r[0] for r in received] == ["/gen"],
+    check("presence event without a member id fails closed for every format", [r[0] for r in received] == [],
           str([r[0] for r in received]))
     await db.conn.execute("UPDATE users SET status_preference = NULL WHERE id = ?", (uid,))
     await db.conn.commit()
