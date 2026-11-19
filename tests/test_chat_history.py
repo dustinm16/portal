@@ -14,8 +14,6 @@ import asyncio
 import inspect
 import json
 import os
-import re
-import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -382,7 +380,6 @@ def test_private_stream_chat_join_page_route_thread_and_send():
     async def body(env):
         d = env.db
         ids, cid, msgs = await seed(d)
-        ch = await d.get_chat_channel(cid)
         sid = await link_stream(d, ids, cid, public=True)
         # bob joins while the stream is public and keeps his socket
         bob = await env.ws(ids["bob"])

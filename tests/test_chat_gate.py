@@ -10,7 +10,6 @@ and the order of the calls in the handler are checked.
 
 import asyncio
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
