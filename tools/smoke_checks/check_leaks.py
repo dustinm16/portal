@@ -616,11 +616,14 @@ async def _stream_owner_payloads(ctx, data):
            res.get("banned") is True and res.get("only_one") is True, out[-300:])
     ctx.ok("leaks: stream owner: the ban does not reach the author in other streams",
            res.get("other_channel_banned") is False, out[-300:])
+    # The banned author is put out of the room by the ban, so the newest list may no longer hold
+    # the anonymous entry: take the handle from the newest list that still does.
     ref_b = None
     for e in reversed(ev["leakbob"]):
         if e.get("type") == "users":
             ref_b = next((u.get("anon_ref") for u in e.get("users", []) if u.get("anonymous")), None)
-            break
+            if ref_b:
+                break
     data["stream_ref"] = ref_b
     last_users = next((e for e in reversed(ev["leakbob"]) if e.get("type") == "users"), {"users": []})
     flags = [bool(u.get("anonymous")) for u in last_users["users"]]

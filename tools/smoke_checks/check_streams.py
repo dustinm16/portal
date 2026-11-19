@@ -180,9 +180,10 @@ async def run(ctx):
         # --- chat channel listing
         status, body, text = await _get_json(other, ctx, "/api/chat/channels")
         chans = {c.get("stream_id"): c for c in body.get("channels", []) if c.get("is_stream_channel")}
-        ctx.ok("streams: other user's channel list has no private-stream key",
-               status == 200 and priv["id"] in chans and not chans[priv["id"]].get("stream_public_key")
-               and priv["public_key"] not in text, f"status {status}")
+        ctx.ok("streams: other user's channel list leaves out the private stream's chat and has no key",
+               status == 200 and priv["id"] not in chans and priv["public_key"] not in text
+               and not any(c.get("stream_owner") and c.get("stream_id") == priv["id"] for c in body.get("channels", [])),
+               f"status {status}")
         ctx.ok("streams: public stream's channel still lists its key",
                chans.get(pub["id"], {}).get("stream_public_key") == pub["public_key"])
         status, body, text = await _get_json(owner, ctx, "/api/chat/channels")
@@ -200,9 +201,11 @@ async def run(ctx):
                         return msg
             return {}
 
+        # the channel id comes from the owner's list: the other user's list no longer has it
+        status, body, _ = await _get_json(owner, ctx, "/api/chat/channels")
+        priv_cid = next((c["id"] for c in body.get("channels", []) if c.get("stream_id") == priv["id"]), None)
         for label, sess, want_key in (("other user", other, False), ("owner", owner, True)):
-            status, body, _ = await _get_json(sess, ctx, "/api/chat/channels")
-            cid = next((c["id"] for c in body.get("channels", []) if c.get("stream_id") == priv["id"]), None)
+            cid = priv_cid
             try:
                 info = await _channel_info(sess, cid)
             except Exception as e:
