@@ -4987,6 +4987,9 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             if not await db.regenerate_public_key(stream_id, rotated_key, user_id=token.user_id):
                 rotated_key = None
                 logger.error(f"Failed to rotate playback key for stream {stream_id} after it became private")
+            # Sockets already in the chat room (and its voice call) belong to members
+            # who can no longer read it: put them out now, not at their next request
+            await _evict_unreadable_by_id(stream.get("chat_channel_id") or data.get("chat_channel_id"))
         # Revoke all RTMP tokens if rtmp_enabled was toggled off
         if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
             revoked = await db.revoke_rtmp_tokens_for_stream(stream_id)
@@ -5333,7 +5336,8 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     )
 
     if ban_id:
-        # A banned member does not stay in the stream chat's voice call.
+        # A banned member does not stay in the stream chat's text room or its voice call.
+        await _evict_unreadable_by_id(stream.get("chat_channel_id"))
         await _voice_eject_if_not_allowed(user_id)
         # Get banned user's username for the response
         banned_user = await db.get_user_by_id(user_id)
@@ -15046,27 +15050,21 @@ async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: st
     slowmode=False skips the slow-mode wait (edits: fixing a typo right after
     posting is not a new message; the rate limit still applies).
 
-    A stream chat closed to this member (not public, not the owner or an admin),
-    stream ban, timeout or mute, the per-socket rate limit and slow mode, in that
-    order; the error reply is sent to ws and True is returned when one applies.
+    Read access (_can_read_channel: a stream chat closed to this member, a stream
+    ban, a private channel the member no longer belongs to), timeout or mute, the
+    per-socket rate limit and slow mode, in that order; the error reply is sent
+    to ws and True is returned when one applies.
     A send and an edit both go through here, and automod runs only after it, so a
     member who is timed out, muted, banned or sending too fast never reaches the
     rules (and never costs them regex work or a new penalty). A passed rate limit
     check counts against msg_times.
     """
-    # The chat of a stream that is not public is closed to everyone but its
-    # owner and admins (same answer as for a missing channel)
-    stream = await db.get_stream_by_chat_channel(channel["id"])
-    if _stream_chat_hidden(stream, user_id, user_role):
-        await ws.send_json({"type": "error", "message": "Channel not found"})
-        return True
-
-    # Check if user is banned from this stream's chat
-    if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
-        await ws.send_json({
-            "type": "error",
-            "message": "You are banned from this stream's chat"
-        })
+    # The same read check as join, history, react and polls: a socket that joined
+    # while it could read the channel does not keep sending or editing after that
+    # stopped (stream made private, stream ban, removed from a private channel)
+    access = await _can_read_channel(channel, user_id, user_role)
+    if not access:
+        await ws.send_json({"type": "error", "message": access.message})
         return True
 
     # Check if user is timed out or muted
@@ -15217,10 +15215,16 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
 
     user = await db.get_user_by_id(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
-    channels = await db.get_accessible_channels(token.user_id, user_role)
+    channels = []
     # Enrich with stream association data
-    for ch in channels:
+    for ch in await db.get_accessible_channels(token.user_id, user_role):
         stream = await db.get_stream_by_chat_channel(ch["id"])
+        # The chat of a stream that is not public is closed to everyone but its
+        # owner and admins (join and history answer "Channel not found"): it is
+        # not listed either, with its stream, live state and owner
+        if _stream_chat_hidden(stream, token.user_id, user_role):
+            continue
+        channels.append(ch)
         ch["is_stream_channel"] = bool(stream)
         if stream:
             ch["stream_id"] = stream["id"]
@@ -15385,6 +15389,9 @@ async def http_update_chat_channel(request: web.Request) -> web.Response:
     # not allowed in a private channel leave the call now, not at their next
     # reconnect.
     if data.get("visibility") == "private":
+        # The sockets of members who do not belong to it leave the text room (and its
+        # call) first, so they are not sent the call's last updates
+        await _evict_unreadable_by_id(channel_id)
         for voice_user_id in list((voice_state.get(new_name or old_name) or {}).keys()):
             await _voice_eject_if_not_allowed(voice_user_id)
 
@@ -16356,6 +16363,93 @@ async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREA
     return _ReadAccess(True)
 
 
+async def _socket_may_act_in(ws, channel, user_id: int, user_role: str, notify: bool = True) -> bool:
+    """The read check for an action a joined socket takes in its current channel.
+
+    A socket that joined while it could read the channel keeps `current_channel`
+    after that stops (stream made private, stream ban, removed from a private
+    channel), so every per-socket action asks again. False after sending the
+    refusal to ws (unless notify is off, for the high-volume typing signal).
+    """
+    access = await _can_read_channel(channel, user_id, user_role)
+    if access:
+        return True
+    if notify:
+        await ws.send_json({"type": "error", "message": access.message})
+    return False
+
+
+async def _evict_unreadable_sockets(channel) -> int:
+    """After access to a channel was lost (stream made not public, member removed
+    from a private channel, stream ban, channel made private): put every socket in
+    its room that can no longer read it out.
+
+    _can_read_channel is run again for each socket in chat_rooms[channel name].
+    One that fails is removed from the room (so it receives nothing more from it;
+    the handler clears its current channel when its next frame arrives, and
+    every per-socket action checks access itself in the meantime), is sent one
+    error frame with the answer for a missing channel, and the member's voice
+    entry in that room ends through the usual leave path. Members that are in
+    the voice room without a socket in the text room are checked too. The rest
+    of the room is told who left. Returns the number of sockets put out; never
+    raises (a failure is logged and the next socket is still checked).
+    """
+    if not channel:
+        return 0
+    name = channel["name"]
+    evicted = []
+    try:
+        stream = await db.get_stream_by_chat_channel(channel["id"])
+        verdicts: dict = {}
+        for entry in list(chat_rooms.get(name, ())):
+            key = (entry[1], entry[3] if len(entry) > 3 else None)
+            if key not in verdicts:
+                verdicts[key] = bool(await _can_read_channel(channel, key[0], key[1], stream))
+            if verdicts[key]:
+                continue
+            # No await between the check of this socket's verdict and its removal
+            chat_rooms[name].discard(entry)
+            evicted.append(entry)
+    except Exception as e:
+        logger.warning(f"[Chat] Could not re-check access to #{name}: {e}")
+    for entry in evicted:
+        try:
+            await asyncio.wait_for(entry[0].send_json({"type": "error", "message": "Channel not found"}), 2)
+        except Exception:
+            pass
+    # Voice: whoever is in this channel's voice room and may no longer read it
+    for voice_user_id in list((voice_state.get(name) or {}).keys()):
+        await _voice_eject_if_not_allowed(voice_user_id)
+    if evicted:
+        if name in chat_rooms and not chat_rooms[name]:
+            del chat_rooms[name]
+        try:
+            for entry in evicted:
+                if _user_has_other_socket(name, entry[1], entry[0]):
+                    continue
+                state = chat_user_state.get(entry[1], {})
+                anon = bool(state.get("anonymous"))
+                await broadcast_to_channel(name, {
+                    "type": "user_left",
+                    "user_id": entry[1],
+                    "username": "Anonymous" if anon else (state.get("nickname") or entry[2])
+                }, anon_subject=entry[1] if anon else None)
+            await broadcast_users_list(name)
+        except Exception as e:
+            logger.warning(f"[Chat] Could not announce the removal from #{name}: {e}")
+        logger.info(f"[Chat] {len(evicted)} socket(s) removed from #{name} after access was lost")
+    return len(evicted)
+
+
+async def _evict_unreadable_by_id(channel_id) -> int:
+    """_evict_unreadable_sockets for a channel known by id. Never raises."""
+    try:
+        return await _evict_unreadable_sockets(await db.get_chat_channel(channel_id))
+    except Exception as e:
+        logger.warning(f"[Chat] Could not re-check access to channel {channel_id}: {e}")
+        return 0
+
+
 async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, channel_id) -> list:
     """Add display data to channel messages (in place) for one viewer.
 
@@ -17126,6 +17220,7 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
     # Users can leave channels themselves
     if target_id == token.user_id:
         await db.remove_channel_member(channel_id, target_id)
+        await _evict_unreadable_sockets(channel)
         await _voice_eject_if_not_allowed(target_id)
         return web.json_response({"success": True})
 
@@ -17134,6 +17229,7 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
         return web.json_response({"error": "Moderator access required"}, status=403)
 
     await db.remove_channel_member(channel_id, target_id)
+    await _evict_unreadable_sockets(channel)
     await _voice_eject_if_not_allowed(target_id)
 
     target = await db.get_user_by_id(target_id)
@@ -17293,6 +17389,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 try:
                     data = json.loads(msg.data)
                     msg_type = data.get("type")
+
+                    # Put out of its room (access lost, see _evict_unreadable_sockets):
+                    # the socket has no current channel until it joins one again
+                    if current_channel and user_entry not in chat_rooms.get(current_channel, ()):
+                        current_channel = None
 
                     if msg_type == "join":
                         # Support multiple join methods:
@@ -17680,7 +17781,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 logger.error(f"Mention notification error: {e}")
 
                     elif msg_type == "typing":
-                        if current_channel:
+                        typing_ch = await db.get_chat_channel_by_name(current_channel) if current_channel else None
+                        if typing_ch and await _socket_may_act_in(ws, typing_ch, user_id, user_role, notify=False):
                             typing_name = "Anonymous" if my_state["anonymous"] else (my_state["nickname"] or username)
                             await broadcast_to_channel(current_channel, {
                                 "type": "typing",
@@ -17703,6 +17805,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         del_ch = await db.get_chat_channel_by_name(current_channel)
                         if not del_ch or del_msg["channel_id"] != del_ch["id"]:
+                            continue
+                        if not await _socket_may_act_in(ws, del_ch, user_id, user_role):
                             continue
                         # Admins/mods can delete any; users delete own only
                         is_mod = user_role in ("admin", "superadmin", "moderator")
@@ -17832,6 +17936,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if not channel:
                             continue
+                        if not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
                         msg = await db.get_chat_message(message_id)
                         if not msg or msg["channel_id"] != channel["id"]:
                             continue
@@ -17868,11 +17974,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         except (ValueError, TypeError):
                             continue
                         # Verify message belongs to current channel (if it still exists)
+                        unpin_ch = await db.get_chat_channel_by_name(current_channel)
+                        if not unpin_ch or not await _socket_may_act_in(ws, unpin_ch, user_id, user_role):
+                            continue
                         unpin_msg = await db.get_chat_message(message_id)
-                        if unpin_msg:
-                            unpin_ch = await db.get_chat_channel_by_name(current_channel)
-                            if not unpin_ch or unpin_msg["channel_id"] != unpin_ch["id"]:
-                                continue
+                        if unpin_msg and unpin_msg["channel_id"] != unpin_ch["id"]:
+                            continue
                         # Allow unpin even if message was deleted (cleans up stale pins in frontend)
                         # Unpin in DB (no-op if message already deleted)
                         await db.unpin_message(message_id)
@@ -17910,7 +18017,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Cannot timeout users with equal or higher role"})
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
-                        if not channel:
+                        if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
                             continue
                         await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
                         display_name = my_state.get("nickname") or username
@@ -17957,7 +18064,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Cannot mute users with equal or higher role"})
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
-                        if not channel:
+                        if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
                             continue
                         await db.create_chat_timeout(target_user_id, user_id, "mute", channel["id"], reason)
                         display_name = my_state.get("nickname") or username
@@ -17995,7 +18102,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         except (ValueError, TypeError):
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
-                        if not channel:
+                        if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
                             continue
                         removed = await db.remove_chat_timeout(target_user_id, channel["id"])
                         if removed:
@@ -18208,6 +18315,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not poll_ch or poll_ch["name"] != current_channel:
                             await ws.send_json({"type": "error", "message": "Poll not found"})
                             continue
+                        if not await _socket_may_act_in(ws, poll_ch, user_id, user_role):
+                            continue
                         # Only creator or mod+ can close
                         is_creator = poll["user_id"] == user_id
                         is_mod = user_role in ("admin", "superadmin", "moderator")
@@ -18302,7 +18411,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         )
 
                         if ban_id:
-                            # A banned member does not stay in the voice call.
+                            # A banned member does not stay in the room or the voice call.
+                            await _evict_unreadable_sockets(channel)
                             await _voice_eject_if_not_allowed(target_user_id)
                             # Get banned user info
                             banned_user = await db.get_user_by_id(target_user_id)
@@ -18473,6 +18583,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             target_room = requested_room
                         elif current_channel:
                             target_room = current_channel
+                            # A socket whose channel it can no longer read does not join its voice room
+                            voice_ch = await db.get_chat_channel_by_name(current_channel)
+                            if not voice_ch or not await _socket_may_act_in(ws, voice_ch, user_id, user_role):
+                                continue
                         else:
                             await ws.send_json({"type": "error", "message": "Join a channel first"})
                             continue
@@ -19848,16 +19962,10 @@ async def _voice_room_allowed(room: str, user_id: int, user_role: str) -> bool:
             return await db.is_dm_participant(int(room.split(":", 1)[1]), user_id)
         except (ValueError, IndexError):
             return False
+    # The read check of join and history: a stream chat closed to the member, a
+    # stream ban and a private channel the member does not belong to all count
     channel = await db.get_chat_channel_by_name(room)
-    if not channel:
-        return False
-    if channel.get("visibility", "public") == "private" and user_role not in ("admin", "superadmin"):
-        if not await db.is_channel_member(channel["id"], user_id):
-            return False
-    stream = await db.get_stream_by_chat_channel(channel["id"])
-    if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
-        return False
-    return True
+    return bool(await _can_read_channel(channel, user_id, user_role))
 
 
 async def _voice_notify_replaced(old_ws) -> None:

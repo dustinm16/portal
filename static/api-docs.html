@@ -2676,7 +2676,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
                         <span class="endpoint-desc">List chat channels</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns all available chat channels.</p>
+                        <p>Returns the chat channels the caller may see: public channels, private channels the caller belongs to (admins and superadmins: all) and stream chat channels only when the stream is public or the caller is its owner or an admin. The chat of a stream that is not public is left out, with its stream, live state and owner.</p>
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{
@@ -2922,9 +2922,16 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 {<span class="string">"type"</span>: <span class="string">"history_page"</span>, <span class="string">"around_id"</span>: <span class="number">42</span>, <span class="string">"req"</span>: <span class="number">8</span>}
 {<span class="string">"type"</span>: <span class="string">"history_page"</span>, <span class="string">"req"</span>: <span class="number">9</span>}
 
-<span class="comment">// Access is checked again on every action: message, edit_message, react, create_poll, vote_poll and
-// history_page are refused with "Channel not found" (or the stream-ban / private-channel text) once the channel
-// has been closed to the member since the socket joined. A refused "join" leaves the socket in no channel.</span>
+<span class="comment">// Access is checked again on every action: message, edit_message, react, create_poll, vote_poll, close_poll,
+// delete, pin_message, unpin_message, timeout_user, mute_user, unmute_user, history_page and voice_join (a resume
+// too) are refused with "Channel not found" (or the stream-ban / private-channel text) once the channel has been
+// closed to the member since the socket joined; typing is dropped silently. A refused "join" leaves the socket in
+// no channel.
+//
+// Sockets are put out when access is lost (stream made not public, member removed from a private channel, member
+// banned from a stream chat, channel made private): the socket is removed from the room, gets one
+// {"type": "error", "message": "Channel not found"} frame and nothing more from the room, and its voice call in
+// that room ends. The others get user_left and a new users list.</span>
 
 <span class="comment">// Typing indicator</span>
 {<span class="string">"type"</span>: <span class="string">"typing"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>}
