@@ -235,6 +235,34 @@ async def main():
         Config.STAGE_MODE = real_stage
         svc._service_types.pop("fake-init", None)
 
+    # restart_service and the restart in update_service_config clear the purposeful-stop mark
+    for how in ("restart", "config"):
+        events.clear()
+        mr = svc.ServiceManager(FakeDb(), on_event=lambda e, d: events.append((e, d)))
+
+        class Cfg(FakeDb):
+            async def update_service_full(self, *a, **k):
+                return True
+
+        mr._db = Cfg()
+        t = Fake(30)
+        mr._services[30] = t
+        await mr._check_services_once()
+        await mr.stop_service(30)
+        await mr._check_services_once()
+        if how == "restart":
+            t.restart_ok = False
+            await mr.restart_service(30)
+        else:
+            # the config restart only happens on a running service: stop mark set, then started elsewhere
+            t.status = "running"
+            t.restart_ok = False
+            await mr.update_service_config(30, {"a": 1})
+        for _ in range(3):
+            await mr._check_services_once()
+        check(f"a failed {how} after a manual stop alerts",
+              [(x[1]["id"], x[1]["state"]) for x in events] == [(30, "down")], str(events))
+
     # a broken hook is swallowed
     bad = svc.ServiceManager(FakeDb(), on_event=lambda e, d: 1 / 0)
     bad._services[5] = Fake(5, status="stopped")

@@ -358,6 +358,8 @@ class ServiceManager:
             return False, "Service not found"
 
         logger.info(f"Restarting service: {service.name}")
+        self._stopped_on_purpose.discard(service_id)
+        self._baseline_quiet.discard(service_id)
         return await service.restart()
 
     async def enable_service(self, service_id: int) -> bool:
@@ -422,6 +424,8 @@ class ServiceManager:
         # unit to track, and restarting wouldn't apply anything.
         if service.status == 'running' and getattr(service, 'restart_on_config_change', True):
             logger.info(f"Restarting {service.name} to apply config changes")
+            self._stopped_on_purpose.discard(service_id)
+            self._baseline_quiet.discard(service_id)
             return await service.restart()
 
         return True, ""
