@@ -37,19 +37,24 @@ Open Relay Portal puts all of it on a server you own. One installation gives you
 ### Live Streaming
 Broadcast video to your community — like having your own private TV channel. Stream from OBS or any RTMP-compatible app, with support for hardware-accelerated encoding (NVENC, AMF, x264). Viewers watch in their browser over HLS. Every stream is automatically recorded as VOD clips and uploaded to your own storage. Relay your stream simultaneously to Twitch, YouTube, Kick, or any custom RTMP destination. You keep full control — no platform cut, no algorithm deciding who sees your content, no surprise policy changes.
 
+Streams are private unless you make them public. The chat of a stream that is not public can be read, joined and written to only by its owner and the admins, and its channel is left out of everyone else's channel list. **Rotate Share Link** in the stream settings replaces the viewing link, so old links, embeds and open watch pages stop working; making a public stream private rotates it for you. Private streams send no go-live notification, and viewing keys never appear in notifications, webhooks or logs. **Allow unauthenticated access** is a separate switch that shows the video on the public live page.
+
 ### Encrypted Chat
-Message your team or community in real time — all messages are encrypted on the server so only your portal can read them. Organize conversations into channels, reply to specific messages, start threads, react with emoji, @mention people, share images, embed links and videos, and pin important messages. Scroll up to read older messages of a channel, and jump from a reply, a pin, a search result or a mention straight to that message in context. Search across everything with Ctrl+K. Enable desktop alerts to get browser notifications when someone mentions you or a stream goes live — even when the tab is in the background. It's a full-featured chat system that lives entirely on your hardware.
+Message your team or community in real time — all messages are encrypted on the server so only your portal can read them. Organize conversations into channels, reply to specific messages, start threads, react with emoji, @mention people, share images, embed links and videos, and pin important messages. Scroll up to read older messages of a channel, 50 at a time, and jump from a reply, a pin, a search result or a mention straight to that message in context; a **Jump to present** bar brings you back to the newest messages. History reaches back as far as the chat retention keeps messages (7 days by default, set under Data Retention). Search across everything with Ctrl+K. Enable desktop alerts to get browser notifications when someone mentions you or a stream goes live — even when the tab is in the background. It's a full-featured chat system that lives entirely on your hardware.
 
 ### Direct Messages
 Have private conversations with one person or a small group (up to 10 people), all encrypted on the server. Supports reactions, replies, message editing, typing indicators, unread badges, and muting — everything you'd expect from a modern messaging experience, delivered instantly over WebSocket. If someone is offline, they'll see a notification when they return.
 
 ### Message Search
-Find anything across your channels and DMs with full-text search. Filter by who sent it, when it was sent, or what type of content it contains. Use shortcuts like `from:user in:channel has:image before:date` to narrow results. DM search is private — you only see results from your own conversations.
+Find anything across your channels and DMs with full-text search (the Search button or Ctrl+K). Narrow it with operators: `from:name`, `in:channel`, `has:link`, `has:file`, `has:image`, `is:pinned`, `before:2026-11-01`, `after:2026-11-01` and "quoted phrases"; `from:` and `in:` can be negated with a leading `-`. Suggestion chips under the search box offer the operators, channel names and people in the room. A search made only of operators lists up to the 200 newest matches, and clicking a result opens that message in context.
+
+You only find what you are allowed to read. A private channel you are not in, a stream chat you may not read and other people's DMs never match, and they look exactly like channels that do not exist. A search never reveals who wrote an anonymous post. Messages older than the chat retention are deleted and cannot be found.
 
 ### Voice Chat
 Talk to people in real time with encrypted audio. Choose between push-to-talk or automatic voice detection. Audio travels directly between participants using WebRTC — it never passes through or gets stored on the server. True peer-to-peer, end-to-end encrypted voice.
 A dropped connection (a Wi-Fi change, a brief outage) keeps your seat in the call for 20 seconds so you can rejoin it without starting over; a second tab of the same account cannot take it over.
 The voice settings window (the Voice settings button next to the voice controls in chat) lets you pick your microphone and, in browsers that allow it, your speaker, shows a live level meter with the voice-detection threshold on it, can play your own microphone back to you as a test, and can keep the microphone open for a moment after you release the push-to-talk key. These choices stay in your own browser.
+Right-click or long-press a name in the voice bar or the online list to set that person's volume (0 to 200%) or mute them for yourself. Like the voice settings, this is stored only in your own browser and never sent to the server.
 
 ### Private Search
 Search the web without the trackers. Portal can run [SearXNG](https://github.com/searxng/searxng) — a privacy-respecting metasearch engine that aggregates results from 70+ engines while stripping the profiling — as an optional managed service, reachable at `/search/` by logged-in users. No search history, no cookies handed to upstream engines, no ads. The SearXNG UI is re-skinned to your portal theme and carries the portal navbar, so it feels like a native page. The dashboard has a unified search bar with a **Portal** / **Internet** toggle — Portal searches your indexed chat history, Internet runs a private web search. It's a normal managed service: enable it from the Services panel to turn it on, disable it and the portal carries on exactly as before (the search bar quietly drops the Internet option). A JSON API (`/search/search?q=...&format=json`) is available for automation; scripts authenticate with a personal API key (`Authorization: Api-Key portal_...`), and any valid key can search.
@@ -58,6 +63,8 @@ Search the web without the trackers. Portal can run [SearXNG](https://github.com
 Control other computers from your browser — no special software needed on your end. Connect to SSH terminals, VNC desktops, SPICE consoles, databases, and more — all through a secure WebSocket connection. 75 connection types are supported across 17 categories, each with a setup guide. A Quick Add bar lets you create common connections (SSH, VNC, MySQL, PostgreSQL, Proxmox, HTTP Proxy) with one click.
 
 On a phone or tablet the web terminal shows a **key bar** above the on-screen keyboard: Esc, Tab, sticky Ctrl and Alt (tap once, then type the next key), arrow keys, `|`, `~`, `/`, Paste and text size buttons. Pasting more than one line asks for confirmation first, and when the browser will not let the page read the clipboard a text box takes the paste instead. The bar is shown by default only on touch screens; the keyboard button in the terminal header turns it on or off and the choice is remembered in the browser.
+
+SSH and SFTP connections verify the remote server's host key. The first time you connect, Portal shows the key's fingerprint (SHA256) instead of connecting; compare it with the server's, then choose **Accept this key**. If the key later changes, the connection is refused until the connection's owner accepts the new one. Portal sends a remote host only the credentials stored on the connection, never the server account's own SSH keys or agent. The connection form has a **Do not verify host key** option; it is off by default and not recommended.
 
 For web-based services, Portal includes a built-in embedded browser with tabbed browsing and keyboard shortcuts (Ctrl+T for new tab, Ctrl+W to close, Alt+arrows for back/forward). Browse web dashboards, admin panels, or any website through Portal's secure proxy. Every user gets a default **Web Browser** connection; its home page is Portal's own private search (SearXNG) when that service is enabled, otherwise DuckDuckGo. From the private-search home, clicking a result opens it in a new tab *inside* the embedded browser (multi-site connections) or in a real browser tab (single-site connections). The embedded browser is session-aware — log out anywhere and any open browser window returns to the login page. Add it from the connection form's **Web Browser (private search)** preset. No VPN required — if you can reach your portal, you can reach everything behind it.
 
@@ -68,7 +75,7 @@ Give another Portal user access to a connection you set up — click **Share** o
 Browse, upload, download, and edit files on your server or on remote machines through the web. The file manager works with your server's local filesystem (for admins) and with any SFTP connection you've set up. When you have multiple SFTP connections, a dual-pane commander-style view lets you move files between remote machines side by side.
 
 ### System Monitoring
-See what's running on your server at a glance — active processes, systemd services, network interfaces, and open ports. Start, stop, or restart services. Kill runaway processes. All integrated directly into the admin panel as a tab, so you don't need to open a terminal for routine server management.
+See what's running on your server at a glance — active processes, systemd services, network interfaces, and open ports. Start, stop, or restart services. Kill runaway processes. All integrated directly into the admin panel as a tab, so you don't need to open a terminal for routine server management. Portal also watches managed services: after three failed health checks in a row a service counts as down, and after two good ones as up again. A service you stopped on purpose, or a game server stopped for an update, stays quiet. Starting, stopping and restarting from the panel is written to the audit log.
 
 You can also promote any installed systemd unit — a game server, a database, a file share — to a **managed service** of type `systemd`. Portal then shows it alongside MediaMTX and SearXNG with the same start/stop/restart controls, health, and (journal) logs, and reflects the unit's state even when it's changed outside Portal. Portal only ever stops such a unit when you explicitly click Stop — never on its own restart or when you remove the entry.
 
@@ -91,6 +98,30 @@ Twenty-eight built-in themes — switch with the palette icon in the navbar. The
 ### Administration
 Manage users with a clear role hierarchy — Super Admin, Admin, Moderator, and User. Create invite codes to let people register (daily rotating, single-use, or time-limited). Require two-factor authentication. Issue API keys for automation. Manage SSH keys, monitor traffic patterns, and scan for vulnerabilities. All administration happens through the admin panel in your browser.
 
+### Moderation and Anonymous Posting
+Moderators and admins can give a channel a **slow mode** of 5, 10 or 30 seconds, or 1, 2 or 5 minutes, from its context menu; staff are exempt, and editing a message does not count as sending one. **Auto-moderation** rules (Admin > Auto-Mod) filter words (contains, exact word or regex), links (a block list of domains, or all links), excessive capitals and mention spam. A matching message is blocked and its author is told which rule stopped it; a rule can also time the author out or mute them. Edited messages are checked too, regex rules run in a separate time-limited process, and staff are stopped by a rule but never timed out or muted by it. Every trigger is recorded in the Auto-Mod action log (View Action Log).
+
+Members can switch on **Hide my username** in the chat sidebar to post anonymously. Ordinary members never receive the account, role, nickname or avatar behind an anonymous post: not in history, search, reactions, reply previews, polls or webhooks. Moderators, admins and the author still see who wrote it, so anonymous does not mean unaccountable, and a stream owner can ban an anonymous author by message.
+
+### Sessions
+**Dashboard > Profile Settings > Sessions** lists every browser login and token of your account with the browser and system (read from the User-Agent by a small local parser, nothing is looked up online), when it was signed in and last used, and its last IP address. Sign out one device, or choose **Sign out other devices**; a signed-out session loses its chat, voice call and proxied downloads at once. API keys are listed separately and are not touched. Admins can sign a user out everywhere from Manage Users, within the role hierarchy.
+
+### Security Events and Audit Trail
+A **security event log** records sign-ins and failures, two-factor events, logouts and session sign-outs, API key, password, role, user and invite changes, IP blocks and unblocks, SSH host key accepts, rate-limit trips and changes to the log's own settings. Each row stores the IP address and user agent it came from. Passwords, codes, tokens and keys are never recorded, and a failed login for a name that is not an account does not store the typed name. Only a superadmin can read it (Admin > Audit Log, with Security and Auth filters and CSV or JSON export), and it is kept 180 days by default (Data Retention). Floods from outsiders are aggregated per source and minute, so they cannot fill the database.
+
+The moderation **audit log** next to it records what staff do: moderation actions, service control, backup downloads and settings changes.
+
+### Address Blocking
+Admins can block IP addresses, permanently or for a time. Automatic blocks (the optional scanner blocking) are lockout-safe: they skip loopback, private networks, this host's own addresses, trusted proxies, Cloudflare and a **never-ban list** you edit in Admin > Settings (or set with `NEVER_BAN_CIDRS`), and they never override a manual block. If you lock yourself out, stop the portal and run `server.py unblock <ip>` or `clear-bans`. A weekly job refreshes the built-in Cloudflare range list (on by default, can be switched off, sends no portal data); a list that fails the safety checks is held for a superadmin to approve or dismiss, and **Use the built-in list** undoes it. The portal also warns when `TRUSTED_PROXIES` looks wrong.
+
+### Backups and Restore
+Daily backup archives are on by default (the newest 7 are kept). An archive holds a consistent copy of the database, the files needed to read it and a manifest of hashes; you can add an extra destination directory, run **Back Up Now**, and download an archive (superadmin, browser login only). `server.py restore-archive` verifies an archive and unpacks it into an empty directory. Every update takes a backup first and does not start if it fails. Treat an archive like root access to the portal. Details are under [Backups and Rollback](#backups-and-rollback).
+
+### Notifications and Alerts
+Besides signed generic JSON, outgoing webhooks can send to **ntfy, Gotify, Discord and Slack**. A superadmin can create **system webhooks** (Admin > Webhooks) and subscribe them to fourteen kinds of alert, plus a notice sent whenever alerts were held back by the limits: failed sign-in bursts, two-factor turned off, API key created, role changed, IP blocked, update available, service health changes, certificate expiry and renewal failure, game server crashes, backup success and failure, moderation actions and automod triggers. Each alert can also appear as an in-portal notification for admins.
+
+The defaults are cautious. **No alert leaves the machine until a superadmin creates a system webhook and picks alert events**; `*` never includes an alert. A message to ntfy, Gotify, Discord or Slack carries a title, a one-line summary and the portal name, and no message text, IP address or token. IP addresses, user agents and rule names are added only when a hook's **include_details** switch is on (off by default). `message.created` goes to such a hook only when listed by name, and never for private channels, DMs or non-public stream chats. An anonymous post is sent with its author shown only as "Anonymous". Credentials are stored encrypted and never shown again, and a hook cannot be aimed at private or loopback addresses unless a superadmin allows it for a self-hosted ntfy or Gotify. Alerts are rate-limited, and a notice says what was held back. The formats were tested against local test receivers only, so press **Test** on a new hook before relying on it.
+
 ## Usage Examples
 
 Here are a few ways people use Open Relay Portal:
@@ -109,61 +140,121 @@ Here are a few ways people use Open Relay Portal:
 
 ## Screenshots
 
+All pictures are taken from a throwaway demo instance with made-up members and addresses.
+
+### Overview
+
 ![Dashboard](docs/screenshots/dashboard.png)
-*Dashboard — Services, connections, streams, VODs, quick access, and system stats*
+*Dashboard — services, connections, streams, recent activity and system stats*
 
-![Theme Picker](docs/screenshots/themes.png)
-*Theme Switcher — 28 built-in themes (core, accent hues, developer palettes, light readers, vibrant, and animated gradients)*
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/about.png" alt="About" width="100%"><br><em>Feature guide and documentation</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/login.png" alt="Login" width="100%"><br><em>Sign-in page with TOTP two-factor support</em></td>
+</tr>
+</table>
 
-![Light Theme](docs/screenshots/dashboard-light.png)
-*Light Theme — full light mode with dark text and blue accent*
-
-![Chat](docs/screenshots/chat.png)
-*Encrypted Chat — Channels, reactions, threads, @mentions, voice chat*
-
-![Direct Messages](docs/screenshots/dms.png)
-*Direct Messages — Private 1:1 and group DMs with encryption at rest*
-
-![Embedded Browser](docs/screenshots/browser.png)
-*Embedded Browser — Tabbed browsing with address bar, navigation controls, private-search home page, and multi-site proxy*
-
-![Admin Panel](docs/screenshots/admin.png)
-*Admin Panel — Server stats, traffic metrics, Shodan scanner, system resources*
-
-![File Manager](docs/screenshots/files.png)
-*File Manager — Browse and manage server files*
-
-![System Monitor](docs/screenshots/sysmon.png)
-*System Monitor — Processes, systemd services, network interfaces*
-
-![Streams](docs/screenshots/streams.png)
-*Community Streams — Live streaming with HLS playback and VOD recording*
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/guides.png" alt="Guides" width="100%"><br><em>Connection setup guides — step-by-step documentation for all 75 connection types</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/guides-detail.png" alt="Guide detail" width="100%"><br><em>Guide detail — requirements, setup steps and security advice per type</em></td>
+</tr>
+</table>
 
 ![API Docs](docs/screenshots/api-docs.png)
-*API Documentation — Interactive endpoint reference*
+*API Documentation — interactive endpoint reference*
 
-![Guides](docs/screenshots/guides.png)
-*Connection Setup Guides — Step-by-step documentation for all 75 connection types*
+### Chat and voice
 
-<details>
-<summary>More screenshots</summary>
+![Chat](docs/screenshots/chat.png)
+*Encrypted Chat — channels, polls, pinned messages and online users*
 
-![High Contrast Theme](docs/screenshots/dashboard-hc.png)
-*High Contrast Theme — maximum readability with yellow accent on pure black*
+![Chat scrollback](docs/screenshots/chat-scrollback.png)
+*Scrollback — reading older messages with a Jump to present bar*
 
-![Login](docs/screenshots/login.png)
-*Login page with TOTP 2FA support*
+![Chat search](docs/screenshots/chat-search.png)
+*Search operators — `from:casey has:link` with link badges on the results*
 
-![About](docs/screenshots/about.png)
-*Feature guide and documentation*
+![Direct Messages](docs/screenshots/dms.png)
+*Direct Messages — private 1:1 and group conversations with encryption at rest*
 
-![System Services](docs/screenshots/sysmon-services.png)
-*Systemd service management*
+<img src="docs/screenshots/voice-settings.png" alt="Voice settings" width="300">
 
-![Guide Detail](docs/screenshots/guides-detail.png)
-*Guide detail — Requirements, setup steps, and security best practices per type*
+*Voice Settings — voice detection mode, live level meter with the threshold line, sensitivity, and input and output pickers*
 
-</details>
+### Streams
+
+![Streams](docs/screenshots/streams.png)
+*Community Streams — a public stream card shown offline*
+
+<img src="docs/screenshots/streams-settings.png" alt="Stream settings" width="360">
+
+*Stream settings — OBS server and masked stream key, public and unauthenticated switches, viewing key, playback URL, and Regenerate Key and Rotate Share Link*
+
+### Remote access
+
+![Embedded Browser](docs/screenshots/browser.png)
+*Embedded Browser — tabbed browsing with address bar, navigation controls and multi-site proxy*
+
+![File Manager](docs/screenshots/files.png)
+*File Manager — remote files over SFTP*
+
+<table>
+<tr>
+<td valign="top" width="60%"><img src="docs/screenshots/hostkey-prompt.png" alt="Host key prompt" width="100%"><br><em>Host key check — the fingerprint is shown and must be accepted before the first connection</em></td>
+<td valign="top" width="40%"><img src="docs/screenshots/terminal-keybar.png" alt="Terminal key bar" width="240"><br><em>Mobile terminal — key bar with Esc, Tab, Ctrl, Alt and arrows</em></td>
+</tr>
+</table>
+
+### Administration and security
+
+![Admin Panel](docs/screenshots/admin.png)
+*Admin Panel — server statistics, traffic, community stats and resource gauges*
+
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/sysmon.png" alt="System resources" width="100%"><br><em>System resources — CPU, memory and disk gauges</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/sysmon-services.png" alt="Managed services" width="100%"><br><em>Managed Services — start, stop and restart with health and logs</em></td>
+</tr>
+</table>
+
+![Auto-moderation](docs/screenshots/admin-automod.png)
+*Auto-Mod — word, caps, link and mention rules*
+
+![Security events](docs/screenshots/admin-security-events.png)
+*Audit Log, Security filter — sign-in failures, blocks and list changes with source addresses*
+
+![Address blocking](docs/screenshots/admin-blocking.png)
+*Blocked IPs with the never-ban list and the effective list*
+
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/admin-cloudflare.png" alt="Cloudflare ranges" width="100%"><br><em>Cloudflare ranges — built-in list, weekly refresh switch and reset</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/admin-webhook-edit.png" alt="Edit system webhook" width="100%"><br><em>Edit system webhook — format, events, include details and private-address switches</em></td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/sessions.png" alt="Sessions" width="100%"><br><em>Sessions — your devices, with Sign out other devices</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/admin-backups.png" alt="Backups" width="100%"><br><em>Backups — archives, schedule, extra destination and Back Up Now</em></td>
+</tr>
+</table>
+
+![System webhooks](docs/screenshots/admin-webhooks.png)
+*System webhooks — generic, ntfy, Gotify, Discord and Slack destinations, and the alert events*
+
+### Themes
+
+![Theme Picker](docs/screenshots/themes.png)
+*Theme Switcher — 28 built-in themes (core, accent hues, developer palettes, light readers, vibrant and animated gradients)*
+
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/dashboard-light.png" alt="Light theme" width="100%"><br><em>Light Theme — full light mode with dark text and blue accent</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/dashboard-hc.png" alt="High Contrast theme" width="100%"><br><em>High Contrast Theme — maximum readability with yellow accent on pure black</em></td>
+</tr>
+</table>
 
 ## Quick Start
 
@@ -254,12 +345,17 @@ Single binary. No Docker required. No microservices. No external databases. One 
 - **Stream key encryption** — SHA-256 hashed for lookups, encrypted at rest
 - **Opaque connection IDs** — URL-safe tokens replace sequential integers, preventing enumeration
 - **Proxy isolation** — Embedded browser strips session cookies and auth headers from upstream requests; sandboxed iframe
-- **Rate limiting** — Per-IP request throttling on all endpoints
+- **Rate limiting** — Per-IP throttling on sign-in, registration, token creation, incoming webhooks and relay WebSocket connections; per-member limits on chat messages, search and history paging
 - **Trusted proxies** — `CF-Connecting-IP` / `X-Forwarded-For` are honoured only from Cloudflare and `TRUSTED_PROXIES` (add `127.0.0.1,::1` for a reverse proxy on the same host); direct-to-origin clients cannot spoof their address
 - **Lockout-safe blocking** — Every automatic block skips loopback, private networks, this host's own addresses, trusted proxies and Cloudflare, `NEVER_BAN_CIDRS` from `.env` and an admin-editable never-ban list (Admin > Settings > Never-ban list, which shows the effective list). An automatic block never shortens or overwrites a manual or permanent one. `sudo venv/bin/python server.py unblock <ip>` and `sudo venv/bin/python server.py clear-bans` lift blocks with the portal stopped
 - **Scanner blocking (optional)** — Set `PROBE_BLOCK_STRIKES=3` to block non-browser clients for an hour (`PROBE_BLOCK_SECONDS`) after repeated requests for `.env`, `.git/config`, `*.php` and similar. Off by default because blocks are per IP and shared by everyone behind one NAT
 - **Restart-safe terminal sessions** — Each local web-terminal shell runs in its own systemd scope, so `tmux`/`screen` sessions started from it survive a portal restart (`TERMINAL_OWN_SCOPE`)
 - **Security headers** — HSTS, X-Frame-Options, X-Content-Type-Options, CSP on every response
+- **SSH host key verification** — Every SSH and SFTP connection pins the remote host key on first use and refuses a changed key until the owner accepts it; the portal's own SSH keys and agent are never offered to remote hosts ([notes](#upgrade-notes-for-1110))
+- **Security event log** — Sign-ins, failures, session sign-outs, key, role and block changes are recorded with IP address and user agent, readable by a superadmin only and kept 180 days by default ([notes](#upgrade-notes-for-1130))
+- **Sessions** — Members can see and sign out their own sessions; signing out closes the sockets, voice call and proxied downloads opened with it ([notes](#upgrade-notes-for-1130))
+- **Closed chat and anonymity** — One access check decides every read of a channel (history, search, pins, notifications, voice), so a private channel or a non-public stream chat answers like a missing one. Ordinary members never receive the real author of an anonymous post ([notes](#upgrade-notes-for-1140))
+- **Cautious notifications** — No alert leaves the machine until a superadmin creates a system webhook; payloads are minimal unless a hook turns on `include_details`; webhook credentials are stored encrypted and never shown again; private and loopback destinations need an explicit superadmin opt-in ([notes](#upgrade-notes-for-1150))
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full security model, and
 [SECURITY-AUDIT-2026-09.md](docs/SECURITY-AUDIT-2026-09.md) for the most recent
@@ -282,6 +378,7 @@ Because of that, an archive is as sensitive as root access to the portal. Archiv
 - **Extra destination**: after each archive, a copy is written there (0600, renamed into place) and older copies beyond the keep count are removed from that directory, only files named like portal archives. The directory must exist, be absolute, and not be writable by group or others unless it has the sticky bit. Directories under `/tmp`, `/var/tmp` and `/dev/shm` are refused: the service runs with PrivateTmp, so a copy written there would be invisible to the host and deleted on every restart. The destination may not be the installation directory or anything under it, nor inside a directory the portal serves or exposes: a file-manager root other than `/`, a game-server storage root, `RECORDINGS_DIR` or the VOD temp directory; this is checked when the setting is saved and again before every copy. Changing the extra destination needs the superadmin's browser login session (like a download); lowering the number to keep needs it too, the other settings also work with an API key or token, and an extra destination that is left unchanged is not checked when saving, so an unmounted disk does not block editing them. A failed extra copy is reported and logged, the archive in `backups/archives/` is still kept.
 - **Download and delete** are in the same card and need a superadmin logged in with the browser cookie; API keys, bearer tokens and `?token=` links are refused for download. Every download is written to the audit log. Archives are never served to anyone else.
 - **Every update** (Apply in Admin > Updates, or `server.py update`) takes a backup archive first and does not start if the backup fails.
+- **Alerts**: a superadmin can subscribe a system webhook to `backup.ok` and `backup.failed` (off by default, see [notes for 1.15.0](#upgrade-notes-for-1150)); a failed extra copy sends `backup.failed`.
 
 **Restore.** `restore-archive` verifies the manifest hashes of every file, then unpacks into a directory that is empty (or does not exist yet). It refuses a directory that has anything in it and never reads or writes the live installation. If anything is wrong, nothing is left in the target. To bring a portal back from the unpacked files:
 
@@ -293,6 +390,8 @@ Because of that, an archive is as sensitive as root access to the portal. Archiv
 `backup-db` takes a consistent copy of the database only and runs an integrity check on it. It never overwrites an existing file, writes the copy owner-only (0600), needs free space of about twice the database size, and refuses a destination directory that other accounts can write to (a sticky directory such as `/tmp` is accepted).
 
 Update snapshots (`backups/snapshots/`) are owner-only and contain the code plus an integrity-checked copy of the database. A rollback restores the code only: it does not restore the database, `.env`, the virtual environment or `backups/`, and it logs the `restore-archive` command and the newest archive instead of restoring anything. Rollback refuses to run if the snapshot or the backup directories are owned by another account or writable by group or others; fix the ownership and modes (`chown` to the portal's account, `chmod 700`) and retry.
+
+The upgrade notes below explain each release in detail, including how to go back: [1.11.0](#upgrade-notes-for-1110) (backups, host keys), [1.13.0](#upgrade-notes-for-1130) (security events, sessions, blocking), [1.14.0](#upgrade-notes-for-1140) (history, search) and [1.15.0](#upgrade-notes-for-1150) (alert channels).
 
 ### Upgrade notes for 1.10.8
 
