@@ -140,6 +140,15 @@ async def main():
         check("system route: bearer plus a superadmin cookie is refused too", st == 403, str((st, e)))
         st, e = await call(sa, "POST", "/api/webhooks", body, headers={"X-API-Key": "portal_nonsense"})
         check("a request carrying an API key header is refused whatever the cookie says", st == 403, str((st, e)))
+        qtok = (tok or {}).get("token", "")
+        n_hooks = len(await db.get_all_webhooks())
+        st, e = await call(sa, "POST", "/api/webhooks?token=" + qtok, body)
+        check("?token=<api token> with a superadmin cookie cannot set allow_private", st == 403, str((st, e)))
+        st, e = await call(sa, "POST", "/api/admin/webhooks?token=" + qtok, {
+            "name": "s", "events": ["*"], "format": "gotify", "url": rbase, "allow_private": True,
+            "format_config": {"token": "T"}})
+        check("nor on the system route", st == 403, str((st, e)))
+        check("and nothing was created by those two requests", len(await db.get_all_webhooks()) == n_hooks)
         before = len(await secevents_rows())
         st, lan = await call(sa, "POST", "/api/webhooks", body)
         check("superadmin with a cookie session can", st == 201 and lan["allow_private"] is True
