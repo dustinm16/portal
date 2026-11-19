@@ -23,6 +23,7 @@ from aiohttp.test_utils import TestServer  # noqa: E402
 
 import secevents  # noqa: E402
 import server  # noqa: E402
+import webhook_formats as wf  # noqa: E402
 from auth import create_user  # noqa: E402
 from config import Config  # noqa: E402
 
@@ -240,7 +241,9 @@ async def main():
         st, lst = await call(sa, "GET", "/api/admin/webhooks")
         check("list shows system hooks only, with formats and event classes",
               st == 200 and [x["id"] for x in lst["webhooks"]] == [sid] and "ntfy" in lst["formats"]
-              and lst["system_only_events"] == ["webhook.test"])
+              and "webhook.test" in lst["system_only_events"]
+              and set(wf.ALERT_EVENTS) <= set(lst["system_only_events"]) and set(wf.ALERT_EVENTS) <= set(lst["events"])
+              and [g["group"] for g in lst["alert_groups"]] == ["security", "operations", "moderation"])
         st, mine = await call(adm, "GET", "/api/webhooks")
         check("the ordinary list leaves system hooks out", all(x["id"] != sid for x in mine["webhooks"]))
         for method, suffix in (("GET", ""), ("PUT", ""), ("DELETE", ""), ("GET", "/logs"), ("POST", "/test"),

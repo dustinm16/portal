@@ -130,6 +130,7 @@ from host_check import (
     HostCheckError, HostBlockedError, HostResolveError,
     _SSRFSafeResolver, _SSRFSafeConnector,
 )
+import alerts
 import backup_manager
 import ipguard
 import update_manager
@@ -1537,6 +1538,45 @@ async def _cf_refresh_loop() -> None:
         await asyncio.sleep(CF_CHECK_EVERY)
 
 
+ALERT_CHECK_FIRST_DELAY = 300.0      # first certificate and update check, seconds after start
+ALERT_CHECK_EVERY = 86400.0
+
+
+async def _alert_cert_loop() -> None:
+    """Daily look at the served certificate file (never in staged mode). Reads one local file."""
+    await asyncio.sleep(ALERT_CHECK_FIRST_DELAY)
+    while True:
+        try:
+            await alerts.check_certificate(Config.SSL_CERT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Certificate alert check failed: {type(e).__name__}")
+        await asyncio.sleep(ALERT_CHECK_EVERY)
+
+
+async def _alert_update_loop() -> None:
+    """Daily update check, only while a system hook lists update.available (the portal makes no
+    scheduled outbound request for it otherwise). Never in staged mode."""
+    await asyncio.sleep(ALERT_CHECK_FIRST_DELAY * 2)
+    while True:
+        try:
+            if await db.get_enabled_outgoing_webhooks_for_event("update.available"):
+                data = {}
+                for key, fn in (("portal", update_manager._check_portal_updates),
+                                ("mediamtx", update_manager._check_mediamtx_updates)):
+                    try:
+                        data[key] = await fn()
+                    except Exception as e:
+                        data[key] = {"error": type(e).__name__}
+                await alerts.note_updates(data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Update alert check failed: {type(e).__name__}")
+        await asyncio.sleep(ALERT_CHECK_EVERY)
+
+
 async def _load_never_ban_state() -> None:
     global _never_ban_admin_nets
     raw = await db.get_setting(NEVER_BAN_SETTING)
@@ -1603,14 +1643,50 @@ def _security_event_args(request, ip, user, user_id, username, user_agent=None):
     }
 
 
+async def _alert_notify_admins(event: str, title: str, summary: str) -> None:
+    """The in-portal copy of an alert: one notification per administrator."""
+    for u in await db.get_all_users():
+        if u.get("role") in ("admin", "superadmin") or u.get("is_admin"):
+            await send_notification(u["id"], "alert", title, summary, {"alert": event})
+
+
+async def _alert_record(event: str, details, ip=None) -> None:
+    """A security event for an alert that has none of its own (a burst, a certificate)."""
+    await security_event(event, ip=ip or "system", details=details)
+
+
+async def _alert_staff_accounts() -> list:
+    """(id, username) of every moderator, admin and superadmin: their actions bypass the alert sub-caps."""
+    return [(u["id"], u["username"]) for u in await db.get_all_users()
+            if u.get("role") in alerts.STAFF_ROLES or u.get("is_admin")]
+
+
+async def _alert_context_private(channel) -> bool:
+    """True when a moderation alert's channel is not one an ordinary member can read (a private
+    channel, a conversation, the chat of a stream that is not public, or one that cannot be found):
+    a third-party format then gets the alert without the channel or stream name."""
+    try:
+        return not bool(await _can_read_channel(channel, 0, "user"))
+    except Exception:
+        return True
+
+
+def _bind_alerts() -> None:
+    alerts.bind(fire=fire_webhook_event, notify=_alert_notify_admins,
+                get_setting=db.get_setting, set_setting=db.set_setting)
+    alerts.bind_record(_alert_record)
+    alerts.bind_staff(_alert_staff_accounts)
+
+
 def security_event_nowait(event: str, *, request=None, ip=None, user=None, user_id=None,
                           username=None, result=None, details=None, user_agent=None) -> None:
     """Count an attacker-triggered security event (login failure, bad code, probe,
     rate-limit trip). Synchronous, no I/O, never raises: the event joins the
     in-memory aggregate that is flushed every few seconds."""
     try:
-        secevents.log.note(event, result=result, details=details,
-                           **_security_event_args(request, ip, user, user_id, username, user_agent))
+        kwargs = _security_event_args(request, ip, user, user_id, username, user_agent)
+        secevents.log.note(event, result=result, details=details, **kwargs)
+        alerts.on_security_event(event, details=details, result=result, **kwargs)
     except Exception:
         pass
 
@@ -1629,6 +1705,8 @@ async def security_event(event: str, *, request=None, ip=None, user=None, user_i
             secevents.log.note(event, result=result, details=details, **kwargs)
         else:
             await secevents.log.write(event, result=result, details=details, **kwargs)
+        # An alert, where this event is one: scheduled, never awaited, never raises
+        alerts.on_security_event(event, details=details, result=result, **kwargs)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -5526,6 +5604,17 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
         # Get banned user's username for the response
         banned_user = await db.get_user_by_id(user_id)
         logger.info(f"User {banned_user['username'] if banned_user else user_id} banned from stream {stream['name']} by user {token.user_id}")
+        # Same alert as a ban over the websocket (and the same cooldown key). A target who
+        # chats anonymously, or who cannot be found, is never named.
+        banner = await db.get_user_by_id(token.user_id)
+        ban_channel = await db.get_chat_channel(stream["chat_channel_id"]) if stream.get("chat_channel_id") else None
+        alerts.moderation_action(
+            "ban", actor=(banner["username"] if banner else "a moderator"),
+            target=(banned_user["username"] if banned_user else None),
+            anonymous=bool(banned_user is None or banned_user.get("chat_anonymous")),
+            actor_id=token.user_id, target_id=user_id, reason=reason, where=stream["name"],
+            actor_anonymous=bool(banner and banner.get("chat_anonymous")),
+            actor_role=(banner or {}).get("role"), private=await _alert_context_private(ban_channel))
         return web.json_response({
             "success": True,
             "ban_id": ban_id,
@@ -6797,8 +6886,9 @@ async def _third_party_may_see(event: str, meta: dict | None) -> bool:
     return True
 
 
-async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = None) -> None:
-    """Dispatch event to all subscribed outgoing webhooks (non-blocking).
+async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = None) -> int:
+    """Dispatch event to all subscribed outgoing webhooks (non-blocking). Returns how many
+    deliveries were started.
 
     `meta` is private to the portal: it is never part of the generic body. It
     carries what the non-generic formats need (channel id, anonymous flag,
@@ -6811,11 +6901,14 @@ async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = N
             visible = await _third_party_may_see(event, meta)
     except Exception as e:
         logger.warning(f"Webhook event dispatch failed for {event}: {e}")
-        return
+        return 0
+    started = 0
     for webhook in webhooks:
         if webhook.get("format") != "generic" and not visible:
             continue
         asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta))
+        started += 1
+    return started
 
 
 _webhook_paused_until: dict[int, float] = {}
@@ -7601,7 +7694,48 @@ async def http_admin_webhooks_list(request: web.Request) -> web.Response:
         "formats": list(webhook_formats.FORMATS),
         "events": sorted(_SYSTEM_WEBHOOK_EVENTS),
         "system_only_events": sorted(webhook_formats.SYSTEM_ONLY_EVENTS),
+        "alert_groups": alerts.catalogue(),
     })
+
+
+async def http_admin_alerts_get(request: web.Request) -> web.Response:
+    """GET /api/admin/alerts - alert event groups and the in-portal notification switches."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    return web.json_response({"groups": alerts.catalogue(), "notify": await alerts.notify_settings()})
+
+
+async def http_admin_alerts_notify(request: web.Request) -> web.Response:
+    """PUT /api/admin/alerts/notify - {"event": "role.changed", "enabled": true}: whether an alert
+    also creates an in-portal notification for every administrator."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _bad_request("Invalid JSON")
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool) \
+            or body.get("event") not in alerts.EVENT_NAMES:
+        return _bad_request("event (an alert event name) and enabled (true or false) are required")
+    await alerts.set_notify(body["event"], body["enabled"])
+    await audit_log("alert_notify_change", user["id"], user["username"], target_name=body["event"],
+                    details=json.dumps({"enabled": body["enabled"]}))
+    return web.json_response({"event": body["event"], "enabled": body["enabled"]})
+
+
+async def http_admin_alerts_stage_reset(request: web.Request) -> web.Response:
+    """POST /api/admin/alerts/stage-reset - forget every cooldown, the global cap and the
+    counters, so a smoke check starts from a known state. A staged instance only: any other
+    instance answers 404 as if the route did not exist."""
+    if not Config.STAGE_MODE:
+        return web.json_response({"error": "Not found"}, status=404)
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    alerts.reset_state()
+    return web.json_response({"success": True})
 
 
 async def http_admin_webhooks_create(request: web.Request) -> web.Response:
@@ -10448,6 +10582,10 @@ async def http_trigger_letsencrypt(request: web.Request) -> web.Response:
 
     success, message = await asyncio.to_thread(cert_manager.request_letsencrypt_cert, hostname, email)
     if not success:
+        alerts.emit("cert.renewal_failed", key="request",
+                    summary="A Let's Encrypt certificate request failed",
+                    details={"Host": hostname, "Reason": message},
+                    record={"event": "cert_renewal_failed", "details": {"kind": "request"}})
         return web.json_response({"error": message}, status=500)
 
     # Get cert paths and update .env
@@ -15689,6 +15827,10 @@ async def apply_automod(ws, text: str, *, user_id: int, user_role: str, channel:
     am_action = automod_result["action"]
     is_privileged = user_role in ("admin", "superadmin", "moderator")
     rule_name = automod_result["rule_name"]
+    alerts.automod_triggered(
+        rule_id=automod_result.get("rule_id"), rule_name=rule_name, rule_action=am_action,
+        member=username, member_id=user_id, anonymous=bool(my_state.get("anonymous")),
+        channel=channel_name, member_role=user_role, private=await _alert_context_private(channel))
     # chat_timeouts.moderator_id must be a real account: the penalty is booked to the
     # account that created the rule (it is announced to the channel as "AutoMod").
     penalty_by = automod_result.get("created_by")
@@ -17969,6 +18111,15 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
                     target_id=target_id, target_type="user",
                     target_name=target["username"] if target else str(target_id),
                     channel_id=channel_id, channel_name=channel["name"])
+    # Removing someone else from a channel is a kick. The target's chat_anonymous flag decides
+    # whether a sent alert may name them.
+    alerts.moderation_action(
+        "kick", actor=(user["username"] if user else "a moderator"),
+        target=(target["username"] if target else None),
+        anonymous=bool(target and target.get("chat_anonymous")) or not target,
+        actor_id=token.user_id, target_id=target_id, channel=channel["name"],
+        actor_anonymous=bool(user and user.get("chat_anonymous")),
+        actor_role=(user or {}).get("role"), private=await _alert_context_private(channel))
 
     return web.json_response({"success": True})
 
@@ -18788,6 +18939,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         target_name=target_name,
                                         channel_name=current_channel,
                                         details=json.dumps({"duration": duration, "reason": reason}))
+                        alerts.moderation_action(
+                            "timeout", actor=username, target=target_user["username"], anonymous=target_anon,
+                            actor_id=user_id, target_id=target_user_id, channel=current_channel,
+                            reason=reason, duration=duration, actor_anonymous=bool(my_state.get("anonymous")),
+                            actor_role=user_role, private=await _alert_context_private(channel))
 
                     elif msg_type == "mute_user":
                         if not current_channel:
@@ -18834,6 +18990,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                         target_name=target_name,
                                         channel_name=current_channel,
                                         details=json.dumps({"reason": reason}))
+                        alerts.moderation_action(
+                            "mute", actor=username, target=target_user["username"], anonymous=target_anon,
+                            actor_id=user_id, target_id=target_user_id, channel=current_channel, reason=reason,
+                            actor_anonymous=bool(my_state.get("anonymous")),
+                            actor_role=user_role, private=await _alert_context_private(channel))
 
                     elif msg_type == "unmute_user":
                         if not current_channel:
@@ -19204,6 +19365,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                             target_name=banned_username,
                                             channel_name=current_channel,
                                             details=json.dumps({"reason": reason, "stream": stream["name"]}))
+                            alerts.moderation_action(
+                                "ban", actor=username, target=banned_username,
+                                anonymous=bool(banned_anon or (banned_user and banned_user.get("chat_anonymous"))),
+                                actor_id=user_id, target_id=target_user_id, channel=current_channel,
+                                reason=reason, where=stream["name"],
+                                actor_anonymous=bool(my_state.get("anonymous")),
+                                actor_role=user_role, private=await _alert_context_private(channel))
                         else:
                             await ws.send_json({"type": "error", "message": "User may already be banned"})
 
@@ -22752,6 +22920,9 @@ def create_app() -> web.Application:
     app.router.add_get("/api/webhooks/{id}/logs", http_get_webhook_logs)
     app.router.add_post("/api/webhooks/{id}/test", http_test_webhook)
     app.router.add_post("/api/webhooks/{id}/regenerate-secret", http_regenerate_webhook_secret)
+    app.router.add_get("/api/admin/alerts", http_admin_alerts_get)
+    app.router.add_put("/api/admin/alerts/notify", http_admin_alerts_notify)
+    app.router.add_post("/api/admin/alerts/stage-reset", http_admin_alerts_stage_reset)
     app.router.add_get("/api/admin/webhooks", http_admin_webhooks_list)
     app.router.add_post("/api/admin/webhooks", http_admin_webhooks_create)
     app.router.add_get("/api/admin/webhooks/{id}", http_admin_webhooks_get)
@@ -22897,6 +23068,7 @@ class PortalServer:
         # Security event log: bind the database and start the aggregate flusher
         secevents.log.bind(db)
         secevents.log.start()
+        _bind_alerts()
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
@@ -22915,6 +23087,8 @@ class PortalServer:
         # never in staged mode)
         if not Config.STAGE_MODE:
             asyncio.create_task(_cf_refresh_loop())
+            asyncio.create_task(_alert_cert_loop())
+            asyncio.create_task(_alert_update_loop())
 
         # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
         # (skipped in staged test mode: it would poll the host's real MediaMTX)
@@ -22944,7 +23118,7 @@ class PortalServer:
         # Initialize managed services
         global _service_manager
         load_service_types()  # Load service type plugins
-        _service_manager = await init_service_manager(db)
+        _service_manager = await init_service_manager(db, on_event=alerts.service_event)
         logger.info("Managed services initialized")
 
         # Seed the game-server catalog (idempotent) + start the periodic

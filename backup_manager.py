@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import alerts
 import update_manager as um
 from config import Config
 
@@ -1041,8 +1042,19 @@ async def run_now(reason: str = "manual", wait: float = 0) -> dict:
         )
     except Exception as e:
         await _record(False, error=str(e))
+        alerts.emit("backup.failed", key=reason, summary="A backup failed",
+                    details={"Reason": reason, "Error": str(e)[:200]})
         raise
     await _record(True, name=info["name"], error=info.get("extra_error") or "")
+    if info.get("extra_error"):
+        # The local archive exists, but the copy meant to survive the disk did not: not a success.
+        alerts.emit("backup.failed", key=f"{reason}:extra",
+                    summary="The local backup archive was written, but the extra copy failed",
+                    details={"Archive": info["name"], "Reason": reason, "Local archive": "written",
+                             "Extra copy": "failed", "Error": str(info["extra_error"])[:200]})
+    else:
+        alerts.emit("backup.ok", key=reason, summary="A backup finished",
+                    details={"Archive": info["name"], "Reason": reason})
     logger.info("Backup (%s) finished: %s%s", reason, info["name"],
                 f"; pruned {', '.join(info['pruned'])}" if info.get("pruned") else "")
     return info

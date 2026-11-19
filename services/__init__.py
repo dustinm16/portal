@@ -46,6 +46,11 @@ def get_available_service_types() -> Dict[str, ServiceInfo]:
     }
 
 
+HEALTH_INTERVAL = 30.0          # seconds between health checks
+HEALTH_FAIL_THRESHOLD = 3       # consecutive failed checks before a service counts as down
+HEALTH_OK_THRESHOLD = 2         # consecutive good checks before a down service counts as up again
+
+
 class ServiceManager:
     """Manages lifecycle of all managed services.
 
@@ -56,13 +61,19 @@ class ServiceManager:
     - Provides API for service control
     """
 
-    def __init__(self, db):
+    def __init__(self, db, on_event=None):
         """Initialize the service manager.
 
         Args:
             db: Database instance for persistence
+            on_event: optional callable(event, data) told about service.health_changed
+                (a transition only: down after HEALTH_FAIL_THRESHOLD failed checks, up after
+                HEALTH_OK_THRESHOLD good ones) and about events the services raise themselves
+                (gameserver.crashed). It must not block; errors in it are swallowed.
         """
         self._db = db
+        self._on_event = on_event
+        self._health_state: Dict[int, dict] = {}
         self._services: Dict[int, ManagedService] = {}
         self._health_task: Optional[asyncio.Task] = None
         self._shutdown = False
@@ -89,6 +100,7 @@ class ServiceManager:
             try:
                 service = handler_class(svc_data)
                 service._db = self._db
+                service._on_event = self._on_event
                 self._services[svc_data['id']] = service
                 logger.info(f"Loaded service: {svc_data['name']} ({service_type})")
 
@@ -198,6 +210,7 @@ class ServiceManager:
             svc_data = await self._db.get_service_by_id(service_id)
             service = handler_class(svc_data)
             service._db = self._db
+            service._on_event = self._on_event
             self._services[service_id] = service
 
             # Reconcile status for services that track an external process
@@ -238,6 +251,7 @@ class ServiceManager:
                 await service.stop()
             await service.cleanup()
             del self._services[service_id]
+        self._health_state.pop(service_id, None)
 
         # Delete from unified services table
         success = await self._db.delete_service(service_id)
@@ -455,47 +469,109 @@ class ServiceManager:
             return await service.get_journal_logs(limit)
         return await self._db.get_service_logs(service_id, limit, level)
 
+    def _emit(self, event: str, data: dict) -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event, data)
+        except Exception as e:
+            logger.warning(f"on_event hook failed for {event}: {type(e).__name__}")
+
+    def _track_health(self, service: ManagedService, ok: bool) -> None:
+        """Count one check for a service and report a transition. A service is down after
+        HEALTH_FAIL_THRESHOLD failed checks in a row and up again after HEALTH_OK_THRESHOLD good
+        ones, so a flapping service sends nothing and a steady one sends one alert per change."""
+        st = self._health_state.setdefault(service.id, {"fails": 0, "oks": 0, "down": False})
+        if ok:
+            st["fails"] = 0
+            if st["down"]:
+                st["oks"] += 1
+                if st["oks"] >= HEALTH_OK_THRESHOLD:
+                    st.update(down=False, oks=0)
+                    self._emit("service.health_changed", {
+                        "id": service.id, "name": service.name, "display_name": service.display_name,
+                        "state": "up", "status": service.status})
+        else:
+            st["oks"] = 0
+            st["fails"] += 1
+            if not st["down"] and st["fails"] >= HEALTH_FAIL_THRESHOLD:
+                st["down"] = True
+                self._emit("service.health_changed", {
+                    "id": service.id, "name": service.name, "display_name": service.display_name,
+                    "state": "down", "status": service.status, "failed_checks": st["fails"]})
+
+    async def _check_services_once(self):
+        """One pass of the health monitor over all services."""
+        for service in list(self._services.values()):
+            # Services that wrap an external process (systemd units)
+            # reconcile their status from the outside world here — they
+            # can start/stop without Portal's involvement.
+            if hasattr(service, 'sync_status'):
+                try:
+                    await service.sync_status()
+                except Exception as e:
+                    logger.error(f"sync_status failed for {service.name}: {e}")
+
+            # A service that is not enabled is not expected to run: no state, no alerts
+            if not service.enabled:
+                self._health_state.pop(service.id, None)
+            elif service.status in ('starting', 'stopping'):
+                pass
+            elif service.status != 'running':
+                self._track_health(service, False)
+
+            if service.status != 'running':
+                continue
+
+            try:
+                healthy = await service.health_check()
+                health_status = 'healthy' if healthy else 'unhealthy'
+
+                await self._db.update_service_health_status(service.id, health_status)
+                if service.enabled:
+                    self._track_health(service, bool(healthy))
+
+                if not healthy:
+                    logger.warning(f"Service {service.name} is unhealthy")
+
+                    # Check if process died
+                    if service.process and service.process.returncode is not None:
+                        await self._handle_crashed_service(service)
+
+            except Exception as e:
+                logger.error(f"Health check failed for {service.name}: {e}")
+                await self._db.update_service_health_status(service.id, 'unknown')
+                if service.enabled:
+                    self._track_health(service, False)
+
+    async def _stage_interval(self) -> float:
+        try:
+            return min(max(float(await self._db.get_setting("stage_health_interval") or HEALTH_INTERVAL), 0.25), HEALTH_INTERVAL)
+        except Exception:
+            return HEALTH_INTERVAL
+
+    async def _wait_next_check(self):
+        """Sleep until the next check. A staged instance (a test) may shorten the wait with the
+        stage_health_interval setting, which a production instance never reads."""
+        if not Config.STAGE_MODE:
+            await asyncio.sleep(HEALTH_INTERVAL)
+            return
+        waited = 0.0
+        while not self._shutdown and waited < await self._stage_interval():
+            await asyncio.sleep(0.25)
+            waited += 0.25
+
     async def _health_monitor(self):
         """Background task to monitor service health."""
         logger.info("Health monitor started")
 
         while not self._shutdown:
             try:
-                for service in list(self._services.values()):
-                    # Services that wrap an external process (systemd units)
-                    # reconcile their status from the outside world here — they
-                    # can start/stop without Portal's involvement.
-                    if hasattr(service, 'sync_status'):
-                        try:
-                            await service.sync_status()
-                        except Exception as e:
-                            logger.error(f"sync_status failed for {service.name}: {e}")
-
-                    if service.status != 'running':
-                        continue
-
-                    try:
-                        healthy = await service.health_check()
-                        health_status = 'healthy' if healthy else 'unhealthy'
-
-                        await self._db.update_service_health_status(service.id, health_status)
-
-                        if not healthy:
-                            logger.warning(f"Service {service.name} is unhealthy")
-
-                            # Check if process died
-                            if service.process and service.process.returncode is not None:
-                                await self._handle_crashed_service(service)
-
-                    except Exception as e:
-                        logger.error(f"Health check failed for {service.name}: {e}")
-                        await self._db.update_service_health_status(service.id, 'unknown')
-
+                await self._check_services_once()
             except Exception as e:
                 logger.error(f"Health monitor error: {e}")
 
-            # Check every 30 seconds
-            await asyncio.sleep(30)
+            await self._wait_next_check()
 
     async def _handle_crashed_service(self, service: ManagedService):
         """Handle a crashed service with exponential backoff restart."""
@@ -529,7 +605,7 @@ class ServiceManager:
 service_manager: Optional[ServiceManager] = None
 
 
-async def init_service_manager(db) -> ServiceManager:
+async def init_service_manager(db, on_event=None) -> ServiceManager:
     """Initialize the global service manager.
 
     Args:
@@ -539,7 +615,7 @@ async def init_service_manager(db) -> ServiceManager:
         Initialized ServiceManager
     """
     global service_manager
-    service_manager = ServiceManager(db)
+    service_manager = ServiceManager(db, on_event=on_event)
     await service_manager.initialize()
     return service_manager
 

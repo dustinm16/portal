@@ -1430,6 +1430,18 @@ def update_server(db, gs_id: int) -> str:
     )
 
 
+async def _mark_expected_stop(gs) -> None:
+    """Tell the game server's service handler that the next stop is the portal's own."""
+    try:
+        mgr = _services.service_manager
+        sid = gs.get("service_id")
+        svc = await mgr.get_service(sid) if mgr is not None and sid else None
+        if svc is not None:
+            svc._expected_stop = True
+    except Exception as e:
+        logger.warning("could not mark the stop of %s as expected: %s", gs.get("unit_name"), type(e).__name__)
+
+
 async def _update_job(db, gs_id, job):
     gs = await db.game_server_get(gs_id)
     if not gs:
@@ -1460,6 +1472,9 @@ async def _update_job(db, gs_id, job):
     was_running = out.strip() == "active"
     if was_running:
         jobs.log(job, "stopping service for update")
+        # The portal's own stop is not a crash: flag it before the unit goes down, so the
+        # health poll that sees it end (possibly "failed") does not raise gameserver.crashed.
+        await _mark_expected_stop(gs)
         await _run_cmd(_sudo("systemctl", "stop", f"{unit}.service"), timeout=120)
 
     rc = await _run(job, _steam_update_cmd(install_dir, gs["steam_login"], app_id, runtime,

@@ -439,7 +439,19 @@ async def check_all(force: bool = False) -> dict:
         "checked_at": _ts(),
     }
     _check_cache[cache_key] = {"data": data, "ts": now}
+    announce_updates(data)
     return data
+
+
+def announce_updates(data: dict) -> None:
+    """Hand a check's answer to the alert events (update.available, once per version).
+    Fire and forget; does nothing in the command-line run, where no alerts are bound."""
+    try:
+        import alerts
+        if alerts.bound():
+            alerts._spawn(alerts.note_updates(data))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

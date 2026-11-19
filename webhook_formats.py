@@ -28,6 +28,37 @@ from datetime import datetime, timezone
 
 FORMATS = ("generic", "ntfy", "gotify", "discord", "slack")
 
+# Ops, security and moderation alerts (see alerts.py, which holds the groups and the rules
+# that keep them from flooding a channel). They belong to system hooks only, and a hook
+# receives one only when it lists it by name: "*" never includes them, so a system hook
+# made before these existed (or one made for "everything") sends no alert until a superadmin
+# picks the events.
+ALERT_EVENTS = frozenset({
+    "auth.login_failed_burst", "2fa.disabled", "apikey.created", "role.changed", "ip.blocked",
+    "update.available", "service.health_changed", "cert.expiring", "cert.renewal_failed",
+    "gameserver.crashed", "backup.ok", "backup.failed", "moderation.action",
+    "automod.triggered", "alerts.suppressed",
+})
+ALERT_TITLES = {
+    "auth.login_failed_burst": "Repeated failed sign-ins",
+    "2fa.disabled": "Two-factor sign-in turned off",
+    "apikey.created": "API key created",
+    "role.changed": "Account role changed",
+    "ip.blocked": "Address blocked",
+    "update.available": "Update available",
+    "service.health_changed": "Service state changed",
+    "cert.expiring": "Certificate expiring",
+    "cert.renewal_failed": "Certificate renewal failed",
+    "gameserver.crashed": "Game server stopped unexpectedly",
+    "backup.ok": "Backup finished",
+    "backup.failed": "Backup failed",
+    "moderation.action": "Moderation action",
+    "automod.triggered": "Auto-moderation rule triggered",
+    "alerts.suppressed": "Alerts suppressed",
+}
+SEVERITY_PRIORITY = {"info": 2, "notice": 3, "warning": 4, "critical": 5}
+SEVERITY_COLOR = {"info": 0x3498DB, "notice": 0x5865F2, "warning": 0xF39C12, "critical": 0xE74C3C}
+
 # The one allow-list of events a user hook may subscribe to or receive. Anything not
 # listed here (webhook.test, every ops or security event added later) is system-only:
 # a new event is closed to user hooks until it is added to this set on purpose.
@@ -37,8 +68,12 @@ USER_EVENTS = frozenset({
 })
 
 # Events a system hook may also receive. Listed for the admin form; the rule that
-# keeps them from user hooks is the allow-list above, not this set.
-SYSTEM_ONLY_EVENTS = frozenset({"webhook.test"})
+# keeps them from user hooks is the allow-list above, not this set. Every alert event
+# is system-only.
+SYSTEM_ONLY_EVENTS = frozenset({"webhook.test"}) | ALERT_EVENTS
+
+# Events a hook receives only when it lists them by name, whatever its format.
+EXPLICIT_ONLY_EVENTS = ALERT_EVENTS
 
 # Presence events: never sent in a non-generic format for a member whose status
 # preference is appear-offline (the dispatcher checks this, see server).
@@ -77,7 +112,13 @@ def event_subscribed(events, event: str, *, kind: str = "user", fmt: str = "gene
         return False
     if event in events:
         return True
+    if event == "alerts.suppressed" and kind == "system" and any(e in ALERT_EVENTS for e in events):
+        # The notice that alerts are being held back goes to every system hook that has any
+        # alert subscribed, whether or not it lists this one.
+        return True
     if "*" in events:
+        if event in EXPLICIT_ONLY_EVENTS:
+            return False
         return not (fmt != "generic" and event in NON_GENERIC_EXPLICIT_ONLY)
     return False
 
@@ -212,12 +253,55 @@ def build_message(event: str, data: dict, meta: dict, *, include_details: bool,
         if d:
             _add(m, "Member", data.get("username"))
         return m
+    if event in ALERT_EVENTS:
+        return _alert_message(event, data, d)
     if event == "webhook.test":
         return Message("Test notification", f"This is a test message from {portal}",
                        priority=3, tag="white_check_mark", color=0x2ECC71)
     # An event with no catalogue entry (ops events added later must add one):
     # say only that it happened.
     return Message("Portal event", "An event happened", priority=3, tag="bell")
+
+
+ALERT_SUMMARY_LIMIT = 300
+ALERT_DETAIL_LIMIT = 200
+ALERT_DETAIL_MAX = 8
+
+
+def _alert_message(event: str, data: dict, with_details: bool) -> Message:
+    """An alert from alerts.py. Title and one-line summary always; the details (addresses,
+    user agents, rule names, reasons) only for a hook with include_details."""
+    sev = data.get("severity") if data.get("severity") in SEVERITY_PRIORITY else "notice"
+    # An alert from a private context carries a version of the summary and details with no
+    # channel or stream name for the non-generic formats (generic keeps the original, see alert_body).
+    tp = data.get("third_party") if isinstance(data.get("third_party"), dict) else None
+    if tp:
+        data = dict(data, summary=tp.get("summary") or data.get("summary"),
+                    details=tp.get("details") if isinstance(tp.get("details"), dict) else {})
+    m = Message(_one_line(data.get("title") or ALERT_TITLES[event], 120) or ALERT_TITLES[event],
+                _one_line(data.get("summary"), ALERT_SUMMARY_LIMIT) or "An event happened",
+                priority=SEVERITY_PRIORITY[sev], tag="warning" if sev in ("warning", "critical") else "bell",
+                color=SEVERITY_COLOR[sev])
+    if with_details and isinstance(data.get("details"), dict):
+        for label, value in list(data["details"].items())[:ALERT_DETAIL_MAX]:
+            _add(m, _one_line(label, 40), value)
+    return m
+
+
+def alert_body(data: dict, include_details: bool) -> dict:
+    """What a generic hook is sent for an alert: the same two lines as the other formats,
+    and the details only when the hook asks for them. Never the raw dict."""
+    data = data if isinstance(data, dict) else {}
+    out = {
+        "title": _one_line(data.get("title"), 120),
+        "summary": _one_line(data.get("summary"), ALERT_SUMMARY_LIMIT),
+        "severity": data.get("severity") if data.get("severity") in SEVERITY_PRIORITY else "notice",
+        "group": _one_line(data.get("group"), 20),
+    }
+    if include_details and isinstance(data.get("details"), dict):
+        out["details"] = {_one_line(k, 40): _one_line(v, ALERT_DETAIL_LIMIT)
+                          for k, v in list(data["details"].items())[:ALERT_DETAIL_MAX]}
+    return out
 
 
 def _add(m: Message, label: str, value) -> None:
@@ -253,6 +337,8 @@ def format_payload(fmt: str, event: str, data: dict, *, meta: dict | None = None
     The other formats need no secret; `secret_config` carries their credentials.
     """
     if fmt == "generic":
+        if event in ALERT_EVENTS:
+            data = alert_body(data, include_details)
         body_json = json.dumps({
             "event": event,
             "timestamp": datetime.now(timezone.utc).isoformat(),

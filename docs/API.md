@@ -3907,11 +3907,11 @@ Failures are retried after 10 s, 60 s and 5 minutes; 10 consecutive failures dis
 
 #### System webhooks (Superadmin)
 
-A system webhook has no owner and survives the deletion of the account that created it. Only the receiver classes below differ from a user hook: system-only events (currently `webhook.test`; ops and security events will be added to this list) can be delivered to system hooks only, never to a user hook, not even through `*`. Routes (superadmin, any full credential; `allow_private` still needs a browser session):
+A system webhook has no owner and survives the deletion of the account that created it. Only the receiver classes below differ from a user hook: system-only events (`webhook.test` and the alert events below) can be delivered to system hooks only, never to a user hook, not even through `*`. Routes (superadmin, any full credential; `allow_private` still needs a browser session):
 
 | Route | Purpose |
 |---|---|
-| `GET /api/admin/webhooks` | `{"webhooks", "formats", "events", "system_only_events"}` |
+| `GET /api/admin/webhooks` | `{"webhooks", "formats", "events", "system_only_events", "alert_groups"}` |
 | `POST /api/admin/webhooks` | create (same fields as above; `events` required; maximum 20) |
 | `GET`, `PUT`, `DELETE /api/admin/webhooks/{id}` | read, update (also `enabled`), delete |
 | `GET /api/admin/webhooks/{id}/logs` | recent deliveries: `id`, `event`, `response_status`, `success`, `attempt`, `duration_ms`, `created_at`; never payloads |
@@ -3919,6 +3919,25 @@ A system webhook has no owner and survives the deletion of the account that crea
 | `POST /api/admin/webhooks/{id}/regenerate-secret` | generic format only |
 
 The same hooks are managed in **Admin > Webhooks** (visible to superadmins only).
+
+#### Alert events (system webhooks only)
+
+Fifteen ops, security and moderation events, in three groups, can be delivered to system webhooks. **A hook receives an alert only when it lists the event by name**: `*` never includes one, a user hook cannot subscribe to one, and nothing is subscribed by default. Delivery is the hook's own format (generic bodies stay HMAC-signed).
+
+| Group | Events |
+|---|---|
+| Security | `auth.login_failed_burst`, `2fa.disabled`, `apikey.created`, `role.changed`, `ip.blocked` |
+| Operations | `update.available`, `service.health_changed`, `cert.expiring`, `cert.renewal_failed`, `gameserver.crashed`, `backup.ok`, `backup.failed`, `alerts.suppressed` |
+| Moderation | `moderation.action` (timeout, mute, ban, kick), `automod.triggered` |
+
+Generic body: `{"event", "timestamp", "data": {"title", "summary", "severity", "group"}}`, and `"details": {label: text}` inside `data` only for a hook with `include_details`. IP addresses, user agents, reasons and rule names are details only. Account names may appear in the summary of an admin or moderation event (role change, block, timeout, ban); the sign-in burst, 2FA and API key alerts name the account in the details only; a member who posts anonymously is never named (the summary says "an anonymous member" and no name or id is in the details). The other formats show the same title and summary.
+
+Every alert has a cooldown or transition rule: `auth.login_failed_burst` fires at 5 failed sign-ins in 60 seconds per address (an IPv6 address counts as its /64) or per existing account, then rests 10 minutes per key; automatic IP blocks are reported once a minute with a count; `service.health_changed` fires on a change only (down after 3 consecutive failed health checks of an enabled service, up after 2 good ones); `cert.expiring` fires once per threshold (14, 7 and 1 days) and certificate serial; `update.available` once per version; `automod.triggered` at most once per rule and member per minute; `moderation.action` once per moderator, member and action per minute. All alerts together are capped at 30 per 10 minutes; the first alert refused sends one `alerts.suppressed` (it counts in the window, and a new one is sent only after a whole 10 minutes without a refused alert). What a stranger or an ordinary member can set off has its own smaller cap in the same window, so it cannot use up the room of the others: 5 `auth.login_failed_burst` and 5 automatic-block `ip.blocked` alerts per 10 minutes, 5 in all for the moderation alerts any signed-in member can set off (`moderation.action` and `automod.triggered` share that one cap), 3 `2fa.disabled` and 2 `apikey.created` (a cap each, apart from moderation, so moderation cannot hold back an account-security alert). That leaves room for at least 9 other alerts in each window. These caps bind only alerts caused by non-staff accounts: an alert whose actor is a moderator, admin or superadmin, an alert about a staff account (a failed-sign-in burst against a staff account name, `2fa.disabled` or `apikey.created` on one) and every operations alert bypass them and are limited only by their own cooldown or transition rule and the global cap; the global cap keeps a reserve of 10 of the 30 that an alert subject to a sub-cap can never use. The `alerts.suppressed` notice is sent 30 seconds after the trip, names each kind of alert held back with its count (the commonest first; kinds that do not fit in the summary are counted as "and N more kinds"), and goes to every system hook with any alert event subscribed (not only hooks that list `alerts.suppressed`). Wrong second-factor codes count toward `auth.login_failed_burst` like wrong passwords, and a burst held back by its cooldown or a cap is still written once to the security event log. For `moderation.action` and `automod.triggered` from a private channel, a conversation or the chat of a stream that is not public, the ntfy, Gotify, Discord and Slack formats say "in a private channel" and carry no channel or stream name, also in their details; the generic format is unchanged. A backup whose extra copy failed sends `backup.failed`, not `backup.ok`; `update.available` is marked announced only when a hook was sent it or the in-portal notice was raised. `role.changed` rests 60 seconds per account and role change: a second, different change of the same account is still sent. A cooldown that names a combination (rule and member; moderator, member and action) counts the combination as one key. A stream chat ban sends `moderation.action` over the REST route (`POST /api/streams/{id}/bans`) as well as over the websocket. `gameserver.crashed` is sent when a game server unit ends in the failed state or when systemd restarts it on its own (its restart count grew since the last 30 second check); it is not sent for a stop or restart asked for through the portal.
+
+| Route (superadmin, any full credential) | Purpose |
+|---|---|
+| `GET /api/admin/alerts` | `{"groups": [{"group", "label", "events": [{"event", "title", "notify_default"}]}], "notify": {event: bool}}` |
+| `PUT /api/admin/alerts/notify` | body `{"event", "enabled"}`: whether the alert also creates an in-portal notification (type `alert`) for every administrator. Default on, except `backup.ok`, `moderation.action` and `automod.triggered` |
 
 ### Audit Log (Moderator+)
 

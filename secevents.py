@@ -82,6 +82,9 @@ EVENTS = {
     "host_key_accepted": "security",
     "security_log_export": "security",
     "webhook_allow_private": "security",
+    "login_failed_burst": "security",
+    "cert_expiring": "security",
+    "cert_renewal_failed": "security",
 }
 
 # Events an outsider can cause without any credential (or with a stolen

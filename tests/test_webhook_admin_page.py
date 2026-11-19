@@ -35,7 +35,7 @@ check("tab content and loader wired into showTab",
 check("only admin routes are used (system hooks have their own)", "'/api/webhooks" not in js and "`/api/webhooks" not in js and "/api/admin/webhooks" in js)
 tpl_values = re.findall(r"\$\{([^}]*)\}", js)
 raw = [v for v in tpl_values if not (v.startswith("escapeHtml(") or v.startswith("Number(") or "?" in v or v in
-                                     ("inputCss", "evBoxes", "id", "checked", "isEdit ? 'Edit' : 'New'", "isEdit ? 'Save' : 'Create'")
+                                     ("inputCss", "evBoxes", "id", "checked", "plainBoxes", "groupBoxes", "memberBoxes", "on", "isEdit ? 'Edit' : 'New'", "isEdit ? 'Save' : 'Create'")
                                      or v.startswith(("whState", "WH_", "status", "fails", "flags", "last", "reason", "dest")))]
 check("every interpolated value is escaped, numeric or built from escaped parts", not raw, str(raw))
 check("a non-generic destination is shown only as the masked host",

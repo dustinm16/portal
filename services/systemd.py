@@ -38,6 +38,16 @@ class SystemdService(ManagedService):
     def __init__(self, service_data: dict):
         super().__init__(service_data)
         self._main_pid = None
+        # True from a stop or restart requested through the portal until the unit runs
+        # again: a unit that ends "failed" after that was asked to stop, it did not crash
+        self._expected_stop = False
+
+    async def _status_transition(self, old: str, new: str, info) -> None:
+        """Hook for subclasses: the status just changed from `old` to `new`."""
+
+    async def _observe(self, info) -> None:
+        """Hook for subclasses: called on every poll (before the requested-stop flag is cleared),
+        whether or not the status changed. `info` is None when the unit is not found."""
 
     @classmethod
     def get_info(cls) -> ServiceInfo:
@@ -146,8 +156,20 @@ class SystemdService(ManagedService):
 
         self._main_pid = new_pid
 
+        try:
+            await self._observe(info)
+        except Exception:
+            pass
+
+        if new_status == 'running':
+            self._expected_stop = False
         if new_status != self.status:
+            old_status = self.status
             self.status = new_status
+            try:
+                await self._status_transition(old_status, new_status, info)
+            except Exception:
+                pass
             if self._db:
                 await self._db.update_service_process_status(
                     self.id, new_status, new_pid, error_message=err
@@ -167,6 +189,8 @@ class SystemdService(ManagedService):
             return False, msg
 
         await self._log("info", f"systemctl {action} {self.unit}.service")
+        if action in ("stop", "restart"):
+            self._expected_stop = True
         success, message = await asyncio.to_thread(
             system_monitor.control_service, self.unit, action
         )
@@ -192,6 +216,7 @@ class SystemdService(ManagedService):
         if not self.unit:
             return False, "No systemd unit configured"
         await self._log("info", f"systemctl stop {self.unit}.service")
+        self._expected_stop = True
         success, message = await asyncio.to_thread(
             system_monitor.control_service, self.unit, "stop"
         )

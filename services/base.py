@@ -77,6 +77,17 @@ class ManagedService(ABC):
         self.status = service_data.get('status', 'stopped')
         self._log_task: Optional[asyncio.Task] = None
         self._db = None  # Set by ServiceManager
+        self._on_event = None  # Set by ServiceManager: callable(event, data), for alerts
+
+    def _emit_event(self, event: str, data: dict) -> None:
+        """Tell the ServiceManager's on_event hook about something. Never raises."""
+        hook = self._on_event
+        if hook is None:
+            return
+        try:
+            hook(event, data)
+        except Exception:
+            pass
 
     @classmethod
     @abstractmethod

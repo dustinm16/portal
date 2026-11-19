@@ -2170,6 +2170,16 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="wh-alerts-panel" style="margin-top:16px;">
+                    <h4 style="margin:0 0 6px;color:var(--text-secondary);">Alert events</h4>
+                    <p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 8px;">
+                        Nothing is sent until you create a system webhook above and pick events in it. "*" never includes an alert.
+                        A checked box here also shows the alert as a notification to every administrator inside the portal (nothing leaves the machine).
+                        Alerts carry a title and a one-line summary; addresses, user agents and rule names are sent only to a hook with "Include details".
+                        All alerts together are capped at 30 per 10 minutes.
+                    </p>
+                    <div id="wh-alerts-body"></div>
+                </div>
                 <div id="wh-logs-panel" style="display:none;margin-top:16px;">
                     <h4 style="margin:0 0 8px;color:var(--text-secondary);">Recent deliveries: <span id="wh-logs-title"></span></h4>
                     <div class="sys-table-scroll">
@@ -6786,8 +6796,9 @@
                 const res = await Portal.fetch('/api/admin/webhooks');
                 if (!res.ok) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Failed to load (superadmin only)</td></tr>'; return; }
                 const data = await res.json();
-                whState = { webhooks: data.webhooks || [], formats: data.formats || [], events: data.events || [], systemOnly: data.system_only_events || [] };
+                whState = { webhooks: data.webhooks || [], formats: data.formats || [], events: data.events || [], systemOnly: data.system_only_events || [], groups: data.alert_groups || [] };
                 renderSystemWebhooks();
+                loadAlertSettings();
             } catch (e) {
                 body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Error</td></tr>';
             }
@@ -6826,6 +6837,38 @@
                 </tr>`;
             }).join('');
         }
+
+        async function loadAlertSettings() {
+            const box = document.getElementById('wh-alerts-body');
+            try {
+                const res = await Portal.fetch('/api/admin/alerts');
+                if (!res.ok) { box.textContent = 'Could not load the alert settings'; return; }
+                const data = await res.json();
+                const notify = data.notify || {};
+                const notifyBox = (ev) => {
+                    const on = notify[ev.event] ? 'checked' : '';
+                    return `<label style="cursor:pointer;font-size:0.9rem;"><input type="checkbox" class="wh-notify" value="${escapeHtml(ev.event)}" ${on} style="width:auto;"> ${escapeHtml(ev.title)} <span style="color:var(--text-muted);font-size:0.78rem;">(${escapeHtml(ev.event)})</span></label>`;
+                };
+                box.innerHTML = (data.groups || []).map(g => {
+                    const memberBoxes = (g.events || []).map(notifyBox).join('');
+                    return `<div style="margin-bottom:8px;"><strong>${escapeHtml(g.label)}</strong><div style="display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:4px;">${memberBoxes}</div></div>`;
+                }).join('');
+            } catch (e) {
+                box.textContent = 'Could not load the alert settings';
+            }
+        }
+
+        document.getElementById('wh-alerts-body').addEventListener('change', async (e) => {
+            const box = e.target.closest('input.wh-notify');
+            if (!box) return;
+            const r = await whRequest('PUT', '/api/admin/alerts/notify', { event: box.value, enabled: box.checked });
+            if (!r.ok) {
+                box.checked = !box.checked;
+                Portal.toast((r.data && r.data.error) || 'Could not save', 'error');
+            } else {
+                Portal.toast('Saved', 'success');
+            }
+        });
 
         async function whRequest(method, path, payload) {
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -6886,12 +6929,21 @@
             const modal = document.createElement('div');
             modal.id = 'wh-modal';
             modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;';
-            const evBoxes = whState.events.map(ev => {
-                const sys = whState.systemOnly.indexOf(ev) >= 0;
+            const alertNames = [];
+            (whState.groups || []).forEach(g => (g.events || []).forEach(ev => alertNames.push(ev.event)));
+            const evBox = (ev, label) => {
                 const checked = (w.events || []).indexOf(ev) >= 0 ? 'checked' : '';
-                const label = ev === '*' ? '* (everything allowed for this format)' : ev + (sys ? ' (system only)' : '');
                 return `<label style="display:block;cursor:pointer;"><input type="checkbox" class="wh-ev" value="${escapeHtml(ev)}" ${checked} style="width:auto;"> ${escapeHtml(label)}</label>`;
+            };
+            const plainBoxes = whState.events.filter(ev => alertNames.indexOf(ev) < 0).map(ev => {
+                const sys = whState.systemOnly.indexOf(ev) >= 0;
+                return evBox(ev, ev === '*' ? '* (everything allowed for this format, never an alert)' : ev + (sys ? ' (system only)' : ''));
             }).join('');
+            const groupBoxes = (whState.groups || []).map(g => {
+                const memberBoxes = (g.events || []).map(ev => evBox(ev.event, ev.title + ' (' + ev.event + ')')).join('');
+                return `<div style="margin-top:8px;"><label style="display:block;cursor:pointer;font-weight:600;"><input type="checkbox" class="wh-grp" data-group="${escapeHtml(g.group)}" style="width:auto;"> ${escapeHtml(g.label)} alerts (all)</label><div class="wh-grp-body" data-group="${escapeHtml(g.group)}" style="margin-left:18px;">${memberBoxes}</div></div>`;
+            }).join('');
+            const evBoxes = plainBoxes + groupBoxes;
             modal.innerHTML = `
                 <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:480px;max-width:94vw;max-height:88vh;overflow-y:auto;">
                     <h3 style="margin:0 0 12px;">${isEdit ? 'Edit' : 'New'} system webhook</h3>
@@ -6949,6 +7001,18 @@
             };
             q('wh-format').addEventListener('change', syncFormat);
             syncFormat();
+            const syncGroups = () => modal.querySelectorAll('.wh-grp').forEach(gb => {
+                const members = modal.querySelectorAll('.wh-grp-body[data-group="' + gb.dataset.group + '"] .wh-ev');
+                gb.checked = members.length > 0 && Array.from(members).every(m => m.checked);
+            });
+            modal.addEventListener('change', (e) => {
+                if (e.target.classList.contains('wh-grp')) {
+                    modal.querySelectorAll('.wh-grp-body[data-group="' + e.target.dataset.group + '"] .wh-ev').forEach(m => { m.checked = e.target.checked; });
+                } else if (e.target.classList.contains('wh-ev')) {
+                    syncGroups();
+                }
+            });
+            syncGroups();
 
             const close = () => modal.remove();
             q('wh-cancel').addEventListener('click', close);
@@ -7113,7 +7177,7 @@
             '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'password_changed',
             'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
             'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
-            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private'
+            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed'
         ];
         let auditView = 'audit';
         let secOffset = 0;

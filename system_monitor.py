@@ -253,7 +253,7 @@ def get_service_status(name: str) -> dict | None:
             ["systemctl", "show", f"{name}.service",
              "--property=ActiveState,SubState,LoadState,Description,MainPID,"
              "ExecMainStartTimestamp,MemoryCurrent,TasksCurrent,Restart,"
-             "FragmentPath,UnitFileState"],
+             "FragmentPath,UnitFileState,NRestarts"],
             capture_output=True, text=True, timeout=10
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -282,6 +282,8 @@ def get_service_status(name: str) -> dict | None:
         "memory": props.get("MemoryCurrent", ""),
         "tasks": props.get("TasksCurrent", ""),
         "restart_policy": props.get("Restart", ""),
+        # automatic restarts since the unit was last started by hand; None when systemd does not say
+        "n_restarts": int(props["NRestarts"]) if props.get("NRestarts", "").isdigit() else None,
         "unit_file": props.get("FragmentPath", ""),
         "enabled": props.get("UnitFileState", "") == "enabled",
     }
