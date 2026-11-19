@@ -133,6 +133,11 @@ MEMBER_RESERVE = 10
 # and then at most once per NOTICE_INTERVAL.
 NOTICE_DELAY = 30.0
 NOTICE_INTERVAL = 600.0
+# A notice that a hook could not take (the hook is paused by a 429 or over its rate limit) is
+# sent again once that pause ends, with its counts put back; at most this many times in a row,
+# and never later than this many seconds after the refusal.
+NOTICE_RETRY_MAX = 5
+NOTICE_RETRY_LIMIT = 900.0
 # Staff-subject sign-in bursts (a stranger can set one off by guessing a staff account name) have no
 # sub-cap of the ordinary kind, but may use at most this many of the MEMBER_RESERVE reserved slots per
 # window (they are held back once CAP_ALERTS - MEMBER_RESERVE + this many slots are used), so the rest
@@ -203,6 +208,8 @@ _held_why: "dict[str, set]" = {}             # the limits that held each kind ba
 _notice_scheduled = False                    # a notice is waiting to be sent
 _notice_sent_at: Optional[float] = None      # when the last notice was sent
 _notice_gen = 0                              # bumped by reset_state: older notice tasks do nothing
+_last_notice: "Optional[tuple]" = None      # (generation, held, why) of the notice just sent, until a hook refuses it
+_notice_retries = 0                          # consecutive notices a hook refused (bounded by NOTICE_RETRY_MAX)
 _burst: "OrderedDict[tuple, deque]" = OrderedDict()
 _auto_blocks: dict = {"count": 0, "addresses": [], "scheduled": False}
 _announced: set = set()                      # (component, version) of update alerts sent since start
@@ -210,7 +217,7 @@ _announced: set = set()                      # (component, version) of update al
 
 def reset_state() -> None:
     """Forget every cooldown, the cap and all counters (tests, and the stage-only reset route)."""
-    global _notice_scheduled, _notice_sent_at, _notice_gen, _staff_at
+    global _notice_scheduled, _notice_sent_at, _notice_gen, _staff_at, _last_notice, _notice_retries
     _cooldowns.clear()
     _held.clear()
     _held_why.clear()
@@ -224,6 +231,8 @@ def reset_state() -> None:
     _notice_scheduled = False
     _notice_sent_at = None
     _notice_gen += 1
+    _last_notice = None
+    _notice_retries = 0
     _auto_blocks.update(count=0, addresses=[], scheduled=False)
 
 
@@ -458,12 +467,44 @@ def _hold_back(name: str, why: str, now: float) -> None:
     _notice_scheduled = _spawn(_send_notice(delay, _notice_gen))
 
 
-def note_dropped(name: str) -> None:
+def note_dropped(name: str, retry_in: Optional[float] = None) -> None:
     """An alert event was dropped for a hook that is paused after a 429 ("receiver asked to slow
-    down"): count it into the next "alerts held back" notice so a receiver cannot swallow
-    alerts unseen. The notice itself is never counted (it would announce itself forever)."""
-    if name in EVENT_NAMES and name != "alerts.suppressed":
+    down") or is over its rate limit: count it into the next "alerts held back" notice so a
+    receiver cannot swallow alerts unseen. The caller counts each event once, not once per hook.
+
+    The notice itself is never counted (it would announce itself forever). When a hook could not
+    take the notice, its counts are put back and a new notice is scheduled for `retry_in` seconds
+    from now (when the hook's pause ends), so the counts are not lost."""
+    if name == "alerts.suppressed":
+        _notice_undelivered(retry_in)
+    elif name in EVENT_NAMES:
         _hold_back(name, WHY_SLOW, _clock())
+
+
+def _notice_undelivered(retry_in: Optional[float]) -> None:
+    """The notice just sent was refused by a hook: keep its counts and send it again once the
+    hook can take it. One refusal puts the counts back once (the same notice refused by two
+    hooks is one refusal); at most one retry is pending; the retries are bounded."""
+    global _last_notice, _notice_retries, _notice_scheduled
+    last, _last_notice = _last_notice, None
+    if last is None or last[0] != _notice_gen:
+        return                      # already put back, or the state was reset meanwhile
+    _, held, why = last
+    for k, n in held.items():
+        _held[k] = _held.get(k, 0) + n
+        _held_why.setdefault(k, set()).update(why.get(k, ()))
+    _notice_retries += 1
+    if _notice_retries > NOTICE_RETRY_MAX:
+        _held.clear()               # a receiver that keeps refusing: give up, do not grow forever
+        _held_why.clear()
+        _notice_retries = 0
+        logger.warning("[Alerts] a held-back notice was refused %d times in a row; its counts were dropped",
+                       NOTICE_RETRY_MAX + 1)
+        return
+    if _notice_scheduled:
+        return                      # a notice is already pending and will carry the counts
+    delay = min(max(float(retry_in or 0.0), NOTICE_DELAY), NOTICE_RETRY_LIMIT)
+    _notice_scheduled = _spawn(_send_notice(delay, _notice_gen))
 
 
 WHY_LABEL = {WHY_GLOBAL: "global limit", WHY_RESERVE: "reserve", WHY_KIND: "per-kind limit",
@@ -484,7 +525,7 @@ def _why_sentence(why: str) -> str:
 async def _send_notice(delay: float, gen: int) -> None:
     """The "alerts suppressed" alert: every kind held back since the previous notice, with its count
     and the limit that held it back, then the counts are cleared."""
-    global _notice_scheduled, _notice_sent_at
+    global _notice_scheduled, _notice_sent_at, _last_notice, _notice_retries
     try:
         await _sleep(delay)
     except asyncio.CancelledError:
@@ -494,11 +535,14 @@ async def _send_notice(delay: float, gen: int) -> None:
     if gen != _notice_gen:
         return                      # the state was reset meanwhile
     _notice_scheduled = False
+    if _last_notice is not None:
+        _notice_retries = 0         # the previous notice was not refused by any hook
     held, why = dict(_held), {k: set(v) for k, v in _held_why.items()}
     _held.clear()
     _held_why.clear()
     if not held:
         return
+    _last_notice = (gen, held, why)  # put back by note_dropped if a hook refuses this notice
     now = _clock()
     _notice_sent_at = now
     _count_sent(now, None, False)       # counted in the window, never refused by a cap

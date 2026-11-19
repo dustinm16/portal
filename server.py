@@ -6939,10 +6939,11 @@ async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = N
         logger.warning(f"Webhook event dispatch failed for {event}: {e}")
         return 0
     started = 0
+    drops: dict = {}        # shared by this event's deliveries: a drop is counted once, not once per hook
     for webhook in webhooks:
         if webhook.get("format") != "generic" and not visible:
             continue
-        asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta))
+        asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta, drops=drops))
         started += 1
     return started
 
@@ -6973,6 +6974,17 @@ def _webhook_error_text(e: BaseException) -> str:
     if isinstance(e, asyncio.TimeoutError):
         return "timeout"
     return type(e).__name__
+
+
+def _webhook_note_dropped(event: str, drops: dict | None, retry_in: float) -> None:
+    """An alert was dropped for one hook (paused by a 429, or over its rate limit): tell the
+    alert module once per event, however many hooks drop it. The "held back" notice is passed on
+    for every hook that refuses it; the alert module puts its counts back once."""
+    if event != "alerts.suppressed" and drops is not None:
+        if drops.get("noted"):
+            return
+        drops["noted"] = True
+    alerts.note_dropped(event, retry_in)
 
 
 async def _stage_sink_allows(url: str, allow_private: bool) -> bool:
@@ -7039,14 +7051,17 @@ async def _webhook_note_policy_refusal(webhook_id: int, reason: str) -> None:
 
 async def _deliver_webhook(webhook: dict, event: str, payload: dict,
                             attempt: int = 1, *, meta: dict | None = None,
-                            single: bool = False, waits_used: int = 0) -> dict:
+                            single: bool = False, waits_used: int = 0,
+                            drops: dict | None = None) -> dict:
     """Deliver payload to a single webhook endpoint with retry.
 
     Returns {"sent", "status", "success", "error"} for the last request made
     (the Test route reports it). `single` makes one attempt with no retry
     schedule and no Retry-After wait. `waits_used` carries the Retry-After waits
     already spent by earlier attempts of the same delivery, so the cap of
-    _WEBHOOK_MAX_429_WAITS covers the whole delivery, backoff retries included.
+    _WEBHOOK_MAX_429_WAITS covers the whole delivery, backoff retries included. `drops` is
+    shared by all deliveries of one event, so an alert dropped for several hooks is counted
+    into the "held back" notice once.
     """
     result = {"sent": False, "status": None, "success": False, "error": None}
     webhook_id = webhook["id"]
@@ -7076,7 +7091,7 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     # A receiver that answered 429 is left alone until its Retry-After is over
     if not single and monotonic() < _webhook_paused_until.get(webhook_id, 0.0):
         result["error"] = "receiver asked to slow down"
-        alerts.note_dropped(event)      # an alert dropped here is counted into the "held back" notice
+        _webhook_note_dropped(event, drops, _webhook_paused_until.get(webhook_id, 0.0) - monotonic())
         return result
 
     # Per-webhook rate limit
@@ -7087,6 +7102,8 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     if len(_webhook_rate_limits[webhook_id]) >= _WEBHOOK_RATE_LIMIT:
         logger.warning(f"Webhook {webhook_id} rate limited, dropping delivery for {event}")
         result["error"] = "rate limited"
+        if not single:
+            _webhook_note_dropped(event, drops, _webhook_rate_limits[webhook_id][0] + _WEBHOOK_RATE_WINDOW - now)
         return result
     _webhook_rate_limits[webhook_id].append(now)
 
@@ -7224,7 +7241,7 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
             w = await _webhook_current_for_event(webhook_id, event, meta)
             if w:
                 await _deliver_webhook(w, event, payload, attempt + 1, meta=meta,
-                                       waits_used=waits)
+                                       waits_used=waits, drops=drops)
         except Exception:
             pass
     return result

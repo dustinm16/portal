@@ -322,6 +322,26 @@ async def main():
         await alerts._send_notice(0, alerts._notice_gen)
         check("the notice names the kind and the reason", sent_alerts and "role.changed: 1" in sent_alerts[0]["summary"]
               and "slow down" in sent_alerts[0]["summary"], str(sent_alerts))
+        # the notice a paused hook refuses keeps its counts for a later notice
+        await server._deliver_webhook(w, "alerts.suppressed", {"x": 1})
+        check("a notice refused by a paused hook puts its counts back",
+              alerts._held == {"role.changed": 1} and alerts._notice_scheduled, str(alerts._held))
+        alerts.reset_state()
+        # one event dropped for two paused hooks is counted once; a rate-limit drop counts too
+        syshook2 = await db.create_webhook(None, "sysp2", "outgoing", url=rbase + "/sys2", events=["role.changed"], kind="system", allow_private=True)
+        server._webhook_paused_until[syshook2["id"]] = server.monotonic() + 100
+        await server.fire_webhook_event("role.changed", {"title": "t"})
+        for _ in range(10):
+            await asyncio.sleep(0.05)
+        check("one event paused for two hooks is counted once", alerts._held == {"role.changed": 1}, str(alerts._held))
+        alerts.reset_state()
+        server._webhook_paused_until.pop(syshook["id"], None)
+        server._webhook_paused_until.pop(syshook2["id"], None)
+        server._webhook_rate_limits[syshook["id"]] = [server.monotonic()] * server._WEBHOOK_RATE_LIMIT
+        r = await server._deliver_webhook(w, "role.changed", {"title": "t"})
+        check("a drop by the per-hook rate limit is counted into the notice too",
+              r["error"] == "rate limited" and alerts._held == {"role.changed": 1}, str((r, alerts._held)))
+        server._webhook_rate_limits.pop(syshook["id"], None)
         alerts.reset_state()
         server._webhook_paused_until.pop(syshook["id"], None)
         await rsrv.close()

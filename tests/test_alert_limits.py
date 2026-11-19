@@ -457,6 +457,37 @@ async def main():
     check("a newer version is announced", await alerts.note_updates(data) == 1)
     env.close()
 
+    # --- a notice that a paused hook refused is not lost: counts kept, sent again when the pause ends
+    env = Env(virtual=True)
+    alerts.note_dropped("role.changed")
+    alerts.note_dropped("role.changed")
+    await env.advance(1000.0 + alerts.NOTICE_DELAY + 1)
+    notices = [p for _, e, p in env.payloads if e == "alerts.suppressed"]
+    check("the first notice names the two dropped alerts", len(notices) == 1 and "role.changed: 2" in notices[0]["summary"])
+    alerts.note_dropped("alerts.suppressed", 100.0)
+    alerts.note_dropped("alerts.suppressed", 100.0)     # a second hook refusing the same notice
+    check("the refused notice's counts are kept", alerts._held == {"role.changed": 2}, str(alerts._held))
+    await env.pump()
+    check("one retry is pending, not two", alerts._notice_scheduled and len([1 for _, f in env.timers if not f.done()]) == 1,
+          str(env.timers))
+    await env.advance(env.t + 50)
+    check("nothing is sent before the pause ends",
+          len([1 for _, e, _p in env.payloads if e == "alerts.suppressed"]) == 1)
+    await env.advance(env.t + 100)
+    notices = [p for _, e, p in env.payloads if e == "alerts.suppressed"]
+    check("the notice is sent again after the pause with the same counts",
+          len(notices) == 2 and "role.changed: 2" in notices[1]["summary"], str([n["summary"] for n in notices]))
+    check("and the counts are then cleared", alerts.suppressed_count() == 0)
+    for _ in range(alerts.NOTICE_RETRY_MAX + 3):
+        alerts.note_dropped("alerts.suppressed", 40.0)
+        await env.advance(env.t + 50)
+    before = len([1 for _, e, _p in env.payloads if e == "alerts.suppressed"])
+    await env.advance(env.t + alerts.NOTICE_RETRY_LIMIT * 3)
+    check("a hook that refuses every time is retried a bounded number of times, then the counts are dropped",
+          len([1 for _, e, _p in env.payloads if e == "alerts.suppressed"]) == before
+          and alerts.suppressed_count() == 0 and before <= 2 + alerts.NOTICE_RETRY_MAX + 1, str(before))
+    env.close()
+
 
 asyncio.run(main())
 if failures:
