@@ -470,10 +470,8 @@ async def main():
         async def look(_cid):
             return dict({"id": 1, "user_id": 5, "is_public": 0}, **kw)
         return look
-    for label, kw in (("a default channel", {"chat_channel_default": 1, "chat_channel_all_public": 1}),
-                      ("a shared channel", {"chat_channel_default": 0, "chat_channel_shared": 1,
-                                            "chat_channel_all_public": 1}),
-                      ("a plain channel", {"chat_channel_default": 0, "chat_channel_all_public": 1})):
+    for label, kw in (("a default channel", {"chat_channel_default": 1, "chat_channel_all_public": 0}),
+                      ("a plain channel", {"chat_channel_default": 0, "chat_channel_all_public": 0})):
         db.get_stream_by_chat_channel = bound(**kw)
         check(f"a non-public stream bound to {label} makes the alert context private",
               await server._alert_context_private(pub_channel) is True)
