@@ -6,6 +6,7 @@ import logging
 import secrets as _secrets
 
 import aiosqlite
+import sqlite3
 import base64
 import hashlib
 import os
@@ -19,6 +20,7 @@ import recording_paths
 import chat_uploads
 import secevents
 import ipguard
+import chat_search
 
 logger = logging.getLogger("portal.database")
 
@@ -1146,6 +1148,11 @@ MIGRATIONS = [
     "ALTER TABLE tokens ADD COLUMN ip TEXT",
     "ALTER TABLE tokens ADD COLUMN user_agent TEXT",
     "ALTER TABLE tokens ADD COLUMN last_ip TEXT",
+    # Search operators: link and file flags next to has_image (filled for old rows by the backfill)
+    "ALTER TABLE chat_fts_map ADD COLUMN has_link INTEGER DEFAULT 0",
+    "ALTER TABLE chat_fts_map ADD COLUMN has_file INTEGER DEFAULT 0",
+    "ALTER TABLE dm_fts_map ADD COLUMN has_link INTEGER DEFAULT 0",
+    "ALTER TABLE dm_fts_map ADD COLUMN has_file INTEGER DEFAULT 0",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -1204,6 +1211,8 @@ class Database:
         # Terminal recordings whose session is still running (ids and file
         # names), kept by the recorder; retention must not touch these.
         self.live_recording_ids: set[int] = set()
+        # Held while the search index backfill runs (see backfill_search_flags).
+        self._search_backfill_lock = asyncio.Lock()
         self.live_recording_files: set[str] = set()
         # Folder holding chat uploads (a test points this at a temporary folder).
         self.chat_upload_dir: str = str(chat_uploads.DEFAULT_DIR)
@@ -5099,7 +5108,7 @@ class Database:
         encrypted_preview = encrypt_message(reply_preview_text) if reply_preview_text else None
         # Explicitly store UTC timestamp with timezone info
         created_at = datetime.now(timezone.utc).isoformat()
-        has_attachment = 1 if (image_url or attachment_url) else 0
+        flags = chat_search.message_flags(plaintext, image_url, attachment_url, attachment_type)
         cursor = await self.conn.execute(
             """INSERT INTO chat_messages (channel_id, user_id, username, message, message_type, created_at, anonymous, reply_to, image_url, reply_preview_username, reply_preview_text, attachment_url, attachment_name, attachment_size, attachment_type)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -5110,7 +5119,7 @@ class Database:
         # Index for full-text search
         await self.index_message_for_search(
             msg_id, plaintext, "channel", channel_id, user_id, username,
-            has_attachment, created_at
+            flags[0], created_at, has_file=flags[1], has_link=flags[2]
         )
         return msg_id
 
@@ -6426,9 +6435,10 @@ class Database:
         )
         await self.conn.commit()
         # Index for full-text search
+        flags = chat_search.message_flags(plaintext, image_url, attachment_url, attachment_type)
         await self.index_message_for_search(
             msg_id, plaintext, "dm", conversation_id, user_id, username,
-            1 if image_url else 0, created_at
+            flags[0], created_at, has_file=flags[1], has_link=flags[2]
         )
         return msg_id
 
@@ -6589,29 +6599,46 @@ class Database:
     # Full-Text Search (FTS5)
     # =========================================================================
 
+    # (source) -> (fts table, map table, id column, message table)
+    _SEARCH_TABLES = {
+        "channel": ("chat_messages_fts", "chat_fts_map", "channel_id", "chat_messages"),
+        "dm": ("dm_messages_fts", "dm_fts_map", "conversation_id", "dm_messages"),
+    }
+    SEARCH_BACKFILL_DONE = "search_backfill_done"
+
+    async def _write_search_row(
+        self, message_id: int, plaintext: str, source: str, source_id: int,
+        user_id: int, username: str, has_image: int, created_at: str,
+        has_file: int = 0, has_link: int = 0
+    ) -> None:
+        """Insert one search index row (FTS row and map row) without committing.
+        An attachment-only message gets an empty FTS row: it matches no word,
+        but it owns the rowid the map row needs and the operators find it."""
+        fts_table, map_table, id_col, _ = self._SEARCH_TABLES[source]
+        cursor = await self.conn.execute(
+            f"INSERT INTO {fts_table}(message) VALUES (?)", (plaintext or "",)
+        )
+        await self.conn.execute(
+            f"""INSERT INTO {map_table} (rowid, message_id, {id_col}, user_id, username,
+                                         has_image, has_file, has_link, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (cursor.lastrowid, message_id, source_id, user_id, username,
+             has_image, has_file, has_link, created_at)
+        )
+
     async def index_message_for_search(
         self, message_id: int, plaintext: str, source: str, source_id: int,
-        user_id: int, username: str, has_image: int, created_at: str
+        user_id: int, username: str, has_image: int, created_at: str,
+        has_file: int = 0, has_link: int = 0
     ) -> None:
-        """Index a message for full-text search. source='channel' or 'dm'."""
-        if not plaintext or not plaintext.strip():
+        """Index a message for full-text search. source='channel' or 'dm'.
+        A message with no text is indexed when it has an image or a file."""
+        if not (plaintext and plaintext.strip()) and not (has_image or has_file):
             return
         try:
-            if source == "channel":
-                fts_table, map_table = "chat_messages_fts", "chat_fts_map"
-                id_col = "channel_id"
-            else:
-                fts_table, map_table = "dm_messages_fts", "dm_fts_map"
-                id_col = "conversation_id"
-            cursor = await self.conn.execute(
-                f"INSERT INTO {fts_table}(message) VALUES (?)", (plaintext,)
-            )
-            fts_rowid = cursor.lastrowid
-            await self.conn.execute(
-                f"""INSERT INTO {map_table} (rowid, message_id, {id_col}, user_id, username, has_image, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (fts_rowid, message_id, source_id, user_id, username, has_image, created_at)
-            )
+            await self._write_search_row(
+                message_id, plaintext, source, source_id, user_id, username,
+                has_image, created_at, has_file, has_link)
             await self.conn.commit()
         except Exception:
             pass
@@ -6622,8 +6649,8 @@ class Database:
         For contentless FTS5 tables (content=''), the 'delete' command requires
         the original indexed content. Since we only store encrypted text in the
         message tables, we delete the map entry instead. Orphaned FTS rows are
-        harmless — they never appear in results because _search_fts JOINs through
-        the map table, and any message_id misses are filtered by the msg_row check.
+        harmless — they never appear in results because _search_index JOINs
+        through the map table and the message table.
         Periodic rebuild_search_index() cleans up orphans.
         """
         try:
@@ -6639,40 +6666,26 @@ class Database:
             pass
 
     async def update_search_index(self, message_id: int, new_plaintext: str, source: str) -> None:
-        """Update the FTS index for an edited message."""
+        """Update the search index for an edited message. The flags are worked
+        out again from the stored row (its attachments do not change on edit)."""
         await self.remove_message_from_search(message_id, source)
-        if not new_plaintext or not new_plaintext.strip():
-            return
         try:
-            if source == "channel":
-                fts_table, map_table = "chat_messages_fts", "chat_fts_map"
-                # Fetch channel_id from original message
-                cursor = await self.conn.execute(
-                    "SELECT channel_id, user_id, username, image_url, created_at FROM chat_messages WHERE id = ?",
-                    (message_id,)
-                )
-            else:
-                fts_table, map_table = "dm_messages_fts", "dm_fts_map"
-                cursor = await self.conn.execute(
-                    "SELECT conversation_id, user_id, username, image_url, created_at FROM dm_messages WHERE id = ?",
-                    (message_id,)
-                )
+            _, _, id_col, msg_table = self._SEARCH_TABLES[source]
+            cursor = await self.conn.execute(
+                f"""SELECT {id_col} AS source_id, user_id, username, image_url, attachment_url,
+                           attachment_type, created_at FROM {msg_table} WHERE id = ?""",
+                (message_id,)
+            )
             row = await cursor.fetchone()
             if not row:
                 return
-            row = dict(row)
-            source_id = row.get("channel_id") or row.get("conversation_id")
-            id_col = "channel_id" if source == "channel" else "conversation_id"
-            cur = await self.conn.execute(
-                f"INSERT INTO {fts_table}(message) VALUES (?)", (new_plaintext,)
-            )
-            fts_rowid = cur.lastrowid
-            await self.conn.execute(
-                f"""INSERT INTO {map_table} (rowid, message_id, {id_col}, user_id, username, has_image, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (fts_rowid, message_id, source_id, row["user_id"], row["username"],
-                 1 if row.get("image_url") else 0, row["created_at"])
-            )
+            has_image, has_file, has_link = chat_search.message_flags(
+                new_plaintext, row["image_url"], row["attachment_url"], row["attachment_type"])
+            if not (new_plaintext and new_plaintext.strip()) and not (has_image or has_file):
+                return
+            await self._write_search_row(
+                message_id, new_plaintext, source, row["source_id"], row["user_id"],
+                row["username"], has_image, row["created_at"], has_file, has_link)
             await self.conn.commit()
         except Exception:
             pass
@@ -6683,233 +6696,374 @@ class Database:
         from_user: str = None, has_image: bool = None,
         before: str = None, after: str = None,
         limit: int = 25, offset: int = 0,
-        user_role: str = "user"
+        user_role: str = "user", *,
+        parsed: "chat_search.ParsedSearch" = None,
+        channel_ids=None, include_anonymous_authors: bool = False
     ) -> dict:
-        """Search messages across channels and/or DMs. Returns {results, total}."""
-        results = []
-        total = 0
-        fts_query = query.strip()
-        if not fts_query:
-            return {"results": [], "total": 0}
-        # Escape FTS5 special chars to prevent syntax errors
-        safe_query = ""
-        for ch in fts_query:
-            if ch in '"*():-^':
-                safe_query += " "
-            else:
-                safe_query += ch
-        # Split into words and rejoin for FTS prefix matching
-        words = safe_query.split()
-        if not words:
-            return {"results": [], "total": 0}
-        fts_expr = " ".join(f'"{w}"' for w in words if w)
+        """Search messages across channels and/or DMs.
 
-        # Build set of accessible channel IDs to filter private channels
-        accessible_channel_ids = None
-        if scope in ("all", "channels") and user_role not in ("admin", "superadmin"):
-            try:
-                accessible = await self.get_accessible_channels(user_id, user_role)
-                accessible_channel_ids = {ch["id"] for ch in accessible}
-            except Exception:
-                accessible_channel_ids = None  # Fall back to unfiltered on error
-            if accessible_channel_ids:
-                # The chat of a stream that is not public is closed to everyone
-                # but the stream's owner and admins (server._stream_chat_hidden),
-                # so its messages are not searchable either. This is kept out of
-                # get_accessible_channels, which also feeds the channel list.
-                cursor = await self.conn.execute(
-                    """SELECT chat_channel_id FROM user_streams
-                       WHERE chat_channel_id IS NOT NULL
-                         AND COALESCE(is_public, 0) = 0 AND user_id != ?""",
-                    (user_id,)
-                )
-                accessible_channel_ids -= {row[0] for row in await cursor.fetchall()}
+        Returns {results, total, has_more, capped}. `parsed` is the parsed query
+        (chat_search.parse_search_query); without it `query` is parsed here
+        together with the older from_user / has_image / before / after
+        arguments, and a bad query raises chat_search.SearchQueryError.
 
-        # Search channel messages
-        if scope in ("all", "channels"):
-            ch_results, ch_total = await self._search_fts(
-                "chat_messages_fts", "chat_fts_map", "chat_messages", "channel_id",
-                fts_expr, channel_id=channel_id, from_user=from_user,
-                has_image=has_image, before=before, after=after,
-                limit=offset + limit if scope == "all" else limit,
-                offset=offset if scope == "channels" else 0,
-                accessible_channel_ids=accessible_channel_ids
-            )
-            # Batch fetch channel names (avoids N+1)
-            ch_ids = list({r.get("source_id") for r in ch_results if r.get("source_id")})
-            ch_names = {}
-            if ch_ids:
-                ph = ",".join("?" * len(ch_ids))
-                cur = await self.conn.execute(f"SELECT id, name FROM chat_channels WHERE id IN ({ph})", ch_ids)
-                ch_names = {row["id"]: row["name"] for row in await cur.fetchall()}
-            for r in ch_results:
-                r["source"] = "channel"
-                r["source_name"] = f"#{ch_names.get(r.get('source_id'), 'unknown')}"
-            results.extend(ch_results)
-            total += ch_total
+        `channel_ids` is the set of channels the caller may read; the server
+        passes the answer of its read check. Without it the channels visible to
+        `user_role` are used (no stream-ban check), which is for callers that
+        have no read check of their own. A channel that is not in the set is
+        never searched: the set is part of the WHERE clause, so counts and
+        has_more can not reveal anything outside it.
 
-        # Search DM messages (only user's own conversations)
-        if scope in ("all", "dms"):
-            dm_results, dm_total = await self._search_fts(
-                "dm_messages_fts", "dm_fts_map", "dm_messages", "conversation_id",
-                fts_expr, conversation_id=conversation_id, from_user=from_user,
-                has_image=has_image, before=before, after=after,
-                limit=offset + limit if scope == "all" else limit,
-                offset=offset if scope == "dms" else 0,
-                dm_user_id=user_id
-            )
-            # Batch fetch DM conversation info (avoids N+1)
-            dm_conv_ids = list({r.get("source_id") for r in dm_results if r.get("source_id")})
-            dm_conv_map = {}
-            if dm_conv_ids:
-                ph = ",".join("?" * len(dm_conv_ids))
-                cur = await self.conn.execute(f"SELECT id, name FROM dm_conversations WHERE id IN ({ph})", dm_conv_ids)
-                dm_conv_map = {row["id"]: row["name"] for row in await cur.fetchall()}
-                # Batch fetch participants for DM conversations
-                pcur = await self.conn.execute(
-                    f"""SELECT dp.conversation_id, u.username, u.nickname
-                        FROM dm_participants dp JOIN users u ON u.id = dp.user_id
-                        WHERE dp.conversation_id IN ({ph}) AND dp.left_at IS NULL""",
-                    dm_conv_ids
-                )
-                dm_parts: dict[int, list[dict]] = {cid: [] for cid in dm_conv_ids}
-                for prow in await pcur.fetchall():
-                    dm_parts[prow["conversation_id"]].append(dict(prow))
-            for r in dm_results:
-                r["source"] = "dm"
-                cid = r.get("source_id")
-                conv_name = dm_conv_map.get(cid)
-                if conv_name:
-                    r["source_name"] = conv_name
-                elif cid in dm_parts:
-                    others = [p["nickname"] or p["username"] for p in dm_parts[cid] if p.get("user_id") != user_id]
-                    r["source_name"] = ", ".join(others) or "DM"
-                else:
-                    r["source_name"] = "DM"
-            results.extend(dm_results)
-            total += dm_total
+        Channel hits carry ids and flags only (no author, no text): the server
+        builds the visible message from the row for the viewer, with the same
+        masking as history. A positive author filter skips anonymous posts
+        unless `include_anonymous_authors` (staff); a negated one never removes
+        them for anyone else, so neither can be used to tell who wrote one.
+        An operator-only query (no words) is ordered newest first and returns
+        at most chat_search.OPERATOR_ONLY_CAP results in total.
+        """
+        empty = {"results": [], "total": 0, "has_more": False, "capped": False}
+        if parsed is None:
+            parsed = chat_search.parse_search_query(
+                query, from_=from_user, has="image" if has_image else None,
+                before=before, after=after)
+        if not parsed.phrases and not parsed.has_operators:
+            return empty
+        op_only = parsed.operator_only
+        cap = chat_search.OPERATOR_ONLY_CAP
+        if op_only:
+            limit = max(0, min(limit, cap - offset))
 
-        # Sort combined results by date descending, apply limit
-        results.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        search_channels = scope in ("all", "channels")
+        search_dms = scope in ("all", "dms") and not parsed.in_channels and not parsed.pinned
+        # Nothing to list (an operator-only query past its cap): only the counts
+        # are needed, so no rows are fetched however large the offset is.
+        fetch = (offset + limit if scope == "all" else limit) if limit > 0 else 0
+        fetch_offset = 0 if scope == "all" else offset
+
+        ch_hits, ch_total, dm_hits, dm_total = [], 0, [], 0
+        if search_channels:
+            accessible = set(channel_ids) if channel_ids is not None else {
+                c["id"] for c in await self.get_accessible_channels(user_id, user_role)}
+            if parsed.in_channels or parsed.not_in_channels:
+                wanted, unwanted = set(parsed.in_channels), set(parsed.not_in_channels)
+                cur = await self.conn.execute("SELECT id, name FROM chat_channels")
+                names = {r["id"]: (r["name"] or "").lower() for r in await cur.fetchall()}
+                accessible = {cid for cid in accessible
+                              if (not wanted or names.get(cid) in wanted) and names.get(cid) not in unwanted}
+            ch_hits, ch_total = await self._search_index(
+                "channel", parsed, channel_ids=accessible, channel_id=channel_id,
+                include_anonymous_authors=include_anonymous_authors,
+                limit=fetch, offset=fetch_offset, count_cap=cap if op_only else None,
+                newest_first=scope == "all")
+        if search_dms:
+            dm_hits, dm_total = await self._search_index(
+                "dm", parsed, conversation_id=conversation_id, dm_user_id=user_id,
+                limit=fetch, offset=fetch_offset, count_cap=cap if op_only else None,
+                newest_first=scope == "all")
+
+        raw_total = ch_total + dm_total
+        results = ch_hits + dm_hits
+        results.sort(key=lambda r: ((r.get("created_at") or "").replace(" ", "T"), r["id"]), reverse=True)
         if scope == "all":
             results = results[offset:offset + limit]
-        return {"results": results, "total": total}
+        await self._name_search_hits(results, user_id)
+        capped = bool(op_only and raw_total > cap)
+        # Each source counts up to cap + 1, so the sum can be past the cap; an
+        # operator-only query never lists more than cap results in total.
+        listed_total = min(raw_total, cap) if op_only else raw_total
+        return {
+            "results": results,
+            "total": listed_total,
+            "has_more": listed_total > offset + len(results),
+            "capped": capped,
+        }
 
-    async def _search_fts(
-        self, fts_table: str, map_table: str, msg_table: str, id_col: str,
-        fts_expr: str, channel_id: int = None, conversation_id: int = None,
-        from_user: str = None, has_image: bool = None,
-        before: str = None, after: str = None,
-        limit: int = 25, offset: int = 0, dm_user_id: int = None,
-        accessible_channel_ids: set = None
+    async def _search_index(
+        self, source: str, parsed: "chat_search.ParsedSearch", *,
+        channel_ids=None, channel_id: int = None, conversation_id: int = None,
+        dm_user_id: int = None, include_anonymous_authors: bool = False,
+        limit: int = 25, offset: int = 0, count_cap: int = None,
+        newest_first: bool = False
     ) -> tuple[list[dict], int]:
-        """Run FTS5 search against a specific table pair. Returns (results, total)."""
-        try:
-            conditions = [f"{fts_table} MATCH ?"]
-            params = [fts_expr]
+        """Run one search against the channel or the DM index. Returns
+        (hits, count); count stops at count_cap + 1 when a cap is given.
 
+        `newest_first` orders a word search by date, the way search_messages
+        merges the channel and DM lists, instead of by relevance. The merged
+        scope reads the first offset + limit rows of each source and slices the
+        merge, so both must use the same order or a later page is not the
+        continuation of the earlier one."""
+        fts_table, map_table, id_col, msg_table = self._SEARCH_TABLES[source]
+        conds: list = []
+        params: list = []
+        if parsed.phrases:
+            from_sql = (f"FROM {fts_table} JOIN {map_table} m ON m.rowid = {fts_table}.rowid "
+                        f"JOIN {msg_table} cm ON cm.id = m.message_id")
+            conds.append(f"{fts_table} MATCH ?")
+            params.append(parsed.fts_expr)
+            order = ("ORDER BY REPLACE(m.created_at, ' ', 'T') DESC, m.message_id DESC"
+                     if newest_first else "ORDER BY rank, m.message_id DESC")
+        else:
+            from_sql = f"FROM {map_table} m JOIN {msg_table} cm ON cm.id = m.message_id"
+            order = "ORDER BY m.message_id DESC"
+
+        if source == "channel":
+            if not channel_ids:
+                return [], 0
+            # integers only, so the list can be written into the statement
+            conds.append("cm.channel_id IN (%s)" % ",".join(str(int(c)) for c in channel_ids))
             if channel_id:
-                conditions.append(f"m.{id_col} = ?")
-                params.append(channel_id)
+                conds.append("cm.channel_id = ?")
+                params.append(int(channel_id))
+            if parsed.pinned:
+                conds.append("COALESCE(cm.is_pinned, 0) = 1")
+        else:
+            if parsed.pinned:
+                return [], 0
+            conds.append("cm.conversation_id IN (SELECT conversation_id FROM dm_participants "
+                         "WHERE user_id = ? AND left_at IS NULL)")
+            params.append(dm_user_id)
             if conversation_id:
-                conditions.append(f"m.{id_col} = ?")
-                params.append(conversation_id)
-            if from_user:
-                conditions.append("m.username = ?")
-                params.append(from_user)
-                if msg_table == "chat_messages":
-                    # Anonymous posts must never match an author filter, or the
-                    # filter could be used to attribute them. The flag lives on
-                    # the message row (it can change nothing in the index map),
-                    # so check it at query time. DM messages have no anonymous
-                    # flag.
-                    conditions.append(
-                        "NOT EXISTS (SELECT 1 FROM chat_messages cm "
-                        "WHERE cm.id = m.message_id AND cm.anonymous = 1)"
-                    )
-            if has_image:
-                conditions.append("m.has_image = 1")
-            if before:
-                conditions.append("m.created_at < ?")
-                params.append(before)
-            if after:
-                conditions.append("m.created_at > ?")
-                params.append(after)
-            # DM security: only search user's conversations
-            if dm_user_id:
-                conditions.append(
-                    f"m.{id_col} IN (SELECT conversation_id FROM dm_participants WHERE user_id = ? AND left_at IS NULL)"
-                )
-                params.append(dm_user_id)
-            # Channel access security: only search channels the user can access
-            if accessible_channel_ids is not None:
-                if not accessible_channel_ids:
-                    return [], 0  # User has no accessible channels
-                ph = ",".join("?" * len(accessible_channel_ids))
-                conditions.append(f"m.{id_col} IN ({ph})")
-                params.extend(accessible_channel_ids)
+                conds.append("cm.conversation_id = ?")
+                params.append(int(conversation_id))
 
-            where = " AND ".join(conditions)
+        # Anonymous channel posts never match an author for someone who may not
+        # see who wrote them; DM messages have no anonymous flag.
+        hide_anon = " AND COALESCE(cm.anonymous, 0) = 0" if (
+            source == "channel" and not include_anonymous_authors) else ""
 
-            # Get total count
-            count_sql = f"""SELECT COUNT(*) FROM {fts_table}
-                           JOIN {map_table} m ON m.rowid = {fts_table}.rowid
-                           WHERE {where}"""
-            cursor = await self.conn.execute(count_sql, params)
+        def author_in(names):
+            ph = ",".join("?" * len(names))
+            params.extend(list(names) * 2)
+            return ("cm.user_id IN (SELECT id FROM users WHERE username COLLATE NOCASE IN (%s) "
+                    "OR nickname COLLATE NOCASE IN (%s))" % (ph, ph))
+        if parsed.from_users:
+            conds.append("(" + author_in(parsed.from_users) + hide_anon + ")")
+        if parsed.not_from_users:
+            conds.append("NOT (" + author_in(parsed.not_from_users) + hide_anon + ")")
+        for flag in parsed.has:
+            conds.append({"image": "m.has_image = 1", "file": "m.has_file = 1", "link": "m.has_link = 1"}[flag])
+        if parsed.before:
+            conds.append("m.created_at < ?")
+            params.append(parsed.before)
+        if parsed.after:
+            conds.append("m.created_at >= ?")
+            params.append(parsed.after)
+
+        where = " AND ".join(conds)
+        try:
+            if count_cap:
+                cursor = await self.conn.execute(
+                    f"SELECT COUNT(*) FROM (SELECT 1 {from_sql} WHERE {where} LIMIT {int(count_cap) + 1})", params)
+            else:
+                cursor = await self.conn.execute(f"SELECT COUNT(*) {from_sql} WHERE {where}", params)
             row = await cursor.fetchone()
             total = row[0] if row else 0
-
-            if total == 0:
-                return [], 0
-
-            # Get results
-            search_sql = f"""SELECT m.message_id, m.{id_col} as source_id, m.user_id, m.username,
-                                    m.has_image, m.created_at, rank
-                             FROM {fts_table}
-                             JOIN {map_table} m ON m.rowid = {fts_table}.rowid
-                             WHERE {where}
-                             ORDER BY rank
-                             LIMIT ? OFFSET ?"""
-            params_with_pag = params + [limit, offset]
-            cursor = await self.conn.execute(search_sql, params_with_pag)
-            rows = await cursor.fetchall()
-
-            # Batch fetch message content (avoids N+1)
-            msg_ids = [row["message_id"] for row in rows]
-            msg_map = {}
-            if msg_ids:
-                ph = ",".join("?" * len(msg_ids))
-                anon_col = ", anonymous" if msg_table == "chat_messages" else ""
-                msg_cursor = await self.conn.execute(
-                    f"SELECT id, message, image_url{anon_col} FROM {msg_table} WHERE id IN ({ph})", msg_ids
-                )
-                for mrow in await msg_cursor.fetchall():
-                    msg_map[mrow["id"]] = mrow
-
-            results = []
-            for row in rows:
-                row = dict(row)
-                msg_row = msg_map.get(row["message_id"])
-                if msg_row:
-                    row["message"] = decrypt_message(msg_row["message"])
-                    row["has_image"] = 1 if msg_row["image_url"] else 0
-                    if msg_table == "chat_messages" and msg_row["anonymous"]:
-                        # Anonymous message: results carry no real username or user id
-                        row["username"] = "Anonymous"
-                        row["user_id"] = None
-                else:
-                    row["message"] = ""
-                    if msg_table == "chat_messages":
-                        row["username"] = "Anonymous"
-                        row["user_id"] = None
-                row["id"] = row.pop("message_id")
-                results.append(row)
-            return results, total
-        except Exception:
+            if total == 0 or limit <= 0:
+                return [], total
+            pinned_col = ", COALESCE(cm.is_pinned, 0) AS is_pinned" if source == "channel" else ""
+            cursor = await self.conn.execute(
+                f"""SELECT m.message_id AS id, cm.{id_col} AS source_id, m.created_at,
+                           m.has_image, m.has_file, m.has_link{pinned_col}
+                    {from_sql} WHERE {where} {order} LIMIT ? OFFSET ?""",
+                params + [limit, offset])
+            hits = [dict(r) for r in await cursor.fetchall()]
+        except Exception as e:
+            logger.warning(f"Search failed: {e}")
             return [], 0
+        for h in hits:
+            h["source"] = source
+            h["has_image"], h["has_file"], h["has_link"] = (
+                1 if h["has_image"] else 0, 1 if h["has_file"] else 0, 1 if h["has_link"] else 0)
+            if source == "channel":
+                h["is_pinned"] = 1 if h["is_pinned"] else 0
+        return hits, total
+
+    async def _name_search_hits(self, hits: list[dict], user_id: int) -> None:
+        """Add source_name to the hits and, for DM hits, the message itself
+        (a DM has no anonymous authors, so its fields are as stored)."""
+        ch_ids = list({h["source_id"] for h in hits if h["source"] == "channel"})
+        ch_names = {}
+        if ch_ids:
+            ph = ",".join("?" * len(ch_ids))
+            cur = await self.conn.execute(f"SELECT id, name FROM chat_channels WHERE id IN ({ph})", ch_ids)
+            ch_names = {r["id"]: r["name"] for r in await cur.fetchall()}
+        for h in hits:
+            if h["source"] == "channel":
+                h["source_name"] = f"#{ch_names.get(h['source_id'], 'unknown')}"
+
+        dm_hits = [h for h in hits if h["source"] == "dm"]
+        if not dm_hits:
+            return
+        dm_conv_ids = list({h["source_id"] for h in dm_hits})
+        ph = ",".join("?" * len(dm_conv_ids))
+        cur = await self.conn.execute(f"SELECT id, name FROM dm_conversations WHERE id IN ({ph})", dm_conv_ids)
+        dm_conv_map = {r["id"]: r["name"] for r in await cur.fetchall()}
+        pcur = await self.conn.execute(
+            f"""SELECT dp.conversation_id, dp.user_id, u.username, u.nickname
+                FROM dm_participants dp JOIN users u ON u.id = dp.user_id
+                WHERE dp.conversation_id IN ({ph}) AND dp.left_at IS NULL""",
+            dm_conv_ids)
+        dm_parts: dict[int, list[dict]] = {cid: [] for cid in dm_conv_ids}
+        for prow in await pcur.fetchall():
+            dm_parts[prow["conversation_id"]].append(dict(prow))
+        msg_ids = [h["id"] for h in dm_hits]
+        ph2 = ",".join("?" * len(msg_ids))
+        mcur = await self.conn.execute(
+            f"""SELECT id, user_id, username, message, image_url, attachment_url, attachment_name,
+                       attachment_type, attachment_size FROM dm_messages WHERE id IN ({ph2})""", msg_ids)
+        msgs = {r["id"]: r for r in await mcur.fetchall()}
+        for h in dm_hits:
+            cid = h["source_id"]
+            name = dm_conv_map.get(cid)
+            if not name:
+                others = [p["nickname"] or p["username"] for p in dm_parts.get(cid, []) if p["user_id"] != user_id]
+                name = ", ".join(others) or "DM"
+            h["source_name"] = name
+            row = msgs.get(h["id"])
+            if row:
+                h["message"] = decrypt_message(row["message"])
+                h["user_id"], h["username"], h["display_name"] = row["user_id"], row["username"], row["username"]
+                for k in ("image_url", "attachment_url", "attachment_name", "attachment_type", "attachment_size"):
+                    h[k] = row[k]
+            else:
+                h["message"] = ""
+
+    # -- Backfill of the operator flags and of attachment-only messages ----------
+
+    async def search_backfill_complete(self) -> bool:
+        return await self.get_setting(self.SEARCH_BACKFILL_DONE) == "1"
+
+    async def backfill_search_flags(self, batch_size: int = 200, pause: float = 0.05,
+                                    log_interval: float = 60.0) -> dict:
+        """One-time pass over every stored message that fills has_image, has_file
+        and has_link in the search index and adds the index rows that are missing for
+        attachment-only messages, which were never indexed (an empty row: no
+        words are stored; messages with text but no row are left to
+        rebuild_search_index).
+
+        Meant to run as a background task, never on a request path: it decrypts
+        each message, so it works in batches of `batch_size` rows, commits and
+        stores its position in settings after every batch, and sleeps `pause`
+        seconds between batches so the event loop stays free. It can be stopped
+        at any time and resumes from the stored position (`search_backfill_channel_last_id`,
+        `search_backfill_dm_last_id`); once both tables are done the setting
+        `search_backfill_done` is '1' and later calls return at once. Progress is
+        logged at most once per `log_interval` seconds. A second call while one
+        runs returns without doing anything."""
+        if await self.search_backfill_complete():
+            return {"skipped": "done"}
+        if self._search_backfill_lock.locked():
+            return {"skipped": "running"}
+        async with self._search_backfill_lock:
+            stats = {"channel": 0, "dm": 0, "indexed": 0}
+            started = last_log = time.monotonic()
+            logger.info("Search index backfill started")
+            for source in ("channel", "dm"):
+                key = f"search_backfill_{source}_last_id"
+                last_id = int(await self.get_setting(key) or 0)
+                while True:
+                    done = await self._backfill_batch(source, key, last_id, batch_size)
+                    if done is None:
+                        break
+                    last_id, rows_done, added = done
+                    stats[source] += rows_done
+                    stats["indexed"] += added
+                    now = time.monotonic()
+                    if now - last_log >= log_interval:
+                        last_log = now
+                        logger.info(f"Search index backfill: {stats['channel']} channel and "
+                                    f"{stats['dm']} DM messages done ({int(now - started)} s)")
+                    await asyncio.sleep(pause)
+            await self.set_setting(self.SEARCH_BACKFILL_DONE, "1")
+            logger.info(f"Search index backfill finished: {stats['channel']} channel and "
+                        f"{stats['dm']} DM messages, {stats['indexed']} added to the index")
+            return stats
+
+    async def _backfill_batch(self, source: str, key: str, last_id: int, batch_size: int):
+        """One batch of the backfill as a single uninterrupted step on the
+        connection: the rows are read, their flags worked out from what was just
+        read, the index rows updated, the position stored under `key` and
+        everything committed, all in one job on the connection's own thread.
+        No other coroutine can run in between, so a rollback or an edit elsewhere
+        can neither discard the updates of a batch whose position was stored, nor
+        be overwritten with flags of the text from before the edit.
+        Returns (last id, rows seen, rows added to the index), or None when no row
+        is left after `last_id`."""
+        return await self.conn._execute(
+            self._backfill_batch_sync, source, key, last_id, batch_size)
+
+    def _backfill_batch_sync(self, source: str, key: str, last_id: int, batch_size: int):
+        """The body of _backfill_batch. Runs on the connection's thread with the
+        sqlite3 connection itself; nothing in it awaits."""
+        raw = self._connection._conn
+        fts_table, map_table, id_col, msg_table = self._SEARCH_TABLES[source]
+        rows = raw.execute(
+            f"""SELECT id, {id_col} AS source_id, user_id, username, message, image_url,
+                       attachment_url, attachment_type, created_at
+                FROM {msg_table} WHERE id > ? ORDER BY id LIMIT ?""",
+            (last_id, batch_size)).fetchall()
+        if not rows:
+            return None
+        added = 0
+        # a savepoint, so a failure undoes only this batch and not the work other
+        # coroutines have pending on the shared connection
+        raw.execute("SAVEPOINT search_backfill")
+        try:
+            for row in rows:
+                try:
+                    plaintext = decrypt_message(row["message"]) if row["message"] else ""
+                    has_image, has_file, has_link = chat_search.message_flags(
+                        plaintext, row["image_url"], row["attachment_url"], row["attachment_type"])
+                    cursor = raw.execute(
+                        f"UPDATE {map_table} SET has_image = ?, has_file = ?, has_link = ? WHERE message_id = ?",
+                        (has_image, has_file, has_link, row["id"]))
+                    if cursor.rowcount > 0:
+                        continue
+                    # Only attachment-only messages are added: a message with text and no
+                    # row is left to rebuild_search_index, so the backfill stores no new words.
+                    if (plaintext and plaintext.strip()) or not (has_image or has_file):
+                        continue
+                    fts = raw.execute(f"INSERT INTO {fts_table}(message) VALUES ('')")
+                    raw.execute(
+                        f"""INSERT INTO {map_table} (rowid, message_id, {id_col}, user_id, username,
+                                                     has_image, has_file, has_link, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (fts.lastrowid, row["id"], row["source_id"], row["user_id"], row["username"],
+                         has_image, has_file, has_link, row["created_at"]))
+                    added += 1
+                except Exception as e:
+                    logger.debug(f"Search backfill skipped {source} message {row['id']}: {e}")
+            new_last = rows[-1]["id"]
+            raw.execute(
+                """INSERT INTO settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(key) DO UPDATE SET
+                   value = excluded.value,
+                   updated_at = CURRENT_TIMESTAMP""",
+                (key, str(new_last)))
+            raw.execute("RELEASE search_backfill")
+        except BaseException:
+            try:
+                raw.execute("ROLLBACK TO search_backfill")
+                raw.execute("RELEASE search_backfill")
+            except sqlite3.Error:
+                pass    # the database already ended the transaction; the original error is the one to report
+            raise
+        raw.commit()
+        return new_last, len(rows), added
 
     async def rebuild_search_index(self) -> dict:
-        """Rebuild all FTS indexes from encrypted messages. Returns counts."""
+        """Rebuild all FTS indexes from encrypted messages. Returns counts.
+
+        Holds the backfill's lock for the whole rebuild, so the two never
+        interleave (a backfill that is running finishes its batch loop first;
+        one that starts meanwhile finds the lock taken and returns)."""
+        async with self._search_backfill_lock:
+            return await self._rebuild_search_index_locked()
+
+    async def _rebuild_search_index_locked(self) -> dict:
         counts = {"channel": 0, "dm": 0}
         # Clear existing FTS data
         try:
@@ -6928,51 +7082,38 @@ class Database:
         except Exception:
             pass
 
-        # Reindex channel messages in batches
+        # Reindex messages in batches; flags come from the stored rows, so a
+        # rebuilt index needs no backfill
         batch_size = 500
-        last_id = 0
-        while True:
-            cursor = await self.conn.execute(
-                "SELECT id, channel_id, user_id, username, message, image_url, created_at FROM chat_messages WHERE id > ? ORDER BY id LIMIT ?",
-                (last_id, batch_size)
-            )
-            rows = await cursor.fetchall()
-            if not rows:
-                break
-            for row in rows:
-                row = dict(row)
-                plaintext = decrypt_message(row["message"])
-                if plaintext and plaintext.strip():
-                    await self.index_message_for_search(
-                        row["id"], plaintext, "channel", row["channel_id"],
-                        row["user_id"], row["username"],
-                        1 if row.get("image_url") else 0, row["created_at"]
-                    )
-                    counts["channel"] += 1
-                last_id = row["id"]
-
-        # Reindex DM messages in batches
-        last_id = 0
-        while True:
-            cursor = await self.conn.execute(
-                "SELECT id, conversation_id, user_id, username, message, image_url, created_at FROM dm_messages WHERE id > ? ORDER BY id LIMIT ?",
-                (last_id, batch_size)
-            )
-            rows = await cursor.fetchall()
-            if not rows:
-                break
-            for row in rows:
-                row = dict(row)
-                plaintext = decrypt_message(row["message"])
-                if plaintext and plaintext.strip():
-                    await self.index_message_for_search(
-                        row["id"], plaintext, "dm", row["conversation_id"],
-                        row["user_id"], row["username"],
-                        1 if row.get("image_url") else 0, row["created_at"]
-                    )
-                    counts["dm"] += 1
-                last_id = row["id"]
-
+        for source in ("channel", "dm"):
+            _, _, id_col, msg_table = self._SEARCH_TABLES[source]
+            last_id = 0
+            while True:
+                cursor = await self.conn.execute(
+                    f"""SELECT id, {id_col} AS source_id, user_id, username, message, image_url,
+                               attachment_url, attachment_type, created_at
+                        FROM {msg_table} WHERE id > ? ORDER BY id LIMIT ?""",
+                    (last_id, batch_size)
+                )
+                rows = await cursor.fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    row = dict(row)
+                    plaintext = decrypt_message(row["message"])
+                    has_image, has_file, has_link = chat_search.message_flags(
+                        plaintext, row["image_url"], row["attachment_url"], row["attachment_type"])
+                    if (plaintext and plaintext.strip()) or has_image or has_file:
+                        await self.index_message_for_search(
+                            row["id"], plaintext, source, row["source_id"],
+                            row["user_id"], row["username"], has_image, row["created_at"],
+                            has_file=has_file, has_link=has_link
+                        )
+                        counts[source] += 1
+                    last_id = row["id"]
+                last_id = rows[-1]["id"]
+                await asyncio.sleep(0)
+        await self.set_setting(self.SEARCH_BACKFILL_DONE, "1")
         return counts
 
     # =========================================================================

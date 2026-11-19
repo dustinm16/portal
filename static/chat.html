@@ -2358,6 +2358,32 @@
             background: rgba(255,255,255,0.08);
         }
 
+        .search-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            padding: 0.3rem 0.75rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .search-chip {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            border-radius: 12px;
+            padding: 0.1rem 0.55rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .search-chip:hover { color: var(--text-primary); }
+        .search-results-note {
+            padding: 0.5rem 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border);
+        }
+        .search-result-flags { color: var(--text-muted); font-size: 0.75rem; margin-left: 0.4rem; }
+        .search-more-btn { margin: 0.5rem auto; display: block; }
         .search-results-panel {
             display: none;
             flex-direction: column;
@@ -2814,7 +2840,7 @@
                     </div>
                 </div>
                 <div class="search-bar" id="search-bar" style="display: none;">
-                    <input type="text" id="search-input" placeholder="Search messages... (from:user in:channel has:image)" autocomplete="off" style="flex: 1;">
+                    <input type="text" id="search-input" placeholder="Search messages... (from:name in:channel has:link before:2026-11-01)" autocomplete="off" style="flex: 1;">
                     <select id="search-scope" style="width: auto;">
                         <option value="all">All</option>
                         <option value="channels">Channels</option>
@@ -2823,6 +2849,7 @@
                     <button class="btn btn-sm" onclick="executeSearch()">Search</button>
                     <button class="btn btn-sm btn-secondary" onclick="closeSearch()">Close</button>
                 </div>
+                <div class="search-chips" id="search-chips" style="display: none;"></div>
                 <div class="chat-topic" id="channel-topic">General discussion</div>
             </div>
             <div class="pinned-banner" id="pinned-banner" style="display:none;">
@@ -3017,6 +3044,7 @@
         <div class="search-results-list" id="search-results-list">
             <!-- Results populated by JS -->
         </div>
+        <div class="search-results-note" id="search-results-note" style="display: none;"></div>
     </div>
 
     <!-- Image Lightbox -->
@@ -7257,13 +7285,16 @@
             bar.style.display = isVisible ? 'none' : 'flex';
             if (!isVisible) {
                 document.getElementById('search-input').focus();
+                renderSearchChips();
             } else {
                 closeSearchPanel();
+                document.getElementById('search-chips').style.display = 'none';
             }
         }
 
         function closeSearch() {
             document.getElementById('search-bar').style.display = 'none';
+            document.getElementById('search-chips').style.display = 'none';
             closeSearchPanel();
         }
 
@@ -7271,85 +7302,174 @@
             document.getElementById('search-results-panel').style.display = 'none';
         }
 
-        function parseSearchFilters(input) {
-            const filters = {};
-            let query = input;
-            // Extract from:user
-            const fromMatch = query.match(/from:(\S+)/i);
-            if (fromMatch) { filters.from = fromMatch[1]; query = query.replace(fromMatch[0], ''); }
-            // Extract in:channel
-            const inMatch = query.match(/in:(\S+)/i);
-            if (inMatch) { filters.in_channel = inMatch[1]; query = query.replace(inMatch[0], ''); }
-            // Extract has:image
-            if (/has:image/i.test(query)) { filters.has = 'image'; query = query.replace(/has:image/i, ''); }
-            // Extract before:date
-            const beforeMatch = query.match(/before:(\S+)/i);
-            if (beforeMatch) { filters.before = beforeMatch[1]; query = query.replace(beforeMatch[0], ''); }
-            // Extract after:date
-            const afterMatch = query.match(/after:(\S+)/i);
-            if (afterMatch) { filters.after = afterMatch[1]; query = query.replace(afterMatch[0], ''); }
-            filters.query = query.trim();
-            return filters;
+        // SEARCH-CLIENT-BEGIN
+        // The server parses the query (from:, in:, has:, is:, before:, after:, with
+        // - on from: and in:); the page sends the text as typed. The chips below the
+        // input only use what the page has loaded already: the channel list and the
+        // people in the room list, never an anonymous entry.
+        const SEARCH_OPERATOR_CHIPS = ['from:', 'in:', 'has:link', 'has:file', 'has:image', 'is:pinned', 'before:', 'after:'];
+        const SEARCH_VALUES = { 'has': ['link', 'file', 'image'], 'is': ['pinned'] };
+        let searchState = { q: '', scope: 'all', offset: 0 };
+
+        // Chips for the last word of the input: [{label, token}], token replaces that word.
+        function searchSuggestions(input, channelNames, userNames) {
+            const last = (/(\S*)$/.exec(input) || ['', ''])[1];
+            const out = [];
+            const m = /^(-?)([A-Za-z]+):(.*)$/.exec(last);
+            if (!m) {
+                const lower = last.toLowerCase();
+                for (const op of SEARCH_OPERATOR_CHIPS) {
+                    if (!lower || op.startsWith(lower)) out.push({ label: op, token: op });
+                }
+                return out.slice(0, 8);
+            }
+            const neg = m[1], op = m[2].toLowerCase(), prefix = m[3].replace(/^#/, '').toLowerCase();
+            let values = [];
+            if (op === 'in') values = channelNames;
+            else if (op === 'from') values = userNames;
+            else if (SEARCH_VALUES[op] && !neg) values = SEARCH_VALUES[op];
+            for (const v of values) {
+                if (v.toLowerCase().startsWith(prefix) && v.toLowerCase() !== prefix) {
+                    out.push({ label: v, token: neg + op + ':' + v + ' ' });
+                }
+            }
+            return out.slice(0, 8);
+        }
+
+        function searchKnownNames() {
+            const channels = (typeof channelsList !== 'undefined' ? channelsList : []).map(c => c.name).filter(Boolean);
+            const users = [];
+            if (typeof onlineUsers !== 'undefined') {
+                for (const u of onlineUsers.values()) {
+                    if (u.anonymous || u.user_id == null || !u.username || u.username === 'Anonymous') continue;
+                    users.push(u.username);
+                }
+            }
+            return { channels, users: Array.from(new Set(users)) };
+        }
+
+        function renderSearchChips() {
+            const box = document.getElementById('search-chips');
+            const input = document.getElementById('search-input');
+            if (!box || !input) return;
+            const known = searchKnownNames();
+            const chips = searchSuggestions(input.value, known.channels, known.users);
+            box.innerHTML = '';
+            chips.forEach(c => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'search-chip';
+                b.textContent = c.label;
+                b.dataset.token = c.token;
+                box.appendChild(b);
+            });
+            box.style.display = chips.length ? 'flex' : 'none';
+        }
+
+        function applySearchChip(token) {
+            const input = document.getElementById('search-input');
+            input.value = input.value.replace(/(\S*)$/, token);
+            input.focus();
+            renderSearchChips();
+        }
+
+        function searchUrl(q, scope, offset) {
+            return `/api/chat/search?q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&offset=${offset}`;
         }
 
         async function executeSearch() {
             const input = document.getElementById('search-input').value.trim();
             if (input.length < 2) return;
-            const scope = document.getElementById('search-scope').value;
-            const filters = parseSearchFilters(input);
-            if (!filters.query) return;
+            searchState = { q: input, scope: document.getElementById('search-scope').value, offset: 0 };
+            await fetchSearchPage(false);
+        }
 
-            let url = `/api/chat/search?q=${encodeURIComponent(filters.query)}&scope=${scope}`;
-            if (filters.from) url += `&from=${encodeURIComponent(filters.from)}`;
-            if (filters.has) url += `&has=${encodeURIComponent(filters.has)}`;
-            if (filters.before) url += `&before=${encodeURIComponent(filters.before)}`;
-            if (filters.after) url += `&after=${encodeURIComponent(filters.after)}`;
-
+        async function fetchSearchPage(append) {
             try {
-                const resp = await Portal.fetch(url);
+                const resp = await Portal.fetch(searchUrl(searchState.q, searchState.scope, searchState.offset));
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({}));
                     Portal.toast(err.error || 'Search failed', 'error');
                     return;
                 }
                 const data = await resp.json();
-                renderSearchResults(data);
+                searchState.offset += (data.results || []).length;
+                renderSearchResults(data, append);
             } catch (e) {
                 console.error('Search error:', e);
             }
         }
 
-        function renderSearchResults(data) {
+        // One Load more request at a time: the button is disabled before the
+        // request starts (a second click does nothing) and enabled again only
+        // if the page failed, so the click can be repeated. A page that arrives
+        // replaces the button.
+        let searchMoreBusy = false;
+        async function loadMoreSearch(btn) {
+            if (searchMoreBusy) return;
+            searchMoreBusy = true;
+            if (btn) btn.disabled = true;
+            try {
+                await fetchSearchPage(true);
+            } finally {
+                searchMoreBusy = false;
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        function searchResultHtml(r, words) {
+            let msgHtml = escapeHtml(r.message || '');
+            if (!msgHtml) msgHtml = '<em>' + escapeHtml(r.has_image ? '[image]'
+                : (r.attachment_name ? '[file] ' + r.attachment_name : '[attachment]')) + '</em>';
+            // Highlight the words the server searched for (not operator text)
+            for (const word of words) {
+                const re = new RegExp(`(${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+                msgHtml = msgHtml.replace(re, '<mark>$1</mark>');
+            }
+            const sourceLabel = r.source === 'channel' ? r.source_name : `DM: ${r.source_name || 'unknown'}`;
+            const timeStr = r.created_at ? new Date(r.created_at).toLocaleString() : '';
+            const flags = [r.is_pinned ? 'pinned' : '', r.has_link ? 'link' : '', r.has_file ? 'file' : '',
+                           r.has_image ? 'image' : ''].filter(Boolean).join(', ');
+            return `<div class="search-result" data-source="${escapeHtml(r.source)}" data-source-id="${Number(r.source_id)}" data-id="${Number(r.id)}">
+                <div class="search-result-meta">
+                    <span class="search-result-source">${escapeHtml(sourceLabel)}</span>
+                    <span class="search-result-user">${escapeHtml(r.display_name || r.username || '')}</span>
+                    <span class="search-result-time">${escapeHtml(timeStr)}</span>
+                    ${flags ? `<span class="search-result-flags">${escapeHtml(flags)}</span>` : ''}
+                </div>
+                <div class="search-result-text">${msgHtml}</div>
+            </div>`;
+        }
+
+        function renderSearchResults(data, append) {
             const panel = document.getElementById('search-results-panel');
             const list = document.getElementById('search-results-list');
             const count = document.getElementById('search-result-count');
+            const note = document.getElementById('search-results-note');
             panel.style.display = 'flex';
-            count.textContent = `${data.total} result${data.total !== 1 ? 's' : ''}`;
+            const shown = data.capped ? `${data.total}+` : `${data.total}`;
+            count.textContent = `${shown} result${data.total !== 1 ? 's' : ''}`;
+            list.querySelectorAll('.search-more-btn').forEach(b => b.remove());
 
-            if (!data.results || !data.results.length) {
+            if (!append && (!data.results || !data.results.length)) {
                 list.innerHTML = '<div style="padding: 1rem; color: var(--text-muted); text-align: center;">No results found</div>';
-                return;
-            }
-
-            const queryWords = (data.query || '').toLowerCase().split(/\s+/).filter(w => w);
-            list.innerHTML = data.results.map(r => {
-                let msgHtml = escapeHtml(r.message || '');
-                // Highlight matching words
-                for (const word of queryWords) {
-                    const re = new RegExp(`(${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-                    msgHtml = msgHtml.replace(re, '<mark>$1</mark>');
+            } else {
+                if (!append) list.innerHTML = '';
+                list.insertAdjacentHTML('beforeend', (data.results || []).map(r => searchResultHtml(r, data.terms || [])).join(''));
+                if (data.has_more) {
+                    const more = document.createElement('button');
+                    more.className = 'btn btn-sm btn-secondary search-more-btn';
+                    more.textContent = 'Load more';
+                    list.appendChild(more);
                 }
-                const sourceLabel = r.source === 'channel' ? r.source_name : `DM: ${r.source_name || 'unknown'}`;
-                const timeStr = r.created_at ? new Date(r.created_at).toLocaleString() : '';
-                return `<div class="search-result" onclick="navigateToSearchResult('${r.source}', ${r.source_id}, ${r.id})">
-                    <div class="search-result-meta">
-                        <span class="search-result-source">${escapeHtml(sourceLabel)}</span>
-                        <span class="search-result-user">${escapeHtml(r.username || '')}</span>
-                        <span class="search-result-time">${timeStr}</span>
-                    </div>
-                    <div class="search-result-text">${msgHtml}</div>
-                </div>`;
-            }).join('');
+            }
+            const notes = [];
+            if (data.capped) notes.push('Only the newest 200 matches are listed. Add words or operators to narrow the search.');
+            if (data.index_complete === false) {
+                notes.push('Older messages are still being added to the search index, so has: and operator-only searches may miss some for now.');
+            }
+            note.textContent = notes.join(' ');
+            note.style.display = notes.length ? 'block' : 'none';
         }
 
         function navigateToSearchResult(source, sourceId, messageId) {
@@ -7360,6 +7480,7 @@
                 openDmConversation(sourceId);
             }
         }
+        // SEARCH-CLIENT-END
 
         // Handle Enter in search input
         document.addEventListener('DOMContentLoaded', () => {
@@ -7367,6 +7488,18 @@
             if (searchInput) {
                 searchInput.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter') executeSearch();
+                });
+                searchInput.addEventListener('input', renderSearchChips);
+                searchInput.addEventListener('focus', renderSearchChips);
+                document.getElementById('search-chips').addEventListener('click', (e) => {
+                    const chip = e.target.closest('.search-chip');
+                    if (chip) applySearchChip(chip.dataset.token);
+                });
+                document.getElementById('search-results-list').addEventListener('click', (e) => {
+                    const moreBtn = e.target.closest('.search-more-btn');
+                    if (moreBtn) { loadMoreSearch(moreBtn); return; }
+                    const row = e.target.closest('.search-result');
+                    if (row) navigateToSearchResult(row.dataset.source, parseInt(row.dataset.sourceId, 10), parseInt(row.dataset.id, 10));
                 });
             }
 

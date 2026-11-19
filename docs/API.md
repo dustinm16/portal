@@ -2125,28 +2125,41 @@ Search users for DM creation. Available to all authenticated users. Returns basi
 
 ### Message Search
 
-Full-text search across chat messages (both channel messages and DMs). Uses SQLite FTS5 for efficient indexing. Search results are filtered by the user's access: channel messages from channels the user can see, and DM messages from conversations the user participates in.
+Full-text search across chat messages (both channel messages and DMs) with search operators. Uses SQLite FTS5 for the words and a small per-message flag table for the operators. Results are filtered by the user's access: channel messages from channels the user may read (the same decision as for joining a channel and for scrollback, so a member banned from a stream's chat finds nothing in it, and a private channel the member does not belong to behaves like one that does not exist), and DM messages from conversations the user participates in.
 
 #### GET /api/chat/search
 Search messages across channels and/or DMs.
 
 Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (`is_public` off) is searched only for the stream's owner and admins, the rule of the channel history.
 
-**Rate Limit:** 10 requests per minute per user.
+**Rate Limit:** 10 requests per minute per user (a request refused for a bad query or parameter does not count).
 
 **Query Parameters:**
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `q` | Yes | - | Search query (2-200 characters) |
+| `q` | Yes | - | Words and operators (2-200 characters), see below |
 | `scope` | No | `all` | Search scope: `all`, `channels`, or `dms` |
-| `channel_id` | No | - | Restrict to a specific channel |
-| `conversation_id` | No | - | Restrict to a specific DM conversation |
-| `from` | No | - | Filter by sender username |
-| `has` | No | - | Filter by content type (`image`) |
-| `before` | No | - | Messages before this date (ISO 8601 or YYYY-MM-DD) |
-| `after` | No | - | Messages after this date (ISO 8601 or YYYY-MM-DD) |
+| `channel_id` | No | - | Restrict to a specific channel (1 to 9223372036854775807; any other value answers `400`) |
+| `conversation_id` | No | - | Restrict to a specific DM conversation (same range) |
+| `from`, `has`, `before`, `after` | No | - | The older way to give those operators; same checks as in `q` |
 | `limit` | No | `25` | Results per page (max 50) |
-| `offset` | No | `0` | Pagination offset |
+| `offset` | No | `0` | Pagination offset (0 to 2000; a larger value answers `400` with `offset must not exceed 2000`) |
+
+**Operators in `q`** (separated by spaces; names are not case-sensitive; at most 10 per query):
+| Operator | Meaning |
+|----------|---------|
+| `from:name`, `-from:name` | Author by account name or nickname (any case). `-` leaves that author out |
+| `in:channel`, `-in:channel` | Channel by name (a leading `#` is ignored). `-` leaves it out. DMs are not searched when `in:` is given |
+| `has:link`, `has:file`, `has:image` | Text with an `http://` or `https://` address; an attachment that is not an image; an image or an image attachment |
+| `is:pinned` | Pinned channel messages (no DM results) |
+| `before:YYYY-MM-DD`, `after:YYYY-MM-DD` | Created before the start of that day, or from the start of that day (UTC), so the two together cover every message |
+| `"two words"` | A phrase |
+
+Anything else is a word that must appear. A query with no words (only operators) is allowed: results are newest first, at most 200 in total (`capped`). A token counts as an operator only when it is letters, a colon and a value, so `12:30` and `https://example.com` are searched as text; any other `name:value` is an unknown operator. To search for such text, put it in double quotes.
+
+**Errors:** an unknown operator, an unknown `has:` or `is:` value, a value missing after an operator, a date that is not `YYYY-MM-DD` or not a real date, `-` before an operator other than `from:` and `in:`, an operator given too often, or more than 10 operators all give `400` with a message in `error`. An `in:` or `from:` that names nothing the caller may see is not an error: it matches nothing.
+
+**Anonymous posts:** a positive `from:` never matches an anonymous post for an ordinary member (not even the author's own), a negated `-from:` never removes one, so neither an author filter nor a count can show who wrote it. Moderators, admins and superadmins, who already receive the author's id, can match it. Result objects are masked exactly like history.
 
 **Response:**
 ```json
@@ -2155,43 +2168,59 @@ Channel results cover only the channels the caller may read: a private channel n
     {
       "id": 123,
       "source": "channel",
-      "channel_id": 1,
-      "channel_name": "general",
-      "user_id": 2,
-      "username": "bob",
-      "nickname": "Bob",
+      "source_id": 1,
+      "source_name": "#general",
       "message": "Has anyone tried the new deployment pipeline?",
+      "username": "bob",
+      "display_name": "Bobby",
+      "nickname": "Bobby",
+      "avatar": {},
+      "user_id": 2,
+      "role": "user",
+      "anonymous": false,
+      "edited_at": null,
       "image_url": null,
-      "created_at": "2026-02-11T09:15:00Z",
-      "relevance": 1.5
+      "attachment_url": null,
+      "attachment_name": null,
+      "attachment_type": null,
+      "attachment_size": null,
+      "has_image": 0,
+      "has_file": 0,
+      "has_link": 0,
+      "is_pinned": 0,
+      "created_at": "2026-02-11T09:15:00+00:00"
     },
     {
       "id": 456,
       "source": "dm",
-      "conversation_id": 3,
-      "conversation_name": "alice, bob",
+      "source_id": 3,
+      "source_name": "alice",
+      "message": "The pipeline is ready for testing",
       "user_id": 1,
       "username": "alice",
-      "nickname": "Alice",
-      "message": "The pipeline is ready for testing",
+      "display_name": "alice",
       "image_url": null,
-      "created_at": "2026-02-11T10:00:00Z",
-      "relevance": 1.2
+      "created_at": "2026-02-11T10:00:00+00:00",
+      "has_image": 0, "has_file": 0, "has_link": 0
     }
   ],
   "total": 42,
-  "limit": 25,
-  "offset": 0
+  "has_more": true,
+  "capped": false,
+  "query": "pipeline in:general",
+  "terms": ["pipeline"],
+  "operator_only": false,
+  "index_complete": true
 }
 ```
 
 **Notes:**
-- Results are ordered by relevance (FTS5 rank), then by recency.
-- The `source` field indicates whether the result is from a `channel` or a `dm`.
-- DM search results are filtered to conversations the authenticated user participates in.
-- Channel search results are filtered to channels the user has access to.
-- The `from` filter matches exact username.
-- The `has: "image"` filter returns only messages with an `image_url`.
+- Word queries with `scope=channels` or `scope=dms` are ordered by relevance (FTS5 rank). With `scope=all` (the default) they are ordered newest first across channels and DMs, so `offset` pages through every match once without repeats or gaps; operator-only queries are newest first.
+- `source` is `channel` or `dm`; `source_id` is the channel id or conversation id. To show a channel result in context, call `GET /api/chat/channels/{source_id}/messages?around_id={id}` (the chat page does this).
+- For a channel result `username` is the account name and `display_name` is what the chat shows (nickname when set). An anonymous post has `username` and `display_name` `"Anonymous"`, `user_id`, `role` and `nickname` null and an empty `avatar` (staff and the author keep `user_id` and `role`).
+- `total` is exact for word queries. For operator-only queries it stops at 200 and `capped` is true when more exist; `offset` plus `limit` cannot go past 200. `has_more` is true when more matches exist than were returned; for a capped query it is false once `offset` plus the number returned reaches 200, so a client that follows it pages through all 200 results and stops. An `offset` of 200 or more answers an empty list without reading any rows. `has_more` is also false when `offset` plus the number returned is above 2000 (the `offset` limit), even if more matches exist, because the next page would be refused with `400`.
+- `terms` holds the free-text words, for highlighting. `index_complete` is false until the one-time backfill that fills `has_link`/`has_file` for messages written before the upgrade (and indexes attachment-only messages) has finished; until then `has:` queries can miss old messages.
+- The `has:image` flag now means an image or an image attachment; the older channel rule (any attachment) is corrected by the backfill.
 
 ---
 
@@ -2203,11 +2232,11 @@ Rebuild the FTS5 search index from encrypted messages. Decrypts all messages, to
 **Response:**
 ```json
 {
-  "success": true,
-  "indexed": 15000,
-  "message": "Search index rebuilt: 15000 messages indexed"
+  "rebuilt": true,
+  "indexed": {"channel": 15000, "dm": 320}
 }
 ```
+The rebuild writes the operator flags itself and marks the backfill as done.
 
 **Security Notes:**
 - FTS5 index stores plaintext tokens alongside encrypted message data (contentless tables — no raw message text stored in the index)

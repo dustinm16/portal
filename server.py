@@ -135,6 +135,7 @@ import ipguard
 import update_manager
 import vod_staging
 import automod
+import chat_search
 import secevents
 setup_logging()
 logger = logging.getLogger("portal")
@@ -19042,8 +19043,79 @@ async def http_add_dm_participants(request: web.Request) -> web.Response:
 # Rate limiting for search: user_id -> list of timestamps
 _search_rate_limits: dict[int, list[float]] = {}
 
+async def _search_readable_channels(user_id: int, user_role: str, scope: str = "all") -> set:
+    """Ids of the channels this member may read: the channels visible to the
+    role, each put through _can_read_channel (the check that join and history
+    use, which also applies stream bans). Nothing outside this set is searched.
+    A scope that searches no channels (dms) needs none of that work."""
+    out = set()
+    if scope == "dms":
+        return out
+    for ch in await db.get_accessible_channels(user_id, user_role):
+        if await _can_read_channel(ch, user_id, user_role):
+            out.add(ch["id"])
+    return out
+
+
+async def _finish_search_results(results: list, viewer_id, viewer_role) -> list:
+    """Turn channel hits (ids and flags) into messages for one viewer. The rows
+    are built and masked by _enrich_channel_messages, as for history, so an
+    anonymous author is never named, whatever the query. Hits whose message is
+    gone are dropped. DM hits are complete already."""
+    by_channel: dict = {}
+    for r in results:
+        if r["source"] == "channel":
+            by_channel.setdefault(r["source_id"], []).append(r["id"])
+    built: dict = {}
+    for channel_id, ids in by_channel.items():
+        rows = await db.get_chat_messages_by_ids(ids, channel_id)
+        real_names = {m["id"]: m.get("username") for m in rows}
+        await _enrich_channel_messages(rows, viewer_id, viewer_role, channel_id)
+        for m in rows:
+            anon = bool(m.get("anonymous"))
+            built[m["id"]] = {
+                "message": m.get("message", ""),
+                # the account name as before (never for an anonymous post); display_name is what chat shows
+                "username": "Anonymous" if anon else real_names.get(m["id"]),
+                "display_name": m.get("username"),
+                "nickname": m.get("nickname"),
+                "avatar": m.get("avatar") or {},
+                "user_id": m.get("user_id"),
+                "role": m.get("role"),
+                "anonymous": anon,
+                "edited_at": m.get("edited_at"),
+                "image_url": m.get("image_url"),
+                "attachment_url": m.get("attachment_url"),
+                "attachment_name": m.get("attachment_name"),
+                "attachment_type": m.get("attachment_type"),
+                "attachment_size": m.get("attachment_size"),
+            }
+    out = []
+    seen = set()
+    for r in results:
+        # a message is listed once, whatever the index returned for it
+        key = (r["source"], r["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        if r["source"] == "channel":
+            extra = built.get(r["id"])
+            if extra is None:
+                continue
+            r = {**r, **extra}
+        out.append(r)
+    return out
+
+
+SEARCH_OFFSET_MAX = 2000        # a search reads offset + limit rows per source; deeper paging is refused with 400
+
+
 async def http_search_messages(request: web.Request) -> web.Response:
-    """Search messages across channels and DMs."""
+    """Search messages across channels and DMs.
+
+    q holds the words and the operators (from:, in:, has:, is:, before:, after:;
+    see chat_search.py); the separate from, has, before and after parameters of
+    the older API still work and go through the same checks."""
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
@@ -19051,8 +19123,35 @@ async def http_search_messages(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     if len(query) < 2:
         return web.json_response({"error": "Query must be at least 2 characters"}, status=400)
-    if len(query) > 200:
-        return web.json_response({"error": "Query too long (max 200 chars)"}, status=400)
+    if len(query) > chat_search.MAX_QUERY_LENGTH:
+        return web.json_response({"error": f"Query too long (max {chat_search.MAX_QUERY_LENGTH} chars)"}, status=400)
+    try:
+        parsed = chat_search.parse_search_query(
+            query, from_=request.query.get("from"), has=request.query.get("has"),
+            before=request.query.get("before"), after=request.query.get("after"))
+    except chat_search.SearchQueryError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+    scope = request.query.get("scope", "all")
+    if scope not in ("all", "channels", "dms"):
+        scope = "all"
+
+    try:
+        channel_id = int(request.query["channel_id"]) if "channel_id" in request.query else None
+        conversation_id = int(request.query["conversation_id"]) if "conversation_id" in request.query else None
+        # ids are checked like the history routes do: a value outside 1..HISTORY_ID_MAX
+        # would otherwise reach the database (or, for 0, silently mean "no filter")
+        for value in (channel_id, conversation_id):
+            if value is not None and not 1 <= value <= HISTORY_ID_MAX:
+                raise ValueError("id out of range")
+        limit = max(1, min(int(request.query.get("limit", "25")), 50))
+        offset = max(int(request.query.get("offset", "0")), 0)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid parameters"}, status=400)
+    # a deep offset never reaches the database (each source is read to offset +
+    # limit rows, and a value past the SQLite integer range fails in the driver)
+    if offset > SEARCH_OFFSET_MAX:
+        return web.json_response({"error": f"offset must not exceed {SEARCH_OFFSET_MAX}"}, status=400)
 
     # Rate limit: 10 searches per minute
     now = monotonic()
@@ -19065,23 +19164,6 @@ async def http_search_messages(request: web.Request) -> web.Response:
     for uid in [k for k, v in _search_rate_limits.items() if not v]:
         del _search_rate_limits[uid]
 
-    scope = request.query.get("scope", "all")
-    if scope not in ("all", "channels", "dms"):
-        scope = "all"
-
-    try:
-        channel_id = int(request.query["channel_id"]) if "channel_id" in request.query else None
-        conversation_id = int(request.query["conversation_id"]) if "conversation_id" in request.query else None
-        limit = max(1, min(int(request.query.get("limit", "25")), 50))
-        offset = max(int(request.query.get("offset", "0")), 0)
-    except (ValueError, TypeError):
-        return web.json_response({"error": "Invalid parameters"}, status=400)
-
-    from_user = request.query.get("from", None)
-    has_image = request.query.get("has") == "image"
-    before = request.query.get("before", None)
-    after = request.query.get("after", None)
-
     # Resolve user role for channel access filtering
     user = await db.get_user_by_id(token.user_id)
     user_role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else "user"
@@ -19089,11 +19171,19 @@ async def http_search_messages(request: web.Request) -> web.Response:
     results = await db.search_messages(
         query=query, user_id=token.user_id, scope=scope,
         channel_id=channel_id, conversation_id=conversation_id,
-        from_user=from_user, has_image=has_image if has_image else None,
-        before=before, after=after, limit=limit, offset=offset,
-        user_role=user_role
+        limit=limit, offset=offset, user_role=user_role, parsed=parsed,
+        channel_ids=await _search_readable_channels(token.user_id, user_role, scope),
+        include_anonymous_authors=user_role in _CHAT_STAFF_ROLES
     )
+    results["results"] = await _finish_search_results(results["results"], token.user_id, user_role)
+    # the page after this one starts at offset + len(results); past the cap it would be refused,
+    # so a client that follows has_more must not be invited to ask for it
+    if offset + len(results["results"]) > SEARCH_OFFSET_MAX:
+        results["has_more"] = False
     results["query"] = query
+    results["terms"] = parsed.words
+    results["operator_only"] = parsed.operator_only
+    results["index_complete"] = await db.search_backfill_complete()
     return web.json_response(results)
 
 
@@ -21555,6 +21645,7 @@ class PortalServer:
         self.runner = None
         self._shutdown_event = asyncio.Event()
         self._vod_recovery_task = None
+        self._search_backfill_task = None
 
     def _start_vod_recovery(self) -> None:
         """Start a recovery pass over the VOD staging folder unless one is already running."""
@@ -21575,6 +21666,17 @@ class PortalServer:
                 pass
             except Exception as e:
                 logger.debug(f"VOD recovery task ended with {e}")
+
+    async def _search_backfill_runner(self) -> None:
+        """Run the one-time search index backfill a little after start, off the
+        request path. It resumes where it stopped and does nothing once done."""
+        try:
+            await asyncio.sleep(20)
+            await db.backfill_search_flags()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Search index backfill stopped: {e}")
 
     async def start(self) -> None:
         """Start the server."""
@@ -21664,6 +21766,11 @@ class PortalServer:
 
         # Start unified data retention cleanup task
         asyncio.create_task(self._data_cleanup_task())
+
+        # Operator flags for old messages in the search index: a background pass in
+        # small batches (never in staged mode; a staged check starts it on purpose)
+        if not Config.STAGE_MODE:
+            self._search_backfill_task = asyncio.create_task(self._search_backfill_runner())
 
         # Scheduled backup due check shortly after start, so a service that restarts more
         # often than the cleanup interval still gets its backups (skipped in staged mode)
@@ -22138,6 +22245,8 @@ class PortalServer:
 
         # Stop the periodic VOD recovery before the recordings finish
         await self._cancel_vod_recovery()
+        if self._search_backfill_task is not None and not self._search_backfill_task.done():
+            self._search_backfill_task.cancel()   # resumes from its stored position at the next start
 
         # Stop any active VOD recordings and upload to SFTP
         await stop_all_recordings()

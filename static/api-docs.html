@@ -3448,14 +3448,14 @@ ws.send(JSON.stringify({
                         <span class="endpoint-desc">Search messages</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user. Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (<code>is_public</code> off) is searched only for the stream's owner and admins, the rule of the channel history.</p>
+                        <p>Search across channel messages and DM conversations. Rate limited to <strong>10 requests per minute</strong> per user (a request refused for a bad query or parameter does not count). Channel results cover only the channels the caller may read: a private channel needs membership (admins and superadmins search every channel), and the chat of a stream that is not public (<code>is_public</code> off) is searched only for the stream's owner and admins, the rule of the channel history. The text of <code>q</code> holds words and operators.</p>
                         <h4>Query Parameters</h4>
                         <table class="param-table">
                             <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
                             <tr>
                                 <td><span class="param-name">q</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>Search query (2-200 characters) <span class="param-required">required</span></td>
+                                <td>Words and operators (2-200 characters), see below <span class="param-required">required</span></td>
                             </tr>
                             <tr>
                                 <td><span class="param-name">scope</span></td>
@@ -3465,32 +3465,17 @@ ws.send(JSON.stringify({
                             <tr>
                                 <td><span class="param-name">channel_id</span></td>
                                 <td><span class="param-type">integer</span></td>
-                                <td>Limit search to a specific channel</td>
+                                <td>Limit search to a specific channel (1 to 9223372036854775807; any other value answers 400)</td>
                             </tr>
                             <tr>
                                 <td><span class="param-name">conversation_id</span></td>
                                 <td><span class="param-type">integer</span></td>
-                                <td>Limit search to a specific DM conversation</td>
+                                <td>Limit search to a specific DM conversation (same range as <code>channel_id</code>)</td>
                             </tr>
                             <tr>
-                                <td><span class="param-name">from</span></td>
+                                <td><span class="param-name">from, has, before, after</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>Filter by sender username</td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">has</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Filter by content type: <code>image</code></td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">before</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Filter messages before this date (ISO 8601)</td>
-                            </tr>
-                            <tr>
-                                <td><span class="param-name">after</span></td>
-                                <td><span class="param-type">string</span></td>
-                                <td>Filter messages after this date (ISO 8601)</td>
+                                <td>The older way to give those operators; they go through the same checks as in <code>q</code></td>
                             </tr>
                             <tr>
                                 <td><span class="param-name">limit</span></td>
@@ -3500,9 +3485,22 @@ ws.send(JSON.stringify({
                             <tr>
                                 <td><span class="param-name">offset</span></td>
                                 <td><span class="param-type">integer</span></td>
-                                <td>Pagination offset (default: 0)</td>
+                                <td>Pagination offset (default: 0, at most 2000; a larger value answers 400 with <code>offset must not exceed 2000</code>)</td>
                             </tr>
                         </table>
+                        <h4>Operators in q</h4>
+                        <table class="param-table">
+                            <tr><th>Operator</th><th>Meaning</th></tr>
+                            <tr><td><code>from:name</code>, <code>-from:name</code></td><td>Author by account name or nickname (any case); <code>-</code> leaves that author out</td></tr>
+                            <tr><td><code>in:channel</code>, <code>-in:channel</code></td><td>Channel by name (a leading <code>#</code> is ignored); <code>-</code> leaves it out. DMs are not searched when <code>in:</code> is given</td></tr>
+                            <tr><td><code>has:link</code>, <code>has:file</code>, <code>has:image</code></td><td>Text with an http(s) address; an attachment that is not an image; an image or image attachment</td></tr>
+                            <tr><td><code>is:pinned</code></td><td>Pinned channel messages (no DM results)</td></tr>
+                            <tr><td><code>before:YYYY-MM-DD</code>, <code>after:YYYY-MM-DD</code></td><td>Created before the start of that day, or from the start of that day (UTC)</td></tr>
+                            <tr><td><code>"two words"</code></td><td>A phrase</td></tr>
+                        </table>
+                        <p>Anything else is a word that must appear. A query of only operators is allowed: newest first, at most 200 results in total (<code>capped</code>). <code>12:30</code> and <code>https://example.com</code> are searched as text; any other <code>name:value</code> is an unknown operator &mdash; put such text in double quotes. An unknown operator or value, a bad date, a negated operator other than <code>from:</code> and <code>in:</code> or more than 10 operators answer <code>400</code> with a message in <code>error</code>. An <code>in:</code> naming a channel you cannot read matches nothing, exactly like a channel that does not exist.</p>
+                        <p>Word queries are ordered newest first when <code>scope</code> is <code>all</code> (the default), so <code>offset</code> pages through every match once; with <code>scope=channels</code> or <code>scope=dms</code> they are ordered by relevance.</p>
+                        <p>A positive <code>from:</code> never matches an anonymous post for an ordinary member, and a negated <code>-from:</code> never removes one, so neither the filter nor a count shows who wrote it. Moderators and admins, who already receive the author id, can match it. Results are masked exactly like channel history.</p>
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{
@@ -3510,29 +3508,38 @@ ws.send(JSON.stringify({
     {
       <span class="string">"id"</span>: <span class="number">42</span>,
       <span class="string">"source"</span>: <span class="string">"channel"</span>,
-      <span class="string">"channel_id"</span>: <span class="number">1</span>,
-      <span class="string">"channel_name"</span>: <span class="string">"general"</span>,
-      <span class="string">"user_id"</span>: <span class="number">1</span>,
-      <span class="string">"username"</span>: <span class="string">"alice"</span>,
+      <span class="string">"source_id"</span>: <span class="number">1</span>,
+      <span class="string">"source_name"</span>: <span class="string">"#general"</span>,
       <span class="string">"message"</span>: <span class="string">"Has anyone tried the new deployment script?"</span>,
-      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T12:00:00"</span>
+      <span class="string">"username"</span>: <span class="string">"alice"</span>,
+      <span class="string">"display_name"</span>: <span class="string">"Ally"</span>,
+      <span class="string">"user_id"</span>: <span class="number">1</span>,
+      <span class="string">"anonymous"</span>: <span class="keyword">false</span>,
+      <span class="string">"has_image"</span>: <span class="number">0</span>, <span class="string">"has_file"</span>: <span class="number">0</span>, <span class="string">"has_link"</span>: <span class="number">0</span>,
+      <span class="string">"is_pinned"</span>: <span class="number">0</span>,
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T12:00:00+00:00"</span>
     },
     {
       <span class="string">"id"</span>: <span class="number">88</span>,
       <span class="string">"source"</span>: <span class="string">"dm"</span>,
-      <span class="string">"conversation_id"</span>: <span class="number">3</span>,
-      <span class="string">"conversation_name"</span>: <span class="string">"bob"</span>,
+      <span class="string">"source_id"</span>: <span class="number">3</span>,
+      <span class="string">"source_name"</span>: <span class="string">"bob"</span>,
       <span class="string">"user_id"</span>: <span class="number">2</span>,
       <span class="string">"username"</span>: <span class="string">"bob"</span>,
       <span class="string">"message"</span>: <span class="string">"I deployed it yesterday, works great"</span>,
-      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T12:05:00"</span>
+      <span class="string">"created_at"</span>: <span class="string">"2026-02-11T12:05:00+00:00"</span>
     }
   ],
   <span class="string">"total"</span>: <span class="number">2</span>,
-  <span class="string">"limit"</span>: <span class="number">25</span>,
-  <span class="string">"offset"</span>: <span class="number">0</span>
+  <span class="string">"has_more"</span>: <span class="keyword">false</span>,
+  <span class="string">"capped"</span>: <span class="keyword">false</span>,
+  <span class="string">"query"</span>: <span class="string">"deploy"</span>,
+  <span class="string">"terms"</span>: [<span class="string">"deploy"</span>],
+  <span class="string">"operator_only"</span>: <span class="keyword">false</span>,
+  <span class="string">"index_complete"</span>: <span class="keyword">true</span>
 }</pre>
                         </div>
+                        <p>An anonymous post has <code>username</code> and <code>display_name</code> <code>"Anonymous"</code>, and <code>user_id</code>, <code>role</code> and <code>nickname</code> null for ordinary members. To open a channel result in context, call <code>GET /api/chat/channels/{source_id}/messages?around_id={id}</code>. <code>total</code> stops at 200 for operator-only queries (<code>capped</code>). <code>has_more</code> is false once <code>offset</code> plus the number returned reaches 200, so following it pages through all 200 results and stops; an <code>offset</code> of 200 or more answers an empty list without reading any rows. <code>has_more</code> is also false when <code>offset</code> plus the number returned is above 2000 (the <code>offset</code> limit), even if more matches exist, because the next page would be refused with 400. <code>index_complete</code> is false until the one-time backfill of the link and file flags for older messages has finished; until then <code>has:</code> queries can miss old messages.</p>
                     </div>
                 </div>
 
@@ -3548,8 +3555,8 @@ ws.send(JSON.stringify({
                         <h4>Response</h4>
                         <div class="code-block">
 <pre>{
-  <span class="string">"success"</span>: <span class="keyword">true</span>,
-  <span class="string">"indexed_messages"</span>: <span class="number">1523</span>
+  <span class="string">"rebuilt"</span>: <span class="keyword">true</span>,
+  <span class="string">"indexed"</span>: { <span class="string">"channel"</span>: <span class="number">1500</span>, <span class="string">"dm"</span>: <span class="number">23</span> }
 }</pre>
                         </div>
                     </div>

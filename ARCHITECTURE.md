@@ -655,7 +655,7 @@ GET  /api/chat/search                   - Full-text search (FTS5)
 POST /api/chat/search/rebuild           - Rebuild search index (superadmin)
 ```
 
-FTS5 full-text search across channels and DMs. Contentless index tables store plaintext alongside encrypted message data. Filters: scope (all/channels/dms), from (username), has (image), before/after (date), channel_id, conversation_id. DM results restricted to user's own conversations. Rate limited: 10 searches/min/user.
+FTS5 full-text search across channels and DMs. Contentless index tables store plaintext alongside encrypted message data. The query is parsed on the server (`chat_search.py`): `from:`, `in:` (both negatable), `has:link|file|image`, `is:pinned`, `before:`/`after:` (YYYY-MM-DD), phrases; operator-only queries are newest first and capped at 200. Also scope, channel_id, conversation_id. Channels are searched only if `_can_read_channel` allows, and results are built with `_enrich_channel_messages` (anonymous authors masked as in history). DM results restricted to user's own conversations. Rate limited: 10 searches/min/user. `offset` is capped at 2000 and the ids must be 1..HISTORY_ID_MAX (400 otherwise). The one-time flag backfill runs each batch as one uninterrupted step on the connection and shares a lock with the rebuild.
 
 ### Voice Chat
 
