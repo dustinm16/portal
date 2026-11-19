@@ -3111,12 +3111,12 @@ account; installs go under a dedicated game-data disk.
 - `POST /api/game-servers/{id}/resync-catalog` — re-pull `config_paths` / `backup_paths` / `config_root` for a deployed server from its (builtin) catalog entry; a server with a missing launch file also takes the entry's `runtime` and `start_cmd` (admin). Also runs automatically for every builtin-based server on restart.
 - `POST /api/game-servers/{id}/launch-options` — edit the launch config and regenerate the unit. Body `{start_args?, stop_signal?, start_cmd?, runtime?}`. `start_args` (shell-style quoting, no shell is run — split to argv) and `stop_signal` (`SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`/`SIGKILL`) take **admin or a `control` grant**; `start_cmd` (a plain relative path that must exist under the install dir) and `runtime` (`native`/`wine`, see [WINDOWS-GAME-SERVERS.md](WINDOWS-GAME-SERVERS.md)) are **admin only** → `403` otherwise. Returns `{success, game_server, restart_required}`; does not restart the server. Audited `gameserver.launch_options`.
 
-Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`. Start/stop/restart/logs reuse `/api/services/{service_id}/...` and are audited there.
+Deploy/destroy are audited `gameserver.deploy` / `gameserver.delete`. Start/stop/restart/logs reuse `/api/services/{service_id}/...`. Start, stop and restart (managed or systemd-bound) write an audit entry `service.start`, `service.stop` or `service.restart` (actor, service id and name, action) when they succeed; a stop done this way is deliberately silent to the `service.health_changed` alerts, so the audit entry is its record.
 
 ---
 
 #### POST /api/services/:id/start
-Start a managed service — admin, or a user holding a `control` grant.
+Start a managed service — admin, or a user holding a `control` grant. A successful start, stop or restart is audited as `service.start`, `service.stop` or `service.restart`.
 
 **Response:**
 ```json

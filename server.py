@@ -3237,6 +3237,18 @@ async def http_get_service_types(request: web.Request) -> web.Response:
     return web.json_response({"types": types})
 
 
+async def _audit_service_control(token: "TokenPayload", service: dict, action: str) -> None:
+    """Audit entry for a start, stop or restart of a service done through the portal. A stop asked
+    for here is deliberately silent to the health alerts, so it must leave a record."""
+    actor = await db.get_user_by_id(token.user_id)
+    await audit_log(
+        f"service.{action}", token.user_id, (actor or {}).get("username", "unknown"),
+        target_id=service["id"], target_type="service", target_name=service.get("name"),
+        details={"service_id": service["id"], "service_name": service.get("name"), "action": action,
+                 "systemd_unit": service.get("systemd_unit") if service.get("service_type") != "managed" else None},
+    )
+
+
 async def _control_systemd_bound_service(
     service: dict, action: str, token: "TokenPayload"
 ) -> web.Response:
@@ -3259,6 +3271,7 @@ async def _control_systemd_bound_service(
         token.user_id, get_display_name(admin_user) if admin_user else "admin",
         f"service_{action}", f"{action.capitalize()}ed service '{service.get('name', service['id'])}' ({unit})"
     )
+    await _audit_service_control(token, service, action)
     unit_status = await asyncio.to_thread(system_monitor.get_service_status, unit)
     status = "running" if unit_status and unit_status["sub_state"] == "running" else "stopped"
     return web.json_response({
@@ -3306,6 +3319,7 @@ async def http_start_service(request: web.Request) -> web.Response:
     success, error = await _service_manager.start_service(service_id)
     if success:
         logger.info(f"Service {service_id} started by user {token.user_id}")
+        await _audit_service_control(token, service, "start")
         updated = await db.get_service_by_id(service_id)
         admin_user = await db.get_user_by_id(token.user_id)
         await db.log_activity(token.user_id, get_display_name(admin_user) if admin_user else "admin", "service_start", f"Started service '{service.get('name', service_id)}'")
@@ -3356,6 +3370,7 @@ async def http_stop_service(request: web.Request) -> web.Response:
     success, error = await _service_manager.stop_service(service_id)
     if success:
         logger.info(f"Service {service_id} stopped by user {token.user_id}")
+        await _audit_service_control(token, service, "stop")
         updated = await db.get_service_by_id(service_id)
         admin_user = await db.get_user_by_id(token.user_id)
         await db.log_activity(token.user_id, get_display_name(admin_user) if admin_user else "admin", "service_stop", f"Stopped service '{service.get('name', service_id)}'")
@@ -3406,6 +3421,7 @@ async def http_restart_service(request: web.Request) -> web.Response:
     success, error = await _service_manager.restart_service(service_id)
     if success:
         logger.info(f"Service {service_id} restarted by user {token.user_id}")
+        await _audit_service_control(token, service, "restart")
         updated = await db.get_service_by_id(service_id)
         return web.json_response({
             "success": True,
