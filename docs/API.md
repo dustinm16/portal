@@ -3903,7 +3903,7 @@ New HMAC secret, shown once. Generic format only.
 
 #### Delivery rules
 
-Failures are retried after 10 s, 60 s and 5 minutes; 10 consecutive failures disable the hook. A `429` answer waits for `Retry-After` (seconds or an HTTP date, capped at 10 minutes, at most 3 waits in all for one delivery, retries after a failure included; the hook is checked again after each wait and nothing more is sent if it was switched off, deleted, changed or unsubscribed meanwhile) and never counts toward the 10. A hook is limited to 30 deliveries per minute.
+Failures are retried after 10 s, 60 s and 5 minutes; 10 consecutive failures disable the hook. A `429` answer waits for `Retry-After` (seconds or an HTTP date, capped at 10 minutes, at most 3 waits in all for one delivery, retries after a failure included; the hook is checked again after each wait and nothing more is sent if it was switched off, deleted, changed or unsubscribed meanwhile) and never counts toward the 10. A delivery refused by policy before anything is sent (a non-generic hook over plain `http://` with allow_private off) sets the hook's last failure reason to a fixed text without the URL and counts toward the 10 at most once per hour. A hook is limited to 30 deliveries per minute.
 
 #### System webhooks (Superadmin)
 

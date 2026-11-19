@@ -307,6 +307,34 @@ async def main():
     check("failure text of a non-generic hook names no URL",
           "SECRETPATH" not in json.dumps(res) and "SECRETPATH" not in (w["last_failure_reason"] or ""), str(res))
 
+    # ---- a delivery refused by policy says why on the hook, and counts once an hour at most
+    plain = await hook(db, "ntfy", "http://198.51.100.7:9/SECRETPATH-abc", uid=uid, private=False)
+    n = len(received)
+    for _ in range(25):
+        res = await server._deliver_webhook(plain, "user.joined", {})
+    w = await db.get_webhook(plain["id"])
+    check("a hook refused for plain http sends nothing", len(received) == n and not res["sent"])
+    check("the refusal sets the hook's last failure reason, a fixed text without the URL",
+          w["last_failure_reason"] == "needs an https:// URL unless allow_private is on"
+          and "SECRETPATH" not in (w["last_failure_reason"] or "") and w["last_failure_at"], str(w))
+    check("25 refused deliveries count as one failure, the hook stays enabled",
+          w["consecutive_failures"] == 1 and w["enabled"] == 1, str(w["consecutive_failures"]))
+    server._webhook_policy_noted[plain["id"]] -= 3601
+    await server._deliver_webhook(plain, "user.joined", {})
+    w = await db.get_webhook(plain["id"])
+    check("an hour later the next refusal counts again", w["consecutive_failures"] == 2, str(w["consecutive_failures"]))
+    for _ in range(7):
+        server._webhook_policy_noted[plain["id"]] -= 3601
+        await server._deliver_webhook(plain, "user.joined", {})
+    w = await db.get_webhook(plain["id"])
+    check("nine hours of refusals do not switch it off", w["enabled"] == 1 and w["consecutive_failures"] == 9,
+          str((w["enabled"], w["consecutive_failures"])))
+    server._webhook_policy_noted[plain["id"]] -= 3601
+    await server._deliver_webhook(plain, "user.joined", {})
+    w = await db.get_webhook(plain["id"])
+    check("it is auto-disabled at ten, one per hour", w["enabled"] == 0 and w["consecutive_failures"] == 10,
+          str((w["enabled"], w["consecutive_failures"])))
+
     # ---- the portal's own port is refused even with allow_private
     own = await hook(db, "ntfy", f"http://127.0.0.1:{Config.PORT}/x", uid=uid)
     res = await server._deliver_webhook(own, "webhook.test", {}, single=True)

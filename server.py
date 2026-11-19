@@ -6924,6 +6924,12 @@ async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = N
 
 
 _webhook_paused_until: dict[int, float] = {}
+# A delivery refused by policy before anything is sent (a non-generic hook over plain http with
+# allow_private off) records its reason on the hook and counts as one failure per hour at most,
+# however many events it refuses, so the admin list says why the hook is silent and a silent hook
+# is switched off only after many hours, not after ten events.
+_webhook_policy_noted: dict[int, float] = {}
+_WEBHOOK_POLICY_NOTE_INTERVAL = 3600.0
 _WEBHOOK_MAX_429_WAITS = 3
 _webhook_sleep = asyncio.sleep      # module level so tests can replace it
 
@@ -6986,6 +6992,26 @@ async def _webhook_resend_allowed(sent_to: dict, event: str, meta: dict | None) 
                for k in ("url", "format", "allow_private", "include_details", "secret", "format_config"))
 
 
+_WEBHOOK_HTTP_REFUSED = "needs an https:// URL unless allow_private is on"     # fixed text, no URL
+
+
+async def _webhook_note_policy_refusal(webhook_id: int, reason: str) -> None:
+    """Set the hook's last failure reason (the admin list shows it) for a delivery refused by
+    policy before sending; counts toward auto-disable at most once per hour."""
+    now = monotonic()
+    last = _webhook_policy_noted.get(webhook_id)
+    if last is not None and now - last < _WEBHOOK_POLICY_NOTE_INTERVAL:
+        return
+    _webhook_policy_noted[webhook_id] = now
+    try:
+        new_count = await db.increment_webhook_failures(webhook_id, reason)
+        if new_count >= _WEBHOOK_MAX_FAILURES:
+            await db.disable_webhook(webhook_id)
+            logger.warning(f"Webhook {webhook_id} auto-disabled after {new_count} consecutive failures")
+    except Exception as e:
+        logger.warning(f"Failed to record a webhook policy refusal: {type(e).__name__}")
+
+
 async def _deliver_webhook(webhook: dict, event: str, payload: dict,
                             attempt: int = 1, *, meta: dict | None = None,
                             single: bool = False, waits_used: int = 0) -> dict:
@@ -7014,7 +7040,9 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     # but allow_private can be switched off afterwards without a re-check, so delivery
     # holds the rule too.
     if fmt != "generic" and not allow_private and not url.lower().startswith("https://"):
-        result["error"] = "needs an https:// URL unless allow_private is on"
+        result["error"] = _WEBHOOK_HTTP_REFUSED
+        if not single:
+            await _webhook_note_policy_refusal(webhook_id, _WEBHOOK_HTTP_REFUSED)
         return result
     if Config.STAGE_MODE and not await _stage_sink_allows(url, allow_private):
         result["error"] = "staged instance: nothing is sent outside the host"
