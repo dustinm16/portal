@@ -80,7 +80,10 @@ class ServiceManager:
         # Services found enabled and not running at the first check after the portal started:
         # the state found at startup is the baseline, not news. A service leaves this set once
         # it is seen running (or started through start_service), after which a stop counts.
+        # A service whose auto-start was attempted by initialize() is never in it: the start
+        # failing is exactly the outage to report, not a state found at startup.
         self._baseline_quiet: set[int] = set()
+        self._autostart_attempted: set[int] = set()
         self._first_pass_done = False
         self._services: Dict[int, ManagedService] = {}
         self._health_task: Optional[asyncio.Task] = None
@@ -122,6 +125,7 @@ class ServiceManager:
                 # Start if enabled (never in staged test mode: no side effects on the host)
                 if svc_data.get('enabled') and not Config.STAGE_MODE:
                     logger.info(f"Auto-starting enabled service: {svc_data['name']}")
+                    self._autostart_attempted.add(svc_data['id'])
                     success, error = await service.start()
                     if not success:
                         logger.error(f"Failed to auto-start {svc_data['name']}: {error}")
@@ -262,6 +266,7 @@ class ServiceManager:
         self._health_state.pop(service_id, None)
         self._stopped_on_purpose.discard(service_id)
         self._baseline_quiet.discard(service_id)
+        self._autostart_attempted.discard(service_id)
 
         # Delete from unified services table
         success = await self._db.delete_service(service_id)
@@ -519,11 +524,15 @@ class ServiceManager:
         """One pass of the health monitor over all services."""
         if not self._first_pass_done:
             # Baseline: an enabled service that is already stopped when the portal starts raises
-            # no alert for that state; only a stop seen after it was running does.
+            # no alert for that state; only a stop seen after it was running does. That holds
+            # only for a service nobody tried to start: initialize() auto-starts every enabled
+            # service (outside stage mode) before this pass, so one that is not running now
+            # failed to start and counts as failing from this first pass.
             self._first_pass_done = True
             self._baseline_quiet = {
                 sid for sid, sv in self._services.items()
-                if sv.enabled and sv.status not in ('running', 'starting', 'stopping')}
+                if sv.enabled and sv.status not in ('running', 'starting', 'stopping')
+                and sid not in self._autostart_attempted}
         for service in list(self._services.values()):
             # Services that wrap an external process (systemd units)
             # reconcile their status from the outside world here — they

@@ -57,6 +57,18 @@ class Fake:
         self.status = "stopped"
         return True, ""
 
+    restart_ok = True
+
+    async def restart(self):
+        if not self.restart_ok:
+            self.status = "stopped"
+            return False, "boom"
+        self.status = "running"
+        return True, ""
+
+    def validate_config(self, config):
+        return True, ""
+
 
 async def main():
     events = []
@@ -186,6 +198,42 @@ async def main():
     for _ in range(3):
         await m4._check_services_once()
     check("a start that fails on a baseline service alerts", [x[1]["id"] for x in events] == [12], str(events))
+
+    # initialize() auto-starts every enabled service before the first health pass: one whose
+    # start failed is an outage from that pass on, one that was never started (stage mode) is not
+    from config import Config
+
+    class InitDb(FakeDb):
+        async def get_services_by_type(self, t):
+            return [{"id": 20, "name": "ok", "plugin": "fake-init", "enabled": 1},
+                    {"id": 21, "name": "bad", "plugin": "fake-init", "enabled": 1}]
+
+    class InitFake(Fake):
+        def __init__(self, data):
+            super().__init__(data["id"], status="stopped", enabled=bool(data["enabled"]))
+            self.start_ok = data["id"] != 21
+
+    svc._service_types["fake-init"] = InitFake
+    real_stage = Config.STAGE_MODE
+    try:
+        for stage in (False, True):
+            events.clear()
+            Config.STAGE_MODE = stage
+            mi = svc.ServiceManager(InitDb(), on_event=lambda e, d: events.append((e, d)))
+            await mi.initialize()
+            mi._shutdown = True
+            mi._health_task.cancel()
+            await asyncio.gather(mi._health_task, return_exceptions=True)
+            for _ in range(3):
+                await mi._check_services_once()
+            if stage:
+                check("stage mode: services never started are baseline-quiet, no alert", events == [], str(events))
+            else:
+                check("an auto-start that failed alerts after the usual three checks, a good one does not",
+                      [x[1]["id"] for x in events] == [21], str(events))
+    finally:
+        Config.STAGE_MODE = real_stage
+        svc._service_types.pop("fake-init", None)
 
     # a broken hook is swallowed
     bad = svc.ServiceManager(FakeDb(), on_event=lambda e, d: 1 / 0)
