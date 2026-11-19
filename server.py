@@ -1239,6 +1239,7 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
                     announce = await _cf_hold_pending(e, now)
                     raise
                 new = list(e.networks)
+            if await _cf_is_approved_saved(saved, new):
                 keep_saved = True
             old_set, new_set = set(_cf_networks), set(new)
             changed = (len(new_set - old_set), len(old_set - new_set))
@@ -18609,9 +18610,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             target_room = requested_room
                         elif current_channel:
                             target_room = current_channel
-                            # A socket whose channel it can no longer read does not join its voice room
+                            # A socket whose channel it can no longer read does not join its voice
+                            # room. voice_denied, like the other refusals here: the client ends the
+                            # join it started (a plain error would leave it waiting)
                             voice_ch = await db.get_chat_channel_by_name(current_channel)
-                            if not voice_ch or not await _socket_may_act_in(ws, voice_ch, user_id, user_role):
+                            voice_access = await _can_read_channel(voice_ch, user_id, user_role)
+                            if not voice_access:
+                                await ws.send_json({"type": "voice_denied", "message": voice_access.message})
                                 continue
                         else:
                             await ws.send_json({"type": "error", "message": "Join a channel first"})

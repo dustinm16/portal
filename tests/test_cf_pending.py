@@ -281,6 +281,14 @@ async def main():
             st = await server.refresh_cloudflare_ranges(texts=(t4, TEXT6))
             check("(control) the same list saved without an approval is held as pending",
                   st["ok"] is False and await d.get_setting(server.CF_SETTING_PENDING) is not None)
+            # an approved list that passes the limits on its own (3 new ranges) keeps its approval too
+            await server.reset_cloudflare_ranges()
+            small = json.dumps({"v4": V4 + [f"45.{i}.0.0/16" for i in range(3)], "v6": V6, "fetched_at": "x", "approved": True})
+            await d.set_setting(server.CF_SETTING_LIST, small)
+            st = await server.refresh_cloudflare_ranges(texts=(v4_text(3), TEXT6))
+            check("an approved list that passes the limits on its own is applied and keeps its approval flag",
+                  st["ok"] is True and server._cf_source == "fetched"
+                  and await d.get_setting(server.CF_SETTING_LIST) == small, str(st))
             await server.reset_cloudflare_ranges()
             await d.set_setting(server.CF_SETTING_LIST, approved_row)
             st = await server.refresh_cloudflare_ranges(texts=(v4_text(8, keep=None).replace("45.0.0.0/16", "45.99.0.0/16"), TEXT6))

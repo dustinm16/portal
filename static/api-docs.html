@@ -2923,10 +2923,11 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 {<span class="string">"type"</span>: <span class="string">"history_page"</span>, <span class="string">"req"</span>: <span class="number">9</span>}
 
 <span class="comment">// Access is checked again on every action: message, edit_message, react, create_poll, vote_poll, close_poll,
-// delete, pin_message, unpin_message, timeout_user, mute_user, unmute_user, history_page and voice_join (a resume
-// too) are refused with "Channel not found" (or the stream-ban / private-channel text) once the channel has been
-// closed to the member since the socket joined; typing is dropped silently. A refused "join" leaves the socket in
-// no channel.
+// delete, pin_message, unpin_message, timeout_user, mute_user, unmute_user and history_page are refused with
+// "Channel not found" (or the stream-ban / private-channel text) once the channel has been closed to the member
+// since the socket joined; typing is dropped silently. A voice_join gets {"type": "voice_denied", "message": ...}
+// instead, and a voice_join with resume gets voice_resume_failed (the held call is dropped). A refused "join"
+// leaves the socket in no channel.
 //
 // Sockets are put out when access is lost (stream made not public, member removed from a private channel, member
 // banned from a stream chat, channel made private): the socket is removed from the room, gets one

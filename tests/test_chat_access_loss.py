@@ -258,6 +258,8 @@ def test_a_member_removed_from_a_private_channel_cannot_act_on_the_open_socket()
         await asyncio.sleep(0.5)
         if "voice_state" in alice.types(mark_a) or "pvt" in server.voice_state:
             went_through.append("voice_join")
+        if "voice_denied" not in alice.types(mark_a):
+            went_through.append("voice_join answer (the client waits for voice_denied): %r" % (alice.types(mark_a),))
         # what reached the room: bob saw none of it
         seen = [t for t in bob.types() if t in ("typing", "message_deleted", "message_pinned", "message_unpinned",
                                                 "user_timed_out", "user_muted", "user_unmuted", "poll_closed",
