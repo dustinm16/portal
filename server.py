@@ -1661,12 +1661,23 @@ async def _alert_staff_accounts() -> list:
             if u.get("role") in alerts.STAFF_ROLES or u.get("is_admin")]
 
 
-async def _alert_context_private(channel) -> bool:
+async def _alert_context_private(channel, stream=None) -> bool:
     """True when a moderation alert's channel is not one an ordinary member can read (a private
-    channel, a conversation, the chat of a stream that is not public, or one that cannot be found):
-    a third-party format then gets the alert without the channel or stream name."""
+    channel, a conversation, the chat of a stream that is not public, or one that cannot be found),
+    and also when a stream bound to the channel is not public, whatever kind of channel it is (a
+    shared or default channel included): a third-party format then gets the alert without the
+    channel or stream name. ``stream`` is the stream the action was taken on, when the caller has it."""
     try:
-        return not bool(await _can_read_channel(channel, 0, "user"))
+        if not bool(await _can_read_channel(channel, 0, "user")):
+            return True
+        if stream is None and channel:
+            stream = await db.get_stream_by_chat_channel(channel["id"])
+        if stream:
+            if not stream.get("is_public"):
+                return True
+            if "chat_channel_all_public" in stream and not stream["chat_channel_all_public"]:
+                return True
+        return False
     except Exception:
         return True
 
@@ -5614,7 +5625,8 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
             anonymous=bool(banned_user is None or banned_user.get("chat_anonymous")),
             actor_id=token.user_id, target_id=user_id, reason=reason, where=stream["name"],
             actor_anonymous=bool(banner and banner.get("chat_anonymous")),
-            actor_role=(banner or {}).get("role"), private=await _alert_context_private(ban_channel))
+            actor_role=(banner or {}).get("role"),
+            private=await _alert_context_private(ban_channel, stream))
         return web.json_response({
             "success": True,
             "ban_id": ban_id,

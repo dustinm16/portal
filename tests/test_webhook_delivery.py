@@ -434,6 +434,27 @@ async def main():
     db.get_stream_by_chat_channel = hidden
     check("chat of a non-public stream never", not await server._third_party_may_see("message.created", {"channel_id": pub}))
     db.get_stream_by_chat_channel = real
+    # an alert's context is private when a stream bound to the channel is not public, whatever channel it is
+    pub_channel = await db.get_chat_channel(pub)
+    check("an alert context in a plain public channel is not private", not await server._alert_context_private(pub_channel))
+
+    def bound(**kw):
+        async def look(_cid):
+            return dict({"id": 1, "user_id": 5, "is_public": 0}, **kw)
+        return look
+    for label, kw in (("a default channel", {"chat_channel_default": 1, "chat_channel_all_public": 1}),
+                      ("a shared channel", {"chat_channel_default": 0, "chat_channel_shared": 1,
+                                            "chat_channel_all_public": 1}),
+                      ("a plain channel", {"chat_channel_default": 0, "chat_channel_all_public": 1})):
+        db.get_stream_by_chat_channel = bound(**kw)
+        check(f"a non-public stream bound to {label} makes the alert context private",
+              await server._alert_context_private(pub_channel) is True)
+    db.get_stream_by_chat_channel = bound(is_public=1, chat_channel_default=0, chat_channel_all_public=1)
+    check("a public stream on a public channel stays public", await server._alert_context_private(pub_channel) is False)
+    check("a stream the caller names decides too (a stream ban route)",
+          await server._alert_context_private(pub_channel, {"id": 1, "user_id": 5, "is_public": 0}) is True
+          and await server._alert_context_private(None, {"id": 1, "user_id": 5, "is_public": 0}) is True)
+    db.get_stream_by_chat_channel = real
     check("stream events only for public streams",
           await server._third_party_may_see("stream.live", {"stream_public": True})
           and not await server._third_party_may_see("stream.live", {"stream_public": False})
