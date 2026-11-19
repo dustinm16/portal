@@ -32,7 +32,8 @@ Those sub-caps apply only to alerts caused by non-staff actors. An alert whose a
 moderator, admin or superadmin, or whose subject is a staff account, and every operations alert,
 bypasses them and is limited by its own cooldown or transition rule and the global cap. The
 global cap also keeps a reserve (``MEMBER_RESERVE`` of the ``CAP_ALERTS``) that an alert subject
-to a sub-cap can never use.
+to a sub-cap can never use. The one exception is a failed sign-in burst against a staff account name (a
+stranger can set it off): at most ``STAFF_BURST_CAP`` per window, so at most half of the reserve.
 
 ``emit`` never blocks and never raises: it schedules the delivery as a background task
 whose errors are logged. A failure to deliver an alert cannot break the action that
@@ -132,6 +133,11 @@ MEMBER_RESERVE = 10
 # and then at most once per NOTICE_INTERVAL.
 NOTICE_DELAY = 30.0
 NOTICE_INTERVAL = 600.0
+# Staff-subject sign-in bursts (a stranger can set one off by guessing a staff account name) have no
+# sub-cap of the ordinary kind, but may use at most this many slots per window, which is at most half
+# of the MEMBER_RESERVE slots that operations alerts and staff-actor alerts keep.
+STAFF_BURST_BUCKET = "auth.login_failed_burst:staff"
+STAFF_BURST_CAP = 5
 STAFF_ROLES = frozenset(("moderator", "admin", "superadmin"))
 STAFF_REFRESH = 30.0
 COOLDOWN_MAX_KEYS = 2000
@@ -260,6 +266,8 @@ def _cap_refusal(now: float, bucket: str, capped: bool = True) -> Optional[str]:
         _sent.popleft()
     if len(_sent) >= CAP_ALERTS:
         return WHY_GLOBAL
+    if bucket == STAFF_BURST_BUCKET:
+        return WHY_KIND if _ring_full(now, bucket, STAFF_BURST_CAP) else None
     limit = SUB_CAPS.get(bucket)
     if not capped or limit is None:
         return None
@@ -279,7 +287,7 @@ def _ring_full(now: float, bucket: str, limit: int) -> bool:
 
 def _count_sent(now: float, bucket: Optional[str], capped: bool = True) -> None:
     _sent.append(now)
-    if capped and bucket in SUB_CAPS:
+    if bucket == STAFF_BURST_BUCKET or (capped and bucket in SUB_CAPS):
         _sent_by.setdefault(bucket, deque()).append(now)
 
 
@@ -743,7 +751,7 @@ def note_login_failure(ip, account: Optional[str], *, user_agent=None) -> None:
     else:
         summary = local = f"{BURST_THRESHOLD} failed sign-ins in a minute from one address"
     emit("auth.login_failed_burst", key=[f"{k[0]}:{k[1]}" for k in tripped], summary=summary,
-         local_summary=local, staff=staff,
+         local_summary=local, staff=staff, bucket=STAFF_BURST_BUCKET if staff else None,
          details={"Address": ip, "Account": who, "User agent": user_agent},
          record={"event": "login_failed_burst", "ip": str(ip) if ip else None,
                  "details": {"threshold": BURST_THRESHOLD, "window_seconds": int(BURST_WINDOW),

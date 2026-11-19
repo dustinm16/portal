@@ -401,6 +401,39 @@ async def main():
     check("mixed reasons are named per kind", "moderation.action: 1 (reserve)" in s_ and "backup.failed: 1 (global limit)" in s_, s_)
     env.close()
 
+    # --- strangers hammering staff account names cannot fill the reserve
+    env = Env()
+    names = [f"staff{i}" for i in range(30)]
+    alerts.set_staff(ids=(), names=names)
+    for n_ in names:
+        for _ in range(alerts.BURST_THRESHOLD):
+            alerts.note_login_failure("198.51.100.1", n_)
+    staff_bursts = sum(1 for _, e in env.times if e == "auth.login_failed_burst")
+    check("staff-subject sign-in bursts are limited to STAFF_BURST_CAP per window",
+          staff_bursts == alerts.STAFF_BURST_CAP == 5, str(staff_bursts))
+    check("the cap is within the reserve", alerts.STAFF_BURST_CAP <= alerts.MEMBER_RESERVE // 2)
+    ok = sum(1 for i in range(alerts.CAP_ALERTS) if alerts.emit("service.health_changed", key=("s", i), summary="x"))
+    check("operations alerts keep every other slot of the window", ok == alerts.CAP_ALERTS - staff_bursts, str(ok))
+    env.close()
+    env = Env()
+    alerts.set_staff(ids=(), names=names)
+    for n_ in names:
+        for _ in range(alerts.BURST_THRESHOLD):
+            alerts.note_login_failure("198.51.100.2", n_)
+    for i in range(alerts.CAP_ALERTS):
+        alerts.moderation_action("ban", actor="boss", target=f"t{i}", anonymous=False, actor_id=1,
+                                 target_id=100 + i, actor_role="admin")
+    check("staff-actor alerts keep the rest of the window",
+          sum(1 for _, e in env.times if e == "moderation.action") == alerts.CAP_ALERTS - alerts.STAFF_BURST_CAP)
+    env.close()
+    env = Env()
+    alerts.set_staff(ids=(), names=["boss"])
+    for _ in range(alerts.BURST_THRESHOLD):
+        alerts.note_login_failure("198.51.100.3", "boss")
+    check("a single burst against a staff account is still sent",
+          sum(1 for _, e in env.times if e == "auth.login_failed_burst") == 1)
+    env.close()
+
     # --- update.available once per version, also for overlapping checks
     env = Env(slow_settings=True)
     data = {"portal": {"update_available": True, "latest": "9.9.9", "current": "1.0.0"},

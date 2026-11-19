@@ -133,7 +133,8 @@ async def main():
           and alerts.emit("update.available", key="u", cooldown=0.0, summary="x") is True
           and alerts.emit("gameserver.crashed", key=("gs", 1), summary="x") is True)
     check("staff alerts did not count against the member buckets",
-          all(len(r) <= alerts.SUB_CAPS[b] for b, r in alerts._sent_by.items()))
+          all(len(r) <= alerts.SUB_CAPS[b] for b, r in alerts._sent_by.items()
+              if b != alerts.STAFF_BURST_BUCKET))
 
     # rotating addresses cannot repeat a staff-account burst inside its cooldown
     env = Env()
