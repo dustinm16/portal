@@ -21,6 +21,7 @@ import chat_uploads
 import secevents
 import ipguard
 import chat_search
+import webhook_formats
 
 logger = logging.getLogger("portal.database")
 
@@ -1000,6 +1001,13 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_webhook_logs_webhook ON webhook_logs(webhook_id)",
     "CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at)",
+    # Notification channels (v1.15.0). Defaults leave every existing hook as it was.
+    "ALTER TABLE webhooks ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'",
+    "ALTER TABLE webhooks ADD COLUMN format TEXT NOT NULL DEFAULT 'generic'",
+    "ALTER TABLE webhooks ADD COLUMN format_config TEXT",
+    "ALTER TABLE webhooks ADD COLUMN include_details INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN allow_private INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN created_by INTEGER",
     # Status persistence: track user's explicit offline preference
     "ALTER TABLE users ADD COLUMN status_preference TEXT",
     # Relay error tracking: persist last ffmpeg failure for operator visibility
@@ -1256,6 +1264,9 @@ class Database:
         # Fix service_logs FK to reference services instead of managed_services
         await self._migrate_service_logs_fk()
 
+        # System webhooks have no owner: webhooks.user_id becomes nullable
+        await self._migrate_webhooks_owner_nullable()
+
         # Allow several bans per user and stream (one named, any number
         # recorded from anonymous posts)
         await self._migrate_stream_bans_anonymous()
@@ -1493,6 +1504,84 @@ class Database:
             await self._connection.execute("PRAGMA foreign_keys = ON")
         except Exception:
             await self._connection.execute("PRAGMA foreign_keys = ON")
+
+    _WEBHOOK_COLUMNS = (
+        "id, user_id, name, type, url, secret, token, events, channel_id, enabled, "
+        "consecutive_failures, last_delivery_at, last_failure_at, last_failure_reason, "
+        "created_at, updated_at, kind, format, format_config, include_details, "
+        "allow_private, created_by")
+
+    async def _migrate_webhooks_owner_nullable(self) -> None:
+        """Rebuild webhooks with a nullable user_id (a system webhook has no owner).
+
+        Ids, tokens and every column are copied as they are, so webhook_logs
+        rows still point at their webhook. Foreign keys are off for the
+        rebuild (a DROP with them on would cascade into webhook_logs). Does
+        nothing when user_id is already nullable, so it is safe to repeat.
+        """
+        conn = self._connection
+        try:
+            cursor = await conn.execute("PRAGMA table_info(webhooks)")
+            info = {row["name"]: row for row in await cursor.fetchall()}
+            if not info or "user_id" not in info or not info["user_id"]["notnull"]:
+                return
+            if not {"kind", "format", "format_config", "include_details", "allow_private",
+                    "created_by"} <= set(info):
+                logger.warning("webhooks rebuild skipped: new columns are missing")
+                return
+            await conn.commit()
+            await conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                await conn.execute("BEGIN")
+                await conn.execute("DROP TABLE IF EXISTS webhooks_new")
+                await conn.execute("""
+                    CREATE TABLE webhooks_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
+                        name TEXT NOT NULL,
+                        type TEXT NOT NULL DEFAULT 'outgoing',
+                        url TEXT,
+                        secret TEXT NOT NULL,
+                        token TEXT UNIQUE,
+                        events TEXT NOT NULL DEFAULT '[]',
+                        channel_id INTEGER,
+                        enabled INTEGER DEFAULT 1,
+                        consecutive_failures INTEGER DEFAULT 0,
+                        last_delivery_at TEXT,
+                        last_failure_at TEXT,
+                        last_failure_reason TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        kind TEXT NOT NULL DEFAULT 'user',
+                        format TEXT NOT NULL DEFAULT 'generic',
+                        format_config TEXT,
+                        include_details INTEGER NOT NULL DEFAULT 0,
+                        allow_private INTEGER NOT NULL DEFAULT 0,
+                        created_by INTEGER,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (channel_id) REFERENCES chat_channels(id) ON DELETE SET NULL
+                    )""")
+                await conn.execute(
+                    f"INSERT INTO webhooks_new ({self._WEBHOOK_COLUMNS}) "
+                    f"SELECT {self._WEBHOOK_COLUMNS} FROM webhooks ORDER BY id")
+                await conn.execute("DROP TABLE webhooks")
+                await conn.execute("ALTER TABLE webhooks_new RENAME TO webhooks")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id)")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhooks_type_enabled ON webhooks(type, enabled)")
+                await conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_webhooks_token ON webhooks(token)")
+                await conn.commit()
+            except Exception:
+                try:
+                    await conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                await conn.execute("PRAGMA foreign_keys = ON")
+        except Exception as e:
+            logger.warning(f"webhooks migration failed: {e}")
 
     async def _migrate_stream_bans_anonymous(self) -> None:
         """Rebuild stream_bans without UNIQUE(stream_id, user_id).
@@ -7495,44 +7584,109 @@ class Database:
     # Webhooks
     # =========================================================================
 
-    async def create_webhook(self, user_id: int, name: str, webhook_type: str,
+    @staticmethod
+    def _webhook_secret_config(raw) -> dict:
+        """Decrypt the per-format credentials column to a dict (empty when unset)."""
+        if not raw:
+            return {}
+        try:
+            val = json.loads(decrypt_config(raw))
+        except (ValueError, TypeError):
+            return {}
+        return val if isinstance(val, dict) else {}
+
+    @classmethod
+    def _webhook_public(cls, row) -> dict:
+        """A webhook row as an API may show it. Never carries the HMAC secret or
+        the per-format credentials; for a non-generic format never the URL either
+        (a Discord or Slack webhook URL, an ntfy topic, a Gotify server are
+        credentials), only whether one is set and its scheme and host."""
+        d = dict(row)
+        url = decrypt_config(d["url"]) if d.get("url") else None
+        d["has_secret"] = bool(d.get("secret"))
+        d.pop("secret", None)
+        d["events"] = json.loads(d["events"]) if d.get("events") else []
+        if d.get("last_failure_reason"):
+            d["last_failure_reason"] = decrypt_config(d["last_failure_reason"])
+        fc = cls._webhook_secret_config(d.pop("format_config", None))
+        d["has_format_secret"] = any(fc.get(k) for k in ("token", "password"))
+        d["format"] = d.get("format") or "generic"
+        d["kind"] = d.get("kind") or "user"
+        d["include_details"] = bool(d.get("include_details"))
+        d["allow_private"] = bool(d.get("allow_private"))
+        if d["format"] == "generic":
+            d["url"] = url
+        else:
+            d["url"] = None
+            d.update(webhook_formats.mask_url(url))
+        return d
+
+    async def create_webhook(self, user_id, name: str, webhook_type: str,
                              url: str = None, events: list[str] = None,
-                             channel_id: int = None) -> dict:
-        """Create a webhook. Secret/token auto-generated, encrypted at rest."""
+                             channel_id: int = None, *, kind: str = "user",
+                             fmt: str = "generic", format_config: dict = None,
+                             include_details: bool = False, allow_private: bool = False,
+                             created_by: int = None) -> dict:
+        """Create a webhook. Secret/token auto-generated, encrypted at rest.
+
+        A system webhook (kind 'system') has no owner (user_id None) and is
+        managed by superadmins only. The HMAC secret is generated for every
+        hook of the generic format and for incoming hooks. A hook of another
+        format is stored with an empty secret, so that a version which does not
+        know formats (1.14.0 after a code-only rollback) skips it instead of
+        signing and sending to it; a switch to generic generates one then
+        (update_webhook).
+        """
         import secrets as _s
-        secret = _s.token_hex(32)
+        signed = webhook_type != "outgoing" or fmt == "generic"
+        secret = _s.token_hex(32) if signed else ""
         token = _s.token_urlsafe(32) if webhook_type == "incoming" else None
-        enc_secret = encrypt_config(secret)
+        enc_secret = encrypt_config(secret) if secret else ""
         enc_url = encrypt_config(url) if url else None
         events_json = json.dumps(events or [])
+        enc_fc = encrypt_config(json.dumps(format_config)) if format_config else None
         cursor = await self.conn.execute(
-            """INSERT INTO webhooks (user_id, name, type, url, secret, token, events, channel_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, name, webhook_type, enc_url, enc_secret, token, events_json, channel_id)
+            """INSERT INTO webhooks (user_id, name, type, url, secret, token, events, channel_id,
+                                     kind, format, format_config, include_details, allow_private,
+                                     created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, webhook_type, enc_url, enc_secret, token, events_json, channel_id,
+             kind, fmt, enc_fc, int(bool(include_details)), int(bool(allow_private)), created_by)
         )
         await self.conn.commit()
-        return {
-            "id": cursor.lastrowid, "user_id": user_id, "name": name,
-            "type": webhook_type, "url": url, "token": token,
-            "events": events or [], "channel_id": channel_id,
-            "enabled": 1, "consecutive_failures": 0,
-            "secret": secret
-        }
+        out = await self.get_webhook(cursor.lastrowid)
+        if token:
+            out["token"] = token
+        if fmt == "generic":
+            out["secret"] = secret
+        return out
 
     async def get_webhook(self, webhook_id: int) -> Optional[dict]:
-        """Get webhook by ID. Decrypts url, redacts secret."""
+        """Get webhook by ID, redacted (see _webhook_public)."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+        row = await cursor.fetchone()
+        return self._webhook_public(row) if row else None
+
+    async def get_webhook_for_delivery(self, webhook_id: int) -> Optional[dict]:
+        """Full webhook for the delivery engine: decrypted url, HMAC secret and
+        per-format credentials (`format_config` as a dict). Never sent to an API."""
         cursor = await self.conn.execute(
             "SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
         row = await cursor.fetchone()
         if not row:
             return None
+        return self._webhook_full(row)
+
+    @classmethod
+    def _webhook_full(cls, row) -> dict:
         d = dict(row)
-        d["url"] = decrypt_config(d["url"]) if d["url"] else None
-        d["has_secret"] = bool(d.get("secret"))
-        del d["secret"]
-        d["events"] = json.loads(d["events"]) if d["events"] else []
-        if d.get("last_failure_reason"):
-            d["last_failure_reason"] = decrypt_config(d["last_failure_reason"])
+        d["url"] = decrypt_config(d["url"]) if d.get("url") else None
+        d["secret"] = decrypt_config(d["secret"]) if d.get("secret") else None
+        d["events"] = json.loads(d["events"]) if d.get("events") else []
+        d["format_config"] = cls._webhook_secret_config(d.get("format_config"))
+        d["format"] = d.get("format") or "generic"
+        d["kind"] = d.get("kind") or "user"
         return d
 
     async def get_webhook_by_token(self, token: str) -> Optional[dict]:
@@ -7549,56 +7703,56 @@ class Database:
         return d
 
     async def get_webhooks_for_user(self, user_id: int) -> list[dict]:
-        """Get all webhooks for a user (secrets redacted)."""
+        """Get all (user) webhooks of a user, redacted."""
         cursor = await self.conn.execute(
-            "SELECT * FROM webhooks WHERE user_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM webhooks WHERE user_id = ? AND kind = 'user' ORDER BY created_at DESC",
             (user_id,))
-        results = []
-        for row in await cursor.fetchall():
-            d = dict(row)
-            d["url"] = decrypt_config(d["url"]) if d["url"] else None
-            d["has_secret"] = bool(d.get("secret"))
-            del d["secret"]
-            d["events"] = json.loads(d["events"]) if d["events"] else []
-            results.append(d)
-        return results
+        return [self._webhook_public(row) for row in await cursor.fetchall()]
 
     async def get_all_webhooks(self) -> list[dict]:
-        """Admin: get all webhooks (secrets redacted)."""
+        """Admin: get all user webhooks with their owner (system webhooks have
+        their own list, see get_system_webhooks), redacted."""
         cursor = await self.conn.execute(
             """SELECT w.*, u.username as owner_username
                FROM webhooks w LEFT JOIN users u ON w.user_id = u.id
+               WHERE w.kind = 'user'
                ORDER BY w.created_at DESC""")
-        results = []
-        for row in await cursor.fetchall():
-            d = dict(row)
-            d["url"] = decrypt_config(d["url"]) if d["url"] else None
-            d["has_secret"] = bool(d.get("secret"))
-            del d["secret"]
-            d["events"] = json.loads(d["events"]) if d["events"] else []
-            results.append(d)
-        return results
+        return [self._webhook_public(row) for row in await cursor.fetchall()]
+
+    async def get_system_webhooks(self) -> list[dict]:
+        """System webhooks (no owner), redacted."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM webhooks WHERE kind = 'system' ORDER BY id")
+        return [self._webhook_public(row) for row in await cursor.fetchall()]
+
+    async def count_system_webhooks(self) -> int:
+        cursor = await self.conn.execute("SELECT COUNT(*) FROM webhooks WHERE kind = 'system'")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def get_enabled_outgoing_webhooks_for_event(self, event: str) -> list[dict]:
-        """Get enabled outgoing webhooks subscribed to a specific event.
-        Decrypts url AND secret (needed for delivery signing)."""
+        """Get enabled outgoing webhooks that receive `event` (the event-class
+        rules in webhook_formats.event_subscribed apply). Full rows, for delivery."""
         cursor = await self.conn.execute(
             "SELECT * FROM webhooks WHERE type = 'outgoing' AND enabled = 1")
         results = []
         for row in await cursor.fetchall():
-            d = dict(row)
-            events = json.loads(d["events"]) if d["events"] else []
-            if event not in events and "*" not in events:
+            # Decide on the plain columns first: url, secret and format_config are
+            # decrypted only for a hook that receives this event.
+            try:
+                events = json.loads(row["events"]) if row["events"] else []
+            except ValueError:
                 continue
-            d["url"] = decrypt_config(d["url"]) if d["url"] else None
-            d["secret"] = decrypt_config(d["secret"]) if d["secret"] else None
-            d["events"] = events
-            results.append(d)
+            if not webhook_formats.event_subscribed(
+                    events, event, kind=row["kind"] or "user", fmt=row["format"] or "generic"):
+                continue
+            results.append(self._webhook_full(row))
         return results
 
     async def update_webhook(self, webhook_id: int, **kwargs) -> bool:
-        """Update webhook fields. Encrypts url if provided."""
-        allowed = {"name", "url", "events", "channel_id", "enabled"}
+        """Update webhook fields. Encrypts url and the per-format credentials."""
+        allowed = {"name", "url", "events", "channel_id", "enabled", "format",
+                   "format_config", "include_details", "allow_private"}
         fields, values = [], []
         for key, val in kwargs.items():
             if key not in allowed:
@@ -7607,10 +7761,29 @@ class Database:
                 val = encrypt_config(val)
             elif key == "events" and isinstance(val, list):
                 val = json.dumps(val)
+            elif key == "format_config":
+                val = encrypt_config(json.dumps(val)) if val else None
+            elif key in ("include_details", "allow_private"):
+                val = int(bool(val))
             fields.append(f"{key} = ?")
             values.append(val)
         if not fields:
             return False
+        if kwargs.get("format"):
+            # Only the generic format is signed. Any other format keeps no
+            # secret (a version without formats would otherwise sign and send
+            # to it); a switch to generic gets a fresh one.
+            if kwargs["format"] == "generic":
+                cur = await self.conn.execute(
+                    "SELECT secret FROM webhooks WHERE id = ? AND type = 'outgoing'", (webhook_id,))
+                row = await cur.fetchone()
+                if row is not None and not row[0]:
+                    import secrets as _s
+                    fields.append("secret = ?")
+                    values.append(encrypt_config(_s.token_hex(32)))
+            else:
+                fields.append("secret = ?")
+                values.append("")
         fields.append("updated_at = CURRENT_TIMESTAMP")
         values.append(webhook_id)
         cursor = await self.conn.execute(

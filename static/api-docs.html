@@ -4022,6 +4022,58 @@ ws.send(JSON.stringify({
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks</span>
+                        <span class="endpoint-desc">Notification formats: ntfy, Gotify, Discord, Slack</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Outgoing webhooks take a <code>format</code>: <code>generic</code> (default, unchanged, HMAC-signed), <code>ntfy</code>, <code>gotify</code>, <code>discord</code> or <code>slack</code>. The other formats are not signed and need no secret. A hook in another format stores no signing secret; changing it to <code>generic</code> creates one (read it with <code>regenerate-secret</code>) and changing it away from <code>generic</code> removes it. They send an event title, a one-line summary and the portal name only; <code>include_details</code> (default false) adds a short allow-listed set of fields of the event, never IP addresses, email addresses or tokens. Message text is cut to 200 characters and mentions are removed (Discord payloads set <code>allowed_mentions</code> to none, and markdown link and formatting syntax in Discord text is escaped so <code>[text](url)</code> shows as typed). Redirects are not followed and HTTPS is required unless <code>allow_private</code> is on, at delivery as well as when the hook is saved.</p>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">format</span></td><td><span class="param-type">string</span></td><td><code>generic</code>, <code>ntfy</code>, <code>gotify</code>, <code>discord</code>, <code>slack</code></td></tr>
+                            <tr><td><span class="param-name">format_config</span></td><td><span class="param-type">object</span></td><td>Write-only credentials: Gotify <code>{"token"}</code> (required), ntfy <code>{"token"}</code> or <code>{"username","password"}</code>. Stored encrypted, never returned (responses show <code>has_format_secret</code>). An edit that omits it keeps the stored value.</td></tr>
+                            <tr><td><span class="param-name">include_details</span></td><td><span class="param-type">boolean</span></td><td>Add the detail fields of the event (default false)</td></tr>
+                            <tr><td><span class="param-name">allow_private</span></td><td><span class="param-type">boolean</span></td><td>Let the hook reach loopback and LAN addresses, for a self-hosted ntfy or Gotify (default false). Only a superadmin with a browser login session can turn it on (a request that authenticates by API key or bearer token never can, whatever cookie it also carries); any editor can turn it off, and turning it off is never re-checked against the address. Plain <code>http://</code> is accepted only when every resolved address is private or loopback. Link-local, cloud metadata, 0.0.0.0/8 and the portal's own ports stay blocked. A hook is re-checked against the default policy only when it is created, when its URL or format changes, or when <code>allow_private</code> is switched on; saving it with the same URL and format (rename, disable, other events, <code>allow_private</code> off) is never refused for the address.</td></tr>
+                        </table>
+                        <p>For a non-generic hook the destination URL is never returned: responses carry <code>url: null</code>, <code>url_set</code>, <code>url_host</code> (scheme and host) and <code>has_format_secret</code>. Changing the <code>format</code> of such a hook to <code>generic</code> needs a new <code>url</code> in the same request (otherwise <code>400</code>), because the URL of a generic hook is returned.</p>
+                        <p><code>message.created</code>, <code>user.connected</code> and <code>user.disconnected</code> reach a non-generic hook only when listed by name (<code>*</code> does not include them); the two presence events are never sent for a member whose status preference is appear-offline. A user hook can subscribe only to the documented events (any other event is system-only). The <code>generic</code> format receives full event payloads, including the text of messages in private channels, so point it only at a receiver you control. <code>message.created</code> goes only for channels an ordinary member can read (never private channels or the chat of a stream that is not public; anonymous posts show as "Anonymous"). <code>stream.live</code> and <code>stream.offline</code> are sent only for public streams.</p>
+                        <p>A <code>429</code> answer waits for <code>Retry-After</code> (capped at 10 minutes, at most 3 waits in all for one delivery, retries after a failure included; the hook is checked again after each wait and nothing more is sent if it was switched off, deleted, changed or unsubscribed meanwhile) and never counts toward the automatic disable after 10 failures.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/webhooks/{id}/test</span>
+                        <span class="endpoint-desc">Test: sample in the hook's format, receiver status returned</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Sends one sample in the chosen format and waits for the receiver. The answer is <code>{"message", "format", "sent", "success", "status", "error"}</code>; <code>status</code> is the receiver's HTTP status code (a 429 is reported at once). Disabled hooks answer 400. Records of non-generic hooks hold no payload and no response body.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/webhooks</span>
+                        <span class="endpoint-desc">System webhooks (superadmin)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>System webhooks have no owner and are managed by superadmins only (Admin &gt; Webhooks). System-only events (currently <code>webhook.test</code>; ops and security events will follow) go to system webhooks only, never to user webhooks, not even through <code>*</code>. They are not reachable through <code>/api/webhooks/{id}</code>.</p>
+                        <table class="param-table">
+                            <tr><th>Route</th><th>Purpose</th></tr>
+                            <tr><td><code>GET /api/admin/webhooks</code></td><td>List, plus <code>formats</code>, <code>events</code>, <code>system_only_events</code></td></tr>
+                            <tr><td><code>POST /api/admin/webhooks</code></td><td>Create (fields as above, <code>events</code> required, at most 20)</td></tr>
+                            <tr><td><code>GET</code>, <code>PUT</code>, <code>DELETE /api/admin/webhooks/{id}</code></td><td>Read, update (also <code>enabled</code>), delete</td></tr>
+                            <tr><td><code>GET /api/admin/webhooks/{id}/logs</code></td><td>Recent deliveries: event, status code, time; never payloads</td></tr>
+                            <tr><td><code>POST /api/admin/webhooks/{id}/test</code></td><td>Test, as above</td></tr>
+                            <tr><td><code>POST /api/admin/webhooks/{id}/regenerate-secret</code></td><td>Generic format only</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
                         <span class="endpoint-path">/api/webhooks/incoming/{token}</span>
                         <span class="endpoint-desc">Post incoming webhook message</span>
                     </div>

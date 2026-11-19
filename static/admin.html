@@ -662,6 +662,7 @@
                 <button class="tab-btn" onclick="showTab('files', event)">Files</button>
                 <button class="tab-btn" onclick="showTab('audit', event)">Audit Log</button>
                 <button class="tab-btn" onclick="showTab('automod', event)">Auto-Mod</button>
+                <button class="tab-btn" id="tab-btn-webhooks" style="display:none;" onclick="showTab('webhooks', event)">Webhooks</button>
                 <button class="tab-btn" onclick="showTab('updates', event)">Updates</button>
             </div>
 
@@ -2138,6 +2139,50 @@
                 </div>
             </div>
 
+            <!-- Webhooks Tab (system webhooks, superadmin only) -->
+            <div id="tab-webhooks" class="tab-content">
+                <div class="sysmon-toolbar">
+                    <button class="range-btn" id="wh-new-btn">+ New System Webhook</button>
+                    <button class="range-btn" id="wh-refresh-btn">Refresh</button>
+                </div>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 10px;">
+                    System webhooks belong to no user and are managed here by superadmins only. Ops and security events are delivered to them and never to user webhooks.
+                    ntfy, Gotify, Discord and Slack messages carry only a title, a one-line summary and the portal name unless "Include details" is on.
+                    Destination addresses and tokens are stored encrypted and are never shown again.
+                </p>
+                <div id="wh-secret-box" style="display:none;margin:0 0 10px;padding:10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);">
+                    <strong>Signing secret (shown once):</strong> <code id="wh-secret-value" style="word-break:break-all;"></code>
+                </div>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Format</th>
+                                <th>Destination</th>
+                                <th>Events</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="wh-body">
+                            <tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="wh-logs-panel" style="display:none;margin-top:16px;">
+                    <h4 style="margin:0 0 8px;color:var(--text-secondary);">Recent deliveries: <span id="wh-logs-title"></span></h4>
+                    <div class="sys-table-scroll">
+                        <table class="sysmon-table">
+                            <thead>
+                                <tr><th>Time</th><th>Event</th><th>Status</th><th>Result</th><th>Attempt</th><th>Duration</th></tr>
+                            </thead>
+                            <tbody id="wh-logs-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Updates Tab -->
             <div id="tab-updates" class="tab-content">
                 <div class="section-header">
@@ -2324,6 +2369,7 @@
                 case 'files': filesLoadDirectory(filesCurrentPath || '/'); break;
                 case 'audit': loadAuditLog(); probeSecurityEvents(); break;
                 case 'automod': loadAutomodRules(); break;
+                case 'webhooks': loadSystemWebhooks(); break;
                 case 'updates': loadUpdates(); break;
             }
         }
@@ -5238,6 +5284,7 @@
                     return;
                 }
                 loadOverview();
+                probeWebhooksTab();
             } catch (error) {
                 window.location.href = '/login';
             }
@@ -6712,6 +6759,263 @@
             }
         });
 
+
+        // =================================================================
+        // System webhooks (superadmin only): notification channels
+        // =================================================================
+        let whState = { webhooks: [], formats: [], events: [], systemOnly: [] };
+        const WH_FORMAT_LABELS = { generic: 'Generic (signed JSON)', ntfy: 'ntfy', gotify: 'Gotify', discord: 'Discord', slack: 'Slack' };
+        const WH_URL_HINT = {
+            generic: 'https://example.com/hook',
+            ntfy: 'https://ntfy.sh/your-topic (the topic acts as a password)',
+            gotify: 'https://gotify.example.com (server address)',
+            discord: 'https://discord.com/api/webhooks/... (the Discord webhook URL)',
+            slack: 'https://hooks.slack.com/services/... (the Slack webhook URL)'
+        };
+
+        async function probeWebhooksTab() {
+            try {
+                const res = await Portal.fetch('/api/admin/webhooks');
+                if (res.ok) document.getElementById('tab-btn-webhooks').style.display = '';
+            } catch (e) { /* not a superadmin: the tab stays hidden */ }
+        }
+
+        async function loadSystemWebhooks() {
+            const body = document.getElementById('wh-body');
+            try {
+                const res = await Portal.fetch('/api/admin/webhooks');
+                if (!res.ok) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Failed to load (superadmin only)</td></tr>'; return; }
+                const data = await res.json();
+                whState = { webhooks: data.webhooks || [], formats: data.formats || [], events: data.events || [], systemOnly: data.system_only_events || [] };
+                renderSystemWebhooks();
+            } catch (e) {
+                body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">Error</td></tr>';
+            }
+        }
+
+        function renderSystemWebhooks() {
+            const body = document.getElementById('wh-body');
+            if (!whState.webhooks.length) {
+                body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No system webhooks</td></tr>';
+                return;
+            }
+            body.innerHTML = whState.webhooks.map(w => {
+                const dest = w.format === 'generic' ? (w.url || '') : (w.url_set ? (w.url_host || 'set') + ' (path hidden)' : 'not set');
+                const status = w.enabled
+                    ? '<span style="color:#4ade80;">enabled</span>'
+                    : '<span style="color:#f87171;">disabled</span>';
+                const fails = w.consecutive_failures ? ` <span style="color:#fbbf24;">${Number(w.consecutive_failures)} failure(s)</span>` : '';
+                const flags = (w.allow_private ? ' <span title="May reach loopback and LAN addresses" style="color:#fbbf24;">[private]</span>' : '')
+                    + (w.include_details ? ' <span title="Detail fields are included">[details]</span>' : '');
+                const last = w.last_delivery_at ? `<div style="color:var(--text-muted);font-size:0.78rem;">last ok ${escapeHtml(w.last_delivery_at)}</div>` : '';
+                const reason = (w.last_failure_reason && w.consecutive_failures) ? `<div style="color:#f87171;font-size:0.78rem;">${escapeHtml(w.last_failure_reason)}</div>` : '';
+                return `<tr data-id="${Number(w.id)}">
+                    <td>${escapeHtml(w.name)}${flags}</td>
+                    <td>${escapeHtml(WH_FORMAT_LABELS[w.format] || w.format)}</td>
+                    <td style="word-break:break-all;">${escapeHtml(dest)}${w.has_format_secret ? ' <span style="color:var(--text-muted);font-size:0.78rem;">(token set)</span>' : ''}</td>
+                    <td>${escapeHtml((w.events || []).join(', '))}</td>
+                    <td>${status}${fails}${last}${reason}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="range-btn" data-wh="test" style="padding:2px 8px;font-size:0.8rem;">Test</button>
+                        <button class="range-btn" data-wh="logs" style="padding:2px 8px;font-size:0.8rem;">Deliveries</button>
+                        <button class="range-btn" data-wh="edit" style="padding:2px 8px;font-size:0.8rem;">Edit</button>
+                        <button class="range-btn" data-wh="toggle" style="padding:2px 8px;font-size:0.8rem;">${w.enabled ? 'Disable' : 'Enable'}</button>
+                        ${w.format === 'generic' ? '<button class="range-btn" data-wh="secret" style="padding:2px 8px;font-size:0.8rem;">New secret</button>' : ''}
+                        <button class="range-btn" data-wh="delete" style="padding:2px 8px;font-size:0.8rem;color:#f87171;">Delete</button>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function whRequest(method, path, payload) {
+            const opts = { method, headers: { 'Content-Type': 'application/json' } };
+            if (payload !== undefined) opts.body = JSON.stringify(payload);
+            const res = await Portal.fetch(path, opts);
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* no body */ }
+            return { ok: res.ok, status: res.status, data };
+        }
+
+        async function whTest(id, btn) {
+            btn.disabled = true;
+            try {
+                const r = await whRequest('POST', `/api/admin/webhooks/${id}/test`);
+                if (!r.ok && !(r.data && 'status' in r.data)) {
+                    Portal.toast((r.data && r.data.error) || 'Test failed', 'error');
+                } else if (r.data.success) {
+                    Portal.toast(`Test delivered: the receiver answered ${Number(r.data.status)}`, 'success');
+                } else if (r.data.status) {
+                    Portal.toast(`Test not accepted: the receiver answered ${Number(r.data.status)}`, 'error');
+                } else {
+                    Portal.toast('Test not sent: ' + (r.data.error || 'no answer'), 'error');
+                }
+            } catch (e) {
+                Portal.toast('Test failed', 'error');
+            } finally {
+                btn.disabled = false;
+                loadSystemWebhooks();
+            }
+        }
+
+        async function whShowLogs(id) {
+            const w = whState.webhooks.find(x => x.id === id);
+            const r = await whRequest('GET', `/api/admin/webhooks/${id}/logs?limit=30`);
+            if (!r.ok) { Portal.toast('Failed to load deliveries', 'error'); return; }
+            document.getElementById('wh-logs-title').textContent = w ? w.name : '';
+            const logs = r.data.logs || [];
+            document.getElementById('wh-logs-body').innerHTML = logs.length ? logs.map(l => `<tr>
+                <td>${escapeHtml(l.created_at || '')}</td>
+                <td>${escapeHtml(l.event || '')}</td>
+                <td>${l.response_status ? Number(l.response_status) : '-'}</td>
+                <td>${l.success ? '<span style="color:#4ade80;">ok</span>' : '<span style="color:#f87171;">failed</span>'}</td>
+                <td>${Number(l.attempt || 1)}</td>
+                <td>${Number(l.duration_ms || 0)} ms</td></tr>`).join('')
+                : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No deliveries yet</td></tr>';
+            document.getElementById('wh-logs-panel').style.display = '';
+        }
+
+        function whShowSecret(secret) {
+            document.getElementById('wh-secret-value').textContent = secret;
+            document.getElementById('wh-secret-box').style.display = '';
+        }
+
+        function showWebhookModal(hook) {
+            const isEdit = !!hook;
+            const w = hook || { name: '', format: 'ntfy', url: '', events: [], enabled: 1, include_details: false, allow_private: false };
+            const inputCss = 'width:100%;padding:8px;margin-bottom:8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);box-sizing:border-box;';
+            const modal = document.createElement('div');
+            modal.id = 'wh-modal';
+            modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;';
+            const evBoxes = whState.events.map(ev => {
+                const sys = whState.systemOnly.indexOf(ev) >= 0;
+                const checked = (w.events || []).indexOf(ev) >= 0 ? 'checked' : '';
+                const label = ev === '*' ? '* (everything allowed for this format)' : ev + (sys ? ' (system only)' : '');
+                return `<label style="display:block;cursor:pointer;"><input type="checkbox" class="wh-ev" value="${escapeHtml(ev)}" ${checked} style="width:auto;"> ${escapeHtml(label)}</label>`;
+            }).join('');
+            modal.innerHTML = `
+                <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:480px;max-width:94vw;max-height:88vh;overflow-y:auto;">
+                    <h3 style="margin:0 0 12px;">${isEdit ? 'Edit' : 'New'} system webhook</h3>
+                    <label>Name</label>
+                    <input type="text" id="wh-name" maxlength="100" style="${inputCss}">
+                    <label>Format</label>
+                    <select id="wh-format" style="${inputCss}">${whState.formats.map(f => `<option value="${escapeHtml(f)}">${escapeHtml(WH_FORMAT_LABELS[f] || f)}</option>`).join('')}</select>
+                    <div id="wh-format-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;">A generic hook receives full event payloads, including the text of messages in private channels, so point it only at a receiver you control.</div>
+                    <label id="wh-url-label">URL</label>
+                    <input type="text" id="wh-url" maxlength="2048" autocomplete="off" style="${inputCss}">
+                    <div id="wh-url-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;"></div>
+                    <div id="wh-cred-fields">
+                        <label id="wh-token-label">Token</label>
+                        <input type="password" id="wh-token" autocomplete="new-password" style="${inputCss}">
+                        <div id="wh-basic-fields">
+                            <label>Basic auth user (ntfy, optional)</label>
+                            <input type="text" id="wh-user" autocomplete="off" style="${inputCss}">
+                            <label>Basic auth password</label>
+                            <input type="password" id="wh-pass" autocomplete="new-password" style="${inputCss}">
+                        </div>
+                        <div id="wh-cred-note" style="color:var(--text-muted);font-size:0.78rem;margin:-4px 0 8px;"></div>
+                    </div>
+                    <label>Events</label>
+                    <div style="margin-bottom:8px;font-size:0.9rem;">${evBoxes}</div>
+                    <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:8px;">In ntfy, Gotify, Discord and Slack formats "*" never includes message.created, user.connected or user.disconnected: list them by name. A member who appears offline is never announced in these formats. Chat messages of private channels and non-public streams are never sent.</div>
+                    <label style="display:block;cursor:pointer;margin-bottom:6px;"><input type="checkbox" id="wh-details" style="width:auto;"> Include details (names, stream titles, message text up to 200 characters; never IP addresses, email addresses or tokens)</label>
+                    <label style="display:block;cursor:pointer;margin-bottom:6px;"><input type="checkbox" id="wh-private" style="width:auto;"> May reach loopback and private (LAN) addresses (for a self-hosted ntfy or Gotify; link-local, metadata and this portal's own ports stay blocked)</label>
+                    ${isEdit ? '<label style="display:block;cursor:pointer;margin-bottom:6px;"><input type="checkbox" id="wh-enabled" style="width:auto;"> Enabled</label>' : ''}
+                    <div id="wh-error" style="color:#f87171;font-size:0.85rem;min-height:1.2em;margin:6px 0;"></div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button type="button" id="wh-cancel" style="padding:6px 14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;">Cancel</button>
+                        <button type="button" id="wh-save" style="padding:6px 14px;background:var(--accent-color);border:none;border-radius:6px;color:white;cursor:pointer;">${isEdit ? 'Save' : 'Create'}</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(modal);
+            const q = id => modal.querySelector('#' + id);
+            q('wh-name').value = w.name || '';
+            q('wh-format').value = w.format || 'generic';
+            q('wh-url').value = (w.format === 'generic' && w.url) ? w.url : '';
+            q('wh-details').checked = !!w.include_details;
+            q('wh-private').checked = !!w.allow_private;
+            if (isEdit) q('wh-enabled').checked = !!w.enabled;
+
+            const syncFormat = () => {
+                const f = q('wh-format').value;
+                q('wh-url').placeholder = (isEdit && f !== 'generic' && w.format === f && w.url_set) ? 'leave empty to keep the stored address' : (WH_URL_HINT[f] || '');
+                q('wh-url-label').textContent = f === 'gotify' ? 'Gotify server URL' : (f === 'discord' || f === 'slack') ? 'Webhook URL' : (f === 'ntfy' ? 'ntfy topic URL' : 'URL');
+                q('wh-url-note').textContent = f === 'generic' ? ((isEdit && w.format !== 'generic') ? 'Required: the stored address of the old format is never shown, enter the new URL.' : '') : 'Stored encrypted and never shown again.';
+                const showCred = f === 'ntfy' || f === 'gotify';
+                q('wh-cred-fields').style.display = showCred ? '' : 'none';
+                q('wh-basic-fields').style.display = f === 'ntfy' ? '' : 'none';
+                q('wh-token-label').textContent = f === 'gotify' ? 'Gotify application token' : 'ntfy access token (optional)';
+                const keep = isEdit && w.format === f && w.has_format_secret;
+                q('wh-cred-note').textContent = keep ? 'A credential is stored. Leave the fields empty to keep it; type a new value to replace it.' : '';
+            };
+            q('wh-format').addEventListener('change', syncFormat);
+            syncFormat();
+
+            const close = () => modal.remove();
+            q('wh-cancel').addEventListener('click', close);
+            modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+            q('wh-save').addEventListener('click', async () => {
+                const f = q('wh-format').value;
+                const events = Array.from(modal.querySelectorAll('.wh-ev:checked')).map(x => x.value);
+                const payload = {
+                    name: q('wh-name').value.trim(), format: f, events,
+                    include_details: q('wh-details').checked, allow_private: q('wh-private').checked
+                };
+                const url = q('wh-url').value.trim();
+                if (url || !isEdit) payload.url = url;
+                if (f === 'gotify' || f === 'ntfy') {
+                    const cfg = {};
+                    if (q('wh-token').value) cfg.token = q('wh-token').value;
+                    if (f === 'ntfy' && (q('wh-user').value || q('wh-pass').value)) { cfg.username = q('wh-user').value; cfg.password = q('wh-pass').value; }
+                    if (Object.keys(cfg).length) payload.format_config = cfg;
+                }
+                if (isEdit) payload.enabled = q('wh-enabled').checked;
+                q('wh-save').disabled = true;
+                const r = await whRequest(isEdit ? 'PUT' : 'POST', isEdit ? `/api/admin/webhooks/${Number(w.id)}` : '/api/admin/webhooks', payload);
+                q('wh-save').disabled = false;
+                if (!r.ok) { q('wh-error').textContent = (r.data && r.data.error) || 'Request failed'; return; }
+                close();
+                if (!isEdit && r.data && r.data.secret) whShowSecret(r.data.secret);
+                Portal.toast(isEdit ? 'Webhook saved' : 'Webhook created', 'success');
+                loadSystemWebhooks();
+            });
+        }
+
+        document.getElementById('wh-new-btn').addEventListener('click', () => showWebhookModal(null));
+        document.getElementById('wh-refresh-btn').addEventListener('click', loadSystemWebhooks);
+        document.getElementById('wh-body').addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-wh]');
+            const row = e.target.closest('tr[data-id]');
+            if (!btn || !row) return;
+            const id = Number(row.dataset.id);
+            const w = whState.webhooks.find(x => x.id === id);
+            if (!w) return;
+            switch (btn.dataset.wh) {
+                case 'test': whTest(id, btn); break;
+                case 'logs': whShowLogs(id); break;
+                case 'edit': showWebhookModal(w); break;
+                case 'toggle': {
+                    const r = await whRequest('PUT', `/api/admin/webhooks/${id}`, { enabled: !w.enabled });
+                    if (!r.ok) Portal.toast((r.data && r.data.error) || 'Failed', 'error');
+                    loadSystemWebhooks();
+                    break;
+                }
+                case 'secret': {
+                    if (!confirm('Replace the signing secret? Receivers must be updated.')) break;
+                    const r = await whRequest('POST', `/api/admin/webhooks/${id}/regenerate-secret`);
+                    if (r.ok && r.data.secret) whShowSecret(r.data.secret); else Portal.toast('Failed', 'error');
+                    break;
+                }
+                case 'delete': {
+                    if (!confirm('Delete this system webhook and its delivery records?')) break;
+                    const r = await whRequest('DELETE', `/api/admin/webhooks/${id}`);
+                    if (!r.ok) Portal.toast('Failed to delete', 'error');
+                    document.getElementById('wh-logs-panel').style.display = 'none';
+                    loadSystemWebhooks();
+                    break;
+                }
+            }
+        });
+
         // Initialize
         init();
 
@@ -6809,7 +7113,7 @@
             '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'password_changed',
             'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
             'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
-            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export'
+            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private'
         ];
         let auditView = 'audit';
         let secOffset = 0;

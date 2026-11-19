@@ -126,7 +126,7 @@ import jobs as bg_jobs
 import hostkeys
 import sftp_browser
 from host_check import (
-    BLOCKED_HOSTS, is_blocked_host, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
+    BLOCKED_HOSTS, is_blocked_host, is_private_or_loopback_address, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
     HostCheckError, HostBlockedError, HostResolveError,
     _SSRFSafeResolver, _SSRFSafeConnector,
 )
@@ -137,6 +137,7 @@ import vod_staging
 import automod
 import chat_search
 import secevents
+import webhook_formats
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -674,9 +675,93 @@ async def _checked_relay_target(rtmp_url: str, relay_key: str) -> tuple[list[str
     return ["-rtmp_tcurl", tcurl], f"{new_base}/{relay_key}"
 
 
-async def _validate_webhook_url(url: str) -> str | None:
+_own_endpoints_cache: tuple[float, frozenset, frozenset] = (0.0, frozenset(), frozenset())
+_OWN_ENDPOINTS_TTL = 10.0
+
+
+def _own_endpoints() -> tuple[frozenset, frozenset]:
+    """(listening (address, port) pairs of this process, every address of this host).
+
+    Cached for a few seconds. A failure to read the sockets leaves the
+    configured bind address and port, which are always included.
+    """
+    global _own_endpoints_cache
+    now = monotonic()
+    if _own_endpoints_cache[0] and now - _own_endpoints_cache[0] < _OWN_ENDPOINTS_TTL:
+        return _own_endpoints_cache[1], _own_endpoints_cache[2]
+    listening = {(Config.HOST or "0.0.0.0", Config.PORT)}
+    addrs = set(_get_server_own_ips())
+    try:
+        for c in psutil.Process().net_connections(kind="inet"):
+            if c.status == psutil.CONN_LISTEN and c.laddr:
+                listening.add((c.laddr.ip, c.laddr.port))
+    except Exception as e:
+        logger.debug(f"Own listening sockets could not be read: {type(e).__name__}")
+    try:
+        for infos in psutil.net_if_addrs().values():
+            for info in infos:
+                if info.family in (socket.AF_INET, socket.AF_INET6):
+                    addrs.add(info.address.split("%", 1)[0])
+    except Exception:
+        pass
+    norm = set()
+    for a in addrs:
+        try:
+            norm.add(ipaddress.ip_address(a))
+        except ValueError:
+            pass
+    _own_endpoints_cache = (now, frozenset(listening), frozenset(norm))
+    return _own_endpoints_cache[1], _own_endpoints_cache[2]
+
+
+def _own_endpoint_blocked(address: str, port: int, endpoints=None) -> bool:
+    """True when (address, port) is one of this portal's own listening sockets.
+
+    `endpoints` is a (listening, own addresses) snapshot read off the event loop
+    (see _own_endpoints_async); without it the snapshot is read here.
+
+    A socket bound to a wildcard address answers on every address of this host
+    (and anywhere in 127.0.0.0/8); one bound to a single address only on that.
+    The same port on another machine is not refused.
+    """
+    try:
+        ip = ipaddress.ip_address(str(address).split("%", 1)[0])
+    except ValueError:
+        return True
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    listening, own_addrs = endpoints if endpoints is not None else _own_endpoints()
+    is_own = ip.is_loopback or ip in own_addrs
+    for bind, bport in listening:
+        if bport != port:
+            continue
+        if bind in ("0.0.0.0", "::", ""):
+            if is_own:
+                return True
+            continue
+        try:
+            bip = ipaddress.ip_address(bind)
+        except ValueError:
+            if bind == "localhost" and ip.is_loopback:
+                return True
+            continue
+        if bip == ip:
+            return True
+    return False
+
+
+async def _own_endpoints_async() -> tuple[frozenset, frozenset]:
+    """_own_endpoints() read in a thread: psutil and the host name lookups block."""
+    return await asyncio.to_thread(_own_endpoints)
+
+
+async def _validate_webhook_url(url: str, allow_private: bool = False) -> str | None:
     """Validate webhook URL is not targeting internal/blocked hosts.
 
+    With allow_private (a hook a superadmin marked as reaching a self-hosted
+    receiver) loopback and private addresses pass, but link-local, metadata
+    and unspecified addresses and this portal's own listening sockets do not.
     Returns an error string if invalid, or None if OK.
     """
     if _has_bad_chars(url):
@@ -684,18 +769,26 @@ async def _validate_webhook_url(url: str) -> str | None:
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
     except Exception:
         return "Invalid URL"
     if not hostname:
         return "URL must include a hostname"
-    if is_blocked_host(hostname):
+    if not allow_private and is_blocked_host(hostname):
         return "URL points to a blocked/internal host"
     try:
-        await resolve_checked_host(hostname, 0)
+        addrs = await resolve_checked_host(hostname, 0, allow_private=allow_private)
     except HostBlockedError:
         return "URL resolves to a blocked/internal address"
     except HostResolveError:
         return "Could not resolve hostname"
+    if allow_private:
+        if parsed.scheme == "http" and not all(is_private_or_loopback_address(a) for a in addrs):
+            return "Plain http is only allowed to a private or loopback address: use https for a public host"
+        endpoints = await _own_endpoints_async()
+        for a in addrs:
+            if _own_endpoint_blocked(a, port, endpoints):
+                return "URL points at the portal itself"
     return None
 
 
@@ -6249,7 +6342,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             asyncio.create_task(fire_webhook_event("stream.offline", {
                 "stream_id": stream_id, "stream_name": stream_name,
                 "owner_username": stream.get("owner_username")
-            }))
+            }, meta={"stream_public": bool(stream.get("is_public"))}))
 
             if stream.get("chat_channel_id"):
                 channel = await db.get_chat_channel(stream["chat_channel_id"])
@@ -6291,7 +6384,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
         asyncio.create_task(fire_webhook_event("stream.offline", {
             "stream_id": stream_id, "stream_name": stream_name,
             "owner_username": stream.get("owner_username")
-        }))
+        }, meta={"stream_public": bool(stream.get("is_public"))}))
 
         # Broadcast offline status to chat channel
         if stream.get("chat_channel_id"):
@@ -6669,27 +6762,163 @@ _WEBHOOK_INCOMING_RATE = 10     # max incoming messages per token per window
 _WEBHOOK_INCOMING_WINDOW = 60.0
 
 
-async def fire_webhook_event(event: str, payload: dict) -> None:
-    """Dispatch event to all subscribed outgoing webhooks (non-blocking)."""
+async def _third_party_may_see(event: str, meta: dict | None) -> bool:
+    """Whether an event may go to a non-generic (third-party) channel at all.
+
+    Chat events only for a channel an ordinary member can read: _can_read_channel
+    with an unrelated member id and the plain user role, so private channels and
+    the chat of a stream that is not public never qualify. Stream events only for
+    a public stream. Fails closed when the event carries no such information.
+    """
+    meta = meta or {}
+    if event in webhook_formats.CHAT_EVENTS:
+        channel_id = meta.get("channel_id")
+        if not isinstance(channel_id, int):
+            return False
+        try:
+            channel = await db.get_chat_channel(channel_id)
+            return bool(await _can_read_channel(channel, 0, "user"))
+        except Exception as e:
+            logger.warning(f"Webhook channel visibility check failed: {type(e).__name__}")
+            return False
+    if event in webhook_formats.STREAM_EVENTS:
+        return bool(meta.get("stream_public"))
+    if event in webhook_formats.PRESENCE_EVENTS:
+        # A member who chose to appear offline is not announced to a third party
+        uid = meta.get("user_id")
+        if not isinstance(uid, int):
+            return False
+        try:
+            st = await db.get_user_status(uid)
+        except Exception as e:
+            logger.warning(f"Webhook presence check failed: {type(e).__name__}")
+            return False
+        return bool(st) and st.get("status_preference") != "offline"
+    return True
+
+
+async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = None) -> None:
+    """Dispatch event to all subscribed outgoing webhooks (non-blocking).
+
+    `meta` is private to the portal: it is never part of the generic body. It
+    carries what the non-generic formats need (channel id, anonymous flag,
+    whether a stream is public).
+    """
     try:
         webhooks = await db.get_enabled_outgoing_webhooks_for_event(event)
+        visible = None
+        if any(w.get("format") != "generic" for w in webhooks):
+            visible = await _third_party_may_see(event, meta)
     except Exception as e:
         logger.warning(f"Webhook event dispatch failed for {event}: {e}")
         return
     for webhook in webhooks:
-        asyncio.create_task(_deliver_webhook(webhook, event, payload))
+        if webhook.get("format") != "generic" and not visible:
+            continue
+        asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta))
+
+
+_webhook_paused_until: dict[int, float] = {}
+_WEBHOOK_MAX_429_WAITS = 3
+_webhook_sleep = asyncio.sleep      # module level so tests can replace it
+
+
+def _webhook_error_text(e: BaseException) -> str:
+    """A failure described without the URL, which aiohttp puts in some messages
+    and which is a credential for the non-generic formats."""
+    seen = e
+    for _ in range(4):
+        if isinstance(seen, HostCheckError):
+            return "destination refused by the host policy"
+        nxt = seen.__cause__ or seen.__context__
+        if nxt is None:
+            break
+        seen = nxt
+    if isinstance(e, asyncio.TimeoutError):
+        return "timeout"
+    return type(e).__name__
+
+
+async def _stage_sink_allows(url: str, allow_private: bool) -> bool:
+    """A staged instance (PORTAL_STAGE_MODE) sends nothing, except to a local
+    receiver a test has set up: a hook with allow_private whose URL is the
+    literal 127.0.0.1 and the port in the stage_webhook_sink_port setting."""
+    if not allow_private:
+        return False
+    try:
+        port = int(await db.get_setting("stage_webhook_sink_port") or 0)
+        parts = urlsplit(url)
+        return bool(port) and parts.hostname == "127.0.0.1" and parts.port == port
+    except Exception:
+        return False
+
+
+async def _webhook_current_for_event(webhook_id: int, event: str, meta: dict | None) -> dict | None:
+    """The stored hook, when it may still receive this event: it exists, is enabled and
+    outgoing, subscribed (subscription and event classes) and, for a non-generic
+    format, the event is visible to a third party. Otherwise None."""
+    w = await db.get_webhook_for_delivery(webhook_id)
+    if (w and w.get("enabled") and w["type"] == "outgoing"
+            and webhook_formats.event_subscribed(
+                w["events"], event, kind=w["kind"], fmt=w["format"])
+            and (w["format"] == "generic" or await _third_party_may_see(event, meta))):
+        return w
+    return None
+
+
+async def _webhook_resend_allowed(sent_to: dict, event: str, meta: dict | None) -> bool:
+    """Whether a request already built for `sent_to` may be sent again after a wait:
+    the same rules as a fresh delivery, and the destination, format, privilege and
+    credentials must be the ones the request was built for."""
+    try:
+        w = await _webhook_current_for_event(sent_to["id"], event, meta)
+    except Exception as e:
+        logger.warning(f"Webhook {sent_to.get('id')} re-check failed: {type(e).__name__}")
+        return False
+    if not w:
+        return False
+    return all(w.get(k) == sent_to.get(k)
+               for k in ("url", "format", "allow_private", "include_details", "secret", "format_config"))
 
 
 async def _deliver_webhook(webhook: dict, event: str, payload: dict,
-                            attempt: int = 1) -> None:
-    """Deliver payload to a single webhook endpoint with retry."""
-    if Config.STAGE_MODE:
-        return  # staged test mode: never send anything outside the host
+                            attempt: int = 1, *, meta: dict | None = None,
+                            single: bool = False, waits_used: int = 0) -> dict:
+    """Deliver payload to a single webhook endpoint with retry.
+
+    Returns {"sent", "status", "success", "error"} for the last request made
+    (the Test route reports it). `single` makes one attempt with no retry
+    schedule and no Retry-After wait. `waits_used` carries the Retry-After waits
+    already spent by earlier attempts of the same delivery, so the cap of
+    _WEBHOOK_MAX_429_WAITS covers the whole delivery, backoff retries included.
+    """
+    result = {"sent": False, "status": None, "success": False, "error": None}
     webhook_id = webhook["id"]
+    fmt = webhook.get("format") or "generic"
     url = webhook.get("url")
     secret = webhook.get("secret")
-    if not url or not secret:
-        return
+    allow_private = bool(webhook.get("allow_private"))
+    if fmt not in webhook_formats.FORMATS:
+        result["error"] = "unknown format"
+        return result
+    if not url or (fmt == "generic" and not secret):
+        result["error"] = "not configured"
+        return result
+    # A non-generic hook carries a credential or a private topic: over plain http it is
+    # only ever sent to a private address (allow_private). Saving refuses the combination,
+    # but allow_private can be switched off afterwards without a re-check, so delivery
+    # holds the rule too.
+    if fmt != "generic" and not allow_private and not url.lower().startswith("https://"):
+        result["error"] = "needs an https:// URL unless allow_private is on"
+        return result
+    if Config.STAGE_MODE and not await _stage_sink_allows(url, allow_private):
+        result["error"] = "staged instance: nothing is sent outside the host"
+        return result      # staged test mode: never send anything outside the host
+
+    # A receiver that answered 429 is left alone until its Retry-After is over
+    if not single and monotonic() < _webhook_paused_until.get(webhook_id, 0.0):
+        result["error"] = "receiver asked to slow down"
+        return result
 
     # Per-webhook rate limit
     now = monotonic()
@@ -6698,52 +6927,104 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
     _webhook_rate_limits[webhook_id] = [t for t in times if t > window_start]
     if len(_webhook_rate_limits[webhook_id]) >= _WEBHOOK_RATE_LIMIT:
         logger.warning(f"Webhook {webhook_id} rate limited, dropping delivery for {event}")
-        return
+        result["error"] = "rate limited"
+        return result
     _webhook_rate_limits[webhook_id].append(now)
 
-    # Build signed request
-    body_json = json.dumps({
-        "event": event,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "data": payload
-    }, default=str)
-
-    signature = hmac.new(
-        secret.encode(), body_json.encode(), hashlib.sha256
-    ).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Portal-Signature": f"sha256={signature}",
-        "X-Portal-Event": event,
-        "X-Portal-Delivery": secrets.token_hex(16),
-        "User-Agent": "OpenRelayPortal-Webhook/1.0"
-    }
+    # One formatter layer: generic keeps the signed body, the others are minimal.
+    # A redirect is followed only by a generic hook without allow_private: a public
+    # receiver must not bounce a signed POST on to an address on the LAN
+    try:
+        req = webhook_formats.format_payload(
+            fmt, event, payload, meta=meta,
+            include_details=bool(webhook.get("include_details")),
+            portal_name=Config.TOTP_ISSUER, secret=secret,
+            secret_config=webhook.get("format_config"))
+    except Exception as e:
+        logger.warning(f"Webhook {webhook_id} payload could not be built: {type(e).__name__}")
+        result["error"] = "payload could not be built"
+        return result
+    target = url
+    if req.path_suffix:
+        parts = urlsplit(url)
+        path = parts.path.rstrip("/")
+        if not path.endswith(req.path_suffix):
+            path += req.path_suffix
+        target = urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
     start_time = monotonic()
     response_status = None
     response_body = None
     success = False
+    rate_limited = False
+    waits = waits_used
 
-    try:
-        connector = _SSRFSafeConnector()
-        timeout_cfg = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.post(url, data=body_json, headers=headers,
-                                     timeout=timeout_cfg) as resp:
-                response_status = resp.status
-                response_body = (await resp.text())[:4096]
-                success = 200 <= resp.status < 300
-    except Exception as e:
-        response_body = str(e)[:1024]
-        logger.warning(f"Webhook {webhook_id} delivery failed (attempt {attempt}/{len(_WEBHOOK_RETRY_DELAYS)+1}): {e}")
+    while True:
+        response_status = None
+        response_body = None
+        success = False
+        retry_after = None
+        try:
+            own = await _own_endpoints_async() if allow_private else None
+            connector = _SSRFSafeConnector(
+                allow_private=allow_private,
+                endpoint_blocked=(lambda a, p, _own=own: _own_endpoint_blocked(a, p, _own)) if allow_private else None,
+                private_only=allow_private and urlsplit(target).scheme == "http")
+            timeout_cfg = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.post(target, data=req.body, headers=req.headers,
+                                         timeout=timeout_cfg,
+                                         allow_redirects=req.follow_redirects and not allow_private) as resp:
+                    response_status = resp.status
+                    retry_after = resp.headers.get("Retry-After")
+                    text = (await resp.text())[:4096]
+                    # What a third-party receiver answers is not kept for the other formats
+                    response_body = text if fmt == "generic" else f"HTTP {resp.status}"
+                    success = 200 <= resp.status < 300
+            result["sent"] = True
+        except Exception as e:
+            if fmt == "generic":
+                response_body = str(e)[:1024]
+                logger.warning(f"Webhook {webhook_id} delivery failed (attempt {attempt}/{len(_WEBHOOK_RETRY_DELAYS)+1}): {e}")
+            else:
+                response_body = _webhook_error_text(e)
+                logger.warning(f"Webhook {webhook_id} delivery failed (attempt {attempt}/{len(_WEBHOOK_RETRY_DELAYS)+1}): {response_body}")
 
+        if response_status == 429:
+            delay = webhook_formats.parse_retry_after(retry_after)
+            if not single and waits < _WEBHOOK_MAX_429_WAITS:
+                waits += 1
+                _webhook_paused_until[webhook_id] = monotonic() + delay
+                try:
+                    await db.create_webhook_log(
+                        webhook_id, event, request_payload=None, response_status=429,
+                        response_body="HTTP 429, waiting for Retry-After", success=False,
+                        attempt=attempt, duration_ms=int((monotonic() - start_time) * 1000))
+                except Exception:
+                    pass
+                await _webhook_sleep(delay)
+                # The hook may have been switched off, re-aimed, rotated or deleted, or the
+                # event's channel made private, while we waited: do what the backoff retry
+                # does and apply the rules again before anything more is sent.
+                if not await _webhook_resend_allowed(webhook, event, meta):
+                    result["status"] = response_status
+                    result["error"] = "webhook changed while waiting"
+                    return result
+                continue
+        break
+
+    # Only the last attempt decides: a 429 followed by a 500 is an ordinary failure
+    rate_limited = response_status == 429
+    if success:
+        _webhook_paused_until.pop(webhook_id, None)
     duration_ms = int((monotonic() - start_time) * 1000)
+    result.update({"status": response_status, "success": success,
+                   "error": None if success else (response_body if fmt != "generic" else "delivery failed")})
 
     try:
         await db.create_webhook_log(
             webhook_id, event,
-            request_payload=body_json[:8192],
+            request_payload=req.body.decode("utf-8", "replace")[:8192] if fmt == "generic" else None,
             response_status=response_status,
             response_body=response_body,
             success=success,
@@ -6755,7 +7036,11 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
 
     if success:
         await db.reset_webhook_failures(webhook_id)
-        return
+        return result
+
+    if rate_limited:
+        # The receiver is busy, not broken: never counts toward auto-disable
+        return result
 
     # Handle failure
     try:
@@ -6763,36 +7048,226 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
         if new_count >= _WEBHOOK_MAX_FAILURES:
             await db.disable_webhook(webhook_id)
             logger.warning(f"Webhook {webhook_id} auto-disabled after {new_count} consecutive failures")
-            return
+            return result
     except Exception as e:
         logger.warning(f"Failed to update webhook failure count: {e}")
-        return
+        return result
 
     # Retry with exponential backoff
-    if attempt <= len(_WEBHOOK_RETRY_DELAYS):
+    if not single and attempt <= len(_WEBHOOK_RETRY_DELAYS):
         delay = _WEBHOOK_RETRY_DELAYS[attempt - 1]
-        await asyncio.sleep(delay)
+        await _webhook_sleep(delay)
         try:
-            wh = await db.get_webhook(webhook_id)
-            if not wh or not wh.get("enabled"):
-                return
-            full_whs = await db.get_enabled_outgoing_webhooks_for_event(event)
-            for w in full_whs:
-                if w["id"] == webhook_id:
-                    await _deliver_webhook(w, event, payload, attempt + 1)
-                    return
+            # The hook may have been edited or switched off while we waited: apply
+            # what dispatch applies (subscription, event classes, and for a
+            # non-generic format the third-party visibility of the event) again.
+            w = await _webhook_current_for_event(webhook_id, event, meta)
+            if w:
+                await _deliver_webhook(w, event, payload, attempt + 1, meta=meta,
+                                       waits_used=waits)
         except Exception:
             pass
+    return result
 
 
 # =========================================================================
 # Webhook API Handlers
 # =========================================================================
 
-_VALID_WEBHOOK_EVENTS = frozenset({
-    "message.created", "message.deleted", "stream.live", "stream.offline",
-    "user.joined", "user.connected", "user.disconnected", "*"
-})
+# One definition: webhook_formats.USER_EVENTS is the allow-list for user hooks ("*" also
+# allowed); a system hook may in addition list the system-only events.
+_USER_WEBHOOK_EVENTS = webhook_formats.USER_EVENTS | {"*"}
+_SYSTEM_WEBHOOK_EVENTS = _USER_WEBHOOK_EVENTS | webhook_formats.SYSTEM_ONLY_EVENTS
+_FORMAT_CREDENTIAL_KEYS = {
+    "generic": (), "discord": (), "slack": (),
+    "gotify": ("token",), "ntfy": ("token", "username", "password"),
+}
+_MAX_SYSTEM_WEBHOOKS = 20
+
+
+def _bad_request(msg: str) -> web.Response:
+    return web.json_response({"error": msg}, status=400)
+
+
+def _merge_format_config(fmt: str, raw, existing_cfg: dict, same_format: bool):
+    """(config dict, error text). Incoming keys are merged over the stored ones
+    (an empty string removes a key), so editing a hook without sending its token
+    keeps the token. A format change starts from nothing."""
+    allowed = _FORMAT_CREDENTIAL_KEYS[fmt]
+    cfg = dict(existing_cfg) if same_format else {}
+    if raw is None:
+        cfg = {}
+    elif not isinstance(raw, dict):
+        return None, "format_config must be an object"
+    else:
+        for k, v in raw.items():
+            if k not in allowed:
+                return None, f"format_config.{k} is not used by the {fmt} format"
+            if v is None or v == "":
+                cfg.pop(k, None)
+                continue
+            if not isinstance(v, str) or len(v) > 500 or _has_bad_chars(v) or any(ord(c) < 32 for c in v):
+                return None, f"format_config.{k} is invalid"
+            cfg[k] = v
+    cfg = {k: v for k, v in cfg.items() if k in allowed}
+    if fmt == "gotify" and not cfg.get("token"):
+        return None, "The gotify format needs an application token (format_config.token)"
+    if fmt == "ntfy" and (("username" in cfg) != ("password" in cfg)):
+        return None, "ntfy basic auth needs both username and password"
+    return cfg, None
+
+
+_REQ_AUTH_TOKEN = "_webhook_auth_token"     # the token a route authenticated, kept on the request
+
+
+async def _may_set_allow_private(request: web.Request, token) -> bool:
+    """Whether the request may enable allow_private: only a superadmin acting through
+    a browser login session.
+
+    `token` is the credential the route authenticated (the actor). The authority is
+    derived from that same token: it must be the web-session token carried by the
+    cookie, so a request that authenticated by API key, bearer token, stream key or a
+    ?token= value can never set it, whatever cookie it also carries.
+    """
+    if token is None:
+        return False
+    if (request.headers.get("Authorization") or request.headers.get("X-API-Key")
+            or request.headers.get("X-Stream-Key") or request.query.get("token")):
+        return False
+    cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
+    if not cookie:
+        return False
+    try:
+        ctoken = await validate_token(cookie)
+    except AuthError:
+        return False
+    if (ctoken.token_id != token.token_id or ctoken.user_id != token.user_id
+            or not ctoken.has_scope("*")):
+        return False
+    row = await db.get_token(ctoken.token_id)
+    if not row or row.get("name") != "web_session":
+        return False
+    user = await db.get_user_by_id(token.user_id)
+    return bool(user and user.get("role") == "superadmin")
+
+
+async def _outgoing_webhook_fields(body: dict, *, kind: str, existing: dict | None,
+                                   may_private: bool):
+    """Validate the outgoing-webhook fields of a create or update request.
+
+    `existing` is the full stored hook (decrypted) on update, None on create.
+    Returns (fields to store, error response). `fields` only holds what changes.
+    """
+    creating = existing is None
+    out: dict = {}
+
+    if creating or "name" in body:
+        name = (body.get("name") or "").strip() if isinstance(body.get("name"), (str, type(None))) else ""
+        if not name or len(name) > 100:
+            return None, _bad_request("Name required (max 100 chars)")
+        out["name"] = name
+
+    old_fmt = existing["format"] if existing else "generic"
+    fmt = body.get("format", old_fmt)
+    if fmt not in webhook_formats.FORMATS:
+        return None, _bad_request("format must be one of: " + ", ".join(webhook_formats.FORMATS))
+    fmt_changed = fmt != old_fmt
+    if "format" in body and fmt_changed:
+        out["format"] = fmt
+
+    old_private = bool(existing["allow_private"]) if existing else False
+    if "allow_private" in body:
+        if not isinstance(body["allow_private"], bool):
+            return None, _bad_request("allow_private must be true or false")
+        new_private = body["allow_private"]
+    else:
+        new_private = old_private
+    if new_private and not old_private and not may_private:
+        return None, web.json_response(
+            {"error": "allow_private can only be set by a superadmin in a browser session"}, status=403)
+    if "allow_private" in body and new_private != old_private:
+        out["allow_private"] = new_private
+
+    if "include_details" in body:
+        if not isinstance(body["include_details"], bool):
+            return None, _bad_request("include_details must be true or false")
+        out["include_details"] = body["include_details"]
+
+    if "enabled" in body and not creating:
+        out["enabled"] = 1 if body["enabled"] else 0
+
+    # events
+    if creating or "events" in body:
+        events = body.get("events")
+        valid = _SYSTEM_WEBHOOK_EVENTS if kind == "system" else _USER_WEBHOOK_EVENTS
+        if not events or not isinstance(events, list):
+            return None, _bad_request("events list required for outgoing webhooks")
+        if not all(isinstance(e, str) and e in valid for e in events):
+            return None, _bad_request(f"Invalid events. Valid: {', '.join(sorted(valid))}")
+        out["events"] = events
+
+    # destination
+    url_in_body = "url" in body
+    if url_in_body:
+        url = body["url"].strip() if isinstance(body["url"], str) else ""
+        if not url:
+            return None, _bad_request("URL required for outgoing webhooks")
+        if len(url) > 2048:
+            return None, _bad_request("URL too long (max 2048 chars)")
+        if not url.startswith(("http://", "https://")):
+            return None, _bad_request("URL must start with http:// or https://")
+        out["url"] = url
+    elif creating:
+        return None, _bad_request("URL required for outgoing webhooks")
+    # A generic hook's URL is shown by the API; the stored address of any other format
+    # (a Discord or Slack webhook URL, an ntfy topic) is a credential that is never
+    # returned. Switching to generic therefore never keeps it: a new URL is required.
+    if fmt_changed and fmt == "generic" and old_fmt != "generic" and not url_in_body:
+        return None, _bad_request(
+            "Switching to the generic format needs a new url: the stored address of this format is never shown")
+    # An existing allow_private hook's destination is the superadmin's decision
+    if (not creating and old_private and new_private and not may_private
+            and (url_in_body and out.get("url") != existing["url"] or fmt_changed)):
+        return None, web.json_response(
+            {"error": "This hook reaches a private address: only a superadmin in a browser session can change its URL or format"},
+            status=403)
+    effective_url = out.get("url") or (existing["url"] if existing else None)
+    # The destination is re-checked against the default policy only when it really changes:
+    # on create, a different URL, a different format, or allow_private switched on. Anything
+    # else (renaming, disabling, changing events, switching allow_private off, or the admin
+    # form sending the stored URL and allow_private again with every edit) is not a change
+    # of destination. Delivery and the connector enforce the rules at every send: the
+    # connector refuses an address the policy forbids, and _deliver_webhook refuses a
+    # non-generic hook whose URL is plain http unless allow_private is on.
+    url_changed = url_in_body and out.get("url") != (existing["url"] if existing else None)
+    recheck = creating or url_changed or fmt_changed or (new_private and not old_private)
+    if recheck and effective_url:
+        if fmt != "generic" and not new_private and not effective_url.startswith("https://"):
+            return None, _bad_request("This format needs an https:// URL (http is only allowed with allow_private)")
+        err = await _validate_webhook_url(effective_url, new_private)
+        if err:
+            return None, _bad_request(err)
+
+    # credentials
+    if creating or "format_config" in body or fmt_changed:
+        cfg, err = _merge_format_config(
+            fmt, body.get("format_config") if "format_config" in body else {},
+            existing["format_config"] if existing else {}, fmt == old_fmt)
+        if err:
+            return None, _bad_request(err)
+        out["format_config"] = cfg or None
+    return out, None
+
+
+async def _webhook_private_changed(request: web.Request, actor: dict, hook: dict, enabled: bool) -> None:
+    """Security event and audit entry for allow_private being switched. Neither
+    carries a URL or credential."""
+    details = {"webhook_id": hook["id"], "kind": hook.get("kind"), "format": hook.get("format")}
+    await security_event("webhook_allow_private", request=request, user=actor,
+                         result="enabled" if enabled else "disabled", details=details)
+    await audit_log("webhook_allow_private", actor["id"], actor["username"],
+                    target_id=hook["id"], target_type="webhook", target_name=hook.get("name"),
+                    details={**details, "enabled": enabled})
 
 
 async def http_create_webhook(request: web.Request) -> web.Response:
@@ -6811,8 +7286,10 @@ async def http_create_webhook(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    name = (body.get("name") or "").strip()
+    name = (body.get("name") or "").strip() if isinstance(body.get("name"), (str, type(None))) else ""
     if not name or len(name) > 100:
         return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
 
@@ -6820,27 +7297,13 @@ async def http_create_webhook(request: web.Request) -> web.Response:
     if webhook_type not in ("outgoing", "incoming"):
         return web.json_response({"error": "Type must be 'outgoing' or 'incoming'"}, status=400)
 
-    events = body.get("events", [])
-    if webhook_type == "outgoing":
-        if not events or not isinstance(events, list):
-            return web.json_response({"error": "events list required for outgoing webhooks"}, status=400)
-        if not all(e in _VALID_WEBHOOK_EVENTS for e in events):
-            return web.json_response({"error": f"Invalid events. Valid: {', '.join(sorted(_VALID_WEBHOOK_EVENTS))}"}, status=400)
-
-    url = None
     channel_id = None
-
+    fields = {}
     if webhook_type == "outgoing":
-        url = (body.get("url") or "").strip()
-        if not url:
-            return web.json_response({"error": "URL required for outgoing webhooks"}, status=400)
-        if len(url) > 2048:
-            return web.json_response({"error": "URL too long (max 2048 chars)"}, status=400)
-        if not url.startswith(("http://", "https://")):
-            return web.json_response({"error": "URL must start with http:// or https://"}, status=400)
-        err = await _validate_webhook_url(url)
+        fields, err = await _outgoing_webhook_fields(
+            body, kind="user", existing=None, may_private=await _may_set_allow_private(request, token))
         if err:
-            return web.json_response({"error": err}, status=400)
+            return err
 
     if webhook_type == "incoming":
         channel_id = body.get("channel_id")
@@ -6860,8 +7323,12 @@ async def http_create_webhook(request: web.Request) -> web.Response:
 
     webhook = await db.create_webhook(
         token.user_id, name, webhook_type,
-        url=url, events=events, channel_id=channel_id
-    )
+        url=fields.get("url"), events=fields.get("events"), channel_id=channel_id,
+        fmt=fields.get("format", "generic"), format_config=fields.get("format_config"),
+        include_details=fields.get("include_details", False),
+        allow_private=fields.get("allow_private", False), created_by=token.user_id)
+    if fields.get("allow_private"):
+        await _webhook_private_changed(request, user, webhook, True)
     return web.json_response(webhook, status=201)
 
 
@@ -6892,7 +7359,7 @@ async def http_get_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid webhook ID"}, status=400)
 
     webhook = await db.get_webhook(webhook_id)
-    if not webhook:
+    if not webhook or webhook.get("kind") != "user":      # system hooks have their own routes
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
@@ -6914,7 +7381,7 @@ async def http_update_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid webhook ID"}, status=400)
 
     webhook = await db.get_webhook(webhook_id)
-    if not webhook:
+    if not webhook or webhook.get("kind") != "user":      # system hooks have their own routes
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
@@ -6927,47 +7394,37 @@ async def http_update_webhook(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
     updates = {}
-    if "name" in body:
-        name = (body["name"] or "").strip()
-        if not name or len(name) > 100:
-            return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
-        updates["name"] = name
-
-    if "url" in body and webhook["type"] == "outgoing":
-        url = (body["url"] or "").strip()
-        if not url or len(url) > 2048:
-            return web.json_response({"error": "URL required (max 2048 chars)"}, status=400)
-        if not url.startswith(("http://", "https://")):
-            return web.json_response({"error": "URL must start with http:// or https://"}, status=400)
-        err = await _validate_webhook_url(url)
+    if webhook["type"] == "outgoing":
+        full = await db.get_webhook_for_delivery(webhook_id)
+        updates, err = await _outgoing_webhook_fields(
+            body, kind="user", existing=full, may_private=await _may_set_allow_private(request, token))
         if err:
-            return web.json_response({"error": err}, status=400)
-        updates["url"] = url
-
-    if "events" in body and webhook["type"] == "outgoing":
-        events = body["events"]
-        if not events or not isinstance(events, list):
-            return web.json_response({"error": "events list required"}, status=400)
-        if not all(e in _VALID_WEBHOOK_EVENTS for e in events):
-            return web.json_response({"error": "Invalid events"}, status=400)
-        updates["events"] = events
-
-    if "channel_id" in body and webhook["type"] == "incoming":
-        try:
-            ch_id = int(body["channel_id"])
-        except (ValueError, TypeError):
-            return web.json_response({"error": "Invalid channel_id"}, status=400)
-        ch = await db.get_chat_channel(ch_id)
-        if not ch:
-            return web.json_response({"error": "Channel not found"}, status=404)
-        updates["channel_id"] = ch_id
-
-    if "enabled" in body:
-        updates["enabled"] = 1 if body["enabled"] else 0
+            return err
+    else:
+        if "name" in body:
+            name = (body["name"] or "").strip() if isinstance(body["name"], str) else ""
+            if not name or len(name) > 100:
+                return web.json_response({"error": "Name required (max 100 chars)"}, status=400)
+            updates["name"] = name
+        if "channel_id" in body:
+            try:
+                ch_id = int(body["channel_id"])
+            except (ValueError, TypeError):
+                return web.json_response({"error": "Invalid channel_id"}, status=400)
+            ch = await db.get_chat_channel(ch_id)
+            if not ch:
+                return web.json_response({"error": "Channel not found"}, status=404)
+            updates["channel_id"] = ch_id
+        if "enabled" in body:
+            updates["enabled"] = 1 if body["enabled"] else 0
 
     if updates:
         await db.update_webhook(webhook_id, **updates)
+        if "allow_private" in updates:
+            await _webhook_private_changed(request, user, webhook, bool(updates["allow_private"]))
 
     updated = await db.get_webhook(webhook_id)
     return web.json_response(updated)
@@ -6984,7 +7441,7 @@ async def http_delete_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid webhook ID"}, status=400)
 
     webhook = await db.get_webhook(webhook_id)
-    if not webhook:
+    if not webhook or webhook.get("kind") != "user":      # system hooks have their own routes
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
@@ -6994,6 +7451,7 @@ async def http_delete_webhook(request: web.Request) -> web.Response:
 
     await db.delete_webhook(webhook_id)
     _webhook_rate_limits.pop(webhook_id, None)
+    _webhook_paused_until.pop(webhook_id, None)
     return web.json_response({"message": "Webhook deleted"})
 
 
@@ -7008,7 +7466,7 @@ async def http_get_webhook_logs(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid webhook ID"}, status=400)
 
     webhook = await db.get_webhook(webhook_id)
-    if not webhook:
+    if not webhook or webhook.get("kind") != "user":      # system hooks have their own routes
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
@@ -7036,7 +7494,7 @@ async def http_test_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid webhook ID"}, status=400)
 
     webhook = await db.get_webhook(webhook_id)
-    if not webhook:
+    if not webhook or webhook.get("kind") != "user":      # system hooks have their own routes
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
@@ -7046,35 +7504,39 @@ async def http_test_webhook(request: web.Request) -> web.Response:
 
     if webhook["type"] != "outgoing":
         return web.json_response({"error": "Can only test outgoing webhooks"}, status=400)
+    if not webhook.get("enabled"):
+        return web.json_response({"error": "Webhook is disabled"}, status=400)
 
-    # Fetch full webhook with secret for delivery
-    full_whs = await db.get_enabled_outgoing_webhooks_for_event("webhook.test")
-    full_wh = None
-    for w in full_whs:
-        if w["id"] == webhook_id:
-            full_wh = w
-            break
-    if not full_wh:
-        # Webhook may not subscribe to 'webhook.test', so fetch directly
-        if not webhook.get("enabled"):
-            return web.json_response({"error": "Webhook is disabled"}, status=400)
-        cursor = await db.conn.execute("SELECT * FROM webhooks WHERE id = ? AND enabled = 1", (webhook_id,))
-        row = await cursor.fetchone()
-        if row:
-            full_wh = dict(row)
-            full_wh["url"] = decrypt_config(full_wh["url"]) if full_wh["url"] else None
-            full_wh["secret"] = decrypt_config(full_wh["secret"]) if full_wh["secret"] else None
-
+    full_wh = await db.get_webhook_for_delivery(webhook_id)
     if not full_wh:
         return web.json_response({"error": "Could not load webhook for test"}, status=500)
 
-    asyncio.create_task(_deliver_webhook(full_wh, "webhook.test", {
-        "test": True,
-        "webhook_id": webhook_id,
-        "triggered_by": user["username"] if user else "unknown"
-    }))
+    return await _run_webhook_test(full_wh, user)
 
-    return web.json_response({"message": "Test event dispatched"})
+
+async def _run_webhook_test(full_wh: dict, user: dict) -> web.Response:
+    """Send one sample in the hook's format and report the receiver's status code.
+
+    One attempt, no retry schedule and no Retry-After wait (a 429 is reported
+    at once). The answer carries the status and a short reason, never the
+    receiver's body or the destination.
+    """
+    try:
+        result = await asyncio.wait_for(_deliver_webhook(full_wh, "webhook.test", {
+            "test": True,
+            "webhook_id": full_wh["id"],
+            "triggered_by": user["username"] if user else "unknown"
+        }, single=True), timeout=25)
+    except asyncio.TimeoutError:
+        result = {"sent": False, "status": None, "success": False, "error": "timeout"}
+    return web.json_response({
+        "message": "Test event delivered" if result["success"] else "Test event was not accepted",
+        "format": full_wh.get("format") or "generic",
+        "sent": result["sent"],
+        "success": result["success"],
+        "status": result["status"],
+        "error": None if result["success"] else result["error"],
+    })
 
 
 async def http_regenerate_webhook_secret(request: web.Request) -> web.Response:
@@ -7088,7 +7550,7 @@ async def http_regenerate_webhook_secret(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid webhook ID"}, status=400)
 
     webhook = await db.get_webhook(webhook_id)
-    if not webhook:
+    if not webhook or webhook.get("kind") != "user":      # system hooks have their own routes
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
@@ -7096,11 +7558,161 @@ async def http_regenerate_webhook_secret(request: web.Request) -> web.Response:
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
+    if webhook.get("format") != "generic":
+        return web.json_response({"error": "Only the generic format is signed"}, status=400)
+
     new_secret = await db.regenerate_webhook_secret(webhook_id)
     if not new_secret:
         return web.json_response({"error": "Failed to regenerate secret"}, status=500)
 
     return web.json_response({"secret": new_secret, "message": "Secret regenerated. Store it securely — it will not be shown again."})
+
+
+# ---- System webhooks: no owner, superadmins only (Admin > Webhooks) ----------
+
+def _webhook_log_view(row: dict) -> dict:
+    """A delivery record without payload or response body."""
+    return {k: row.get(k) for k in ("id", "event", "response_status", "success", "attempt",
+                                    "duration_ms", "created_at")}
+
+
+async def _system_webhook_or_404(request: web.Request):
+    """(user, hook, error). Only a superadmin gets past; the hook must be a system hook."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return None, None, err
+    try:
+        webhook_id = int(request.match_info["id"])
+    except (ValueError, KeyError):
+        return None, None, web.json_response({"error": "Invalid webhook ID"}, status=400)
+    hook = await db.get_webhook(webhook_id)
+    if not hook or hook.get("kind") != "system":
+        return None, None, web.json_response({"error": "Webhook not found"}, status=404)
+    return user, hook, None
+
+
+async def http_admin_webhooks_list(request: web.Request) -> web.Response:
+    """List system webhooks, with what the form needs (formats and valid events)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    return web.json_response({
+        "webhooks": await db.get_system_webhooks(),
+        "formats": list(webhook_formats.FORMATS),
+        "events": sorted(_SYSTEM_WEBHOOK_EVENTS),
+        "system_only_events": sorted(webhook_formats.SYSTEM_ONLY_EVENTS),
+    })
+
+
+async def http_admin_webhooks_create(request: web.Request) -> web.Response:
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if await db.count_system_webhooks() >= _MAX_SYSTEM_WEBHOOKS:
+        return _bad_request(f"Maximum {_MAX_SYSTEM_WEBHOOKS} system webhooks")
+    fields, err = await _outgoing_webhook_fields(
+        body, kind="system", existing=None, may_private=await _may_set_allow_private(request, request.get(_REQ_AUTH_TOKEN)))
+    if err:
+        return err
+    hook = await db.create_webhook(
+        None, fields["name"], "outgoing", url=fields["url"], events=fields["events"],
+        kind="system", fmt=fields.get("format", "generic"), format_config=fields.get("format_config"),
+        include_details=fields.get("include_details", False),
+        allow_private=fields.get("allow_private", False), created_by=user["id"])
+    await audit_log("webhook_system_create", user["id"], user["username"], target_id=hook["id"],
+                    target_type="webhook", target_name=hook["name"],
+                    details={"format": hook["format"], "events": hook["events"]})
+    if fields.get("allow_private"):
+        await _webhook_private_changed(request, user, hook, True)
+    return web.json_response(hook, status=201)
+
+
+async def http_admin_webhooks_get(request: web.Request) -> web.Response:
+    user, hook, err = await _system_webhook_or_404(request)
+    if err:
+        return err
+    return web.json_response(hook)
+
+
+async def http_admin_webhooks_update(request: web.Request) -> web.Response:
+    user, hook, err = await _system_webhook_or_404(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    full = await db.get_webhook_for_delivery(hook["id"])
+    updates, err = await _outgoing_webhook_fields(
+        body, kind="system", existing=full, may_private=await _may_set_allow_private(request, request.get(_REQ_AUTH_TOKEN)))
+    if err:
+        return err
+    if updates:
+        await db.update_webhook(hook["id"], **updates)
+        await audit_log("webhook_system_update", user["id"], user["username"], target_id=hook["id"],
+                        target_type="webhook", target_name=hook["name"],
+                        details={"fields": sorted(k for k in updates if k not in ("url", "format_config"))
+                                 + [k for k in ("url", "format_config") if k in updates]})
+        if "allow_private" in updates:
+            await _webhook_private_changed(request, user, hook, bool(updates["allow_private"]))
+    return web.json_response(await db.get_webhook(hook["id"]))
+
+
+async def http_admin_webhooks_delete(request: web.Request) -> web.Response:
+    user, hook, err = await _system_webhook_or_404(request)
+    if err:
+        return err
+    await db.delete_webhook(hook["id"])
+    _webhook_rate_limits.pop(hook["id"], None)
+    _webhook_paused_until.pop(hook["id"], None)
+    await audit_log("webhook_system_delete", user["id"], user["username"], target_id=hook["id"],
+                    target_type="webhook", target_name=hook["name"])
+    return web.json_response({"message": "Webhook deleted"})
+
+
+async def http_admin_webhooks_logs(request: web.Request) -> web.Response:
+    """Recent deliveries: status, event, time. Never the payload or the receiver's answer."""
+    user, hook, err = await _system_webhook_or_404(request)
+    if err:
+        return err
+    try:
+        limit = min(max(int(request.query.get("limit", 20)), 1), 100)
+    except (ValueError, TypeError):
+        return _bad_request("Invalid limit")
+    rows = await db.get_webhook_logs(hook["id"], limit=limit, offset=0)
+    return web.json_response({"logs": [_webhook_log_view(r) for r in rows]})
+
+
+async def http_admin_webhooks_test(request: web.Request) -> web.Response:
+    user, hook, err = await _system_webhook_or_404(request)
+    if err:
+        return err
+    if not hook.get("enabled"):
+        return _bad_request("Webhook is disabled")
+    full = await db.get_webhook_for_delivery(hook["id"])
+    if not full:
+        return web.json_response({"error": "Could not load webhook for test"}, status=500)
+    return await _run_webhook_test(full, user)
+
+
+async def http_admin_webhooks_secret(request: web.Request) -> web.Response:
+    user, hook, err = await _system_webhook_or_404(request)
+    if err:
+        return err
+    if hook.get("format") != "generic":
+        return _bad_request("Only the generic format is signed")
+    new_secret = await db.regenerate_webhook_secret(hook["id"])
+    if not new_secret:
+        return web.json_response({"error": "Failed to regenerate secret"}, status=500)
+    return web.json_response({"secret": new_secret, "message": "Secret regenerated. Store it securely, it will not be shown again."})
 
 
 async def http_incoming_webhook(request: web.Request) -> web.Response:
@@ -7169,7 +7781,7 @@ async def http_incoming_webhook(request: web.Request) -> web.Response:
         "message": content,
         "source": "incoming_webhook",
         "webhook_id": webhook["id"]
-    }))
+    }, meta={"channel_id": channel_id}))
 
     return web.json_response({"ok": True, "message_id": msg_id})
 
@@ -7332,7 +7944,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             }
             if stream.get("is_public"):
                 webhook_payload["public_key"] = stream.get("public_key", "")
-            asyncio.create_task(fire_webhook_event("stream.live", webhook_payload))
+            asyncio.create_task(fire_webhook_event(
+                "stream.live", webhook_payload, meta={"stream_public": bool(stream.get("is_public"))}))
 
         # Start VOD recording on every publish (guards against duplicates internally)
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
@@ -17685,7 +18298,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if _online_users.get(user_id, 0) == 1:
                             asyncio.create_task(fire_webhook_event("user.connected", {
                                 "user_id": user_id, "username": display_name
-                            }))
+                            }, meta={"user_id": user_id}))
                             # Auto-set online if currently offline, unless user explicitly chose offline
                             try:
                                 u_status = await db.get_user_status(user_id)
@@ -17880,7 +18493,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "user_id": user_id, "username": display_name,
                             "message": message_text,
                             "created_at": broadcast_payload["created_at"]
-                        }))
+                        },
+                            meta={"channel_id": channel["id"], "anonymous": bool(my_state["anonymous"])}))
 
                         # Send @mention notifications
                         if message_text and not my_state["anonymous"]:
@@ -17956,7 +18570,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             asyncio.create_task(fire_webhook_event("message.deleted", {
                                 "message_id": message_id, "channel": current_channel,
                                 "deleted_by": user_id
-                            }))
+                            },
+                                meta={"channel_id": del_ch["id"]}))
                             if is_mod:
                                 channel_obj = await db.get_chat_channel_by_name(current_channel)
                                 await audit_log("message_delete", user_id, username,
@@ -19260,7 +19875,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                 await db.update_last_seen(user_id)
                 asyncio.create_task(fire_webhook_event("user.disconnected", {
                     "user_id": user_id, "username": username
-                }))
+                }, meta={"user_id": user_id}))
             except Exception as e:
                 logger.debug(f"Auto-offline status update failed: {e}")
 
@@ -21559,6 +22174,7 @@ async def _backup_superadmin(request: web.Request, cookie_only: bool = False):
     user = await db.get_user_by_id(token.user_id)
     if not user or user.get("role") != "superadmin":
         return None, web.json_response({"error": "Superadmin required"}, status=403)
+    request[_REQ_AUTH_TOKEN] = token
     return user, None
 
 
@@ -22136,6 +22752,14 @@ def create_app() -> web.Application:
     app.router.add_get("/api/webhooks/{id}/logs", http_get_webhook_logs)
     app.router.add_post("/api/webhooks/{id}/test", http_test_webhook)
     app.router.add_post("/api/webhooks/{id}/regenerate-secret", http_regenerate_webhook_secret)
+    app.router.add_get("/api/admin/webhooks", http_admin_webhooks_list)
+    app.router.add_post("/api/admin/webhooks", http_admin_webhooks_create)
+    app.router.add_get("/api/admin/webhooks/{id}", http_admin_webhooks_get)
+    app.router.add_put("/api/admin/webhooks/{id}", http_admin_webhooks_update)
+    app.router.add_delete("/api/admin/webhooks/{id}", http_admin_webhooks_delete)
+    app.router.add_get("/api/admin/webhooks/{id}/logs", http_admin_webhooks_logs)
+    app.router.add_post("/api/admin/webhooks/{id}/test", http_admin_webhooks_test)
+    app.router.add_post("/api/admin/webhooks/{id}/regenerate-secret", http_admin_webhooks_secret)
 
     # Root redirect (handles both HTTP and WebSocket upgrade)
     app.router.add_get("/", http_root_redirect)

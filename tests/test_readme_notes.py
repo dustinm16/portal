@@ -57,6 +57,37 @@ check("it does not claim the sessions values are shown to nobody else", "nobody 
 check("the scanner-blocking default is stated once as off, never as on",
       low.count("still off by default") == 1 and "scanner blocking is on" not in low)
 
+# --- 1.15.0 notes: notification channels --------------------------------------
+m15 = re.search(r"### Upgrade notes for 1\.15\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.15.0' section after the 1.14.0 one",
+      m15 is not None and text.index("### Upgrade notes for 1.15.0") > text.index("### Upgrade notes for 1.14.0"))
+sec15 = m15.group(1) if m15 else ""
+b15 = [b.strip() for b in re.findall(r"^- (.*)$", sec15, re.M)]
+check("1.15.0 notes are bullets and none is repeated", len(b15) >= 10 and len({b[:80] for b in b15}) == len(b15), str(len(b15)))
+low15 = sec15.lower()
+
+
+def says15(name, *needles):
+    check(f"1.15.0 states: {name}", all(n.lower() in low15 for n in needles), str(needles))
+
+
+says15("the formats and that generic stays signed", "ntfy", "gotify", "discord", "slack", "hmac-sha256")
+says15("what leaves the machine by default", "title", "one-line summary", "include_details", "200 characters")
+says15("message.created is opt-in and never private", "message.created", "`*` does not include it", "private channel")
+says15("credentials are write-only", "never returned again", "encrypted")
+says15("429 handling", "retry-after", "10 minutes", "3 waits", "never counts")
+says15("allow_private rules", "allow_private", "superadmin using a browser login session", "link-local", "listening ports", "webhook_allow_private")
+says15("system webhooks and the admin section", "system webhook", "admin > webhooks", "system-only", "webhook.test")
+says15("the test button reports a status", "status code")
+says15("the database change", "six columns", "rebuilt once", "user_id")
+says15("no static version moved", "no `?v=` number moved")
+says15("stage mode sink", "stage_webhook_sink_port")
+says15("rollback", "rollback")
+rb = next((b for b in b15 if b.startswith("Rollback")), "").lower()
+check("1.15.0 rollback does not claim a non-generic hook cannot be signed", "cannot be signed" not in rb and "looks like a generic" not in rb)
+check("1.15.0 rollback says 1.14.0 skips hooks without a secret and shows the destination URL",
+      "no signing secret" in rb and "skips" in rb and "full destination url" in rb and "credential" in rb, rb[:120])
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

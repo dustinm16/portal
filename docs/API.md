@@ -3855,6 +3855,71 @@ The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.clou
 
 ---
 
+### Webhooks (Admin)
+
+Outgoing webhooks send an event to a URL; incoming webhooks post a message into a chat channel. Management needs an admin; owners and admins reach `/api/webhooks/{id}` (a **system** webhook is never reachable there, see below). Destinations and credentials are encrypted at rest.
+
+#### POST /api/webhooks
+
+Create a webhook (maximum 25 per user). Fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | 1-100 characters, required |
+| `type` | string | `outgoing` (default) or `incoming` |
+| `url` | string | outgoing: the destination, required |
+| `events` | array | outgoing: `message.created`, `message.deleted`, `stream.live`, `stream.offline`, `user.joined`, `user.connected`, `user.disconnected` or `*` (a user hook can list only these; any other event is system-only) |
+| `channel_id` | integer | incoming: the target channel |
+| `format` | string | `generic` (default), `ntfy`, `gotify`, `discord` or `slack` |
+| `format_config` | object | credentials, write-only: gotify `{"token"}` (required), ntfy `{"token"}` or `{"username","password"}`; the other formats take none |
+| `include_details` | boolean | non-generic formats: add the detail fields of the event (default `false`) |
+| `allow_private` | boolean | let the hook reach loopback and private (LAN) addresses (default `false`); only a superadmin using a browser login session may turn it on (a request that authenticates by API key or bearer token never can, whatever cookie it also carries), any editor may turn it off, and turning it off is never re-checked against the address |
+
+Formats:
+
+- `generic`: unchanged. A JSON body `{"event", "timestamp", "data"}` signed with HMAC-SHA256 in `X-Portal-Signature`. The secret is returned once, on creation.
+- `ntfy`, `gotify`, `discord`, `slack`: no signature and no secret. The message carries an event title, a one-line summary and the portal name, nothing else, unless `include_details` is on: then a short allow-listed set of fields of that event is added (never IP addresses, email addresses or tokens). Message text is cut to 200 characters. Mentions (`@everyone`, `@here`, `<@id>`, `<!channel>`) are removed; Discord payloads set `allowed_mentions` to none, and markdown link and formatting syntax in Discord text is escaped so `[text](url)` shows as typed; Slack text is escaped. Redirects are not followed. These formats need an `https://` URL unless `allow_private` is on; a hook saved with a plain `http://` URL whose `allow_private` was switched off later is not delivered (the Test route reports it) until the URL is changed to `https://`. ntfy: the URL is the topic URL; the token goes in an `Authorization` header. Gotify: the URL is the server address, the message is posted to `/message` with the token in `X-Gotify-Key`. Discord and Slack: the URL is the webhook URL itself.
+- A non-generic hook receives `message.created`, `user.connected` and `user.disconnected` only when it lists them by name (`*` does not include them); `user.connected` and `user.disconnected` are never sent for a member whose status preference is appear-offline. `message.created` goes only for a channel an ordinary member can read (never a private channel, never the chat of a stream that is not public; anonymous posts are shown as "Anonymous"), and `stream.live` / `stream.offline` only for public streams. The `generic` format receives full event payloads, including the text of messages in private channels: point it only at a receiver you control.
+
+The destination URL of a non-generic hook, and every credential, is never returned by any route. Responses show `url: null`, `url_set`, `url_host` (scheme and host only) and `has_format_secret`. A rename or other edit that does not send `format_config` keeps the stored credentials; sending a new value replaces it, an empty string removes that key. Changing the `format` of a hook from `ntfy`, `gotify`, `discord` or `slack` to `generic` needs a new `url` in the same request (otherwise `400`), because the URL of a generic hook is returned. A non-generic hook has no signing secret (`has_secret` is `false`); changing it to `generic` creates one that no response shows, so read it with `regenerate-secret`, and changing a hook away from `generic` removes it.
+
+`allow_private` hooks still cannot reach link-local addresses, cloud metadata addresses, the unspecified address and the rest of 0.0.0.0/8, or the portal's own listening ports; plain `http://` is accepted only when every resolved address is private or loopback (`http://` to a public address is refused, use `https://`); the checks run when the hook is saved and again at every connection (redirects included). Changing the URL or format of an `allow_private` hook needs the same superadmin browser session. Turning it on or off writes a `webhook_allow_private` security event and an audit entry. A hook is re-checked against the default policy only when it is created, when its URL or format changes, or when allow_private is switched on; saving it with the same URL and format (rename, disable, other events, allow_private off) is not a change of destination and is never refused for the address.
+
+#### GET /api/webhooks, GET /api/webhooks/{id}, PUT /api/webhooks/{id}, DELETE /api/webhooks/{id}
+
+List (admins see every user hook with `owner_username`), read, update (same fields as create) and delete. `PUT` also takes `enabled`.
+
+#### GET /api/webhooks/{id}/logs
+
+Delivery records (`event`, `response_status`, `success`, `attempt`, `duration_ms`). Records of non-generic hooks hold no payload and no response body.
+
+#### POST /api/webhooks/{id}/test
+
+Sends one sample message in the hook's format (event `webhook.test`) and waits for the receiver. Answers `{"message", "format", "sent", "success", "status", "error"}`: `status` is the receiver's HTTP status code (a 429 is reported at once, without waiting). The Test button of a hook that is disabled answers 400.
+
+#### POST /api/webhooks/{id}/regenerate-secret
+
+New HMAC secret, shown once. Generic format only.
+
+#### Delivery rules
+
+Failures are retried after 10 s, 60 s and 5 minutes; 10 consecutive failures disable the hook. A `429` answer waits for `Retry-After` (seconds or an HTTP date, capped at 10 minutes, at most 3 waits in all for one delivery, retries after a failure included; the hook is checked again after each wait and nothing more is sent if it was switched off, deleted, changed or unsubscribed meanwhile) and never counts toward the 10. A hook is limited to 30 deliveries per minute.
+
+#### System webhooks (Superadmin)
+
+A system webhook has no owner and survives the deletion of the account that created it. Only the receiver classes below differ from a user hook: system-only events (currently `webhook.test`; ops and security events will be added to this list) can be delivered to system hooks only, never to a user hook, not even through `*`. Routes (superadmin, any full credential; `allow_private` still needs a browser session):
+
+| Route | Purpose |
+|---|---|
+| `GET /api/admin/webhooks` | `{"webhooks", "formats", "events", "system_only_events"}` |
+| `POST /api/admin/webhooks` | create (same fields as above; `events` required; maximum 20) |
+| `GET`, `PUT`, `DELETE /api/admin/webhooks/{id}` | read, update (also `enabled`), delete |
+| `GET /api/admin/webhooks/{id}/logs` | recent deliveries: `id`, `event`, `response_status`, `success`, `attempt`, `duration_ms`, `created_at`; never payloads |
+| `POST /api/admin/webhooks/{id}/test` | as the user test route |
+| `POST /api/admin/webhooks/{id}/regenerate-secret` | generic format only |
+
+The same hooks are managed in **Admin > Webhooks** (visible to superadmins only).
+
 ### Audit Log (Moderator+)
 
 View log of all moderation actions. Entries are automatically created for: message_delete, pin/unpin_message, timeout/mute/unmute/ban/unban, channel CRUD, role changes (`role_change`), user deletes (`user_delete`), automod triggers, channel member management.

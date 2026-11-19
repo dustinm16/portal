@@ -81,6 +81,7 @@ EVENTS = {
     "rate_limited": "security",
     "host_key_accepted": "security",
     "security_log_export": "security",
+    "webhook_allow_private": "security",
 }
 
 # Events an outsider can cause without any credential (or with a stolen
@@ -101,6 +102,7 @@ CAP_EXEMPT = frozenset({
     "cf_ranges_refreshed", "cf_ranges_reset", "cf_refresh_toggled",
     "cf_ranges_approved", "cf_ranges_dismissed",
     "security_retention_changed", "security_events_pruned", "security_log_export",
+    "webhook_allow_private",
 })
 CAP_EXEMPT_WITH_USER = frozenset({"ip_blocked", "ip_unblocked"})
 

@@ -132,6 +132,81 @@ def is_blocked_address(addr: str) -> bool:
     return bool(mapped) and is_blocked_host(str(mapped))
 
 
+# ---------------------------------------------------------------------------
+# Opt-in policy for a self-hosted receiver on the LAN or this machine
+# (webhooks with allow_private). Loopback, RFC 1918, CGNAT and IPv6 ULA
+# addresses are allowed; everything that can reach a metadata service, the
+# link-local range, the unspecified address, multicast and reserved space stays
+# blocked. Public addresses pass, so this widens the default policy only.
+# ---------------------------------------------------------------------------
+
+# Metadata endpoints that sit inside ranges the LAN policy allows (ULA, CGNAT)
+# or that the cloud providers document: blocked by address.
+_LAN_METADATA_ADDRS = frozenset(ipaddress.ip_address(a) for a in (
+    '169.254.169.254', '169.254.170.2', 'fd00:ec2::254', '100.100.100.200', '192.0.0.192'))
+# Tunnel ranges that carry an IPv4 address inside them (6to4 and Teredo): refused as
+# the default policy refuses them, since the embedded address could be a metadata one
+_LAN_TUNNEL_NETS = (ipaddress.ip_network('2002::/16'), ipaddress.ip_network('2001::/32'))
+_THIS_NETWORK_V4 = ipaddress.ip_network('0.0.0.0/8')
+_LAN_BLOCKED_NAMES = frozenset({'metadata.google.internal', 'metadata', 'instance-data',
+                                'kubernetes.default'})
+
+
+def is_blocked_address_lan(addr: str) -> bool:
+    """The allow_private policy applied to one address (fails closed on text that is no address)."""
+    text = (addr or '').strip()
+    if text.startswith('[') and text.endswith(']'):
+        text = text[1:-1]
+    try:
+        ip = ipaddress.ip_address(text.split('%', 1)[0])
+    except ValueError:
+        return True
+    mapped = getattr(ip, 'ipv4_mapped', None)
+    if mapped is not None:
+        ip = mapped
+    if ip in _LAN_METADATA_ADDRS or ip.is_unspecified or ip.is_link_local or ip.is_multicast:
+        return True
+    if ip.version == 4 and ip in _THIS_NETWORK_V4:     # all of 0.0.0.0/8, not only 0.0.0.0
+        return True
+    if ip.is_loopback:
+        return False
+    if ip.version == 6 and (ip.is_site_local or any(ip in n for n in _LAN_TUNNEL_NETS)):
+        return True
+    return bool(ip.is_reserved)
+
+
+def is_private_or_loopback_address(addr: str) -> bool:
+    """True for a loopback, RFC 1918, CGNAT, ULA (any non-public) address; False for a
+    public one and for text that is no address. Used to keep plain http to the LAN."""
+    text = (addr or '').strip()
+    if text.startswith('[') and text.endswith(']'):
+        text = text[1:-1]
+    try:
+        ip = ipaddress.ip_address(text.split('%', 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(ip, 'ipv4_mapped', None)
+    if mapped is not None:
+        ip = mapped
+    return not ip.is_global
+
+
+def is_blocked_name_lan(host: str) -> bool:
+    """Host text that is refused under the LAN policy before any lookup."""
+    h = (host or '').lower().strip().rstrip('.')
+    if not h:
+        return True
+    return h in _LAN_BLOCKED_NAMES
+
+
+def _host_blocked(h: str, lan: bool) -> bool:
+    return is_blocked_name_lan(h) if lan else (is_blocked_host(h) or is_blocked_host(h.rstrip('.')))
+
+
+def _addr_blocked(a: str, lan: bool) -> bool:
+    return is_blocked_address_lan(a) if lan else is_blocked_address(a)
+
+
 async def _resolve(host: str, port: int) -> list[str]:
     """Resolve host to address strings (stream sockets, any family). Stubbed in tests."""
     loop = asyncio.get_running_loop()
@@ -145,24 +220,26 @@ async def _resolve(host: str, port: int) -> list[str]:
     return out
 
 
-async def resolve_checked_host(host: str, port: int = 0, *, timeout: float = 5.0) -> list[str]:
+async def resolve_checked_host(host: str, port: int = 0, *, timeout: float = 5.0,
+                               allow_private: bool = False) -> list[str]:
     """Resolve `host` and return its addresses, all of which passed the policy.
 
     Raises HostBlockedError if the literal host or ANY resolved address is
     blocked, HostResolveError if it cannot be resolved (fail closed). Numeric
     spellings of IPv4 addresses are normalised and checked without DNS.
+    With allow_private the LAN policy applies instead (see is_blocked_address_lan).
     """
     if not isinstance(host, str) or not host.strip():
         raise HostBlockedError()
     h = host.strip()
     if h.startswith('[') and h.endswith(']'):
         h = h[1:-1]
-    if is_blocked_host(h) or is_blocked_host(h.rstrip('.')):
+    if _host_blocked(h, allow_private):
         raise HostBlockedError()
 
     literal = _normalise_ip(h)
     if literal is not None:
-        if is_blocked_address(literal):
+        if _addr_blocked(literal, allow_private):
             raise HostBlockedError()
         return [literal]
 
@@ -173,7 +250,7 @@ async def resolve_checked_host(host: str, port: int = 0, *, timeout: float = 5.0
     if not addrs:
         raise HostResolveError()
     for addr in addrs:
-        if is_blocked_address(addr):
+        if _addr_blocked(addr, allow_private):
             logger.warning(f"Outbound host check: {h!r} resolves to a blocked address ({addr})")
             raise HostBlockedError()
     return addrs
@@ -281,32 +358,64 @@ class _SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
     the initial check and the actual connection, this resolver catches it.
     """
 
+    def __init__(self, *args, allow_private: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._allow_private = allow_private
+
     async def resolve(self, host: str, port: int = 0, family: int = 0):
         result = await super().resolve(host, port, family)
         for entry in result:
-            if is_blocked_address(entry["host"]):
+            if _addr_blocked(entry["host"], self._allow_private):
                 logger.warning(f"Outbound host check: {host!r} resolved to a blocked address at connect time")
                 raise HostBlockedError()
         return result
 
 
 class _CheckedConnector(aiohttp.TCPConnector):
-    """TCPConnector that applies the policy to every host it is asked to dial."""
+    """TCPConnector that applies the policy to every host it is asked to dial.
+
+    With allow_private the LAN policy applies, and `endpoint_blocked(address,
+    port)` (when given) can still refuse single (address, port) pairs, such as
+    the portal's own listening sockets.
+    """
+
+    def __init__(self, *args, allow_private: bool = False, endpoint_blocked=None,
+                 private_only: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._allow_private = allow_private
+        self._endpoint_blocked = endpoint_blocked
+        self._private_only = private_only     # plain http: every address must be non-public
 
     async def _resolve_host(self, host, port, traces=None):
-        if is_blocked_host(host) or is_blocked_host(host.rstrip('.')):
+        lan = self._allow_private
+        if _host_blocked(host, lan):
             raise HostBlockedError()
         literal = _normalise_ip(host)
-        if literal is not None and is_blocked_address(literal):
+        if literal is not None and _addr_blocked(literal, lan):
             raise HostBlockedError()
         result = await super()._resolve_host(host, port, traces)
         for entry in result:
-            if is_blocked_address(entry["host"]):
+            if self._private_only and not is_private_or_loopback_address(entry["host"]):
+                logger.warning(f"Outbound host check: {host!r} resolves to a public address, plain http refused")
+                raise HostBlockedError()
+            if _addr_blocked(entry["host"], lan):
                 logger.warning(f"Outbound host check: {host!r} resolved to a blocked address at connect time")
+                raise HostBlockedError()
+            if self._endpoint_blocked is not None and self._endpoint_blocked(entry["host"], port):
+                logger.warning(f"Outbound host check: {host!r} resolved to a refused endpoint at connect time")
                 raise HostBlockedError()
         return result
 
 
-def _SSRFSafeConnector(**kwargs):
-    """Create a TCPConnector that validates resolved IPs against the SSRF blocklist."""
-    return _CheckedConnector(resolver=_SSRFSafeResolver(), **kwargs)
+def _SSRFSafeConnector(*, allow_private: bool = False, endpoint_blocked=None,
+                       private_only: bool = False, **kwargs):
+    """Create a TCPConnector that validates resolved IPs against the SSRF blocklist.
+
+    allow_private switches to the LAN policy (loopback and private addresses
+    allowed, link-local, metadata and unspecified still blocked), for a hook a
+    superadmin marked as reaching a self-hosted receiver. private_only (for plain
+    http) additionally refuses any destination that resolves to a public address.
+    """
+    return _CheckedConnector(resolver=_SSRFSafeResolver(allow_private=allow_private),
+                             allow_private=allow_private, endpoint_blocked=endpoint_blocked,
+                             private_only=private_only, **kwargs)
