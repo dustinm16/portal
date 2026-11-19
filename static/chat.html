@@ -3205,6 +3205,7 @@
         let slowmodeCooldownTimer = null; // timer for slowmode countdown
         let blockedUsers = new Set(); // set of blocked user IDs
         let channelCanSend = true; // whether current user can send in current channel
+        let pendingJoin = null; // channel name of the join sent and not yet answered
         let channelUnavailable = false; // the open channel was lost (access removed): no sending until another is chosen
 
         // Per-channel/stream desktop notification subscriptions (localStorage)
@@ -3723,6 +3724,7 @@
 
             // Request channel info and history
             if (ws && ws.readyState === WebSocket.OPEN) {
+                pendingJoin = channelName;
                 ws.send(JSON.stringify({
                     type: 'join',
                     channel: channelName
@@ -3744,6 +3746,7 @@
                 setupVoiceUserMenus();
 
                 // Join current channel
+                pendingJoin = currentChannel;
                 ws.send(JSON.stringify({
                     type: 'join',
                     channel: currentChannel
@@ -3805,6 +3808,7 @@
                     onHistoryError(data);
                     break;
                 case 'channel_info':
+                    pendingJoin = null;
                     updateChannelInfo(data);
                     break;
                 case 'stream_status':
@@ -3914,6 +3918,7 @@
                     renderDmList();
                     break;
                 case 'dm_conversation_opened':
+                    resetChannelUnavailable();
                     currentView = 'dm';
                     currentDmConversationId = data.conversation.id;
                     renderDmView(data.conversation, data.messages);
@@ -3964,7 +3969,13 @@
                     break;
                 case 'error':
                     if (data.message === 'Channel not found' && currentView === 'channel') {
-                        showChannelUnavailable();
+                        // Act only for the open channel: the frame names the channel it is
+                        // about; one without a name answers the join this page just sent
+                        const own = (data.channel !== undefined && data.channel !== null)
+                            ? data.channel === currentChannel
+                            : pendingJoin === currentChannel;
+                        pendingJoin = null;
+                        if (own) showChannelUnavailable();
                     } else if (data.error_code === 'slowmode') {
                         startSlowmodeCooldown(data.cooldown_remaining || 5);
                     } else if (data.error_code === 'timeout' || data.error_code === 'muted') {
@@ -7287,14 +7298,19 @@
             } catch { return ''; }
         }
 
+        // The unavailable state belongs to the channel view: leaving it for a
+        // direct message ends it (input enabled again)
+        function resetChannelUnavailable() {
+            if (!channelUnavailable) return;
+            channelUnavailable = false;
+            const ci = document.getElementById('chat-input'), sb = document.getElementById('send-btn');
+            ci.disabled = false;
+            ci.placeholder = 'Type a message...';
+            if (sb) sb.disabled = false;
+        }
+
         function openDmConversation(convId) {
-            if (channelUnavailable) {
-                channelUnavailable = false;
-                const ci = document.getElementById('chat-input'), sb = document.getElementById('send-btn');
-                ci.disabled = false;
-                ci.placeholder = 'Type a message...';
-                if (sb) sb.disabled = false;
-            }
+            resetChannelUnavailable();
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'dm_open', conversation_id: convId }));
             }

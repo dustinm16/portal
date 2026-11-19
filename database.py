@@ -4315,7 +4315,12 @@ class Database:
         cursor = await self.conn.execute(
             "SELECT is_default FROM chat_channels WHERE id = ?", (channel_id,))
         ch = await cursor.fetchone()
-        stream["chat_channel_shared"] = len(rows) > 1 or bool(ch and ch["is_default"])
+        is_default = bool(ch and ch["is_default"])
+        stream["chat_channel_shared"] = len(rows) > 1 or is_default
+        stream["chat_channel_default"] = is_default
+        # Every stream bound to the channel: who may read it when several are
+        stream["chat_channel_owner_ids"] = sorted({r["user_id"] for r in rows})
+        stream["chat_channel_all_public"] = all(bool(r["is_public"]) for r in rows)
         return stream
 
     async def count_streams_for_chat_channel(self, channel_id: int) -> int:

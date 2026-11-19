@@ -4847,6 +4847,43 @@ async def http_list_user_streams(request: web.Request) -> web.Response:
     return web.json_response({"streams": streams})
 
 
+_STREAM_NAME_MAX = 100
+_STREAM_DESCRIPTION_MAX = 2000
+_STREAM_FLAG_FIELDS = ("is_public", "allow_unauthenticated", "rtmp_enabled")
+
+
+def _validate_stream_fields(data: dict):
+    """Check the types of the stream settings a client sent (create and update).
+
+    Returns (clean, None) with the checked values (flags stored as 0/1, name and
+    description stripped), or (None, message) for the first invalid one. Only the
+    fields present in `data` are looked at.
+    """
+    clean = {}
+    for key in _STREAM_FLAG_FIELDS:
+        if key in data:
+            v = data[key]
+            if type(v) is bool or (type(v) is int and v in (0, 1)):
+                clean[key] = int(v)
+            else:
+                return None, f"{key} must be true, false, 0 or 1"
+    if "name" in data:
+        v = data["name"]
+        if not isinstance(v, str) or not v.strip():
+            return None, "Stream name is required"
+        if len(v.strip()) > _STREAM_NAME_MAX:
+            return None, f"Stream name must be at most {_STREAM_NAME_MAX} characters"
+        clean["name"] = v.strip()
+    if "description" in data:
+        v = data["description"]
+        if v is not None and not isinstance(v, str):
+            return None, "description must be a string or null"
+        if v is not None and len(v) > _STREAM_DESCRIPTION_MAX:
+            return None, f"description must be at most {_STREAM_DESCRIPTION_MAX} characters"
+        clean["description"] = v.strip() if v is not None else None
+    return clean, None
+
+
 async def http_create_user_stream(request: web.Request) -> web.Response:
     """Create a new stream for the authenticated user."""
     token = await authenticate_request(request)
@@ -4864,12 +4901,16 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    name = data.get("name", "").strip()
-    if not name:
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    clean, problem = _validate_stream_fields(data)
+    if problem:
+        return web.json_response({"error": problem}, status=400)
+    if "name" not in clean:
         return web.json_response({"error": "Stream name is required"}, status=400)
-
-    description = data.get("description", "").strip()
-    is_public = bool(data.get("is_public", False))
+    name = clean["name"]
+    description = clean.get("description") or ""
+    is_public = bool(clean.get("is_public", 0))
 
     # Generate unique keys
     stream_key = generate_stream_key()  # Private key for publishing
@@ -5003,6 +5044,9 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
     data = {k: v for k, v in data.items() if k in _STREAM_CLIENT_FIELDS}
     if not data:
         return web.json_response({"error": "No editable stream fields given"}, status=400)
+    data, problem = _validate_stream_fields(data)
+    if problem:
+        return web.json_response({"error": problem}, status=400)
 
     # Create chat channel if one doesn't exist (for legacy streams)
     if not stream.get("chat_channel_id"):
@@ -5029,11 +5073,12 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             if not await db.regenerate_public_key(stream_id, rotated_key, user_id=token.user_id):
                 rotated_key = None
                 logger.error(f"Failed to rotate playback key for stream {stream_id} after it became private")
-        if "is_public" in data and not data["is_public"]:
+        if not (data["is_public"] if "is_public" in data else stream.get("is_public")):
             # Sockets already in the chat room (and its voice call) belong to members
             # who can no longer read it: put them out now, not at their next request.
-            # Also when the stream was private already: the room may still hold
-            # sockets from before.
+            # Whenever the stream is not public after the update, also when the
+            # request did not carry is_public (the stream was private already: the
+            # room may still hold sockets from before).
             await _evict_unreadable_by_id(stream.get("chat_channel_id") or data.get("chat_channel_id"))
         # Revoke all RTMP tokens if rtmp_enabled was toggled off
         if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
@@ -6216,7 +6261,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
                     })
 
             # Clear chat history for the stream's channel
-            if stream.get("chat_channel_id"):
+            if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
                 clear_stats = {}
                 deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
                 if deleted > 0:
@@ -6259,7 +6304,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
                 })
 
         # Clear chat history for the stream's channel
-        if stream.get("chat_channel_id"):
+        if stream.get("chat_channel_id") and not await _stream_chat_shared(stream["chat_channel_id"]):
             clear_stats = {}
             deleted = await db.clear_channel_messages(stream["chat_channel_id"], stats=clear_stats)
             if deleted > 0:
@@ -16357,6 +16402,19 @@ _history_hits: dict[int, list[float]] = {}
 _STREAM_UNSET = object()
 
 
+async def _stream_chat_shared(channel_id) -> bool:
+    """True when the stream's powers do not apply to this channel: it is a default
+    channel or more than one stream uses it (see get_stream_by_chat_channel). A
+    stream clears the history of, and bans members from, only a chat that is its
+    own. A lookup failure counts as shared (nothing is deleted)."""
+    try:
+        bound = await db.get_stream_by_chat_channel(channel_id)
+    except Exception as e:
+        logger.warning(f"[Chat] Could not tell whether channel {channel_id} is shared: {e}")
+        return True
+    return bool(bound and bound.get("chat_channel_shared"))
+
+
 class _ReadAccess:
     """Result of _can_read_channel: true when the viewer may read the channel,
     otherwise `reason` says why ("missing", "hidden", "banned" or "private") and
@@ -16375,14 +16433,24 @@ class _ReadAccess:
 def _stream_chat_hidden(stream, user_id: int, user_role: str) -> bool:
     """True when the chat of this stream is closed to this member: the stream is
     not public and the member is neither its owner nor an admin (the rule of the
-    stream detail route). A channel without a stream is never hidden by this."""
-    if not stream or stream.get("is_public"):
+    stream detail route). A channel without a stream is never hidden by this.
+
+    A default channel is never hidden by a stream binding. A channel bound to
+    several streams fails closed: it is hidden unless every bound stream is
+    public, and its owners are the owners of any of them (plus admins)."""
+    if not stream:
         return False
-    # A default channel, or one that several streams point at, is not the chat of
-    # this stream: a stream's binding never hides it
-    if stream.get("chat_channel_shared"):
+    if stream.get("chat_channel_default"):
         return False
-    return stream.get("user_id") != user_id and user_role not in ("admin", "superadmin")
+    if "chat_channel_all_public" in stream:
+        if stream["chat_channel_all_public"]:
+            return False
+        owners = stream.get("chat_channel_owner_ids") or [stream.get("user_id")]
+    else:
+        if stream.get("is_public"):
+            return False
+        owners = [stream.get("user_id")]
+    return user_id not in owners and user_role not in ("admin", "superadmin")
 
 
 async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREAM_UNSET) -> _ReadAccess:
@@ -16464,7 +16532,8 @@ async def _evict_unreadable_sockets(channel) -> int:
         logger.warning(f"[Chat] Could not re-check access to #{name}: {e}")
     for entry in evicted:
         try:
-            await asyncio.wait_for(entry[0].send_json({"type": "error", "message": "Channel not found"}), 2)
+            await asyncio.wait_for(entry[0].send_json(
+                {"type": "error", "message": "Channel not found", "channel": name}), 2)
         except Exception:
             pass
     # Voice: whoever is in this channel's voice room and may no longer read it
@@ -17496,7 +17565,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 stream = await db.get_stream_by_chat_channel(channel["id"])
 
                         if not channel:
-                            await ws.send_json({"type": "error", "message": "Channel not found"})
+                            missing = {"type": "error", "message": "Channel not found"}
+                            if not stream_key and not channel_id:
+                                missing["channel"] = channel_name
+                            await ws.send_json(missing)
                             continue
 
                         # Leave current text channel (voice stays in its own room)
@@ -17517,12 +17589,18 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
 
                         # Stream ban and private-channel membership: the same check
                         # every way of reading a channel's messages uses
-                        access = await _can_read_channel(channel, user_id, user_role, stream)
+                        # (a stream found by its key carries no channel-level data: ask
+                        # for the stream the channel is bound to)
+                        check_stream = stream
+                        if stream_key and stream:
+                            check_stream = await db.get_stream_by_chat_channel(channel["id"])
+                        access = await _can_read_channel(channel, user_id, user_role, check_stream)
                         if not access:
                             # The old room is already left and the client has switched
                             # its view: later sends must not go to the room it left
                             current_channel = None
-                            await ws.send_json({"type": "error", "message": access.message})
+                            await ws.send_json({"type": "error", "message": access.message,
+                                                "channel": channel["name"]})
                             continue
 
                         # Join new channel (use channel name from DB)
@@ -18425,7 +18503,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
 
                         # Only stream owner or admin can ban
-                        is_owner = stream["user_id"] == user_id
+                        is_owner = stream["user_id"] == user_id and not stream.get("chat_channel_shared")
                         is_admin = user_role in ("admin", "superadmin")
                         if not is_owner and not is_admin:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
@@ -18545,7 +18623,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
 
                         # Only stream owner or admin can unban
-                        is_owner = stream["user_id"] == user_id
+                        is_owner = stream["user_id"] == user_id and not stream.get("chat_channel_shared")
                         is_admin = user_role in ("admin", "superadmin")
                         if not is_owner and not is_admin:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
@@ -18599,7 +18677,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
 
                         # Only stream owner or admin can view bans
-                        is_owner = stream["user_id"] == user_id
+                        is_owner = stream["user_id"] == user_id and not stream.get("chat_channel_shared")
                         is_admin = user_role in ("admin", "superadmin")
                         if not is_owner and not is_admin:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
