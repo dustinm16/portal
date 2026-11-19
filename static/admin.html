@@ -6991,7 +6991,7 @@
                 const f = q('wh-format').value;
                 q('wh-url').placeholder = (isEdit && f !== 'generic' && w.format === f && w.url_set) ? 'leave empty to keep the stored address' : (WH_URL_HINT[f] || '');
                 q('wh-url-label').textContent = f === 'gotify' ? 'Gotify server URL' : (f === 'discord' || f === 'slack') ? 'Webhook URL' : (f === 'ntfy' ? 'ntfy topic URL' : 'URL');
-                q('wh-url-note').textContent = f === 'generic' ? ((isEdit && w.format !== 'generic') ? 'Required: the stored address of the old format is never shown, enter the new URL.' : '') : 'Stored encrypted and never shown again.';
+                q('wh-url-note').textContent = f === 'generic' ? ((isEdit && w.format !== 'generic') ? 'Required: the stored address of the old format is never shown, enter the new URL.' : '') : 'Stored encrypted and never shown again. A new scheme, host or port does not keep the stored token or login: enter them again.';
                 const showCred = f === 'ntfy' || f === 'gotify';
                 q('wh-cred-fields').style.display = showCred ? '' : 'none';
                 q('wh-basic-fields').style.display = f === 'ntfy' ? '' : 'none';

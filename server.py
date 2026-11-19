@@ -7284,6 +7284,17 @@ async def _may_set_allow_private(request: web.Request, token) -> bool:
     return bool(user and user.get("role") == "superadmin")
 
 
+def _webhook_destination(url) -> tuple:
+    """(scheme, host, port) of a webhook URL, for telling a new destination from a new path."""
+    try:
+        parts = urlsplit(str(url or ""))
+        scheme = (parts.scheme or "").lower()
+        port = parts.port or {"http": 80, "https": 443}.get(scheme)
+        return (scheme, (parts.hostname or "").lower(), port)
+    except ValueError:
+        return ("?", str(url), None)
+
+
 async def _outgoing_webhook_fields(body: dict, *, kind: str, existing: dict | None,
                                    may_private: bool):
     """Validate the outgoing-webhook fields of a create or update request.
@@ -7381,11 +7392,21 @@ async def _outgoing_webhook_fields(body: dict, *, kind: str, existing: dict | No
         if err:
             return None, _bad_request(err)
 
-    # credentials
-    if creating or "format_config" in body or fmt_changed:
+    # credentials. Stored credentials belong to the destination they were saved for: when the
+    # scheme, host or port changes (a path-only change keeps them), or allow_private is
+    # switched off together with a URL change, they are not carried over; the request has to
+    # send them again.
+    moved = (not creating and url_in_body and (
+        _webhook_destination(out["url"]) != _webhook_destination(existing["url"])
+        or (old_private and not new_private and out["url"] != existing["url"])))
+    if moved and "format_config" not in body and fmt == "gotify" and not fmt_changed:
+        return None, _bad_request(
+            "The destination changed, so the stored credentials were not kept: "
+            "send the gotify application token (format_config.token) again")
+    if creating or "format_config" in body or fmt_changed or moved:
         cfg, err = _merge_format_config(
             fmt, body.get("format_config") if "format_config" in body else {},
-            existing["format_config"] if existing else {}, fmt == old_fmt)
+            existing["format_config"] if existing else {}, fmt == old_fmt and not moved)
         if err:
             return None, _bad_request(err)
         out["format_config"] = cfg or None
