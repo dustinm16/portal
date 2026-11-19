@@ -293,6 +293,13 @@ async def main():
         check("presence without a user id in meta fails closed",
               await server.fire_webhook_event("user.connected", {"user_id": ids["u1"]}, meta=None) == 0)
 
+        # 4. only the first 4096 bytes of the answer are read
+        bighook = await db.create_webhook(ids["adm"], "big", "outgoing", url=rbase + "/big", events=["message.created"], allow_private=True)
+        res = await server._deliver_webhook(await db.get_webhook_for_delivery(bighook["id"]), "webhook.test", {"x": 1}, single=True)
+        check("a receiver answering with 40 MB is not read to the end", res["success"] and big["written"] < 20 * 1024 * 1024, str(big))
+        logs = await db.get_webhook_logs(bighook["id"], limit=5, offset=0)
+        check("the logged answer is at most 4096 bytes", logs and len(logs[0]["response_body"] or "") <= 4096, str(logs[:1])[:200])
+
         await rsrv.close()
 
     check("admin form says a new destination needs the credentials again",

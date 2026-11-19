@@ -6955,6 +6955,7 @@ _webhook_paused_until: dict[int, float] = {}
 _webhook_policy_noted: dict[int, float] = {}
 _WEBHOOK_POLICY_NOTE_INTERVAL = 3600.0
 _WEBHOOK_MAX_429_WAITS = 3
+_WEBHOOK_ANSWER_MAX = 4096        # bytes of a receiver's answer that are read at all
 _webhook_sleep = asyncio.sleep      # module level so tests can replace it
 
 
@@ -7134,7 +7135,8 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
                                          allow_redirects=req.follow_redirects and not allow_private) as resp:
                     response_status = resp.status
                     retry_after = resp.headers.get("Retry-After")
-                    text = (await resp.text())[:4096]
+                    raw_answer = await resp.content.read(_WEBHOOK_ANSWER_MAX)      # never the whole body
+                    text = raw_answer.decode("utf-8", "replace")
                     # What a third-party receiver answers is not kept for the other formats
                     response_body = text if fmt == "generic" else f"HTTP {resp.status}"
                     success = 200 <= resp.status < 300
