@@ -7424,11 +7424,38 @@ async def _webhook_private_changed(request: web.Request, actor: dict, hook: dict
                     details={**details, "enabled": enabled})
 
 
-async def http_create_webhook(request: web.Request) -> web.Response:
-    """Create a new webhook (admin+ only)."""
+def _is_streamkey(token) -> bool:
+    return str(getattr(token, "token_id", "") or "").startswith("streamkey-")
+
+
+async def _webhook_route_token(request: web.Request, *, write: bool):
+    """(token, error) for the user webhook routes. A stream key is refused on all of them
+    with 403. Creating, changing or deleting a hook (and a new signing secret) needs a
+    credential that carries its user's whole authority (a browser session or an all-scope
+    token or key), the same rule as the other routes that change the account."""
     token = await authenticate_request(request)
     if not token:
-        return unauthorized_response(request)
+        return None, unauthorized_response(request)
+    if _is_streamkey(token):
+        return None, full_scope_required_response()
+    if write and not has_full_user_scope(token):
+        return None, full_scope_required_response()
+    return token, None
+
+
+def _webhook_may_cross(token, user) -> bool:
+    """Whether the caller may act on hooks of other users: the admin role, and a credential
+    that itself carries admin power (scope admin or *), so a narrowly scoped key of an
+    administrator cannot."""
+    return bool(user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+                and (token.has_scope("admin") or token.has_scope("*")))
+
+
+async def http_create_webhook(request: web.Request) -> web.Response:
+    """Create a new webhook (admin+ only)."""
+    token, err = await _webhook_route_token(request, write=True)
+    if err:
+        return err
     user = await db.get_user_by_id(token.user_id)
     if not user:
         return web.json_response({"error": "User not found"}, status=404)
@@ -7488,14 +7515,13 @@ async def http_create_webhook(request: web.Request) -> web.Response:
 
 async def http_list_webhooks(request: web.Request) -> web.Response:
     """List webhooks. Admins see all with owner info."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=False)
+    if err:
+        return err
     user = await db.get_user_by_id(token.user_id)
     if not user:
         return web.json_response({"error": "User not found"}, status=404)
-    is_admin = user.get("is_admin") or user.get("role") in ("admin", "superadmin")
-    if is_admin:
+    if _webhook_may_cross(token, user):
         webhooks = await db.get_all_webhooks()
     else:
         webhooks = await db.get_webhooks_for_user(token.user_id)
@@ -7504,9 +7530,9 @@ async def http_list_webhooks(request: web.Request) -> web.Response:
 
 async def http_get_webhook(request: web.Request) -> web.Response:
     """Get a single webhook by ID (owner or admin)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=False)
+    if err:
+        return err
     try:
         webhook_id = int(request.match_info["id"])
     except (ValueError, KeyError):
@@ -7517,7 +7543,7 @@ async def http_get_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    is_admin = _webhook_may_cross(token, user)
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
@@ -7526,9 +7552,9 @@ async def http_get_webhook(request: web.Request) -> web.Response:
 
 async def http_update_webhook(request: web.Request) -> web.Response:
     """Update webhook (owner or admin)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=True)
+    if err:
+        return err
     try:
         webhook_id = int(request.match_info["id"])
     except (ValueError, KeyError):
@@ -7539,7 +7565,7 @@ async def http_update_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    is_admin = _webhook_may_cross(token, user)
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
@@ -7586,9 +7612,9 @@ async def http_update_webhook(request: web.Request) -> web.Response:
 
 async def http_delete_webhook(request: web.Request) -> web.Response:
     """Delete webhook (owner or admin)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=True)
+    if err:
+        return err
     try:
         webhook_id = int(request.match_info["id"])
     except (ValueError, KeyError):
@@ -7599,7 +7625,7 @@ async def http_delete_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    is_admin = _webhook_may_cross(token, user)
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
@@ -7611,9 +7637,9 @@ async def http_delete_webhook(request: web.Request) -> web.Response:
 
 async def http_get_webhook_logs(request: web.Request) -> web.Response:
     """Get delivery logs for a webhook (owner or admin)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=False)
+    if err:
+        return err
     try:
         webhook_id = int(request.match_info["id"])
     except (ValueError, KeyError):
@@ -7624,7 +7650,7 @@ async def http_get_webhook_logs(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    is_admin = _webhook_may_cross(token, user)
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
@@ -7639,9 +7665,9 @@ async def http_get_webhook_logs(request: web.Request) -> web.Response:
 
 async def http_test_webhook(request: web.Request) -> web.Response:
     """Send a test event to the webhook."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=False)
+    if err:
+        return err
     try:
         webhook_id = int(request.match_info["id"])
     except (ValueError, KeyError):
@@ -7652,7 +7678,7 @@ async def http_test_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    is_admin = _webhook_may_cross(token, user)
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
@@ -7695,9 +7721,9 @@ async def _run_webhook_test(full_wh: dict, user: dict) -> web.Response:
 
 async def http_regenerate_webhook_secret(request: web.Request) -> web.Response:
     """Regenerate the HMAC signing secret. Returns new secret (shown once)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, err = await _webhook_route_token(request, write=True)
+    if err:
+        return err
     try:
         webhook_id = int(request.match_info["id"])
     except (ValueError, KeyError):
@@ -7708,7 +7734,7 @@ async def http_regenerate_webhook_secret(request: web.Request) -> web.Response:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
     user = await db.get_user_by_id(token.user_id)
-    is_admin = user and (user.get("is_admin") or user.get("role") in ("admin", "superadmin"))
+    is_admin = _webhook_may_cross(token, user)
     if webhook["user_id"] != token.user_id and not is_admin:
         return web.json_response({"error": "Webhook not found"}, status=404)
 

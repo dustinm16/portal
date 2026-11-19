@@ -147,6 +147,77 @@ async def main():
         st, e = await call(sa, "PUT", f"/api/admin/webhooks/{sn['id']}", {"url": "https://93.184.216.35/t"})
         check("system ntfy: a new host drops the credentials", st == 200 and not (await stored(sn["id"]))["format_config"], str((st, e)))
 
+        # ---------------- 2. credential scope on the webhook routes
+        keys = {}
+        for who, sess in (("adm", adm), ("sa", sa)):
+            for label, scopes in (("full", "*"), ("narrow", "services:read"), ("admin", "admin")):
+                st, k = await call(sess, "POST", "/api/api-keys", {"name": f"{who}-{label}", "scopes": scopes})
+                assert st == 201, (st, k)
+                keys[(who, label)] = {"X-API-Key": k["key"]}
+        real_by_key = db.get_stream_by_key
+
+        async def fake_stream(key):
+            if key == "live_adm_stream":
+                return {"id": 71, "user_id": ids["adm"]}
+            if key == "live_sa_stream":
+                return {"id": 72, "user_id": ids["sa"]}
+            return await real_by_key(key)
+        db.get_stream_by_key = fake_stream
+        sk_adm = {"X-Stream-Key": "live_adm_stream"}
+        sk_sa = {"X-Stream-Key": "live_sa_stream"}
+
+        own = await db.create_webhook(ids["adm"], "own", "outgoing", url="https://93.184.216.34/x", events=["stream.live"])
+        foreign = await db.create_webhook(ids["u1"], "foreign", "outgoing", url="https://93.184.216.34/y", events=["stream.live"])
+        oid, fid = own["id"], foreign["id"]
+        adm_hooks = len(await db.get_webhooks_for_user(ids["adm"]))
+        adm_ids = {w["id"] for w in await db.get_webhooks_for_user(ids["adm"])}
+        routes = [("GET", "/api/webhooks", None), ("POST", "/api/webhooks", {"name": "z", "events": ["*"], "url": "https://93.184.216.34/z"}),
+                  ("GET", f"/api/webhooks/{oid}", None), ("PUT", f"/api/webhooks/{oid}", {"name": "renamed"}),
+                  ("DELETE", f"/api/webhooks/{oid}", None), ("GET", f"/api/webhooks/{oid}/logs", None),
+                  ("POST", f"/api/webhooks/{oid}/test", None), ("POST", f"/api/webhooks/{oid}/regenerate-secret", None)]
+        for method, path, body in routes:
+            st, e = await call(plain, method, path, body, sk_adm)
+            check(f"a stream key is refused on {method} {path.replace(str(oid), '{id}')}", st == 403, str((st, e)))
+        check("the refused stream-key calls changed nothing",
+              (await db.get_webhook(oid))["name"] == "own" and len(await db.get_webhooks_for_user(ids["adm"])) == adm_hooks)
+        narrow = keys[("adm", "narrow")]
+        for method, path, body in (("POST", "/api/webhooks", routes[1][2]), ("PUT", f"/api/webhooks/{oid}", {"name": "renamed"}),
+                                   ("DELETE", f"/api/webhooks/{oid}", None), ("POST", f"/api/webhooks/{oid}/regenerate-secret", None)):
+            st, e = await call(plain, method, path, body, narrow)
+            check(f"a narrowly scoped key cannot {method} {path.replace(str(oid), '{id}')}", st == 403, str((st, e)))
+        check("the narrow key's refused calls changed nothing", (await db.get_webhook(oid)) is not None
+              and (await db.get_webhook(oid))["name"] == "own")
+        st, e = await call(plain, "GET", f"/api/webhooks/{oid}", None, narrow)
+        check("a narrowly scoped key can still read its own hook", st == 200, str((st, e)))
+        st, e = await call(plain, "GET", f"/api/webhooks/{fid}", None, narrow)
+        check("a narrowly scoped key of an administrator cannot read another user's hook", st == 404, str((st, e)))
+        st, e = await call(plain, "GET", "/api/webhooks", None, narrow)
+        check("... and lists only its own", st == 200 and {w["id"] for w in e["webhooks"]} == adm_ids, str((st, e)))
+        st, e = await call(plain, "GET", f"/api/webhooks/{fid}", None, keys[("adm", "full")])
+        check("an all-scope administrator key reads another user's hook", st == 200, str((st, e)))
+        st, e = await call(plain, "GET", "/api/webhooks", None, keys[("adm", "admin")])
+        check("an admin-scope key lists every hook", st == 200 and {oid, fid} <= {w["id"] for w in e["webhooks"]}, str((st, e)))
+        st, e = await call(plain, "POST", "/api/webhooks", routes[1][2], keys[("adm", "admin")])
+        check("an admin-only scope is not enough to create a hook", st == 403, str((st, e)))
+        st, e = await call(plain, "PUT", f"/api/webhooks/{fid}", {"name": "by-full-key"}, keys[("adm", "full")])
+        check("an all-scope administrator key edits another user's hook", st == 200, str((st, e)))
+        st, e = await call(plain, "POST", "/api/webhooks", routes[1][2], keys[("adm", "full")])
+        check("an all-scope key creates its own hook", st == 201, str((st, e)))
+
+        # system hook routes
+        sysh = await db.create_webhook(None, "sys", "outgoing", url="https://93.184.216.34/s", events=["webhook.test"], kind="system")
+        sid = sysh["id"]
+        sroutes = [("GET", "/api/admin/webhooks", None), ("POST", "/api/admin/webhooks", {"name": "s2", "events": ["webhook.test"], "url": "https://93.184.216.34/s2"}),
+                   ("GET", f"/api/admin/webhooks/{sid}", None), ("PUT", f"/api/admin/webhooks/{sid}", {"name": "x"}),
+                   ("DELETE", f"/api/admin/webhooks/{sid}", None), ("GET", f"/api/admin/webhooks/{sid}/logs", None),
+                   ("POST", f"/api/admin/webhooks/{sid}/test", None), ("POST", f"/api/admin/webhooks/{sid}/regenerate-secret", None)]
+        for label, hdr in (("a stream key", sk_sa), ("a narrowly scoped key", keys[("sa", "narrow")])):
+            for method, path, body in sroutes:
+                st, e = await call(plain, method, path, body, hdr)
+                check(f"system route {method} {path.replace(str(sid), '{id}')} refuses {label}", st == 403, str((st, e)))
+        check("the refused system calls changed nothing", (await db.get_webhook(sid))["name"] == "sys")
+        db.get_stream_by_key = real_by_key
+
     check("admin form says a new destination needs the credentials again",
           "does not keep the stored token or login" in (Path(__file__).resolve().parent.parent / "static" / "admin.html").read_text())
 

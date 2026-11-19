@@ -3859,6 +3859,8 @@ The weekly job fetches `https://www.cloudflare.com/ips-v4` and `https://www.clou
 
 Outgoing webhooks send an event to a URL; incoming webhooks post a message into a chat channel. Management needs an admin; owners and admins reach `/api/webhooks/{id}` (a **system** webhook is never reachable there, see below). Destinations and credentials are encrypted at rest.
 
+Credentials: a stream key is refused with `403` on every webhook route, user and system. Creating, changing or deleting a user webhook and getting a new signing secret need a credential that carries its user's whole authority (a browser session, or a token or API key with the `*` scope); a narrowly scoped key can still list, read, view the delivery log of and test its own hooks. Acting on a hook of another user (list all, read, change) needs the administrator role and a credential with the `admin` or `*` scope; a narrowly scoped key of an administrator sees and reaches only its own hooks. System webhook routes need a superadmin and a credential with the `admin` scope.
+
 #### POST /api/webhooks
 
 Create a webhook (maximum 25 per user). Fields:
