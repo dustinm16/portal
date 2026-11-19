@@ -4717,8 +4717,9 @@ class Database:
 
     async def get_audit_log(self, limit: int = 50, offset: int = 0,
                              action: str = None, actor_id: int = None,
-                             channel_id: int = None, since: str = None) -> list[dict]:
-        """Get audit log entries with optional filters."""
+                             channel_id: int = None, since: str = None,
+                             exclude_actions: tuple = ()) -> list[dict]:
+        """Get audit log entries with optional filters; exclude_actions leaves those actions out."""
         conditions = []
         params = []
         if action:
@@ -4733,6 +4734,9 @@ class Database:
         if since:
             conditions.append("created_at >= ?")
             params.append(since)
+        if exclude_actions:
+            conditions.append("action NOT IN (" + ",".join("?" * len(exclude_actions)) + ")")
+            params.extend(exclude_actions)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         params.extend([limit, offset])
         cursor = await self.conn.execute(
@@ -4748,7 +4752,8 @@ class Database:
         return entries
 
     async def get_audit_log_count(self, action: str = None, actor_id: int = None,
-                                   channel_id: int = None, since: str = None) -> int:
+                                   channel_id: int = None, since: str = None,
+                                   exclude_actions: tuple = ()) -> int:
         """Get total count of audit log entries with filters."""
         conditions = []
         params = []
@@ -4764,6 +4769,9 @@ class Database:
         if since:
             conditions.append("created_at >= ?")
             params.append(since)
+        if exclude_actions:
+            conditions.append("action NOT IN (" + ",".join("?" * len(exclude_actions)) + ")")
+            params.extend(exclude_actions)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         cursor = await self.conn.execute(f"SELECT COUNT(*) as cnt FROM audit_log{where}", params)
         row = await cursor.fetchone()

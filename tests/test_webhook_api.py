@@ -347,6 +347,25 @@ async def main():
         cur = await db.conn.execute("SELECT action FROM audit_log WHERE action LIKE 'webhook_%'")
         acts = {r["action"] for r in await cur.fetchall()}
         check("audit entries for system hook create/update", {"webhook_system_create", "webhook_system_update"} <= acts, str(acts))
+        # the audit log is open to moderators; entries about system hooks and alert routing are not
+        sa_actions = {"webhook_system_create", "webhook_system_update", "webhook_system_delete", "webhook_allow_private", "alert_notify_change"}
+        await db.conn.execute("UPDATE users SET role = 'moderator' WHERE id = ?", (ids["u1"],))
+        await db.conn.commit()
+        await server.audit_log("alert_notify_change", ids["sa"], "sa", target_name="update.available")
+        st, own = await call(sa, "GET", "/api/admin/audit-log?limit=200")
+        sa_seen = {x["action"] for x in own["entries"]}
+        check("a superadmin sees the system hook audit entries", st == 200 and {"webhook_system_create", "webhook_system_update"} <= sa_seen, str(sa_seen))
+        for who, label in ((adm, "an admin"), (u1, "a moderator")):
+            st, lg = await call(who, "GET", "/api/admin/audit-log?limit=200")
+            seen = {x["action"] for x in lg["entries"]}
+            check(f"{label} does not see system hook or alert routing audit entries", st == 200 and not (seen & sa_actions), str((st, seen)))
+            st, lg = await call(who, "GET", "/api/admin/audit-log?action=webhook_system_create")
+            check(f"{label} filtering for one of them gets nothing, total 0", st == 200 and lg["entries"] == [] and lg["total"] == 0, str((st, lg)))
+        st, all_sa = await call(sa, "GET", "/api/admin/audit-log?limit=1")
+        st, all_adm = await call(adm, "GET", "/api/admin/audit-log?limit=1")
+        check("the total excludes them for an admin and counts them for a superadmin", all_adm["total"] < all_sa["total"], str((all_adm["total"], all_sa["total"])))
+        await db.conn.execute("UPDATE users SET role = 'user' WHERE id = ?", (ids["u1"],))
+        await db.conn.commit()
         # a creating superadmin's deletion leaves system hooks alone
         await db.conn.execute("DELETE FROM users WHERE id = ?", (ids["sa"],))
         await db.conn.commit()

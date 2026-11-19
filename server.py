@@ -17731,6 +17731,12 @@ async def http_unblock_user(request: web.Request) -> web.Response:
 # Audit Log API
 # =============================================================================
 
+# Audit entries about system webhooks and alert routing: the audit log is open to moderators, and
+# these name destinations and settings only a superadmin manages, so everyone else never sees them.
+SUPERADMIN_ONLY_AUDIT_ACTIONS = ("webhook_system_create", "webhook_system_update", "webhook_system_delete",
+                                 "webhook_allow_private", "alert_notify_change")
+
+
 async def http_get_audit_log(request: web.Request) -> web.Response:
     """Get audit log entries (moderator+ only)."""
     token = await authenticate_request(request)
@@ -17766,6 +17772,8 @@ async def http_get_audit_log(request: web.Request) -> web.Response:
     if request.query.get("since"):
         filters["since"] = request.query["since"]
 
+    if role != "superadmin":
+        filters["exclude_actions"] = SUPERADMIN_ONLY_AUDIT_ACTIONS
     entries = await db.get_audit_log(limit=limit, offset=offset, **filters)
     total = await db.get_audit_log_count(**filters)
     return web.json_response({"entries": entries, "total": total})
