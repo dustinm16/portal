@@ -2026,6 +2026,8 @@
             padding: 1.5rem;
             width: 360px;
             max-width: 90vw;
+            max-height: 90vh;
+            overflow-y: auto;
         }
         .voice-settings-content h3 { margin: 0 0 1rem; }
         .voice-settings-content label {
@@ -2405,8 +2407,8 @@
             border-bottom: 1px solid rgba(255,255,255,0.08);
         }
         .search-chip {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
+            background: var(--card-bg, rgba(255,255,255,0.06));
+            border: 1px solid var(--card-border, rgba(255,255,255,0.2));
             color: var(--text-muted);
             border-radius: 12px;
             padding: 0.1rem 0.55rem;
@@ -2418,7 +2420,7 @@
             padding: 0.5rem 0.75rem;
             color: var(--text-muted);
             font-size: 0.8rem;
-            border-top: 1px solid var(--border);
+            border-top: 1px solid var(--card-border, rgba(255,255,255,0.2));
         }
         .search-result-flags { color: var(--text-muted); font-size: 0.75rem; margin-left: 0.4rem; }
         .search-more-btn { margin: 0.5rem auto; display: block; }
@@ -3203,6 +3205,7 @@
         let slowmodeCooldownTimer = null; // timer for slowmode countdown
         let blockedUsers = new Set(); // set of blocked user IDs
         let channelCanSend = true; // whether current user can send in current channel
+        let channelUnavailable = false; // the open channel was lost (access removed): no sending until another is chosen
 
         // Per-channel/stream desktop notification subscriptions (localStorage)
         let _subscribedChannels = new Set(JSON.parse(localStorage.getItem('portal_notif_channels') || '[]'));
@@ -3756,6 +3759,11 @@
             ws.onclose = (event) => {
                 console.log('Chat disconnected');
                 updateConnectionStatus(false);
+                // A history request in flight will never be answered: clear its
+                // state (the buffer of live messages stays) so scrolling can ask again
+                HistoryView.pending = null;
+                HistoryView.loading = false;
+                updateHistoryBar();
 
                 // The session was signed out elsewhere (password reset, role
                 // change, revoked token): go to the login page, do not retry.
@@ -3955,7 +3963,9 @@
                     renderDmList();
                     break;
                 case 'error':
-                    if (data.error_code === 'slowmode') {
+                    if (data.message === 'Channel not found' && currentView === 'channel') {
+                        showChannelUnavailable();
+                    } else if (data.error_code === 'slowmode') {
                         startSlowmodeCooldown(data.cooldown_remaining || 5);
                     } else if (data.error_code === 'timeout' || data.error_code === 'muted') {
                         showToast(data.message, 'error');
@@ -4136,6 +4146,21 @@
             return div;
         }
 
+        // The server answers "Channel not found" for a channel this member can no
+        // longer read (the stream went private, removed from the channel): show
+        // that instead of a stale list, and stop sending until another is chosen.
+        function showChannelUnavailable() {
+            channelUnavailable = true;
+            resetHistoryState();
+            document.getElementById('chat-messages').innerHTML = '';
+            appendSystemMessage('This channel is no longer available.');
+            const chatInput = document.getElementById('chat-input');
+            const sendBtn = document.getElementById('send-btn');
+            chatInput.disabled = true;
+            chatInput.placeholder = 'This channel is no longer available';
+            if (sendBtn) sendBtn.disabled = true;
+        }
+
         function appendSystemMessage(text) {
             const container = document.getElementById('chat-messages');
             const div = document.createElement('div');
@@ -4154,6 +4179,7 @@
 
             // Handle channel permissions - readonly mode
             channelCanSend = data.can_send !== false;
+            channelUnavailable = false;
             const chatInput = document.getElementById('chat-input');
             const sendBtn = document.getElementById('send-btn');
             if (!channelCanSend) {
@@ -4995,6 +5021,7 @@
             const message = input.value.trim();
 
             if ((!message && !pendingImageUrl && !pendingAttachment) || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if (channelUnavailable && currentView === 'channel') return;
 
             if (currentView === 'dm' && currentDmConversationId) {
                 // Send DM message
@@ -7074,9 +7101,10 @@
             fill.style.width = voiceMeterPct(db) + '%';
             fill.classList.toggle('over', db > VoiceChat.getPrefs().vadThreshold);
             meter.setAttribute('aria-valuenow', String(Math.round(Math.max(-80, db))));
-            if (info.error) note.textContent = info.error;
-            else if (info.inCall) note.textContent = 'Showing the microphone of your current call.';
-            else note.textContent = '';
+            // The note is a role=status region: write it only when its text changes
+            const noteText = info.error ? info.error
+                : (info.inCall ? 'Showing the microphone of your current call.' : '');
+            if (note.textContent !== noteText) note.textContent = noteText;
             note.classList.toggle('error', !!info.error);
             loop.disabled = !!info.inCall;
             loop.checked = !!info.loopback;
@@ -7260,6 +7288,13 @@
         }
 
         function openDmConversation(convId) {
+            if (channelUnavailable) {
+                channelUnavailable = false;
+                const ci = document.getElementById('chat-input'), sb = document.getElementById('send-btn');
+                ci.disabled = false;
+                ci.placeholder = 'Type a message...';
+                if (sb) sb.disabled = false;
+            }
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'dm_open', conversation_id: convId }));
             }
@@ -7545,14 +7580,30 @@
             }
         }
 
+        // Highlight the words the server searched for (not operator text). The
+        // match runs on the raw text and each piece is escaped on its own, so a
+        // word such as "amp" or "lt" cannot cut into an HTML entity.
+        function highlightSearchText(text, words) {
+            const parts = (words || []).filter(Boolean)
+                .sort((x, y) => y.length - x.length)
+                .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+            if (!parts.length) return escapeHtml(text);
+            const re = new RegExp(parts.join('|'), 'gi');
+            let out = '', last = 0, m;
+            while ((m = re.exec(text)) !== null) {
+                out += escapeHtml(text.slice(last, m.index)) + '<mark>' + escapeHtml(m[0]) + '</mark>';
+                last = m.index + m[0].length;
+            }
+            return out + escapeHtml(text.slice(last));
+        }
+
         function searchResultHtml(r, words) {
-            let msgHtml = escapeHtml(r.message || '');
-            if (!msgHtml) msgHtml = '<em>' + escapeHtml(r.has_image ? '[image]'
-                : (r.attachment_name ? '[file] ' + r.attachment_name : '[attachment]')) + '</em>';
-            // Highlight the words the server searched for (not operator text)
-            for (const word of words) {
-                const re = new RegExp(`(${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-                msgHtml = msgHtml.replace(re, '<mark>$1</mark>');
+            let msgHtml;
+            if (r.message) {
+                msgHtml = highlightSearchText(r.message, words);
+            } else {
+                msgHtml = '<em>' + escapeHtml(r.has_image ? '[image]'
+                    : (r.attachment_name ? '[file] ' + r.attachment_name : '[attachment]')) + '</em>';
             }
             const sourceLabel = r.source === 'channel' ? r.source_name : `DM: ${r.source_name || 'unknown'}`;
             const timeStr = r.created_at ? new Date(r.created_at).toLocaleString() : '';

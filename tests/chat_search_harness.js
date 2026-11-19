@@ -72,6 +72,9 @@ const anon = { id: 5, source: 'channel', source_id: 1, source_name: '#general', 
                display_name: 'Anonymous', created_at: '2026-10-12T09:30:00+00:00', has_link: 1, is_pinned: 1 };
 const h = api.searchResultHtml(anon, ['dinner']);
 check('the server terms are highlighted and the text is escaped', h.includes('<mark>Dinner</mark>') && h.includes('&lt;b&gt;') && !h.includes('<b>x'));
+const ent = api.searchResultHtml({ id: 8, source: 'channel', source_id: 1, source_name: '#general', message: 'fish & chips <amp> lt', display_name: 'Mom' }, ['amp', 'lt', 'chips']);
+check('a word that is part of an HTML entity does not cut into the entity',
+  ent.includes('fish &amp; <mark>chips</mark> &lt;<mark>amp</mark>&gt; <mark>lt</mark>') && !ent.includes('&<mark>'), ent);
 check('the author shown is the display name the server sent', h.includes('>Anonymous<'));
 check('flags are shown', h.includes('pinned, link'));
 check('the row carries ids in data attributes, not in an inline handler', h.includes('data-id="5"') && !h.includes('onclick'));
