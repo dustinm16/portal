@@ -247,6 +247,46 @@ async def main():
             check("(that success is one ok event)", len(await events(d)) == before_events + 1
                   and (await events(d))[-1]["result"] == "ok")
 
+        with section('an approved list fetched again after a restart with the refresh off'):
+            await server.reset_cloudflare_ranges()
+            await server.refresh_cloudflare_ranges(texts=(t4, TEXT6))
+            pend = json.loads(await d.get_setting(server.CF_SETTING_PENDING))
+            code, _ = await server.approve_cloudflare_pending(pend["id"])
+            approved_row = await d.get_setting(server.CF_SETTING_LIST)
+            check("(an approved list is saved and in use)", code == 200 and json.loads(approved_row)["approved"] is True)
+            # restart with the refresh off: the saved list is kept but the built-in one is in use
+            await d.set_setting(server.CF_SETTING_ENABLED, "false")
+            server._apply_cloudflare_networks(NETS(), "built-in")
+            await server._load_cloudflare_state()
+            check("(restart with the refresh off: built-in in use, saved list ignored)",
+                  server._cf_source == "built-in" and server._cf_saved_ignored == "refresh_off")
+            # the refresh is switched on again and runs before the next restart
+            await d.set_setting(server.CF_SETTING_ENABLED, "true")
+            n_events = len(await events(d))
+            st = await server.refresh_cloudflare_ranges(texts=(t4, TEXT6))
+            check("the fetched list identical to the approved saved list is accepted, not held as pending again",
+                  st["ok"] is True and await d.get_setting(server.CF_SETTING_PENDING) is None
+                  and server._cf_source == "fetched" and server._is_trusted_proxy("45.3.0.9"), str(st))
+            check("...the saved list keeps its approval flag and its content",
+                  await d.get_setting(server.CF_SETTING_LIST) == approved_row)
+            check("...and it is one ok event, not a failure", len(await events(d)) == n_events + 1
+                  and (await events(d))[-1]["result"] == "ok")
+            server._apply_cloudflare_networks(NETS(), "built-in")
+            await server._load_cloudflare_state()
+            check("...and it still loads at the next start (the approval was not lost)",
+                  server._cf_source == "fetched" and server._is_trusted_proxy("45.3.0.9"))
+            # control: a different list with the same size is still held, and so is the same list when it was never approved
+            await server.reset_cloudflare_ranges()
+            await d.set_setting(server.CF_SETTING_LIST, json.dumps({**json.loads(approved_row), "approved": False}))
+            st = await server.refresh_cloudflare_ranges(texts=(t4, TEXT6))
+            check("(control) the same list saved without an approval is held as pending",
+                  st["ok"] is False and await d.get_setting(server.CF_SETTING_PENDING) is not None)
+            await server.reset_cloudflare_ranges()
+            await d.set_setting(server.CF_SETTING_LIST, approved_row)
+            st = await server.refresh_cloudflare_ranges(texts=(v4_text(8, keep=None).replace("45.0.0.0/16", "45.99.0.0/16"), TEXT6))
+            check("(control) a different list than the approved one is held as pending",
+                  st["ok"] is False and await d.get_setting(server.CF_SETTING_PENDING) is not None)
+
         with section('a good refresh clears a pending list'):
             await server.reset_cloudflare_ranges()
             await server.refresh_cloudflare_ranges(texts=(v4_text(9), TEXT6))

@@ -6074,7 +6074,9 @@
                     const c = await cfRes.json();
                     const last = c.last;
                     let line;
-                    if (last && last.ok === false) {
+                    if (last && last.discarded) {
+                        line = `<span style="color:var(--text-muted);">Last refresh discarded (${escapeHtml(last.at)}): the list was reset while it ran. The ${escapeHtml(c.source)} list is in use.</span>`;
+                    } else if (last && last.ok === false) {
                         line = `<span style="color:var(--accent-yellow, #eab308);">Last refresh failed (${escapeHtml(last.at)}): ${escapeHtml(last.message || '')}. The ${escapeHtml(c.source)} list is in use.</span>`;
                     } else if (last && last.ok) {
                         line = `<span style="color:var(--accent-green);">Refreshed ${escapeHtml(last.at)}</span>`;
@@ -6165,6 +6167,8 @@
                 let result = '<span style="color:var(--text-muted);">No refresh has run yet.</span>';
                 if (last && last.ok) {
                     result = `<span style="color:var(--accent-green);">Last refresh: ${escapeHtml(last.at)} (${parseInt(last.v4) || 0} IPv4, ${parseInt(last.v6) || 0} IPv6)</span>`;
+                } else if (last && last.discarded) {
+                    result = `<span style="color:var(--text-muted);">Last refresh discarded (${escapeHtml(last.at)}): the list was reset while it ran, so the fetched result was not used. It comes back at a later scheduled refresh.${last.last_ok_at ? ' Last good: ' + escapeHtml(last.last_ok_at) + '.' : ''}</span>`;
                 } else if (last) {
                     result = `<span style="color:var(--accent-yellow, #eab308);">Last refresh failed (${escapeHtml(last.at)}): ${escapeHtml(last.message || '')}.${last.last_ok_at ? ' Last good: ' + escapeHtml(last.last_ok_at) + '.' : ''}</span>`;
                 }

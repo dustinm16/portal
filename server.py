@@ -1181,6 +1181,21 @@ async def _cf_hold_pending(refusal: "ipguard.ListLimitError", now: str) -> bool:
     return True
 
 
+async def _cf_is_approved_saved(saved: dict, nets) -> bool:
+    """True when `nets` is exactly the saved list and a superadmin approved that list.
+
+    The saved list is read again through the hard rules, as at start, so a list
+    that was edited in the database into something that breaks them is not trusted.
+    """
+    if saved.get("approved") is not True:
+        return False
+    try:
+        saved_nets = ipguard.validate_cf_hard("\n".join(saved["v4"]), "\n".join(saved["v6"]))
+    except Exception:
+        return False
+    return set(saved_nets) == set(nets)
+
+
 async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> dict:
     """Fetch (or take injected) Cloudflare lists, validate, swap, persist. Never raises.
 
@@ -1199,6 +1214,7 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
     changed = (0, 0)
     announce = True
     pending_id = None
+    keep_saved = False
     try:
         if texts is None:
             if Config.STAGE_MODE and urls is None:
@@ -1211,12 +1227,19 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
         async with _cf_lock():
             if generation != _cf_generation:
                 raise _CfDiscarded()
+            saved = await _cf_load_json(CF_SETTING_LIST)
             try:
                 new = ipguard.validate_cf_lists(v4_text, v6_text, _cf_networks)
             except ipguard.ListLimitError as e:
-                pending_id = ipguard.cf_list_id(e.networks)
-                announce = await _cf_hold_pending(e, now)
-                raise
+                # The saved list a superadmin approved, fetched again (for example after a
+                # restart with the refresh off, which put the built-in list in use): already
+                # approved, so it is accepted, not held as pending a second time
+                if not await _cf_is_approved_saved(saved, e.networks):
+                    pending_id = ipguard.cf_list_id(e.networks)
+                    announce = await _cf_hold_pending(e, now)
+                    raise
+                new = list(e.networks)
+                keep_saved = True
             old_set, new_set = set(_cf_networks), set(new)
             changed = (len(new_set - old_set), len(old_set - new_set))
             payload = {
@@ -1224,7 +1247,10 @@ async def refresh_cloudflare_ranges(texts=None, urls=None, ssl_context=None) -> 
                 "v6": [str(n) for n in new if n.version == 6],
                 "fetched_at": now,
             }
-            if not (new_set == old_set and _cf_source == "fetched"):
+            if keep_saved:
+                # The saved list stays as it is (it carries its approval); only the swap is made
+                _apply_cloudflare_networks(new, "fetched", saved.get("fetched_at") or now)
+            elif not (new_set == old_set and _cf_source == "fetched"):
                 # Persist first, then swap. The same list again leaves the saved one alone
                 # (it may be an approved list, which carries its own flag).
                 await db.set_setting(CF_SETTING_LIST, json.dumps(payload))

@@ -22,9 +22,11 @@ function slice(src, from, to) {
 
 const escSrc = slice(html, 'function escapeHtml(text) {', '\n        }\n') + '\n}\n';
 const panelSrc = slice(html, 'async function loadCfRanges()', '// ===== DATA RETENTION =====');
+const trustSrc = slice(html, 'async function loadNetworkTrust()', 'let neverBanState');
 
 const handlers = {};
 const body = { innerHTML: '' };
+const trustBody = { innerHTML: '' };
 const calls = [];
 let confirmAnswer = true;
 let confirmMessages = [];
@@ -33,11 +35,14 @@ const toasts = [];
 
 const context = {
   document: {
-    getElementById: (id) => (id === 'cfranges-body' ? body : null),
+    getElementById: (id) => (id === 'cfranges-body' ? body : id === 'network-trust-body' ? trustBody : null),
     addEventListener: (type, fn) => { (handlers[type] = handlers[type] || []).push(fn); },
   },
   Portal: {
-    fetch: async (url, opts) => { calls.push({ url, opts }); return nextResponse; },
+    fetch: async (url, opts) => {
+      calls.push({ url, opts });
+      return url.includes('proxy-trust') ? { ok: false, json: async () => ({}) } : nextResponse;
+    },
     toast: (msg, kind) => toasts.push([msg, kind]),
   },
   confirm: (msg) => { confirmMessages.push(msg); return confirmAnswer; },
@@ -47,6 +52,13 @@ const context = {
 vm.createContext(context);
 vm.runInContext(escSrc, context);
 vm.runInContext(panelSrc, context);
+vm.runInContext(trustSrc, context);
+
+async function renderTrust(view) {
+  nextResponse = { ok: true, json: async () => view };
+  await context.loadNetworkTrust();
+  return trustBody.innerHTML;
+}
 
 async function render(view) {
   nextResponse = { ok: true, json: async () => view };
@@ -129,6 +141,23 @@ const base = {
   check('failed checks with the refresh on: same text', out.includes('failed the checks when the portal started'));
   out = await render({ ...base });
   check('nothing ignored: neither text', !out.includes('failed the checks') && !out.includes('was off when the portal started'));
+
+  // the result of the last refresh: a failure, a success and a refresh discarded by a reset
+  const lastFailed = { ok: false, at: '2026-11-19 03:00:00', message: 'IPv4 list is empty', last_ok_at: '2026-11-12 03:00:00' };
+  const lastDiscarded = { ok: false, discarded: true, at: '2026-11-19 03:00:00', last_ok_at: '2026-11-12 03:00:00',
+                          message: 'the list was reset while the refresh ran; the fetched result was discarded and comes back at a later scheduled refresh' };
+  out = await render({ ...base, last: lastFailed });
+  check('settings panel: a failed refresh is shown as failed', out.includes('Last refresh failed'));
+  out = await render({ ...base, last: lastDiscarded });
+  check('settings panel: a refresh discarded by a reset is not shown as failed',
+        !out.includes('Last refresh failed') && out.includes('Last refresh discarded') && out.includes('reset while it ran'), out);
+  out = await renderTrust({ ...base, last: lastFailed });
+  check('status panel: a failed refresh is shown as failed', out.includes('Last refresh failed'));
+  out = await renderTrust({ ...base, last: lastDiscarded });
+  check('status panel: a refresh discarded by a reset is not shown as failed',
+        !out.includes('Last refresh failed') && out.includes('Last refresh discarded'), out);
+  out = await render({ ...base, last: { ok: true, at: '2026-11-19 03:00:00', v4: 15, v6: 7 } });
+  check('settings panel: a success is still shown as a success', out.includes('Last refresh: 2026-11-19') && !out.includes('discarded'));
 
   // the reset confirmation
   confirmMessages = []; calls.length = 0;
