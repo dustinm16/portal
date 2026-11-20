@@ -6369,7 +6369,10 @@ async def http_add_stream_mod(request: web.Request) -> web.Response:
         return web.json_response({"error": "Already a mod"}, status=409)
     if len(current) >= MAX_STREAM_MODS:
         return web.json_response({"error": f"At most {MAX_STREAM_MODS} mods per stream"}, status=409)
-    if not await db.add_channel_member(channel["id"], target_id, role="moderator", added_by=token.user_id):
+    # The count and the insert are one statement: parallel requests cannot pass the cap together
+    if not await db.add_channel_moderator_capped(channel["id"], target_id, token.user_id, MAX_STREAM_MODS):
+        if len(await db.get_channel_moderator_ids(channel["id"])) >= MAX_STREAM_MODS:
+            return web.json_response({"error": f"At most {MAX_STREAM_MODS} mods per stream"}, status=409)
         return web.json_response({"error": "Could not appoint the mod"}, status=500)
     actor_level, _ = await _stream_route_mod_level(stream, token.user_id, role)
     actor = await db.get_user_by_id(token.user_id)

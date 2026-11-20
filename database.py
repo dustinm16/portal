@@ -5375,6 +5375,23 @@ class Database:
         except Exception:
             return False
 
+    async def add_channel_moderator_capped(self, channel_id: int, user_id: int,
+                                           added_by: int, cap: int) -> bool:
+        """Make a member a 'moderator' of a channel unless it already has `cap` of them.
+        One statement counts and inserts, so concurrent requests cannot pass the cap
+        together. False: the cap is reached (or the insert failed)."""
+        try:
+            cursor = await self.conn.execute(
+                """INSERT OR REPLACE INTO channel_members (channel_id, user_id, role, added_by)
+                   SELECT ?, ?, 'moderator', ?
+                   WHERE (SELECT COUNT(*) FROM channel_members
+                          WHERE channel_id = ? AND role = 'moderator' AND user_id != ?) < ?""",
+                (channel_id, user_id, added_by, channel_id, user_id, cap))
+            await self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            return False
+
     async def remove_channel_member(self, channel_id: int, user_id: int) -> bool:
         """Remove a member from a channel."""
         cursor = await self.conn.execute(

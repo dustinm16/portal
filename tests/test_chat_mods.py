@@ -892,6 +892,22 @@ def test_pinned_list_on_join_does_not_name_an_anonymous_pinner():
     server.chat_user_state.clear()      # the anonymous mode set here is not the next test's
 
 
+def test_parallel_mod_appointments_keep_the_cap():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        sid, cid = w.stream["a"], w.chat["a"]
+        extra = [await d.create_user("par%d" % i, "x") for i in range(25)]
+        results = await asyncio.gather(*[
+            env.call("POST", w.u["owner"], f"/api/streams/{sid}/mods", json={"user_id": uid}) for uid in extra])
+        mods = await d.get_channel_moderator_ids(cid)
+        assert len(mods) == server.MAX_STREAM_MODS, len(mods)
+        statuses = sorted(r[0] for r in results)
+        assert statuses.count(201) == server.MAX_STREAM_MODS - 2, statuses
+        assert set(statuses) <= {201, 409}, statuses
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
