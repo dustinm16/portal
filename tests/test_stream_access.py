@@ -687,11 +687,18 @@ def test_stream_detail_is_decided_by_the_role_based_read_rule():
             return make_mocked_request("GET", f"/api/streams/{sid}", match_info={"id": str(sid)},
                                        headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie[user]}"},
                                        transport=Transport())
-        # a token that carries only the "admin" scope is no administrator by role
+        # a member (role "user") whose token carries "*" is no administrator: the old inline scope
+        # test let it read the private stream; the role-based rule does not
+        star, _ = await auth.create_access_token(w.users["member"], ["*"])
+        mine = make_mocked_request("GET", f"/api/streams/{sid}", match_info={"id": str(sid)},
+                                   headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={star}"}, transport=Transport())
+        assert (await server.http_get_user_stream(mine)).status == 404
+        # a moderator is not an administrator either
+        assert (await server.http_get_user_stream(get("mod"))).status == 404
         assert (await server.http_get_user_stream(get("member"))).status == 404
         assert (await server.http_get_user_stream(get("owner"))).status == 200
         assert (await server.http_get_user_stream(get("admin"))).status == 200
-        # the decision goes through _stream_read_allowed, not an inline scope test
+        # and the decision goes through _stream_read_allowed, not an inline scope test
         src = (ROOT / "server.py").read_text()
         start = src.index("async def http_get_user_stream(")
         chunk = src[start:src.index("\nasync def ", start + 10)]

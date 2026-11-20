@@ -26,7 +26,7 @@ An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Au
 - Publishing the stream (RTMP authentication; WHIP only where the WebRTC media port is reachable, see Streaming Configuration)
 - The stream event and status calls MediaMTX or an encoder makes
 
-It is **not** a way to sign in as the stream's owner. Every route under `/api/streams`, `/api/stream` (except the publish-side ones) and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope.
+It is **not** a way to sign in as the stream's owner. Every route under `/api/streams` and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope, and a non-administrator's API key is always made with the scoped `services:read,access:*` set, so a non-administrator has no API-key path to these routes. The playback routes under `/api/stream/{key}/` (HLS, thumbnail, info, WHEP and its sessions) ignore a stream key and answer `404` as described under Access; the publish-side routes (`/api/stream/auth`, `/api/stream/event` for MediaMTX on the host, and WHIP, which takes the `live_` key in its URL) keep working; `/api/streams/open` needs no credential.
 
 **Example - what no longer works:**
 ```bash
@@ -1197,13 +1197,13 @@ The owner's own responses (`GET /api/streams`, `GET /api/streams/{id}`) carry `f
 ---
 
 #### PUT /api/streams/{id}/follow  and  DELETE /api/streams/{id}/follow
-Follow a stream, or stop following it (1.16.0). Needs a signed-in member with a full credential (a browser session, or a token or API key with `*`); a stream key is refused (`401`). `PUT` answers `{"following": true, "stream_id": 5}`. A member may follow only a stream they may watch (the playback rule: the owner and administrators always, other members only a public stream); an unknown, a non-numeric and an unviewable stream all answer the same `404 {"error": "Stream not found"}`. A member may follow at most 200 streams (`400`). `DELETE` removes the member's own follow and answers `{"following": false, "stream_id": 5}` whatever the stream is (it reveals nothing). A follow is for the in-portal go-live notification of a stream whose audience is `followers`.
+Follow a stream, or stop following it (1.16.0). Needs a signed-in member with a full credential (a browser session, or a token or API key with `*`); a stream key or a scoped key is refused (`403`). `PUT` answers `{"following": true, "stream_id": 5}`. A member may follow only a stream they may watch (the playback rule: the owner and administrators always, other members only a public stream); an unknown, a non-numeric and an unviewable stream all answer the same `404 {"error": "Stream not found"}`. A member may follow at most 200 streams (`400`). `DELETE` removes the member's own follow and answers `{"following": false, "stream_id": 5}` whatever the stream is (it reveals nothing). A follow is for the in-portal go-live notification of a stream whose audience is `followers`.
 
 #### GET /api/me/follows
-The streams the signed-in member follows: `{"stream_ids": [5, 9]}`. Only the member's own list exists; there is no route that lists who follows a stream. `GET /api/streams/public` and `GET /api/streams/{id}` carry `following` (the viewer's own state) for a full credential only; a request made with a stream key gets no `following` field, as it gets no follow list.
+The streams the signed-in member follows: `{"stream_ids": [5, 9]}`. Only the member's own list exists; there is no route that lists who follows a stream. `GET /api/streams/public` and `GET /api/streams/{id}` carry `following` (the viewer's own state). Both routes, like the follow list, need a full credential: a stream key or a scoped key gets `403`.
 
 #### GET /api/streams/live
-The streams that are live now and that the signed-in member may watch (same rule as playback), for the chat page's "Live now" strip: `{"streams": [{"id": 5, "name": "...", "streamer": "alice", "viewer_count": 3, "started_at": "...", "following": true}]}`. It carries no stream key, `pub_` key or RTMP address; watch a stream at `/watch/{id}`.
+The streams that are live now and that the signed-in member may watch (same rule as playback), for the chat page's "Live now" strip: `{"streams": [{"id": 5, "name": "...", "streamer": "alice", "viewer_count": 3, "started_at": "...", "following": true}]}`. It carries no stream key, `pub_` key or RTMP address; watch a stream at `/watch/{id}`. A stream key or a scoped key gets `403` (it was an empty list for a scoped key before this change).
 
 ---
 

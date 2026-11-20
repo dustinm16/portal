@@ -699,11 +699,35 @@ async def _whip_and_hook_together(w, records):
         # both at the same moment, both having read the stream as offline: the claim decides
         await w.go_offline()
         w.clock.now += 3600
-        first, second = await asyncio.gather(_whip(w), w.publish())
+        # make it certain that both read the stream as offline before either writes: the write of
+        # "live" waits (at most 2 s) until a second one has arrived, so only the claim can decide
+        del records[:]
+        arrived = asyncio.Event()
+        writes = []
+        real_set = w.db.set_stream_live
+
+        async def set_live_together(stream_id, is_live):
+            if is_live is True or is_live == 1:
+                writes.append(stream_id)
+                if len(writes) >= 2:
+                    arrived.set()
+                try:
+                    await asyncio.wait_for(arrived.wait(), 2)
+                except asyncio.TimeoutError:
+                    pass
+            return await real_set(stream_id, is_live)
+
+        w.db.set_stream_live = set_live_together
+        try:
+            first, second = await asyncio.gather(_whip(w), w.publish())
+        finally:
+            w.db.set_stream_live = real_set
         assert (first, second) == (201, 200)
+        assert len(writes) == 2, "both arrivals read the stream as offline and went on to the claim"
+        assert len([m for m in records if "not announced again (cooldown)" in m]) == 1, records
     assert len(await w.notes("m1")) == 3 and len(w.live_events("sys")) == 3
     # the lock never failed (no "bound to a different event loop" turned into a skipped claim):
-    # whatever order the concurrent pair ran in, the conditional claim decided and one announced
+    # the conditional claim decided and one announced (the 3 above, not 4)
     assert not [m for m in records if "claim" in m and "failed" in m], records
 
 
