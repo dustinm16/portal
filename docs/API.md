@@ -16,7 +16,7 @@ All API endpoints require authentication via one of:
 1. **Session Cookie** - Obtained via `/login` form submission
 2. **Bearer Token** - `Authorization: Bearer <jwt_token>`
 3. **API Key** - `Authorization: Api-Key portal_xxx` or `X-API-Key: portal_xxx`
-4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx` (publishing only since 1.16.0, refused on the stream management and viewing routes; see below)
+4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx` (publishing only since 1.16.0: it signs in on no route, and a request that offers one is refused with `403`; see below)
 
 An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Authorization: Bearer` accepts JWTs only, so a `portal_...` key sent as a Bearer token is rejected with `401`. Checking a key that has not been used since the server started is deliberately rate limited: when too many such checks are pending for one key, the request is answered with `503` and a `Retry-After` header instead of `401`. Retry after the given delay; the key itself is not affected.
 
@@ -26,7 +26,7 @@ An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Au
 - Publishing the stream (RTMP authentication; WHIP only where the WebRTC media port is reachable, see Streaming Configuration)
 - The stream event and status calls MediaMTX or an encoder makes
 
-It is **not** a way to sign in as the stream's owner. Every route under `/api/streams` and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope, and a non-administrator's API key is always made with the scoped `services:read,access:*` set, so a non-administrator has no API-key path to these routes. The playback routes under `/api/stream/{key}/` (HLS, thumbnail, info, WHEP and its sessions) ignore a stream key and answer `404` as described under Access; the publish-side routes (`/api/stream/auth`, `/api/stream/event` for MediaMTX on the host, and WHIP, which takes the `live_` key in its URL) keep working; `/api/streams/open` needs no credential.
+It is **not** a way to sign in as the stream's owner, on any route: no route of the portal accepts a stream key as a login, and a request that offers one as its credential is refused with `403`. Every route under `/api/streams` and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope, and a non-administrator's API key is always made with the scoped `services:read,access:*` set, so a non-administrator has no API-key path to these routes. The playback routes under `/api/stream/{key}/` (HLS, thumbnail, info, WHEP and its sessions) ignore a stream key and answer `404` as described under Access; the publish-side routes (`/api/stream/auth`, `/api/stream/event` for MediaMTX on the host, and WHIP, which takes the `live_` key in its URL) keep working; `/api/streams/open` needs no credential.
 
 **Example - what no longer works:**
 ```bash
@@ -1003,7 +1003,7 @@ Returns `{ "available": true|false }` — whether the `searxng` service is enabl
 Deep link from the dashboard search bar's "Portal" mode. `chat.html` opens the message-search panel, runs the query against `/api/chat/search`, and cleans the URL.
 
 #### ALL /search  •  ALL /search/{path}
-Auth-gated reverse proxy to the local SearXNG instance. Any authenticated user may use it: session cookie, JWT (`Bearer`), API key, or stream key. No scope is checked, so every valid API key can search regardless of its `scopes`. Unauthenticated browser requests redirect to `/login`; unauthenticated API requests (`Accept: application/json` or `?format=json`) get `401`.
+Auth-gated reverse proxy to the local SearXNG instance. Any authenticated user may use it: session cookie, JWT (`Bearer`) or API key (a stream key signs in nowhere). No scope is checked, so every valid API key can search regardless of its `scopes`. Unauthenticated browser requests redirect to `/login`; unauthenticated API requests (`Accept: application/json` or `?format=json`) get `401`.
 
 Requests are forwarded verbatim — SearXNG mounts its whole app under `/search/` via its `base_url`, so no path rewriting is done. The Portal session cookie and `Authorization` header are stripped from the upstream request. Responses get `Cache-Control: private, no-store`.
 

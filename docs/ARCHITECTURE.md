@@ -306,7 +306,7 @@ grant / revoke writes an `audit_log` entry (`connection.share`,
 │  1. Session Cookie    - Web dashboard login                 │
 │  2. JWT Bearer Token  - API access                          │
 │  3. API Key           - Programmatic access (portal_xxx)    │
-│  4. Stream Key        - Publish (live_xxx) / View (pub_xxx) │
+│  4. Stream Key        - Publish only (live_xxx), no sign-in │
 │  5. WebSocket Auth    - Token in query/header               │
 └─────────────────────────────────────────────────────────────┘
 ```

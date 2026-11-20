@@ -1263,7 +1263,7 @@
                         <span class="endpoint-desc">Auth-gated reverse proxy to SearXNG</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Any authenticated user may use it: session cookie, JWT, API key, or stream key. No scope is checked, so every valid API key can search. Unauthenticated browser requests redirect to <code>/login</code>; unauthenticated API requests (<code>Accept: application/json</code> or <code>?format=json</code>) get <code>401</code>.</p>
+                        <p>Any authenticated user may use it: session cookie, JWT or API key (a stream key signs in nowhere). No scope is checked, so every valid API key can search. Unauthenticated browser requests redirect to <code>/login</code>; unauthenticated API requests (<code>Accept: application/json</code> or <code>?format=json</code>) get <code>401</code>.</p>
                         <p>Requests are forwarded verbatim — SearXNG mounts its whole app under <code>/search/</code> via its <code>base_url</code>. The Portal session cookie and <code>Authorization</code> header are stripped from the upstream request. Responses get <code>Cache-Control: private, no-store</code>.</p>
                         <p>Prefer <code>Authorization: Api-Key</code> over <code>X-API-Key</code> here: the <code>Authorization</code> header is stripped before the request reaches SearXNG, while <code>X-API-Key</code> is currently forwarded. <code>401</code> means missing or invalid credentials (including a key sent as <code>Bearer</code>); <code>503</code> means credentials were accepted but the service is off.</p>
                         <h4>Example — JSON results for automation</h4>
@@ -1472,7 +1472,7 @@
                 <h3>REST API</h3>
 
                 <div class="alert alert-info">
-                    <strong>Credentials (1.16.0):</strong> a stream key (<code>live_</code>, also sent as <code>Authorization: Stream-Key</code> or <code>X-Stream-Key</code>) authorises <strong>publishing only</strong>: the encoder's connection to MediaMTX, WHIP publishing and the stream event and status calls MediaMTX makes. Every route below under <code>/api/streams</code>, and <code>/api/me/follows</code>, answers a stream key with <code>403</code>; listing, reading, changing, deleting, rotating keys, relays, bans, thumbnails and follows need a browser session or a token or API key with the all-scope <code>*</code> (a narrowly scoped API key gets <code>403</code> too; there is no streams-specific scope). Before 1.16.0 a stream key worked on these routes as its owner.
+                    <strong>Credentials (1.16.0):</strong> a stream key (<code>live_</code>, also sent as <code>Authorization: Stream-Key</code> or <code>X-Stream-Key</code>) authorises <strong>publishing only</strong>; it signs in on no route at all, and a request that offers one as its credential is refused with <code>403</code>. It covers the encoder's connection to MediaMTX, WHIP publishing and the stream event and status calls MediaMTX makes. Every route below under <code>/api/streams</code>, and <code>/api/me/follows</code>, answers a stream key with <code>403</code>; listing, reading, changing, deleting, rotating keys, relays, bans, thumbnails and follows need a browser session or a token or API key with the all-scope <code>*</code> (a narrowly scoped API key gets <code>403</code> too; there is no streams-specific scope). Before 1.16.0 a stream key worked on these routes as its owner.
                 </div>
 
                 <div class="endpoint">
