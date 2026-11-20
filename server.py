@@ -5236,6 +5236,17 @@ def _spawn_go_live(stream_id: int) -> asyncio.Task:
     return task
 
 
+async def _cancel_golive_tasks() -> None:
+    """Stop the go-live announcements still running and wait for them, so none of their
+    inserts runs against a database that is closing. Never raises."""
+    tasks = [t for t in list(_golive_tasks) if not t.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _golive_tasks.clear()
+
+
 def _go_live_card_text(payload: dict) -> str:
     """The plain-text fallback of a go-live card (what a client that does not know
     the stream_card type shows): streamer, title and the logged-in watch link."""
@@ -24474,6 +24485,9 @@ class PortalServer:
     async def stop(self) -> None:
         """Stop the server gracefully."""
         logger.info("Shutting down...")
+
+        # Stop the go-live announcements still writing (cards, notifications) before anything else
+        await _cancel_golive_tasks()
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):

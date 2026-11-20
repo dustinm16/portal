@@ -685,6 +685,33 @@ async def test_whip_and_the_media_hook_together_announce_once(w):
 
 
 @with_world
+async def test_shutdown_cancels_and_awaits_pending_announcements(w):
+    import inspect
+    gate = asyncio.Event()
+    real = server._notify_go_live
+
+    async def slow(stream, payload):
+        await gate.wait()              # never set: the announcement is still running at shutdown
+        raise AssertionError("ran on after the shutdown cancelled it")
+    server._notify_go_live = slow
+    try:
+        task = server._spawn_go_live(w.sid["pub"])
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not task.done() and task in server._golive_tasks
+        await server._cancel_golive_tasks()
+        assert task.done() and task.cancelled(), "the pending announcement was left running"
+        assert not server._golive_tasks
+        assert await w.notes("m1") == []
+    finally:
+        server._notify_go_live = real
+    # the shutdown hook does it before the database closes
+    body = inspect.getsource(server.PortalServer.stop)
+    assert "_cancel_golive_tasks()" in body, "Server.stop does not cancel the go-live tasks"
+    assert body.index("_cancel_golive_tasks()") < body.index("db.close()")
+
+
+@with_world
 async def test_a_database_made_before_the_columns_existed_is_upgraded_on_connect(w):
     """An existing database (here: one with the columns removed, as 1.15.0 left it) gets the two
     columns when the new code connects, and the claim works at once."""
