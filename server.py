@@ -5818,6 +5818,10 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
     _stream_access_changed(stream_id)
+    if not stream.get("is_public"):
+        # Its "went live / went offline" rows from the time it was public must not come back
+        # into other members' feed now that no non-public stream carries the name
+        await db.relabel_private_stream_activity(stream["user_id"], [stream.get("name")])
 
     # Delete the chat channel with its stream, unless it is a default channel or
     # another stream still uses it (delete_chat_channel refuses default channels)
@@ -7306,11 +7310,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             # No VOD recording — go straight to offline
             await _stream_set_offline(stream_id)
             logger.info(f"Stream {stream_name} ended (after grace period)")
-            await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_offline", stream), f"Stream '{stream_name}' went offline")
-            asyncio.create_task(fire_webhook_event("stream.offline", {
-                "stream_id": stream_id, "stream_name": stream_name,
-                "owner_username": stream.get("owner_username")
-            }, meta={"stream_public": bool(stream.get("is_public"))}))
+            await _record_stream_offline(stream)
 
             if stream.get("chat_channel_id"):
                 channel = await db.get_chat_channel(stream["chat_channel_id"])
@@ -7343,6 +7343,28 @@ def _stream_activity_type(action: str, stream: dict) -> str:
     return action if stream.get("is_public") else action + "_private"
 
 
+async def _record_stream_offline(stream: dict) -> None:
+    """The activity row and the stream.offline webhook of a stream that went offline. `stream`
+    was taken when it disconnected, seconds or minutes ago (VOD finalisation): the stream is
+    read again here, so one made private, renamed or deleted since is logged under the private
+    type with its present name and is not announced to member hooks. A stream that cannot be
+    read any more counts as not public."""
+    stream_id = stream["id"]
+    try:
+        current = await db.get_user_stream(stream_id)
+    except Exception as e:
+        logger.warning(f"Stream {stream_id} could not be read again for the offline record: {type(e).__name__}")
+        current = None
+    now = current or {**stream, "is_public": 0}
+    name = now.get("name", stream.get("name", "?"))
+    await db.log_activity(now.get("user_id", stream.get("user_id")), get_display_name(now),
+                          _stream_activity_type("stream_offline", now), f"Stream '{name}' went offline")
+    asyncio.create_task(fire_webhook_event("stream.offline", {
+        "stream_id": stream_id, "stream_name": name,
+        "owner_username": now.get("owner_username") or stream.get("owner_username")
+    }, meta={"stream_public": bool(now.get("is_public"))}))
+
+
 async def _finalize_stream_offline(stream: dict) -> None:
     """Background task: wait for VOD finalization, then transition stream to offline."""
     stream_id = stream["id"]
@@ -7354,11 +7376,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
         # Now transition to fully offline
         await _stream_set_offline(stream_id)
         logger.info(f"Stream {stream_name} VOD finalized, now offline")
-        await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_offline", stream), f"Stream '{stream_name}' went offline")
-        asyncio.create_task(fire_webhook_event("stream.offline", {
-            "stream_id": stream_id, "stream_name": stream_name,
-            "owner_username": stream.get("owner_username")
-        }, meta={"stream_public": bool(stream.get("is_public"))}))
+        await _record_stream_offline(stream)
 
         # Broadcast offline status to chat channel
         if stream.get("chat_channel_id"):
