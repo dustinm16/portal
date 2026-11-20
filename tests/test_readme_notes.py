@@ -267,8 +267,8 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections, dashboard and terminal versions stated are the ones the pages load",
-      re.search(r"user-connections\.js\?v=48", (ROOT / "static" / "index.html").read_text())
-      and "`user-connections.js` is now version 48" in sec18
+      re.search(r"user-connections\.js\?v=49", (ROOT / "static" / "index.html").read_text())
+      and "`user-connections.js` is now version 49" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and re.search(r"terminal\.js\?v=6", (ROOT / "static" / "terminal.html").read_text()) and "`terminal.js` 6" in sec18)
 check("README feature section says a share can expire", "the card shows the time left" in text and "All grants on the portal" in text)
@@ -276,6 +276,21 @@ check("docs/API.md documents expires_in, the 400 case and both new routes",
       all(n in (ROOT / "docs" / "API.md").read_text(encoding="utf-8") for n in ("expires_in", "GET /api/me/shares", "/api/admin/grants", "connection.share_expired", "service.grant_expired")))
 check("api-docs.html documents expires_in and both new routes",
       all(n in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8") for n in ("expires_in", "/api/me/shares", "/api/admin/grants", "4010")))
+
+# --- 1.18.0 notes: stored SSH password -----------------------------------------------
+says18("the stored password fields and modes", "store password", "prompt each time", "`credential_mode`", "`prompt`", "`stored`",
+       "existing connections are not changed", "no migration")
+says18("the password is write-only and the API change", "write-only", "`has_stored_password`", "`has_password` is no longer sent",
+       "breaking for api clients", "`stored_password_cleared`", "without knowing the password")
+says18("host keys", "unpinned or changed host key", "skips the host key check", "`400`", "behaviour change")
+says18("revoke closes the terminal and sftp", "revoking a share", "local test ssh server")
+says18("rollback", "rolling back", "ignores it")
+says18("what was not tested for the stored password", "not tested (stored ssh password)", "not proven", "no ssh key storage")
+check("README says in Sharing Access that a share of a stored password gives a shell without the password",
+      "without knowing the password" in text[text.index("### Sharing Access"):text.index("### File Management")])
+check("docs/API.md and api-docs.html document the stored password",
+      all(n in (ROOT / "docs" / "API.md").read_text(encoding="utf-8") for n in ("has_stored_password", "credential_mode", "stored_password_cleared"))
+      and all(n in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8") for n in ("has_stored_password", "credential_mode", "stored_password_cleared")))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

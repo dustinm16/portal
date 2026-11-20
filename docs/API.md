@@ -805,7 +805,7 @@ List user's remote connections. Sensitive config fields (passwords, private keys
       "type": "ssh",
       "host": "192.168.1.100",
       "port": 22,
-      "config": {"username": "john", "auth_method": "password", "has_password": true},
+      "config": {"username": "john", "auth_method": "password", "credential_mode": "stored", "has_stored_password": true},
       "icon": "terminal",
       "created_at": "2026-02-01T00:00:00Z"
     }
@@ -813,7 +813,9 @@ List user's remote connections. Sensitive config fields (passwords, private keys
 }
 ```
 
-**Redacted fields:** `password`, `private_key`, `private_key_path`, `auth_header`, `psk` are never returned. If a field has a value, `has_<field>: true` is returned instead.
+**Redacted fields:** `password`, `private_key`, `private_key_path`, `auth_header`, `psk` are never returned. If a field has a value, `has_<field>: true` is returned instead. For `ssh` and `sftp` connections the password is the **stored password** (1.18.0) and the flag is `has_stored_password: true` (the older `has_password` is no longer sent for these two types; other types keep `has_<field>`). The same redaction applies to every route that returns a connection (list, details, `/connect`) for the owner and for a user the connection is shared with; the value is never in any response, WebSocket frame, log line or error text.
+
+**Stored SSH password (1.18.0).** An `ssh` or `sftp` connection's config takes `credential_mode` (`"prompt"`, the default, or `"stored"`) and `password`. With `"stored"` the terminal opens without asking for a password and the SFTP browser uses the same password, for the owner and for everyone the connection is shared with; with `"prompt"` the terminal asks every time and the file browser reports that no password is stored. The password is write-only and only the owner's `POST`/`PUT` can set it (a user the connection is shared with gets `404` from `PUT`). Rules: a `credential_mode` other than `prompt` or `stored`, a `password` that is not a string, longer than 1024 characters or holds a NUL, `"stored"` without a password, `"stored"` with `host_key_ignore: true` and a stored password with `auth_method: "key"` answer `400`. On `PUT` an absent `password` keeps the stored one, a new `password` replaces it, an empty `password` or `credential_mode: "prompt"` clears it, and changing `host`, `port` or `config.username` clears it unless the same request carries a new `password` (the response then has `"stored_password_cleared": true` and the mode falls back to `"prompt"`). The password is only sent to a host whose key is pinned and verified: an unpinned or changed key refuses the connect before any credential goes out (see the host-key route), and a connection with `host_key_ignore: true` is refused when it would use a stored password. Revoking or expiring a share closes the grantee's open terminal and SFTP connections (close code `4010`).
 
 ---
 
@@ -896,6 +898,8 @@ Update connection. `{id}` is the opaque string token. Config fields are merged s
   "status": "updated"
 }
 ```
+
+`"stored_password_cleared": true` is added when a stored SSH password was removed because the host, port, username or connection type changed (or the connection now uses key authentication) and the request did not carry a new one. A connection moved to a type other than `ssh` or `sftp` keeps no stored password and no `credential_mode` (a `password` in the same request stays as the new type's own). See "Stored SSH password" above.
 
 ---
 

@@ -7,6 +7,7 @@ from typing import Optional
 
 from aiohttp import web, WSMsgType
 
+import sshpass_rules
 from hostkeys import HostKeyRefused, connect_verified, policy_for
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
@@ -147,7 +148,20 @@ class SSHPlugin(PluginBase):
 
         # Wait for password if needed
         password = None
-        if auth_method == "password":
+        stored_pw = sshpass_rules.terminal_password(config) if auth_method == "password" else None
+        if stored_pw is not None and ignore_key:
+            # A host whose key is not checked never gets the stored password.
+            await ws.send_json({"type": "error", "message":
+                                "A stored password is only used with a verified host key"})
+            return
+        if stored_pw is not None and not username:
+            stored_pw = None            # nobody to log in as: ask (the prompt takes a username)
+        if stored_pw is not None:
+            # No prompt. The host key is checked during the key exchange, before the
+            # password goes out; an unpinned or changed key refuses the connect with
+            # nothing sent (hostkeys.connect_verified) and the owner is shown it.
+            connect_opts["password"] = stored_pw
+        elif auth_method == "password":
             needs_username = not username
             await ws.send_json({
                 "type": "auth_required",

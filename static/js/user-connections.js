@@ -744,6 +744,14 @@ async function showAddConnectionModal() {
         dbPwField.placeholder = '';
     }
 
+    // Reset the stored-password field
+    const sshPwField = document.getElementById('connection-ssh-stored-password');
+    if (sshPwField) {
+        sshPwField.value = '';
+        sshPwField.placeholder = '';
+        sshPwField.dataset.hadStored = '';
+    }
+
     // Reset SSH shell selector
     const sshShellField = document.getElementById('connection-ssh-shell');
     if (sshShellField) sshShellField.value = '';
@@ -1090,6 +1098,37 @@ function onSSHAuthChange() {
     } else {
         keyFields.style.display = 'none';
     }
+
+    // Stored password: only for password authentication. An SFTP connection has no terminal
+    // to prompt in, so it always stores the password (no "Prompt each time" toggle).
+    const isSftp = document.getElementById('connection-type').value === 'sftp';
+    document.getElementById('connection-ssh-password-fields').style.display = authMethod === 'key' ? 'none' : 'block';
+    document.getElementById('connection-ssh-prompt-group').style.display = isSftp ? 'none' : 'block';
+    const prompt = document.getElementById('connection-ssh-prompt');
+    document.getElementById('connection-ssh-stored-group').style.display =
+        (authMethod !== 'key' && (isSftp || !prompt.checked)) ? 'block' : 'none';
+}
+
+/**
+ * The SSH credential fields of the form as config entries. Returns null (after a toast)
+ * when "Prompt each time" is off and there is no password to store.
+ */
+function collectSSHCredential(type, isEdit, hadStoredPassword) {
+    if (document.getElementById('connection-ssh-auth').value === 'key') {
+        return { credential_mode: 'prompt' };            // a key connection holds no stored password
+    }
+    const pw = document.getElementById('connection-ssh-stored-password').value;
+    if (type === 'sftp') {
+        return pw ? { credential_mode: 'stored', password: pw } : {};
+    }
+    if (document.getElementById('connection-ssh-prompt').checked) {
+        return { credential_mode: 'prompt' };            // the server clears any stored password
+    }
+    if (!pw && !(isEdit && hadStoredPassword)) {
+        Portal.toast('Enter the password to store, or turn on Prompt each time', 'error');
+        return null;
+    }
+    return pw ? { credential_mode: 'stored', password: pw } : { credential_mode: 'stored' };
 }
 
 /**
@@ -1160,6 +1199,14 @@ async function submitConnection(event) {
             const sshShell = document.getElementById('connection-ssh-shell').value;
             if (sshShell) config.shell = sshShell;
             config.host_key_ignore = document.getElementById('connection-ssh-host-key-ignore').checked;
+            {
+                const cred = collectSSHCredential(type, isEdit, document.getElementById('connection-ssh-stored-password').dataset.hadStored === '1');
+                if (cred === null) {
+                    Portal.setButtonLoading(submitBtn, false);
+                    return;
+                }
+                Object.assign(config, cred);
+            }
             break;
         case 'database':
             config.db_type = document.getElementById('connection-db-type').value;
@@ -1204,7 +1251,11 @@ async function submitConnection(event) {
 
         console.log('[Connections] Connection saved');
         Portal.flashButtonSuccess(submitBtn);
+        const saved = await response.json().catch(() => ({}));
         Portal.toast(isEdit ? 'Connection updated' : 'Connection added', 'success');
+        if (saved.stored_password_cleared) {
+            Portal.toast('The stored password was removed because the host, port or username changed. Enter it again to keep using it.', 'info');
+        }
         setTimeout(() => closeModal('add-connection-modal'), 800);
         await loadConnections();
         if (typeof loadInlineConnections === 'function') loadInlineConnections();
@@ -1268,9 +1319,14 @@ async function editConnection(connectionId) {
                     document.getElementById('connection-ssh-private-key').value = '';
                     document.getElementById('connection-ssh-private-key').placeholder = '(Key stored - leave empty to keep existing, or paste new key to replace)';
                 }
-                if (config.has_password) {
-                    // Password exists but is redacted by server — show placeholder
-                    // (SSH passwords are entered at connect time, not stored in form)
+                {
+                    // The stored password is write-only: the server says only that one exists.
+                    const pwField = document.getElementById('connection-ssh-stored-password');
+                    pwField.value = '';
+                    pwField.dataset.hadStored = config.has_stored_password ? '1' : '';
+                    pwField.placeholder = config.has_stored_password ? '(Password stored - leave empty to keep it)' : '';
+                    document.getElementById('connection-ssh-prompt').checked = config.credential_mode !== 'stored';
+                    onSSHAuthChange();
                 }
                 document.getElementById('connection-ssh-shell').value = config.shell || '';
                 document.getElementById('connection-ssh-host-key-ignore').checked = config.host_key_ignore === true;
@@ -1456,6 +1512,9 @@ async function showShareConnectionModal(uuid, name) {
     if (!_sharePicker) _sharePicker = initUserPicker('share-chip-box', 'share-user-input', 'share-user-results');
     _sharePicker.reset();
     document.getElementById('share-duration').value = '30d';
+    // The owner is told what a share of a connection with a stored password gives away.
+    document.getElementById('share-stored-password-warning').style.display =
+        (conn && conn.config && conn.config.has_stored_password && conn.config.credential_mode !== 'prompt') ? 'block' : 'none';
     const all = document.getElementById('all-shares-list');
     if (all) all.style.display = 'none';
     if (typeof showModal === 'function') showModal('share-connection-modal');

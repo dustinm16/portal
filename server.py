@@ -126,6 +126,7 @@ import file_manager
 import gameservers
 import jobs as bg_jobs
 import hostkeys
+import sshpass_rules
 import grant_expiry
 import sftp_browser
 from host_check import (
@@ -4355,11 +4356,13 @@ def redact_connection_config(connection: dict) -> dict:
         except json.JSONDecodeError:
             config = {}
 
+    ssh_type = conn.get("type") in sshpass_rules.TYPES
     redacted_config = {}
     for key, value in config.items():
         if key in _SENSITIVE_CONFIG_FIELDS:
             if value:
-                redacted_config[f"has_{key}"] = True
+                # An SSH connection's password is the stored password: one flag, never the value.
+                redacted_config["has_stored_password" if (ssh_type and key == "password") else f"has_{key}"] = True
         else:
             redacted_config[key] = value
 
@@ -4602,6 +4605,13 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
     if "host_key_ignore" in config and not isinstance(config["host_key_ignore"], bool):
         return web.json_response({"error": "Invalid host key setting"}, status=400)
     config = hostkeys.strip_new_pin(config)
+    if conn_type in sshpass_rules.TYPES:
+        _err = sshpass_rules.check_incoming(config)
+        if _err:
+            return web.json_response({"error": _err}, status=400)
+        config, _cleared, _err = sshpass_rules.apply_rules({}, config, config, identity_changed=False)
+        if _err:
+            return web.json_response({"error": _err}, status=400)
 
     # Enforce config size limit to prevent oversized database entries
     config_str = json.dumps(config) if isinstance(config, dict) else (config or "{}")
@@ -4745,6 +4755,7 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
 
     # Merge incoming config with existing config to preserve fields not in the form
     # (e.g., passwords, private keys, and other sensitive fields that are not shown during edit)
+    password_cleared = False
     config = data.get("config", {})
     if isinstance(config, dict):
         existing_config = connection.get("config", {})
@@ -4761,6 +4772,27 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
                 or ("port" in data and (data["port"] or None) != (connection.get("port") or None)))
             data["config"] = hostkeys.guard_config(
                 existing_config, config, target_changed=target_changed)
+            old_type = connection.get("type")
+            new_type = data.get("type", old_type)
+            if old_type in sshpass_rules.TYPES or new_type in sshpass_rules.TYPES:
+                # The stored password: set, changed or cleared only here (the owner's route),
+                # and cleared by a changed host, port, username or type (a row that leaves
+                # ssh/sftp keeps none of it, so no other plugin can read it back or send it on).
+                if new_type in sshpass_rules.TYPES:
+                    _err = sshpass_rules.check_incoming(config)
+                    if _err:
+                        return web.json_response({"error": _err}, status=400)
+                identity_changed = target_changed or new_type != old_type or (
+                    "username" in config
+                    and (config.get("username") or "") != (existing_config.get("username") or ""))
+                if new_type in sshpass_rules.TYPES:
+                    data["config"], password_cleared, _err = sshpass_rules.apply_rules(
+                        existing_config, config, data["config"], identity_changed=identity_changed)
+                    if _err:
+                        return web.json_response({"error": _err}, status=400)
+                else:
+                    data["config"], password_cleared = sshpass_rules.apply_leaving(
+                        existing_config, config, data["config"])
 
     # Enforce config size limit
     config_check = data.get("config", {})
@@ -4788,7 +4820,10 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
     try:
         if await db.update_user_connection(int_id, token.user_id, **data):
             logger.info(f"Connection {conn_uuid} updated by user {token.user_id}")
-            return web.json_response({"status": "updated"})
+            body = {"status": "updated"}
+            if password_cleared:
+                body["stored_password_cleared"] = True
+            return web.json_response(body)
         else:
             return web.json_response({"error": "No changes"}, status=404)
     except Exception as e:

@@ -11,6 +11,7 @@ from typing import Optional
 
 import asyncssh
 
+import sshpass_rules
 from host_check import HostCheckError, resolve_checked_host
 from hostkeys import HostKeyRefused, connect_verified, policy_for
 
@@ -63,7 +64,7 @@ async def connect_sftp(connection: dict, addrs: Optional[list] = None) -> tuple[
 
     # Auth method
     private_key = config.get("private_key")
-    password = config.get("password")
+    password = sshpass_rules.sftp_password(config)
 
     if private_key:
         try:
@@ -71,7 +72,13 @@ async def connect_sftp(connection: dict, addrs: Optional[list] = None) -> tuple[
         except asyncssh.KeyImportError:
             return None, None, "Invalid private key format"
     elif password:
+        if ignore:
+            # A stored password is never sent to a host whose key is not checked, whatever
+            # the mode (a connection without a mode included).
+            return None, None, "A stored password is only used with a verified host key"
         connect_opts["password"] = password
+    elif sshpass_rules.has_stored_password(config):
+        return None, None, "This connection asks for its password each time; the file browser needs a stored password"
     else:
         return None, None, "No credentials configured (need password or private key)"
 
