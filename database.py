@@ -4127,11 +4127,14 @@ class Database:
         One conditional UPDATE, so the check and the set are a single step that two
         concurrent publishes (a retried media hook, a quick encoder restart) cannot
         both win. The time is stored, so a restart of the portal does not reset it.
+        A stored time in the future (the clock was stepped back) is no announcement
+        that happened yet, so it never blocks: it is claimable and is overwritten.
         """
         cursor = await self.conn.execute(
             """UPDATE user_streams SET golive_announced_at = ?
-               WHERE id = ? AND (golive_announced_at IS NULL OR golive_announced_at <= ?)""",
-            (int(now), stream_id, int(now) - int(cooldown))
+               WHERE id = ? AND (golive_announced_at IS NULL OR golive_announced_at <= ?
+                                 OR golive_announced_at > ?)""",
+            (int(now), stream_id, int(now) - int(cooldown), int(now))
         )
         await self.conn.commit()
         return cursor.rowcount == 1

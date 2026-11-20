@@ -540,6 +540,76 @@ async def test_a_failing_claim_never_fails_the_publish_and_announces_nothing(w):
     assert w.sent == [] and await w.notes("m1") == []
 
 
+class _Capture:
+    """Collect the messages the portal logger emits while it is attached."""
+
+    def __enter__(self):
+        import logging
+        self.lines = []
+        outer = self
+
+        class H(logging.Handler):
+            def emit(self, record):
+                outer.lines.append(record.getMessage())
+        self.h = H(level=logging.DEBUG)
+        self.old = server.logger.level
+        server.logger.setLevel(logging.DEBUG)
+        server.logger.addHandler(self.h)
+        return self
+
+    def __exit__(self, *exc):
+        server.logger.removeHandler(self.h)
+        server.logger.setLevel(self.old)
+
+
+@with_world
+async def test_a_stored_time_in_the_future_does_not_block_an_announcement(w):
+    """The clock was stepped back: a stored 'announced at' later than now is claimable, and the
+    stored value is replaced, so the next claim inside the cooldown is refused again."""
+    await w.db.conn.execute("UPDATE user_streams SET golive_announced_at = ? WHERE id = ?",
+                            (w.clock.now + 86_400, w.sid["pub"]))
+    await w.db.conn.commit()
+    assert await w.db.claim_golive(w.sid["pub"], w.clock.now, 600) is True
+    assert await w.db.claim_golive(w.sid["pub"], w.clock.now + 1, 600) is False
+    await w.db.conn.execute("UPDATE user_streams SET golive_announced_at = ? WHERE id = ?",
+                            (w.clock.now + 86_400, w.sid["pub"]))
+    await w.db.conn.commit()
+    assert await w.publish() == 200
+    assert len(await w.notes("m1")) == 1, "a future stored time blocked the announcement"
+
+
+@with_world
+async def test_a_failed_claim_is_logged_as_such_not_as_a_cooldown(w):
+    async def boom(*a, **kw):
+        raise RuntimeError("db locked")
+    real = w.db.claim_golive
+    w.db.claim_golive = boom
+    try:
+        with _Capture() as cap:
+            assert await w.publish() == 200
+    finally:
+        w.db.claim_golive = real
+    text = "\n".join(cap.lines)
+    assert "claim" in text and "failed" in text and "nothing is announced" in text, text
+    assert "cooldown" not in text, text
+
+
+@with_world
+async def test_an_announcement_that_fails_before_sending_is_logged_clearly(w):
+    async def boom(*a, **kw):
+        raise RuntimeError("db gone")
+    real = w.db.get_user_stream
+    w.db.get_user_stream = boom
+    try:
+        with _Capture() as cap:
+            await server._announce_go_live(w.sid["pub"])
+    finally:
+        w.db.get_user_stream = real
+    text = "\n".join(cap.lines)
+    assert "failed before anything was sent" in text, text
+    assert w.sent == []
+
+
 @with_world
 async def test_a_database_made_before_the_columns_existed_is_upgraded_on_connect(w):
     """An existing database (here: one with the columns removed, as 1.15.0 left it) gets the two

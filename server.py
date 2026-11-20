@@ -5412,12 +5412,15 @@ async def _announce_go_live(stream_id: int) -> None:
     try:
         stream = await db.get_user_stream(stream_id)
         if not stream:
+            logger.warning(f"Go-live announcement for stream {stream_id}: the stream is gone, "
+                           f"nothing was announced")
             return
         payload = _golive_payload(stream)
         asyncio.create_task(fire_webhook_event(
             "stream.live", payload, meta={"stream_public": bool(stream.get("is_public"))}))
     except Exception as e:
-        logger.warning(f"Go-live announcement for stream {stream_id} failed: {type(e).__name__}: {e}")
+        logger.warning(f"Go-live announcement for stream {stream_id} failed before anything was sent, "
+                       f"so this go-live is not announced: {type(e).__name__}: {e}")
         return
     for step in (_post_go_live_cards, _notify_go_live):
         try:
@@ -8740,11 +8743,12 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                         stream_id, int(_golive_now()), _GOLIVE_COOLDOWN_SECONDS)
             except Exception as e:
                 # A database fault must not stop a stream; nothing is announced
-                logger.warning(f"Go-live claim for stream {stream_id} failed: {type(e).__name__}: {e}")
-                announce = False
+                logger.warning(f"Go-live claim for stream {stream_id} failed, so nothing is announced "
+                               f"for this go-live: {type(e).__name__}: {e}")
+                announce = None
             if announce:
                 _spawn_go_live(stream_id)          # fan-out in the background: the hook answers at once
-            else:
+            elif announce is False:
                 logger.info(f"Stream {stream['name']}: go-live not announced again (cooldown)")
 
         # Start VOD recording on every publish (guards against duplicates internally)
