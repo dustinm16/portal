@@ -301,7 +301,8 @@ async function deleteSSHKey(keyId) {
 if (typeof formatDate !== 'function') {
     function formatDate(dateStr) {
         if (!dateStr) return '';
-        const date = new Date(dateStr + 'Z');
+        const text = String(dateStr);
+        const date = new Date(/(Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + 'Z');
         return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 }

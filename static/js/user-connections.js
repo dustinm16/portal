@@ -433,7 +433,6 @@ async function loadApiKeyScopePicker() {
     box.innerHTML = '';
     apiKeyScopeInfo.scopes.forEach(sc => {
         const label = document.createElement('label');
-        label.style.display = 'block';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.className = 'api-key-scope-cb';
@@ -442,7 +441,7 @@ async function loadApiKeyScopePicker() {
         cb.disabled = !apiKeyScopeInfo.can_choose;
         cb.addEventListener('change', updateApiKeyWarning);
         label.appendChild(cb);
-        label.appendChild(document.createTextNode(' ' + sc.scope + ' - ' + sc.description));
+        label.appendChild(document.createTextNode(sc.scope + ' - ' + sc.description));
         box.appendChild(label);
     });
     if (!apiKeyScopeInfo.can_choose) {
@@ -1799,7 +1798,8 @@ async function connectTo(connectionId) {
 if (typeof formatDate !== 'function') {
     function formatDate(dateStr) {
         if (!dateStr) return '';
-        const date = new Date(dateStr + 'Z');
+        const text = String(dateStr);
+        const date = new Date(/(Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + 'Z');
         return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 }

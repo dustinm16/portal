@@ -1267,7 +1267,10 @@ async function viewCodeRegistrations(codeId) {
  */
 function formatDate(dateStr) {
     if (!dateStr) return '—';
-    const date = new Date(dateStr + 'Z'); // Assume UTC
+    // The database gives UTC without a zone ("2026-01-02 03:04:05"); an API date may carry one
+    // ("Z" or "+00:00"). Add the Z only where there is none.
+    const text = String(dateStr);
+    const date = new Date(/(Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + 'Z');
     if (isNaN(date.getTime())) return '—';
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 }

@@ -270,10 +270,13 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections, dashboard and terminal versions stated are the ones the pages load",
-      re.search(r"user-connections\.js\?v=53", (ROOT / "static" / "index.html").read_text())
-      and "`user-connections.js` is now version 53" in sec18
+      re.search(r"user-connections\.js\?v=54", (ROOT / "static" / "index.html").read_text())
+      and "`user-connections.js` is now version 54" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and re.search(r"terminal\.js\?v=6", (ROOT / "static" / "terminal.html").read_text()) and "`terminal.js` 6" in sec18)
+check("1.18.0: the admin.js and portal.css versions stated are the ones the pages load",
+      re.search(r"js/admin\.js\?v=38", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
+      and re.search(r"css/portal\.css\?v=55", (ROOT / "static" / "index.html").read_text()) and "`portal.css` 55" in sec18)
 check("README feature section says a share can expire", "the card shows the time left" in text and "All grants on the portal" in text)
 check("docs/API.md documents expires_in, the 400 case and both new routes",
       all(n in (ROOT / "docs" / "API.md").read_text(encoding="utf-8") for n in ("expires_in", "GET /api/me/shares", "/api/admin/grants", "connection.share_expired", "service.grant_expired")))
