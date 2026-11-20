@@ -3938,6 +3938,18 @@ The caller's address is counted for each wrong password on the web login and `PO
 
 **Auth**: Superadmin. Audited as `login_ban.update` and recorded as a `login_ban_changed` security event (`was` and `now` of the changed values).
 
+#### GET /api/admin/proxy-limit
+The logged-out request limit settings: `{"enabled": true, "per_minute": 30, "defaults": {...}, "limits": {"per_minute": {"min": 5, "max": 600}}, "your_ip": "...", "your_ip_exempt": null}` (`your_ip_exempt` names the reason when the caller's address is never limited).
+
+**Auth**: Admin
+
+#### PUT /api/admin/proxy-limit
+Change `enabled` (boolean) and/or `per_minute` (whole number from 5 to 600; anything else, an unknown key or a non-object body is `400` and nothing changes). Response (200): the same object as GET plus `"saved": true`. A change applies at once, is kept across restarts and clears the current counts.
+
+The limit: a request under `/proxy/`, `/search` (and `/search/...`) or `/browser` (and `/browser/...`) that carries no valid credential is counted against its client address in a token bucket of `per_minute` (30 at once, refilled at `per_minute` a minute). Over it the answer is `429` with `Retry-After` (seconds) and `{"error": "Too many requests, retry shortly"}`; the request never reaches the handler. A valid session cookie, `Authorization: Bearer` token or `?token=` is never counted; a bogus, forged, expired or revoked one is counted like none. An API key is not counted once it has been verified by an earlier request, and counted before that (the check never runs the key hash). `/login`, `/api`, `/admin`, `/health`, WebSockets elsewhere and static files are never limited. Exempt addresses (loopback, private, trusted proxy and Cloudflare, this host, `NEVER_BAN_CIDRS`, the never-ban list) are never limited; an IPv6 address is counted as its /64. **On by default.** Nothing is blocked or banned by it; each refusal is counted in the aggregated `rate_limited` security event (details `scope` `logged_out_proxy`).
+
+**Auth**: Superadmin. Audited as `proxy_limit.update` and recorded as a `proxy_limit_changed` security event (`was` and `now` of the changed values).
+
 #### GET /api/admin/never-ban
 The admin-edited never-ban list and the effective list that no automatic block may cover.
 
@@ -4533,6 +4545,7 @@ Regular users default to the "My Connections" tab. Admins default to "Services".
 ## Rate Limiting
 
 - Default: 100 requests per minute per IP
+- Logged-out requests under `/proxy/`, `/search` and `/browser`: 30 per minute per IP (adjustable, can be turned off; see `PUT /api/admin/proxy-limit`); `429` with `Retry-After`, never applied to a valid session
 - WebSocket connections: 10 per minute per IP
 - Login attempts: 5 per minute per IP
 - Registration: 1 account per IP per 24 hours

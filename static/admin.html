@@ -1846,6 +1846,19 @@
                         </div>
                     </div>
 
+                    <!-- Logged-out limit Card -->
+                    <div class="admin-card" id="proxylimit-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                            Logged-out request limit
+                        </h3>
+                        <div id="proxylimit-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+
                     <!-- Cloudflare ranges Card -->
                     <div class="admin-card" id="cfranges-card">
                         <h3>
@@ -5390,7 +5403,7 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadLoginBan(), loadCfRanges()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadLoginBan(), loadProxyLimit(), loadCfRanges()]);
         }
 
         async function loadCertInfo() {
@@ -6402,6 +6415,62 @@
             }
         }
 
+        let proxyLimitState = null;
+
+        async function loadProxyLimit() {
+            const el = document.getElementById('proxylimit-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/proxy-limit');
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>'; return; }
+                proxyLimitState = await res.json();
+                renderProxyLimit();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
+            }
+        }
+
+        function renderProxyLimit() {
+            const el = document.getElementById('proxylimit-body');
+            const d = proxyLimitState;
+            const lim = (d.limits || {}).per_minute || { min: 5, max: 600 };
+            const mine = d.your_ip_exempt
+                ? `Your address ${escapeHtml(d.your_ip)} is never limited (${escapeHtml(d.your_ip_exempt)}).`
+                : `Your address is ${escapeHtml(d.your_ip)}.`;
+            el.innerHTML = `
+                <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                    Slows a client that is not signed in when it asks for pages under /proxy/, /search and /browser: past the allowance
+                    it gets a 429 with a Retry-After header. A signed-in member is never counted, signing in is never limited, and nothing
+                    is blocked or banned by this. It is on by default.
+                </p>
+                <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" id="pl-enabled" ${d.enabled ? 'checked' : ''}> Limit logged-out requests to /proxy, /search and /browser</label>
+                <label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-top:0.5rem;">Requests per minute per address</label>
+                <input type="number" id="pl-rate" value="${parseInt(d.per_minute) || 30}" min="${lim.min}" max="${lim.max}" style="${NB_FIELD_STYLE}">
+                <p style="font-size:0.8rem;margin:0.5rem 0;color:var(--text-muted);">${mine}</p>
+                <div style="margin:0.5rem 0;"><button class="btn btn-primary" data-proxylimit-action="save">Save</button></div>`;
+        }
+
+        async function saveProxyLimit() {
+            const body = {
+                enabled: document.getElementById('pl-enabled').checked,
+                per_minute: parseInt(document.getElementById('pl-rate').value, 10)
+            };
+            try {
+                const res = await Portal.fetch('/api/admin/proxy-limit', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { Portal.toast(data.error || 'Failed to save', 'error'); return; }
+                proxyLimitState = data;
+                Portal.toast('Saved', 'success');
+                renderProxyLimit();
+            } catch (e) {
+                Portal.toast('Failed to save the setting', 'error');
+            }
+        }
+
         async function loadCfRanges() {
             const el = document.getElementById('cfranges-body');
             if (!el) return;
@@ -6521,6 +6590,8 @@
             if (act && act.getAttribute('data-neverban-action') === 'save') saveNeverBan();
             const lb = e.target.closest('[data-loginban-action]');
             if (lb && lb.getAttribute('data-loginban-action') === 'save') saveLoginBan();
+            const pl = e.target.closest('[data-proxylimit-action]');
+            if (pl && pl.getAttribute('data-proxylimit-action') === 'save') saveProxyLimit();
             const cf = e.target.closest('[data-cfranges-action]');
             if (cf && cf.getAttribute('data-cfranges-action') === 'reset') resetCfRanges();
             if (cf && ['approve', 'dismiss'].includes(cf.getAttribute('data-cfranges-action'))) cfPendingAction(cf.getAttribute('data-cfranges-action'), cf);
@@ -7386,7 +7457,7 @@
             '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'api_key_ip_denied', 'password_changed',
             'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
             'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
-            'never_ban_changed', 'login_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed'
+            'never_ban_changed', 'login_ban_changed', 'proxy_limit_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed'
         ];
         let auditView = 'audit';
         let secOffset = 0;

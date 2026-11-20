@@ -19,6 +19,7 @@ import hmac
 import html as _html
 import ipaddress
 import json
+import math
 import socket
 import subprocess
 import logging
@@ -32,7 +33,7 @@ import ssl
 import sys
 import uuid
 import weakref
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24222,6 +24223,66 @@ async def http_put_login_ban(request: web.Request) -> web.Response:
     return web.json_response(view)
 
 
+def _proxy_limit_view(request: web.Request) -> dict:
+    my_ip = get_client_ip(request)
+    return {
+        **_proxy_limit_cfg,
+        "defaults": dict(PROXY_LIMIT_DEFAULTS),
+        "limits": {k: {"min": lo, "max": hi} for k, (lo, hi) in PROXY_LIMIT_LIMITS.items()},
+        "your_ip": my_ip,
+        "your_ip_exempt": _never_ban_reason(my_ip),
+    }
+
+
+async def http_get_proxy_limit(request: web.Request) -> web.Response:
+    """GET /api/admin/proxy-limit - the logged-out /proxy, /search and /browser limit (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(_proxy_limit_view(request))
+
+
+async def http_put_proxy_limit(request: web.Request) -> web.Response:
+    """PUT /api/admin/proxy-limit - change enabled and per_minute (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object"}, status=400)
+    unknown = sorted(str(k) for k in data if k not in PROXY_LIMIT_DEFAULTS)
+    if unknown:
+        return web.json_response({"error": f"Unknown setting: {unknown[0][:40]}"}, status=400)
+    new = {}
+    for key, value in data.items():
+        if key == "enabled":
+            if not isinstance(value, bool):
+                return web.json_response({"error": "enabled must be true or false"}, status=400)
+        else:
+            lo, hi = PROXY_LIMIT_LIMITS[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+                return web.json_response({"error": f"{key} must be a whole number from {lo} to {hi}"}, status=400)
+        new[key] = value
+    before = dict(_proxy_limit_cfg)
+    for key, value in new.items():
+        await db.set_setting(PROXY_LIMIT_SETTING_PREFIX + key,
+                             ("1" if value else "0") if key == "enabled" else str(int(value)))
+    _proxy_limit_cfg.update(new)
+    changed = {k: v for k, v in new.items() if before.get(k) != v}
+    if changed:
+        _proxy_buckets.clear()      # a bucket made under the old rate must not outlive it
+        details = {"was": {k: before[k] for k in changed}, "now": changed}
+        await security_event("proxy_limit_changed", request=request, user=user, details=details)
+        await audit_log("proxy_limit.update", user["id"], user.get("username", "unknown"), details=details)
+        logger.info(f"Logged-out proxy limit settings changed by user {user['id']}: {changed}")
+    view = _proxy_limit_view(request)
+    view["saved"] = True
+    return web.json_response(view)
+
+
 async def http_get_proxy_trust(request: web.Request) -> web.Response:
     """GET /api/admin/proxy-trust - the proxy-trust self-check (admin)."""
     token, err = await _admin_only(request)
@@ -24352,6 +24413,183 @@ async def http_dismiss_cf_pending(request: web.Request) -> web.Response:
 # =============================================================================
 # Application Setup
 # =============================================================================
+
+# ---------------------------------------------------------------------------
+# Tight per-address limit for logged-out hits on /proxy, /search and /browser.
+#
+# Those three prefixes hand a request to something else (a member's own service,
+# SearXNG, the embedded browser) once the handler has authenticated it, so a
+# logged-out client has no business making many of them. A token bucket per client
+# address (30 a minute by default) answers the surplus with 429 and Retry-After
+# before the handler's own authentication. A request that carries a VALID
+# credential is never counted: the session check is the cheap part only (JWT
+# signature, then one indexed token lookup; a forged or stale cookie fails there
+# and is limited like no cookie), and an API key counts only when the
+# verified-key cache already knows it (Argon2 is never run here). The table is
+# bounded and holds nothing but addresses. Exempt addresses (_never_ban_reason)
+# are never limited. It does not use check_rate_limit and feeds no ban: the
+# only record is the aggregated "rate_limited" security event. /login, /api,
+# /admin, /health and static files are outside the three prefixes.
+# ---------------------------------------------------------------------------
+
+PROXY_LIMIT_DEFAULTS = {"enabled": True, "per_minute": 30}
+PROXY_LIMIT_LIMITS = {"per_minute": (5, 600)}
+PROXY_LIMIT_SETTING_PREFIX = "proxy_limit_"
+_PROXY_LIMIT_TABLE_MAX = 10000
+_PROXY_LIMIT_MAX_TOKEN_LEN = 4096
+_proxy_limit_cfg: dict = dict(PROXY_LIMIT_DEFAULTS)
+# bucket key -> [tokens, monotonic time of the last refill]; kept in order of last use
+_proxy_buckets: "OrderedDict[str, list]" = OrderedDict()
+
+
+def _is_proxy_limit_path(path: str) -> bool:
+    """True for /proxy/..., /search, /search/..., /browser and /browser/...; nothing else."""
+    return (path.startswith("/proxy/")
+            or path == "/search" or path.startswith("/search/")
+            or path == "/browser" or path.startswith("/browser/"))
+
+
+def _proxy_bucket_key(ip: str) -> str:
+    """The address a bucket is kept for: the canonical address, an IPv6 one as its /64."""
+    addr = _canon_addr(ip)
+    if addr is None:
+        return str(ip)
+    if addr.version == 6:
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
+
+
+def _proxy_bucket_take(key: str, per_minute: int, now: float) -> float:
+    """Take one token from the bucket for `key`. Returns 0.0 when allowed, else the
+    seconds until a token is available. Synchronous: no await between read and write.
+
+    The bucket holds `per_minute` tokens and refills at per_minute / 60 a second.
+    A refused request takes nothing. When the table is full, buckets that have
+    refilled completely (the same as no bucket) are dropped first, oldest first, then
+    the least recently used one.
+    """
+    capacity = float(max(1, per_minute))
+    rate = capacity / 60.0
+    entry = _proxy_buckets.get(key)
+    if entry is None:
+        if len(_proxy_buckets) >= _PROXY_LIMIT_TABLE_MAX:
+            while _proxy_buckets:
+                oldest = next(iter(_proxy_buckets))
+                tokens, last = _proxy_buckets[oldest]
+                if tokens + (now - last) * rate < capacity:
+                    break
+                del _proxy_buckets[oldest]
+            while len(_proxy_buckets) >= _PROXY_LIMIT_TABLE_MAX:
+                _proxy_buckets.popitem(last=False)
+        _proxy_buckets[key] = [capacity - 1.0, now]
+        return 0.0
+    tokens, last = entry
+    tokens = min(capacity, tokens + max(0.0, now - last) * rate)
+    _proxy_buckets.move_to_end(key)
+    if tokens < 1.0:
+        entry[0], entry[1] = tokens, now
+        return (1.0 - tokens) / rate
+    entry[0], entry[1] = tokens - 1.0, now
+    return 0.0
+
+
+async def _has_valid_credential(request: web.Request) -> bool:
+    """Cheap test of whether a request carries a credential that is valid right now.
+
+    Not authenticate_request: no last-used write, no Argon2. A Bearer header, the
+    ?token= parameter and the session cookie are valid when the JWT verifies and its
+    token row is live. An API key is valid here only when the verified-key cache already
+    holds it (and it is not revoked, expired or outside its networks); a key that
+    has not been verified yet is counted as logged out until the handler has verified it once.
+    """
+    from auth import decode_jwt, parse_api_key
+    auth_header = request.headers.get("Authorization", "")
+    candidates = []
+    if auth_header.startswith("Bearer "):
+        candidates.append(auth_header[7:])
+    if request.query.get("token"):
+        candidates.append(request.query.get("token"))
+    if request.cookies.get(Config.SESSION_COOKIE_NAME):
+        candidates.append(request.cookies.get(Config.SESSION_COOKIE_NAME))
+    for tok in candidates:
+        if not tok or len(tok) > _PROXY_LIMIT_MAX_TOKEN_LEN:
+            continue
+        try:
+            payload = decode_jwt(tok)
+            if await db.is_token_valid(payload.token_id):
+                return True
+        except Exception:
+            continue
+    api_key = None
+    if auth_header.startswith("Api-Key "):
+        api_key = auth_header[8:].strip()
+    elif request.headers.get("X-API-Key") and not auth_header.startswith("Stream-Key "):
+        api_key = request.headers.get("X-API-Key").strip()
+    if api_key and len(api_key) <= _PROXY_LIMIT_MAX_TOKEN_LEN:
+        try:
+            prefix = parse_api_key(api_key)
+            record = await db.get_api_key_by_prefix(prefix) if prefix else None
+            if record and not record.get("revoked") and _api_key_cached_ok(record["id"], api_key, record["key_hash"]):
+                exp = record.get("expires_at")
+                if exp and datetime.fromisoformat(exp.replace("Z", "+00:00")) < datetime.now(timezone.utc):
+                    return False
+                cidrs = apikey_policy.cidrs_from_text(record.get("allowed_cidrs"))
+                return not cidrs or apikey_policy.client_in_cidrs(get_client_ip(request), cidrs)
+        except Exception:
+            return False
+    return False
+
+
+async def _proxy_limit_refusal(request: web.Request) -> Optional[web.Response]:
+    """The 429 for a logged-out request over its allowance, or None to let it through."""
+    ip = get_client_ip(request)
+    if _never_ban_reason(ip) is not None:
+        return None
+    if await _has_valid_credential(request):
+        return None
+    wait = _proxy_bucket_take(_proxy_bucket_key(ip), _proxy_limit_cfg["per_minute"], monotonic())
+    if not wait:
+        return None
+    security_event_nowait("rate_limited", ip=ip, details={"scope": "logged_out_proxy"})
+    retry = max(1, int(math.ceil(wait)))
+    return web.json_response({"error": "Too many requests, retry shortly"}, status=429,
+                             headers={"Retry-After": str(retry)})
+
+
+@web.middleware
+async def proxy_limit_middleware(request: web.Request, handler):
+    """Limit logged-out requests under /proxy/, /search and /browser (see above)."""
+    if _proxy_limit_cfg["enabled"] and _is_proxy_limit_path(request.path):
+        refusal = await _proxy_limit_refusal(request)
+        if refusal is not None:
+            return refusal
+    return await handler(request)
+
+
+async def _load_proxy_limit_state() -> None:
+    """Read the saved logged-out limit settings; a missing or unusable value keeps its default (on, 30)."""
+    cfg = dict(PROXY_LIMIT_DEFAULTS)
+    for key in cfg:
+        try:
+            raw = await db.get_setting(PROXY_LIMIT_SETTING_PREFIX + key)
+        except Exception:
+            raw = None
+        if raw is None:
+            continue
+        if key == "enabled":
+            cfg[key] = raw.strip() != "0"
+            continue
+        try:
+            n = int(raw)
+        except ValueError:
+            continue
+        lo, hi = PROXY_LIMIT_LIMITS[key]
+        if lo <= n <= hi:
+            cfg[key] = n
+    _proxy_limit_cfg.clear()
+    _proxy_limit_cfg.update(cfg)
+    _proxy_buckets.clear()
+
 
 @web.middleware
 async def security_headers_middleware(request: web.Request, handler):
@@ -24792,7 +25030,7 @@ def create_app() -> web.Application:
     # manager's, itself env-configurable) plus a little multipart framing
     # headroom; individual endpoints still enforce their own tighter caps.
     app = web.Application(
-        middlewares=[security_headers_middleware],
+        middlewares=[security_headers_middleware, proxy_limit_middleware],
         client_max_size=Config.FILE_MANAGER_MAX_UPLOAD + 1024 * 1024,
     )
 
@@ -25090,6 +25328,8 @@ def create_app() -> web.Application:
     app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
     app.router.add_get("/api/admin/login-ban", http_get_login_ban)
     app.router.add_put("/api/admin/login-ban", http_put_login_ban)
+    app.router.add_get("/api/admin/proxy-limit", http_get_proxy_limit)
+    app.router.add_put("/api/admin/proxy-limit", http_put_proxy_limit)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
     app.router.add_post("/api/admin/cf-ranges/pending/approve", http_approve_cf_pending)
     app.router.add_post("/api/admin/cf-ranges/pending/dismiss", http_dismiss_cf_pending)
@@ -25373,6 +25613,7 @@ class PortalServer:
         except Exception as e:
             logger.warning(f"Sweep of expired automatic bans failed: {type(e).__name__}")
         await _load_login_ban_state()
+        await _load_proxy_limit_state()
         _blocked_ips = await db.get_active_blocked_ips()
         if _blocked_ips:
             logger.info(f"Loaded {len(_blocked_ips)} active IP block(s)")

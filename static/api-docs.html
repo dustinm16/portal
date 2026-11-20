@@ -6156,6 +6156,32 @@ Headers:
                 <div class="endpoint admin-only">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/proxy-limit</span>
+                        <span class="endpoint-desc">Logged-out request limit settings</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Returns <code>{"enabled": true, "per_minute": 30, "defaults": {...}, "limits": {"per_minute": {"min": 5, "max": 600}}, "your_ip": "...", "your_ip_exempt": null}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/admin/proxy-limit</span>
+                        <span class="endpoint-desc">Change the logged-out request limit</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body: <code>enabled</code> (boolean) and/or <code>per_minute</code> (whole number from 5 to 600; anything else, an unknown key or a non-object body is <code>400</code> and nothing changes). Response (200): the same object as GET plus <code>"saved": true</code>. A change applies at once, is kept across restarts and clears the current counts.</p>
+                        <p>The limit: a request under <code>/proxy/</code>, <code>/search</code> or <code>/browser</code> that carries no valid credential is counted against its client address in a token bucket of <code>per_minute</code> (30 at once, refilled at <code>per_minute</code> a minute). Over it the answer is <code>429</code> with <code>Retry-After</code> (seconds); the request never reaches the handler. A valid session cookie, Bearer token or <code>?token=</code> is never counted; a bogus, forged, expired or revoked one is counted like none. An API key is not counted once an earlier request has verified it, and counted before that (the check never runs the key hash). <code>/login</code>, <code>/api</code>, <code>/admin</code>, <code>/health</code> and static files are never limited, nor are exempt addresses (loopback, private, trusted proxy and Cloudflare, this host, <code>NEVER_BAN_CIDRS</code>, the never-ban list). <strong>On by default.</strong> Nothing is blocked or banned by it; each refusal is counted in the aggregated <code>rate_limited</code> security event (details <code>scope</code> <code>logged_out_proxy</code>).</p>
+                        <p>Auth: superadmin. Audited as <code>proxy_limit.update</code> and recorded as the security event <code>proxy_limit_changed</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/admin/never-ban</span>
                         <span class="endpoint-desc">Never-ban list and effective list</span>
                         <span class="badge-admin">SUPERADMIN</span>

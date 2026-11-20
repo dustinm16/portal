@@ -333,6 +333,25 @@ check("docs/API.md and api-docs.html describe the sign-in blocking settings rout
       and all(n in api_html18 for n in ("/api/admin/login-ban", "login_ban_changed", "<code>probe</code>")))
 check("docs no longer say an automatic block is held in memory only",
       "Nothing in 1.13.0 writes an automatic block" not in api_md18 and "Nothing in 1.13.0 writes an automatic block" not in api_html18)
+# --- 1.18.0 notes: logged-out limit on /proxy, /search and /browser ---------------------
+
+says18("logged-out limit: on by default, paths, 429, valid credential decides",
+       "logged-out limit on /proxy, /search and /browser (on by default)", "30 requests a minute", "`429`", "`retry-after`",
+       "bogus, forged, empty or revoked", "300 assets", "no argon2")
+says18("logged-out limit: api keys, never-limited paths, ipv6", "api keys:", "verified", "`/login`, `/api`, `/admin`, `/health`", "/64")
+says18("logged-out limit: exemptions, table, event, setting, breaking change",
+       "never-ban helper", "bounded at 10000", "`rate_limited`", "`logged_out_proxy`", "/api/admin/proxy-limit",
+       "`proxy_limit.update`", "`proxy_limit_changed`", "changed behaviour", "shared address", "feeds no ban")
+says18("logged-out limit: migration and rollback", "no migration", "`proxy_limit_enabled`", "`proxy_limit_per_minute`", "1.17.0 ignores the rows")
+says18("logged-out limit: what is not tested", "not tested", "browser", "cloudflare", "real client address")
+_pl = _server.PROXY_LIMIT_DEFAULTS
+check("1.18.0: the logged-out limit defaults stated are the ones in the code",
+      _pl == {"enabled": True, "per_minute": 30} and "30 requests a minute" in sec18
+      and "5 to 600 requests a minute" in sec18 and _server.PROXY_LIMIT_LIMITS == {"per_minute": (5, 600)}
+      and "bounded at 10000" in sec18 and _server._PROXY_LIMIT_TABLE_MAX == 10000)
+check("docs/API.md and api-docs.html describe the logged-out limit route",
+      all(n in api_md18 for n in ("GET /api/admin/proxy-limit", "PUT /api/admin/proxy-limit", "`proxy_limit_changed`", "`429`", "`Retry-After`"))
+      and all(n in api_html18 for n in ("/api/admin/proxy-limit", "proxy_limit_changed", "<code>429</code>", "Retry-After")))
 about18 = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
 check("about.html no longer lists scopes the code does not check", "<code>chat</code> &mdash; Send and receive chat messages" not in about18)
 
