@@ -186,6 +186,71 @@ def test_hls_path_is_one_plain_file_name():
     run(body)
 
 
+# --- 4. open-link thumbnails, the decision cache ----------------------------
+
+def _max_age(resp):
+    value = resp.headers["Cache-Control"]
+    return value, int(value.split("max-age=")[1].split(",")[0])
+
+
+def test_open_link_thumbnail_is_kept_at_most_five_seconds():
+    async def body(w):
+        for label in ("open", "public", "private"):
+            key = w.streams[label]["pub"]
+            user = None if label == "open" else "owner"
+            for fresh in (True, False):
+                server._thumbnail_cache[w.streams[label]["live"]] = (server.time() - (0 if fresh else 100), b"JPEG")
+                if fresh:
+                    r = await server.http_stream_thumbnail(w.req(key, user))
+                else:
+                    r = server._stale_thumbnail_response(w.streams[label]["live"], await _stream(w, label))
+                value, age = _max_age(r)
+                if label == "open":
+                    assert value.startswith("public, ") and age <= 5, value
+                else:
+                    assert value.startswith("private, "), value
+    run(body)
+
+
+async def _stream(w, label):
+    return await w.db.get_user_stream(w.streams[label]["id"])
+
+
+def test_full_decision_cache_evicts_expired_then_oldest():
+    async def body(w):
+        key = w.streams["open"]["pub"]
+        clock = [1000.0]
+        real_now, small = server._playback_now, server._PLAYBACK_AUTH_MAX
+        server._playback_now = lambda: clock[0]
+        server._PLAYBACK_AUTH_MAX = 16
+        try:
+            server._playback_cache_forget(everything=True)
+            for i in range(16):
+                clock[0] += 0.1
+                await server.http_stream_info(w.req(key, cookie="junk%d" % i))
+            assert len(server._playback_auth_cache) == 16
+            first_keys = list(server._playback_auth_cache)
+            # full of live entries: one more must not wipe the others
+            clock[0] += 0.1
+            await server.http_stream_info(w.req(key, cookie="newcomer"))
+            kept = [k for k in first_keys if k in server._playback_auth_cache]
+            assert 8 <= len(kept) < 16, len(kept)
+            assert first_keys[0] not in server._playback_auth_cache      # the oldest went
+            assert first_keys[-1] in server._playback_auth_cache          # the newest stayed
+            assert len(server._playback_auth_cache) <= 16
+            # expired entries go first: a full cache whose entries have all expired keeps only the newcomer
+            server._playback_cache_forget(everything=True)
+            for i in range(16):
+                await server.http_stream_info(w.req(key, cookie="old%d" % i))
+            assert len(server._playback_auth_cache) == 16
+            clock[0] += server._PLAYBACK_AUTH_TTL + 1
+            await server.http_stream_info(w.req(key, cookie="late"))
+            assert len(server._playback_auth_cache) == 1
+        finally:
+            server._playback_now, server._PLAYBACK_AUTH_MAX = real_now, small
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -14,6 +14,7 @@ del _sys
 import asyncio
 import copy
 import hashlib
+import heapq
 import hmac
 import html as _html
 import ipaddress
@@ -8988,7 +8989,12 @@ async def _stream_read_access(request: web.Request, key: str) -> tuple[Optional[
             for k in [k for k, v in _playback_auth_cache.items() if v[0] <= now]:
                 del _playback_auth_cache[k]
             if len(_playback_auth_cache) >= _PLAYBACK_AUTH_MAX:
-                _playback_auth_cache.clear()
+                # Still full: drop the oldest decisions (a batch, so a flood does not
+                # pay for a sort on every request), never everybody's at once.
+                batch = max(1, _PLAYBACK_AUTH_MAX // 8)
+                oldest = heapq.nsmallest(batch, _playback_auth_cache.items(), key=lambda kv: kv[1][0])
+                for k, _v in oldest:
+                    del _playback_auth_cache[k]
         _playback_auth_cache[ckey] = (now + _PLAYBACK_AUTH_TTL, user_id, stream["id"], stream, allowed)
     return (stream, "") if allowed else (None, _STREAM_NOT_FOUND)
 
@@ -9151,7 +9157,12 @@ _thumbnail_sem = asyncio.Semaphore(_THUMBNAIL_MAX_CAPTURES)
 _thumbnail_inflight: dict[str, "asyncio.Task"] = {}
 
 
+_OPEN_THUMBNAIL_MAX_AGE = 5      # seconds a shared cache may keep an open-link thumbnail
+
+
 def _thumbnail_response(body: bytes, max_age: int, stream: dict) -> web.Response:
+    if _stream_is_open(stream):
+        max_age = min(max_age, _OPEN_THUMBNAIL_MAX_AGE)
     return web.Response(
         body=body,
         content_type="image/jpeg",

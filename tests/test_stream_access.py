@@ -490,7 +490,7 @@ def test_headers():
             th = await server.http_stream_thumbnail(w.req(key, user))
             assert th.status == 200 and th.body == b"JPEG"
             assert (hdr(th, "Access-Control-Allow-Origin") == "*") is cors
-            assert hdr(th, "Cache-Control") == ("public, max-age=15" if cors else "private, max-age=15"), hls.headers
+            assert hdr(th, "Cache-Control") == ("public, max-age=5" if cors else "private, max-age=15"), hls.headers
             whep = await server.http_stream_webrtc_whep(_whep_request(w, key, user))
             assert whep.status == 201, (label, whep.status)
             assert (hdr(whep, "Access-Control-Allow-Origin") == "*") is cors
