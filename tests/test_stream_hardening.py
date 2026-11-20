@@ -160,6 +160,32 @@ def test_announce_channel_is_checked_before_anything_is_saved():
     run(body)
 
 
+# --- 3. the HLS path --------------------------------------------------------
+
+def test_hls_path_is_one_plain_file_name():
+    async def body(w):
+        key = w.streams["private"]["pub"]
+        other = w.streams["second"]["live"]
+        refused_body = (await server.http_stream_hls_proxy(w.req("pub_nope" + "x" * 12, "owner"))).body
+        bad = ["../index.m3u8", "..", "a/../b.m3u8", f"../{other}/index.m3u8", f"../../live/{other}/index.m3u8",
+               "/etc/passwd", "/index.m3u8", "\\index.m3u8", "..\\index.m3u8", "a\\b.m3u8",
+               "%2e%2e/index.m3u8", "%2e%2e%2findex.m3u8", "..%2findex.m3u8", "%252e%252e%252findex.m3u8",
+               "%5cindex.m3u8", "sub/index.m3u8", "./index.m3u8", ".hidden.m3u8", "a..m3u8",
+               "index.m3u8/", "index.m3u8\n", "", "index", "index.php", "x" * 200 + ".mp4"]
+        for path in bad:
+            FakeSession.calls = []
+            r = await server.http_stream_hls_proxy(w.req(key, "owner", path=path))
+            assert r.status == 404 and r.body == refused_body, (path, r.status)
+            assert not FakeSession.calls, (path, FakeSession.calls)
+        for path in ("index.m3u8", "stream.m3u8", "main_stream.m3u8", "video1_stream.m3u8", "seg0.mp4",
+                     "init.mp4", "a1b2c3d4_seg12.mp4", "prog_0.m4s", "segment.ts", "audio.aac"):
+            FakeSession.calls = []
+            r = await server.http_stream_hls_proxy(w.req(key, "owner", path=path))
+            assert r.status == 200, (path, r.status)
+            assert FakeSession.calls[-1][1].startswith(f"https://127.0.0.1:8888/live/{w.streams['private']['live']}/{path}"), FakeSession.calls
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

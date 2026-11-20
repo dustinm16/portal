@@ -9050,6 +9050,10 @@ def _playback_headers(stream: dict, cache_control: str = "no-cache", extra: Opti
     return headers
 
 
+# What MediaMTX's HLS muxer serves under a path: playlists, init and media segments, parts.
+_HLS_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\.(?:m3u8|mp4|m4s|ts|aac|m4a)\Z")
+
+
 async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     """Proxy HLS requests to MediaMTX through port 443.
 
@@ -9069,6 +9073,11 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     # missing) is revealed to somebody who may not watch it.
     stream, error = await _validate_stream_access(key, request=request)
     if error:
+        return _stream_not_found()
+    # Only a plain file name of the stream's own HLS output is forwarded: no folders, no
+    # dot segments, no encoded forms (the router decoded the path once already, so a
+    # leftover % was encoded twice). Anything else answers like a refusal.
+    if not _HLS_FILE_RE.match(hls_path) or ".." in hls_path:
         return _stream_not_found()
 
     # Get MediaMTX configuration
