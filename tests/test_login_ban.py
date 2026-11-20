@@ -575,6 +575,34 @@ async def main():
                 server._login_ban_cfg.clear()
                 server._login_ban_cfg.update(server.LOGIN_BAN_DEFAULTS)
 
+            # ---- fix pass: a wrong password costs the same lookups for a known and an unknown name
+            reset_state()
+            calls = {}
+            real = {n: getattr(d, n) for n in ("get_user_by_username", "has_recent_login_from")}
+
+            def counting(name):
+                async def wrapper(*a, **kw):
+                    calls[name] = calls.get(name, 0) + 1
+                    return await real[name](*a, **kw)
+                return wrapper
+            for n in real:
+                setattr(d, n, counting(n))
+            try:
+                OUT = "6.7.8.9"
+                await flood(OUT, "alice_lb", 1)
+                known = dict(calls)
+                calls.clear()
+                server._login_known_cache.clear()
+                await flood(OUT, "no_such_name_lb", 1)
+                unknown = dict(calls)
+            finally:
+                for n in real:
+                    delattr(d, n)
+            check("timing: a known and an unknown name run the same database lookups before the 401",
+                  known == unknown and known.get("has_recent_login_from") == 1 and known.get("get_user_by_username") == 2,
+                  f"known {known} unknown {unknown}")
+            check("timing: the dummy lookup leaves the known-address cache alone", not server._login_known_cache)
+
         finally:
             server.db, Config.PROBE_BLOCK_STRIKES, Config.PROBE_BLOCK_SECONDS = saved
             auth_module.db = saved_auth_db

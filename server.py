@@ -1328,8 +1328,13 @@ async def _count_login_failure(ip: str, user_id: Optional[int] = None) -> None:
         canon = ipguard.canonical_ip(ip)
         if canon is None or _never_ban_reason(canon) is not None:
             return
-        if user_id and await _login_address_known(canon, user_id):
-            return
+        if user_id:
+            if await _login_address_known(canon, user_id):
+                return
+        else:
+            # An unknown name runs the same lookup (answer ignored, cache untouched), so a
+            # wrong password costs the same database work whether or not the account exists.
+            await db.has_recent_login_from(-1, canon)
         now = monotonic()
         cfg = _login_ban_cfg
         window = cfg["find_minutes"] * 60
@@ -1358,14 +1363,17 @@ async def _count_login_failure(ip: str, user_id: Optional[int] = None) -> None:
 
 
 async def _failure_user_id(username, fail_reason) -> Optional[int]:
-    """Id of the account a wrong password was tried against; None for an unknown name."""
-    if fail_reason != "bad_password":
-        return None
+    """Id of the account a wrong password was tried against; None for an unknown name.
+
+    The lookup runs for an unknown name too (and its answer is dropped), so the two cases
+    do the same database work before the 401."""
     try:
         user = await db.get_user_by_username(username)
-        return user["id"] if user else None
     except Exception:
         return None
+    if fail_reason != "bad_password":
+        return None
+    return user["id"] if user else None
 
 
 async def _note_login_success(user: dict, ip: str) -> None:
