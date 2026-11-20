@@ -483,7 +483,10 @@ async def seed_operations(stage: Stage, clients: dict) -> dict:
         "name": "Workshop camera", "description": "Members only, the 3D printer bench", "is_public": False})
     pub_id = (pub.get("stream") or pub)["id"]
     priv_id = (priv.get("stream") or priv)["id"]
-    await alex.api("PUT", f"/api/streams/{pub_id}", {"allow_unauthenticated": True})
+    await alex.api("PUT", f"/api/streams/{pub_id}", {
+        "allow_unauthenticated": True,
+        "golive_message": "{streamer} is live: {title}. Come and hang out!",
+        "golive_audience": "followers"})
     out["streams"] = {"public": pub_id, "private": priv_id}
 
     # personal connections of different types. The portal refuses documentation addresses as
@@ -827,8 +830,21 @@ def _guides_detail(s):
 
 @shot("streams")
 def _streams(s):
-    page = s.open(s.context("alex"), "/streams", ".stream-card, .streams-grid, #my-streams")
+    # as alex: other members' public streams with the Follow toggle, two of them live
+    page = s.open(s.context("alex"), "/streams", ".stream-follow-btn", settle=1500)
     s.save("streams", page)
+
+
+@shot("chat-golive")
+def _chat_golive(s):
+    # the go-live cards in the announce channel (general) and the live-now strip above the chat
+    page = chat_page(s)
+    page.wait_for_selector(".stream-card-msg", timeout=15000)
+    page.wait_for_selector("#live-now-strip a", timeout=15000)
+    page.evaluate("""() => { const box = document.getElementById('chat-messages');
+        box.scrollTop = box.scrollHeight; window.scrollTo(0, 0); }""")
+    page.wait_for_timeout(800)
+    s.save("chat-golive", page)
 
 
 @shot("streams-settings")
@@ -1244,6 +1260,51 @@ def main(argv=None) -> int:
     return rc
 
 
+async def seed_golive(stage: Stage, clients: dict) -> dict:
+    """Streams of other members, follows, and two streams that go live (1.16.0).
+
+    The go-live is the real path: the MediaMTX publish hook POST /api/stream/auth, called from
+    loopback with the stream's own key (there is no MediaMTX, OBS or video: the stream is only
+    marked live). The announce channel is `general`, so the go-live cards appear in the chat
+    picture. Run after the chat messages were given their times, so the cards are the newest."""
+    admin, alex = clients[ADMIN_NAME], clients["alex"]
+    chans = {c["name"]: c["id"] for c in (await admin.api("GET", "/api/chat/channels"))["channels"]}
+    await admin.api("PUT", "/api/settings/permissions", {"stream_announce_channel_id": chans["general"]})
+
+    made = {}
+    for owner, name, desc in [
+        ("river", "Saturday sketch hour", "Pencil and ink, ask anything while I draw"),
+        ("jordan", "Retro console repairs", "Recapping a 90s console on the bench"),
+        ("sam", "Community Q and A", "Monthly questions about the portal"),
+    ]:
+        r = await clients[owner].api("POST", "/api/streams", {"name": name, "description": desc, "is_public": True})
+        made[owner] = r.get("stream") or r
+    # alex follows two of them (the toggle shows Following), casey one
+    await alex.api("PUT", f"/api/streams/{made['river']['id']}/follow")
+    await alex.api("PUT", f"/api/streams/{made['sam']['id']}/follow")
+    await clients["casey"].api("PUT", f"/api/streams/{made['jordan']['id']}/follow")
+
+    hook = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), timeout=aiohttp.ClientTimeout(total=30))
+    try:
+        for owner in ("river", "jordan"):
+            key = made[owner]["stream_key"]
+            r = await hook.post(f"{stage.direct}/api/stream/auth",
+                                json={"action": "publish", "path": "live/" + key, "password": key, "ip": "127.0.0.1"})
+            if r.status != 200:
+                raise Fail(f"publish hook for {owner}'s stream answered {r.status}")
+    finally:
+        await hook.close()
+    # the announcement runs in the background: wait for both cards in the announce channel
+    for _ in range(40):
+        msgs = (await alex.api("GET", f"/api/chat/channels/{chans['general']}/messages?limit=50")).get("messages", [])
+        if len([m for m in msgs if m.get("message_type") == "stream_card"]) >= 2:
+            break
+        await asyncio.sleep(0.25)
+    else:
+        raise Fail("the go-live cards did not appear in the announce channel")
+    return {"golive": {k: v["id"] for k, v in made.items()}}
+
+
 async def seed_everything(stage: Stage) -> dict:
     admin = Client(stage, ADMIN_NAME)
     clients: dict = {ADMIN_NAME: admin}
@@ -1254,6 +1315,7 @@ async def seed_everything(stage: Stage) -> dict:
         info.update(await seed_operations(stage, clients))
         spread_timestamps(stage)
         mark_index_complete(stage)
+        info.update(await seed_golive(stage, clients))
         return info
     finally:
         for c in clients.values():
