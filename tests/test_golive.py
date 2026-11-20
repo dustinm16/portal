@@ -739,6 +739,80 @@ async def test_a_database_made_before_the_columns_existed_is_upgraded_on_connect
         await old.close()
 
 
+class _FailingResp:
+    status = 500
+    headers = {}
+
+    class content:
+        @staticmethod
+        async def read(n=-1):
+            return b"no"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _FailingSession:
+    posts = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def post(self, url, **kw):
+        _FailingSession.posts.append(url)
+        return _FailingResp()
+
+
+@with_world
+async def test_a_webhook_retry_is_dropped_when_the_stream_is_no_longer_public(w):
+    real = server._deliver_webhook = w.saved["_deliver_webhook"]     # the retry calls the module's name
+    payload = {"stream_id": w.sid["pub"], "stream_name": "Show pub", "owner_username": "owner"}
+    member = await w.db.get_webhook_for_delivery(w.hooks["member"]["id"])
+    system = await w.db.get_webhook_for_delivery(w.hooks["sys"]["id"])
+    assert member["kind"] == "user" and system["kind"] == "system"
+    # the check itself: a member's hook needs a public stream, a system hook is not asked
+    assert await server._stream_event_still_public(member, "stream.live", payload)
+    assert not await server._stream_event_still_public(member, "stream.live", {"stream_id": w.sid["priv"]})
+    assert not await server._stream_event_still_public(member, "stream.offline", {"stream_id": 99999})
+    assert not await server._stream_event_still_public(member, "stream.live", {})
+    assert await server._stream_event_still_public(system, "stream.live", {"stream_id": w.sid["priv"]})
+    assert await server._stream_event_still_public(member, "message.created", {})
+
+    # a delivery whose first attempt fails: while it waits for the retry the stream is made private
+    saved = (server.aiohttp.ClientSession, server._webhook_sleep)
+    _FailingSession.posts = []
+    flips = []
+
+    async def flip_then_sleep(secs):
+        flips.append(secs)
+        await w.db.update_user_stream(w.sid["pub"], is_public=False)
+
+    server.aiohttp.ClientSession = _FailingSession
+    server._webhook_sleep = flip_then_sleep
+    try:
+        await real(member, "stream.live", payload, meta={"stream_public": True})
+        assert len(_FailingSession.posts) == 1 and flips, (_FailingSession.posts, flips)
+        # the same private stream and a system hook: the retries still go out (4 attempts)
+        _FailingSession.posts = []
+        await real(system, "stream.live", payload, meta={"stream_public": False})
+        assert len(_FailingSession.posts) == 4, _FailingSession.posts
+        # and a fresh delivery to the member's hook for a private stream sends nothing at all
+        _FailingSession.posts = []
+        res = await real(member, "stream.live", payload, meta={"stream_public": True})
+        assert _FailingSession.posts == [] and res["error"] == "stream is no longer public", res
+    finally:
+        server.aiohttp.ClientSession, server._webhook_sleep = saved
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -7612,11 +7612,29 @@ async def _webhook_current_for_event(webhook_id: int, event: str, meta: dict | N
     return None
 
 
-async def _webhook_resend_allowed(sent_to: dict, event: str, meta: dict | None) -> bool:
+async def _stream_event_still_public(webhook: dict, event: str, payload: dict) -> bool:
+    """Before every attempt to deliver stream.live / stream.offline to a hook that is not a
+    system hook: read the stream again, and refuse when it is no longer public (made private
+    or deleted since the event was fired; a retry minutes later must not tell a member's hook
+    about it). System hooks are not asked. Anything but a stream event passes. Fails closed."""
+    if event not in webhook_formats.STREAM_EVENTS or (webhook.get("kind") or "user") == "system":
+        return True
+    try:
+        stream = await db.get_user_stream(_row_id(str((payload or {}).get("stream_id"))))
+    except Exception as e:
+        logger.warning(f"Webhook stream visibility re-check failed: {type(e).__name__}")
+        return False
+    return bool(stream and stream.get("is_public"))
+
+
+async def _webhook_resend_allowed(sent_to: dict, event: str, meta: dict | None,
+                                  payload: dict | None = None) -> bool:
     """Whether a request already built for `sent_to` may be sent again after a wait:
     the same rules as a fresh delivery, and the destination, format, privilege and
     credentials must be the ones the request was built for."""
     try:
+        if not await _stream_event_still_public(sent_to, event, payload or {}):
+            return False
         w = await _webhook_current_for_event(sent_to["id"], event, meta)
     except Exception as e:
         logger.warning(f"Webhook {sent_to.get('id')} re-check failed: {type(e).__name__}")
@@ -7672,6 +7690,11 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
         return result
     if not url or (fmt == "generic" and not secret):
         result["error"] = "not configured"
+        return result
+    # A stream event is only for a stream that is public now: asked again for every attempt
+    # (the first one, each backoff retry and each wait after a 429), not once at dispatch.
+    if not single and not await _stream_event_still_public(webhook, event, payload):
+        result["error"] = "stream is no longer public"
         return result
     # A non-generic hook carries a credential or a private topic: over plain http it is
     # only ever sent to a private address (allow_private). Saving refuses the combination,
@@ -7781,7 +7804,7 @@ async def _deliver_webhook(webhook: dict, event: str, payload: dict,
                 # The hook may have been switched off, re-aimed, rotated or deleted, or the
                 # event's channel made private, while we waited: do what the backoff retry
                 # does and apply the rules again before anything more is sent.
-                if not await _webhook_resend_allowed(webhook, event, meta):
+                if not await _webhook_resend_allowed(webhook, event, meta, payload):
                     result["status"] = response_status
                     result["error"] = "webhook changed while waiting"
                     return result
