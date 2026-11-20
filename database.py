@@ -6939,6 +6939,19 @@ class Database:
 
     BAN_REPEAT_DAYS = 7
 
+    async def peek_ban_offences(self, ip_address: str, kind: str) -> int:
+        """The count record_ban_offence would return now, without recording anything."""
+        ip_address = ipguard.canonical_ip(ip_address) or ip_address
+        cursor = await self.conn.execute(
+            "SELECT offences, last_ban_at FROM ip_ban_history WHERE ip_address = ? AND kind = ?",
+            (ip_address, kind))
+        row = await cursor.fetchone()
+        cursor = await self.conn.execute("SELECT datetime('now', ?)", (f"-{self.BAN_REPEAT_DAYS} days",))
+        (cutoff,) = await cursor.fetchone()
+        if row and row["last_ban_at"] > cutoff:
+            return int(row["offences"]) + 1
+        return 1
+
     async def record_ban_offence(self, ip_address: str, kind: str) -> int:
         """Count one more automatic ban of this address for this kind and return the
         number of offences within the last BAN_REPEAT_DAYS days, this one included (1 for

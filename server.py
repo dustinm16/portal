@@ -1261,11 +1261,13 @@ async def _escalating_ban(ip: str, kind: str, base_seconds: int, reason: str, de
     if _never_ban_reason(ip) is not None:
         return None
     canon = str(_canon_addr(ip))
-    offences = await db.record_ban_offence(canon, kind)
-    seconds = _ban_seconds(base_seconds, offences)
+    # Read the count first to pick the length, and record the offence only when a row was
+    # written: a manual or longer automatic block that was kept is not a new offence.
+    seconds = _ban_seconds(base_seconds, await db.peek_ban_offences(canon, kind))
     exempt, expires_at = await _auto_block(canon, reason, seconds, kind=kind)
     if exempt or not expires_at:
         return None
+    offences = await db.record_ban_offence(canon, kind)
     logger.warning(f"Blocked {canon} ({kind}) until {expires_at} UTC, offence {offences} within 7 days")
     await security_event("ip_blocked", ip=canon, result="auto",
                          details={**(details or {}), "target_ip": canon, "kind": kind,

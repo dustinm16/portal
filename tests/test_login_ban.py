@@ -528,6 +528,30 @@ async def main():
             cur = await d.conn.execute("SELECT COUNT(*) AS n FROM ip_ban_history")
             check("CLI clear-bans: removes every block and every escalation record",
                   not await rows(d) and (await cur.fetchone())["n"] == 0)
+
+            # ---- fix pass: an offence is recorded only when a row was written
+            secevents.log.bind(d)
+            reset_state()
+            await d.conn.execute("DELETE FROM blocked_ips")
+            await d.conn.execute("DELETE FROM ip_ban_history")
+            await d.conn.commit()
+
+            async def history(ip):
+                cur = await d.conn.execute("SELECT * FROM ip_ban_history WHERE ip_address = ?", (ip,))
+                return [dict(r) for r in await cur.fetchall()]
+            await d.block_ip(GLOBAL_C, reason="by hand", expires_at=None)
+            got = await server._escalating_ban(GLOBAL_C, "login", 900, "test")
+            check("offence: a manual block that is kept writes nothing and records no offence",
+                  got is None and not await history(GLOBAL_C) and (await rows(d, GLOBAL_C))[0]["source"] == "manual",
+                  str(await history(GLOBAL_C)))
+            await d.block_ip(GLOBAL_D, reason="long", expires_at="2999-01-01 00:00:00", source="auto", kind="login")
+            got = await server._escalating_ban(GLOBAL_D, "login", 900, "test")
+            check("offence: a longer automatic block that is kept records no offence",
+                  got is None and not await history(GLOBAL_D), str(await history(GLOBAL_D)))
+            got = await server._escalating_ban(GLOBAL_A, "login", 900, "test")
+            check("offence: a block that is written records exactly one offence",
+                  got and [h["offences"] for h in await history(GLOBAL_A)] == [1], str(await history(GLOBAL_A)))
+
         finally:
             server.db, Config.PROBE_BLOCK_STRIKES, Config.PROBE_BLOCK_SECONDS = saved
             auth_module.db = saved_auth_db
