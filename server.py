@@ -5480,6 +5480,19 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
         return web.json_response({"error": "Failed to create stream"}, status=500)
 
 
+_SQLITE_INT_MAX = 2 ** 63 - 1
+
+
+def _row_id(raw) -> int:
+    """An id taken from a URL, ready for the database. Not a number: ValueError, as int().
+    A number SQLite cannot hold (it would raise OverflowError, a 500) is turned into 0, an id
+    no row has, so the handler gives the same answer as for an unknown id."""
+    value = int(raw)
+    if value < 1 or value > _SQLITE_INT_MAX:
+        return 0
+    return value
+
+
 async def http_get_user_stream(request: web.Request) -> web.Response:
     """Get a specific stream by numeric ID or public key (pub_xxx).
 
@@ -5500,7 +5513,7 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
         stream = await db.get_stream_by_public_key(stream_id)
     else:
         try:
-            stream = await db.get_user_stream(int(stream_id))
+            stream = await db.get_user_stream(_row_id(stream_id))
         except (ValueError, TypeError):
             return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5547,7 +5560,7 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5649,7 +5662,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5684,7 +5697,7 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5708,7 +5721,7 @@ async def http_regenerate_public_key(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5737,7 +5750,7 @@ async def http_create_rtmp_token(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5776,7 +5789,7 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5864,7 +5877,7 @@ async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
 
     stream_id = request.match_info.get("id")
     try:
-        stream_id = int(stream_id)
+        stream_id = _row_id(stream_id)
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5906,7 +5919,7 @@ async def http_get_stream_bans(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     try:
-        stream_id = int(request.match_info.get("id"))
+        stream_id = _row_id(request.match_info.get("id"))
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5934,7 +5947,7 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     try:
-        stream_id = int(request.match_info.get("id"))
+        stream_id = _row_id(request.match_info.get("id"))
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
@@ -5956,6 +5969,8 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     try:
         user_id = int(data.get("user_id"))
     except (TypeError, ValueError):
+        return web.json_response({"error": "Valid user_id required"}, status=400)
+    if abs(user_id) > _SQLITE_INT_MAX:
         return web.json_response({"error": "Valid user_id required"}, status=400)
 
     # Can't ban yourself
@@ -6010,8 +6025,8 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     try:
-        stream_id = int(request.match_info.get("id"))
-        user_id = int(request.match_info.get("user_id"))
+        stream_id = _row_id(request.match_info.get("id"))
+        user_id = _row_id(request.match_info.get("user_id"))
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
 
@@ -6048,8 +6063,8 @@ async def http_remove_stream_ban_by_id(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     try:
-        stream_id = int(request.match_info.get("id"))
-        ban_id = int(request.match_info.get("ban_id"))
+        stream_id = _row_id(request.match_info.get("id"))
+        ban_id = _row_id(request.match_info.get("ban_id"))
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
 
@@ -6120,7 +6135,7 @@ async def _viewable_stream_for_follow(request: web.Request, user_id: int, role: 
     non-numeric id, an unknown stream and a stream the member may not watch are
     all the same answer: a private stream's existence is not revealed."""
     try:
-        stream_id = int(request.match_info.get("id", ""))
+        stream_id = _row_id(request.match_info.get("id", ""))
     except (ValueError, TypeError):
         return None
     stream = await db.get_user_stream(stream_id)
@@ -6153,8 +6168,10 @@ async def http_unfollow_stream(request: web.Request) -> web.Response:
         return refusal
     _token, user_id, _role = ctx
     try:
-        stream_id = int(request.match_info.get("id", ""))
+        stream_id = _row_id(request.match_info.get("id", ""))
     except (ValueError, TypeError):
+        return web.json_response(_STREAM_FOLLOW_NOT_FOUND, status=404)
+    if not stream_id:       # out of the database's range: no stream, so no follow
         return web.json_response(_STREAM_FOLLOW_NOT_FOUND, status=404)
     await db.unfollow_stream(user_id, stream_id)
     return web.json_response({"following": False, "stream_id": stream_id})
@@ -11548,16 +11565,15 @@ async def http_update_feature_permissions(request: web.Request) -> web.Response:
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    if "allow_user_connections" in data:
-        await db.set_setting("allow_user_connections", "true" if data["allow_user_connections"] else "false")
-    if "allow_user_streams" in data:
-        await db.set_setting("allow_user_streams", "true" if data["allow_user_streams"] else "false")
+    # Everything is checked before anything is saved: a refused request changes nothing.
+    announce_value = None
+    announce_set = False
     if "stream_announce_channel_id" in data:
         value = data["stream_announce_channel_id"]
         if value is None or value == "":
-            await db.set_setting("stream_announce_channel_id", "")
+            announce_value, announce_set = "", True
         else:
-            if type(value) is not int or value < 1:
+            if type(value) is not int or value < 1 or value > _SQLITE_INT_MAX:
                 return web.json_response({"error": "stream_announce_channel_id must be a channel id or null"}, status=400)
             channel = await db.get_chat_channel(value)
             if not channel:
@@ -11566,7 +11582,14 @@ async def http_update_feature_permissions(request: web.Request) -> web.Response:
                 return web.json_response({"error": "A stream's own chat cannot be the announce channel"}, status=400)
             if not await _channel_open_to_members(channel):
                 return web.json_response({"error": "The announce channel must be readable by every member (not private)"}, status=400)
-            await db.set_setting("stream_announce_channel_id", str(value))
+            announce_value, announce_set = str(value), True
+
+    if "allow_user_connections" in data:
+        await db.set_setting("allow_user_connections", "true" if data["allow_user_connections"] else "false")
+    if "allow_user_streams" in data:
+        await db.set_setting("allow_user_streams", "true" if data["allow_user_streams"] else "false")
+    if announce_set:
+        await db.set_setting("stream_announce_channel_id", announce_value)
 
     logger.info(f"Feature permissions updated by user {token.user_id}: {data}")
     return web.json_response({"success": True})
@@ -17408,7 +17431,7 @@ async def http_delete_emote(request: web.Request) -> web.Response:
         return web.json_response({"error": "Admin or moderator required"}, status=403)
 
     try:
-        emote_id = int(request.match_info["id"])
+        emote_id = _row_id(request.match_info["id"])
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
 
@@ -17452,7 +17475,7 @@ async def http_list_relay_destinations(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
     try:
-        stream_id = int(request.match_info["id"])
+        stream_id = _row_id(request.match_info["id"])
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
     stream = await db.get_user_stream(stream_id)
@@ -17468,7 +17491,7 @@ async def http_create_relay_destination(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
     try:
-        stream_id = int(request.match_info["id"])
+        stream_id = _row_id(request.match_info["id"])
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
     stream = await db.get_user_stream(stream_id)
@@ -17525,8 +17548,8 @@ async def http_update_relay_destination(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
     try:
-        stream_id = int(request.match_info["id"])
-        relay_id = int(request.match_info["relay_id"])
+        stream_id = _row_id(request.match_info["id"])
+        relay_id = _row_id(request.match_info["relay_id"])
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
     stream = await db.get_user_stream(stream_id)
@@ -17598,8 +17621,8 @@ async def http_delete_relay_destination(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
     try:
-        stream_id = int(request.match_info["id"])
-        relay_id = int(request.match_info["relay_id"])
+        stream_id = _row_id(request.match_info["id"])
+        relay_id = _row_id(request.match_info["relay_id"])
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
     stream = await db.get_user_stream(stream_id)
@@ -17625,8 +17648,8 @@ async def http_get_relay_logs(request: web.Request) -> web.Response:
     if not token:
         return unauthorized_response(request)
     try:
-        stream_id = int(request.match_info["id"])
-        relay_id = int(request.match_info["relay_id"])
+        stream_id = _row_id(request.match_info["id"])
+        relay_id = _row_id(request.match_info["relay_id"])
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid ID"}, status=400)
     stream = await db.get_user_stream(stream_id)

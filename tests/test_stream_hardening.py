@@ -84,6 +84,82 @@ def test_private_stream_is_not_in_members_activity():
     run(body)
 
 
+# --- 2. ids the database cannot hold ---------------------------------------
+
+HUGE = "9" * 25
+BIG = str(2 ** 63)
+
+
+def test_out_of_range_ids_answer_as_unknown_streams():
+    async def body(w):
+        member_id = w.users["member"]
+        routes = [
+            ("member", server.http_follow_stream, None),
+            ("member", server.http_get_user_stream, None),
+            ("owner", server.http_update_user_stream, {"name": "x"}),
+            ("owner", server.http_delete_user_stream, None),
+            ("owner", server.http_get_stream_bans, None),
+            ("owner", server.http_create_stream_ban, {"user_id": member_id}),
+            ("owner", server.http_list_relay_destinations, None),
+            ("owner", server.http_regenerate_stream_key, None),
+            ("owner", server.http_regenerate_public_key, None),
+        ]
+        for user, handler, payload in routes:
+            reference = (await handler(api(w, "GET", "/x", user, payload, match={"id": "99999"}))).status
+            assert reference in (403, 404), (handler.__name__, reference)
+            for raw in (HUGE, BIG, "0", "-5"):
+                r = await handler(api(w, "GET", "/x", user, payload, match={"id": raw}))
+                assert r.status == reference, (handler.__name__, raw, r.status, reference)
+        for raw in (HUGE, BIG, "0", "-5"):
+            r = await server.http_unfollow_stream(api(w, "DELETE", "/x", "member", match={"id": raw}))
+            assert r.status == 404, (raw, r.status)
+        r = await server.http_unfollow_stream(api(w, "DELETE", "/x", "member", match={"id": "99999"}))
+        assert r.status == 200
+        sid = str(w.streams["private"]["id"])
+        for raw in (HUGE, BIG):
+            m = {"id": sid, "user_id": raw, "ban_id": raw, "relay_id": raw}
+            r = await server.http_remove_stream_ban(api(w, "DELETE", "/x", "owner", match=m))
+            assert r.status < 500, r.status
+            r = await server.http_remove_stream_ban_by_id(api(w, "DELETE", "/x", "owner", match=m))
+            assert r.status < 500, r.status
+            r = await server.http_get_relay_logs(api(w, "GET", "/x", "owner", match=m))
+            assert r.status == 404, r.status
+            r = await server.http_delete_relay_destination(api(w, "DELETE", "/x", "owner", match=m))
+            assert r.status == 404, r.status
+        r = await server.http_create_stream_ban(api(w, "POST", "/x", "owner", {"user_id": 2 ** 70}, match={"id": sid}))
+        assert r.status == 400, r.status
+        # a number that is fine still works, an unreadable one is still a 400
+        r = await server.http_follow_stream(api(w, "PUT", "/x", "member", match={"id": str(w.streams["public"]["id"])}))
+        assert r.status == 200, r.status
+        r = await server.http_get_user_stream(api(w, "GET", "/x", "member", match={"id": "abc"}))
+        assert r.status == 400
+    run(body)
+
+
+def test_announce_channel_is_checked_before_anything_is_saved():
+    async def body(w):
+        db = w.db
+        await db.set_setting("allow_user_streams", "true")
+        await db.set_setting("allow_user_connections", "true")
+        for value in (2 ** 63, 2 ** 70, 0, -1, True, "7"):
+            r = await server.http_update_feature_permissions(
+                api(w, "PUT", "/api/settings/permissions", "admin",
+                    {"allow_user_streams": False, "allow_user_connections": False,
+                     "stream_announce_channel_id": value}))
+            assert r.status == 400, (value, r.status)
+            assert await db.get_setting("allow_user_streams") == "true", value
+            assert await db.get_setting("allow_user_connections") == "true", value
+        # a channel that does not exist is refused the same way, nothing saved
+        r = await server.http_update_feature_permissions(
+            api(w, "PUT", "/x", "admin", {"allow_user_streams": False, "stream_announce_channel_id": 987654}))
+        assert r.status == 404 and await db.get_setting("allow_user_streams") == "true"
+        # a valid request still saves
+        r = await server.http_update_feature_permissions(
+            api(w, "PUT", "/x", "admin", {"allow_user_streams": False, "stream_announce_channel_id": None}))
+        assert r.status == 200 and await db.get_setting("allow_user_streams") == "false"
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
