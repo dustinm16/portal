@@ -6168,7 +6168,10 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
         stream_id=stream_id,
         user_id=user_id,
         banned_by=token.user_id,
-        reason=reason
+        reason=reason,
+        banned_by_anonymous=bool(
+            (actor_role or "") not in _CHAT_STAFF_ROLES
+            and ((await db.get_user_by_id(token.user_id)) or {}).get("chat_anonymous"))
     )
 
     if ban_id:
@@ -21070,7 +21073,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             banned_by=user_id,
                             reason=reason,
                             anonymous=ban_msg_anonymous,
-                            message_id=ban_message_id if ban_msg_anonymous else None
+                            message_id=ban_message_id if ban_msg_anonymous else None,
+                            banned_by_anonymous=_anon_actor(user_role, my_state)
                         )
 
                         if ban_id:

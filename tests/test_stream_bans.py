@@ -119,10 +119,16 @@ def test_old_table_is_migrated_and_migration_is_repeatable():
         # the old UNIQUE(stream_id, user_id) is gone: a masked ban fits next to the named one
         assert await d.create_stream_ban(1, 2, 1, anonymous=True, message_id=3)
         assert await d.create_stream_ban(1, 2, 1, "dup") == 0
+        # the banner's anonymity at the time of the ban is stored; old rows count as named
+        cur = await d.conn.execute("SELECT banned_by_anonymous FROM stream_bans WHERE id = 7")
+        assert (await cur.fetchone())["banned_by_anonymous"] == 0
+        assert await d.create_stream_ban(1, 2, 1, anonymous=True, message_id=4, banned_by_anonymous=True)
+        rows = sorted(r["banned_by_anonymous"] for r in await d.get_stream_bans(1))
+        assert rows == [0, 0, 1], rows
         # running the migration again changes nothing
         await d._migrate_stream_bans_anonymous()
         cur = await d.conn.execute("SELECT COUNT(*) AS n FROM stream_bans")
-        assert (await cur.fetchone())["n"] == 2
+        assert (await cur.fetchone())["n"] == 3
         cur = await d.conn.execute("PRAGMA index_list(stream_bans)")
         assert not any(r["origin"] == "u" for r in await cur.fetchall())
     run_db(body, setup)

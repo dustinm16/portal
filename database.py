@@ -579,10 +579,14 @@ MIGRATIONS = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         anonymous INTEGER NOT NULL DEFAULT 0,
         message_id INTEGER,
+        banned_by_anonymous INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (banned_by) REFERENCES users(id) ON DELETE CASCADE
     )""",
+    # Whether the member who banned had anonymous chat on at that moment (the ban list masks
+    # the banner from this, never from his current setting). Older rows count as named.
+    "ALTER TABLE stream_bans ADD COLUMN banned_by_anonymous INTEGER NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS idx_stream_bans_stream ON stream_bans(stream_id)",
     "CREATE INDEX IF NOT EXISTS idx_stream_bans_user ON stream_bans(user_id)",
     # Public key for read-only stream access (separate from private stream_key)
@@ -1678,6 +1682,7 @@ class Database:
                             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                             anonymous INTEGER NOT NULL DEFAULT 0,
                             message_id INTEGER,
+                            banned_by_anonymous INTEGER NOT NULL DEFAULT 0,
                             FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE,
                             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                             FOREIGN KEY (banned_by) REFERENCES users(id) ON DELETE CASCADE
@@ -1685,11 +1690,14 @@ class Database:
                     """)
                     anon_sql = "COALESCE(anonymous, 0)" if "anonymous" in cols else "0"
                     msg_sql = "message_id" if "message_id" in cols else "NULL"
+                    by_anon_sql = ("COALESCE(banned_by_anonymous, 0)"
+                                   if "banned_by_anonymous" in cols else "0")
                     await conn.execute(
                         "INSERT INTO stream_bans_new "
-                        "(id, stream_id, user_id, banned_by, reason, created_at, anonymous, message_id) "
+                        "(id, stream_id, user_id, banned_by, reason, created_at, anonymous, message_id, "
+                        "banned_by_anonymous) "
                         "SELECT id, stream_id, user_id, banned_by, reason, created_at, "
-                        + anon_sql + ", " + msg_sql + " FROM stream_bans ORDER BY id"
+                        + anon_sql + ", " + msg_sql + ", " + by_anon_sql + " FROM stream_bans ORDER BY id"
                     )
                     await conn.execute("DROP TABLE stream_bans")
                     await conn.execute("ALTER TABLE stream_bans_new RENAME TO stream_bans")
@@ -4669,7 +4677,8 @@ class Database:
         banned_by: int,
         reason: str = None,
         anonymous: bool = False,
-        message_id: int = None
+        message_id: int = None,
+        banned_by_anonymous: bool = False
     ) -> int:
         """Ban a user from a stream's chat. Returns ban ID or 0 if failed.
 
@@ -4688,10 +4697,11 @@ class Database:
                 if row:
                     return row["id"]
             cursor = await self.conn.execute(
-                """INSERT INTO stream_bans (stream_id, user_id, banned_by, reason, anonymous, message_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO stream_bans (stream_id, user_id, banned_by, reason, anonymous, message_id,
+                                             banned_by_anonymous)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (stream_id, user_id, banned_by, reason, 1 if anonymous else 0,
-                 message_id if anonymous else None)
+                 message_id if anonymous else None, 1 if banned_by_anonymous else 0)
             )
             await self.conn.commit()
             return cursor.lastrowid
@@ -4761,7 +4771,7 @@ class Database:
             """SELECT sb.id, sb.stream_id, sb.user_id, sb.banned_by, sb.reason, sb.created_at,
                       sb.anonymous,
                       u.username as banned_username, ub.username as banned_by_username,
-                      ub.chat_anonymous as banned_by_anonymous, ub.role as banned_by_role
+                      sb.banned_by_anonymous, ub.role as banned_by_role
                FROM stream_bans sb
                JOIN users u ON sb.user_id = u.id
                JOIN users ub ON sb.banned_by = ub.id

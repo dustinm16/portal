@@ -1025,6 +1025,66 @@ def test_an_anonymous_owner_or_mod_is_one_label_to_the_room_and_in_lists():
     server.chat_user_state.clear()
 
 
+def test_a_ban_list_masks_the_banner_as_he_was_at_the_time_of_the_ban():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        sid, u = w.stream["a"], w.u
+        label = server.ANON_MODERATOR_LABEL
+        spam2 = await d.create_user("spammer2", "x")
+        spam3 = await d.create_user("spammer3", "x")
+        server.chat_user_state.clear()
+        # the mod bans over HTTP and the owner over the socket, both with anonymous chat on
+        for name in ("friend", "owner"):
+            await d.set_chat_anonymous(u[name], True)
+        st, _ = await env.call("POST", u["friend"], f"/api/streams/{sid}/bans", json={"user_id": u["spammer"]})
+        assert st == 201
+        server.chat_user_state.clear()
+        owner = await joined(env, w, "owner")
+        got = await owner.act("ban_success", type="ban", user_id=spam2, reason="x")
+        assert got["type"] == "ban_success", got
+        # the same people turn anonymous chat off (what PUT /api/me/anonymous does) and the mod
+        # makes a named ban afterwards
+        for name in ("friend", "owner"):
+            await d.set_chat_anonymous(u[name], False)
+        server.chat_user_state.clear()
+        st, _ = await env.call("POST", u["friend"], f"/api/streams/{sid}/bans", json={"user_id": spam3})
+        assert st == 201
+
+        async def listing(viewer):
+            st, got = await env.call("GET", u[viewer], f"/api/streams/{sid}/bans")
+            assert st == 200, st
+            return {b["banned_username"] if b["user_id"] is None else
+                    {u["spammer"]: "spammer", spam2: "spammer2", spam3: "spammer3"}[b["user_id"]]: b
+                    for b in got["bans"]}
+        for viewer in ("mod2", "owner"):
+            rows = await listing(viewer)
+            for victim, by in (("spammer", "friend"), ("spammer2", "owner")):
+                if viewer == by:
+                    continue            # his own ban is shown to himself by name
+                row = rows[victim]
+                assert row["banned_by"] is None and row["banned_by_username"] == label, (viewer, victim, row)
+            row = rows["spammer3"]
+            assert row["banned_by"] == u["friend"] and row["banned_by_username"] == "friend", (viewer, row)
+        # staff and the banner himself still see who it was
+        rows = await listing("admin")
+        assert rows["spammer"]["banned_by"] == u["friend"] and rows["spammer2"]["banned_by"] == u["owner"], rows
+        rows = await listing("friend")
+        assert rows["spammer"]["banned_by"] == u["friend"], rows
+        # turning anonymous on later does not hide a ban that was made by name
+        await d.set_chat_anonymous(u["friend"], True)
+        rows = await listing("mod2")
+        assert rows["spammer3"]["banned_by"] == u["friend"], rows
+        # the socket list goes through the same rule
+        server.chat_user_state.clear()
+        mod2 = await joined(env, w, "mod2")
+        got = await mod2.act("bans_list", type="get_bans")
+        masked = [b for b in got["bans"] if b["banned_by_username"] == label]
+        assert len(masked) == 2 and all(b["banned_by"] is None for b in masked), got
+    run(body)
+    server.chat_user_state.clear()
+
+
 class StuckWs:
     closed = False
 
