@@ -1142,7 +1142,7 @@ Get stream details.
 **Key Visibility Rules:**
 - **Owner**: Sees both `stream_key` (for OBS) and `public_key` (for sharing)
 - **Non-owner (public stream)**: Sees `public_key` only (for playback)
-- **Non-owner (private stream)**: No keys visible
+- **Non-owner (private stream)**: No keys visible, except to an administrator (the `admin` or `superadmin` role with a full credential, not a scoped key), who sees the `public_key` because the viewing rule lets them watch it. The `stream_key` (publish key) and the key hashes are never shown to a non-owner.
 
 **Response (owner):**
 ```json
@@ -1391,7 +1391,7 @@ Proxy HLS playback through Portal (port 443).
 
 **Access (1.16.0):** one rule decides who may watch, for this route, the thumbnail, WHEP and its session calls, the info route and the HLS route. The stream's owner and administrators always may; any other signed-in member only when the stream is public; somebody not signed in only when the stream is public with `allow_unauthenticated` on and the address carries the stream's current `pub_` key. Credentials: the session cookie, or a token or API key with the all-scope `*`; a stream key (`live_`, also as `Authorization: Stream-Key` or `X-Stream-Key`) and scoped API keys never authorise watching. Everything else is `404` with `{"error": "Stream not found"}` (never `401` or `403`), the same for a private stream, a rotated or wrong key and an unknown stream. Decisions are cached for at most 5 seconds per credential and stream and dropped at once when the stream's visibility, open link or keys change or the viewer is signed out. `Access-Control-Allow-Origin: *` is sent only for a public stream with the open link on; other answers are `Cache-Control: private`.
 
-Returns HLS playlist and segments for the specified stream. A `?token=` query parameter is accepted as the viewer's credential but is not passed on to MediaMTX. Relays, the recorder and the thumbnail capture read MediaMTX directly on loopback and do not use this route.
+Returns HLS playlist and segments for the specified stream. `{path}` must be one plain file name (letters, digits, `_`, `.` and `-`, at most 128 characters, ending in `.m3u8`, `.mp4`, `.m4s`, `.ts`, `.aac` or `.m4a`); a folder, a `..`, a backslash or an encoded form answers the same `404` as a refusal. A `?token=` query parameter is accepted as the viewer's credential but is not passed on to MediaMTX. Relays, the recorder and the thumbnail capture read MediaMTX directly on loopback and do not use this route.
 
 ---
 

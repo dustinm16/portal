@@ -118,7 +118,7 @@ says16("cache time and invalidation", "5 seconds", "signed out", "rotated")
 says16("internal consumers", "relays", "recorder", "thumbnail capture", "loopback", "authhttpexclude")
 says16("webrtc media is outside the rule", "webrtc media", "keeps flowing")
 says16("the query token is not passed on", "?token=", "no longer passed on")
-says16("the database columns and the one static version that moved", "two columns", "golive_message", "`?v=43`", "golive_audience", "stream_follow", "stream_cards")
+says16("the database columns and the one static version that moved", "three columns", "golive_message", "`?v=43`", "golive_audience", "stream_follow", "stream_cards")
 says16("the go-live cooldown", "one announcement per 10 minutes", "stored in the database", "stream state lock", "`stream.offline`")
 says16("the go-live message", "200 characters", "`{streamer}`, `{title}` and `{url}`", "`{0.__class__}`", "literal text")
 says16("the payload change, no keys, where the URL comes from", "`public_key` is removed", "`public_key`", "`url`", "public_base_url", "host header")
@@ -141,8 +141,27 @@ says16("the live-now strip", "live now", "/api/streams/live")
 check("1.16.0 does not still say a public stream notifies everybody except the owner as before",
       "for a public stream everybody except the owner, as before" not in sec16)
 
+check("1.16.0 does not still say a WHIP publish announces nothing",
+      "does not announce a go-live" not in sec16 and "whip" in low16 and "same background announcement" in low16)
+says16("the fixes made after review", "fixes made after review", "activity feed", "plain playlist or segment file name",
+       "lone surrogate", "announce channel setting is validated", "`public_base_url`")
 says16("rollback", "rollback", "1.15.0")
 says16("what was not tested", "not tested", "vlc", "cloudflare")
+
+# --- README: the live streaming section and the pictures of it ----------------------
+ls = re.search(r"### Live Streaming\n(.*?)\n### ", text, re.S)
+lstext = (ls.group(1) if ls else "").lower()
+check("Live Streaming describes read access, follows, audience, message, cards, announce channel and the strip",
+      all(n in lstext for n in ("private means private", "follow", "who is told", "go-live message", "card",
+                                "announce channel", "live now")), lstext[:80])
+check("Live Streaming no longer says private streams send no go-live notification",
+      "private streams send no go-live notification" not in lstext)
+shots = Path(__file__).resolve().parent.parent / "docs" / "screenshots"
+for pic in ("streams", "streams-settings", "chat-golive"):
+    check(f"README shows docs/screenshots/{pic}.png and the file exists",
+          f"docs/screenshots/{pic}.png" in text and (shots / f"{pic}.png").is_file())
+mk = (Path(__file__).resolve().parent.parent / "tools" / "make_screenshots.py").read_text()
+check("make_screenshots takes the stream pictures", all(f'@shot("{n}")' in mk for n in ("streams", "streams-settings", "chat-golive")))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
