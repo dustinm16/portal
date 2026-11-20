@@ -60,6 +60,9 @@ async def main():
     await db.connect()
     await db.set_stream_live(%(sid)d, False)
     await db.conn.execute("UPDATE user_streams SET golive_announced_at = NULL WHERE id = ?", (%(sid)d,))
+    # the streamer's own broadcast slot (one per owner) is part of the cooldown too
+    await db.conn.execute("DELETE FROM golive_owner_cooldown WHERE user_id = "
+                          "(SELECT user_id FROM user_streams WHERE id = ?)", (%(sid)d,))
     await db.conn.commit()
     await db.close()
     print("RESULT {}")
@@ -279,7 +282,7 @@ async def run(ctx):
             st, b = await call(m2, "PUT", f"/api/streams/{pub['id']}", json={"golive_audience": "followers"})
             ok("another member cannot (404)", st == 404, str(st))
             rc, out = await ctx.run_py(RESET % {"sid": pub["id"]})
-            ok("the stream is taken offline and its cooldown cleared", rc == 0, out[-200:])
+            ok("the stream is taken offline and its cooldowns (stream and streamer) cleared", rc == 0, out[-200:])
             await publish(hook, pub["stream_key"])
             ok("a member who does not follow is now notified", await wait_for(m2, pub["id"]))
             ok("the streamer still is not", not await notes(owner, pub["id"]))
