@@ -847,6 +847,25 @@ def _chat_golive(s):
     s.save("chat-golive", page)
 
 
+@shot("watch-chat")
+def _watch_chat(s):
+    # the watch page of river's live stream as alex: the chat with a pinned banner and a Mod badge,
+    # and a viewer count. No video plays here, so the viewers' own heartbeats are sent by the
+    # members' open chat pages (the same call the watch page makes while the video plays); the
+    # count is written about every 5 seconds, so wait for it before the page is opened.
+    watch = s.info["watch"]
+    beat = ("() => { const b = () => fetch('/api/stream/" + watch["public_key"] + "/viewer',"
+            " {method: 'POST', credentials: 'include'}); b(); setInterval(b, 5000); }")
+    for p in s.presence_pages:
+        p.evaluate(beat)
+    s.presence_pages[0].wait_for_timeout(8000)
+    page = s.open(s.context("alex"), f"/watch/{watch['stream_id']}", ".watch-pinned.show", settle=2500)
+    page.wait_for_selector(".mod-badge", timeout=15000)
+    page.evaluate("""() => { const box = document.getElementById('chat-messages'); box.scrollTop = box.scrollHeight; }""")
+    page.wait_for_timeout(800)
+    s.save("watch-chat", page)
+
+
 @shot("streams-settings")
 def _stream_settings(s):
     # the stream's settings window belongs to the dashboard's My Streams tab; a tall window shows all of it
@@ -1260,7 +1279,7 @@ def main(argv=None) -> int:
     return rc
 
 
-async def seed_golive(stage: Stage, clients: dict) -> dict:
+async def seed_golive(stage: Stage, clients: dict, info_streams: dict) -> dict:
     """Streams of other members, follows, and two streams that go live (1.16.0).
 
     The go-live is the real path: the MediaMTX publish hook POST /api/stream/auth, called from
@@ -1272,13 +1291,16 @@ async def seed_golive(stage: Stage, clients: dict) -> dict:
     await admin.api("PUT", "/api/settings/permissions", {"stream_announce_channel_id": chans["general"]})
 
     made = {}
-    for owner, name, desc in [
-        ("river", "Saturday sketch hour", "Pencil and ink, ask anything while I draw"),
-        ("jordan", "Retro console repairs", "Recapping a 90s console on the bench"),
-        ("sam", "Community Q and A", "Monthly questions about the portal"),
+    for owner, name, desc, game in [
+        ("river", "Saturday sketch hour", "Pencil and ink, ask anything while I draw", "Digital painting"),
+        ("jordan", "Retro console repairs", "Recapping a 90s console on the bench", "Hardware repair"),
+        ("sam", "Community Q and A", "Monthly questions about the portal", "Just chatting"),
     ]:
-        r = await clients[owner].api("POST", "/api/streams", {"name": name, "description": desc, "is_public": True})
+        r = await clients[owner].api("POST", "/api/streams", {
+            "name": name, "description": desc, "is_public": True, "game": game})
         made[owner] = r.get("stream") or r
+    # alex's own stream (made in seed_operations) gets a game too, for the settings picture
+    await alex.api("PUT", f"/api/streams/{info_streams['public']}", {"game": "Chess"})
     # alex follows two of them (the toggle shows Following), casey one
     await alex.api("PUT", f"/api/streams/{made['river']['id']}/follow")
     await alex.api("PUT", f"/api/streams/{made['sam']['id']}/follow")
@@ -1302,7 +1324,43 @@ async def seed_golive(stage: Stage, clients: dict) -> dict:
         await asyncio.sleep(0.25)
     else:
         raise Fail("the go-live cards did not appear in the announce channel")
-    return {"golive": {k: v["id"] for k, v in made.items()}}
+    watch = await seed_stream_chat(stage, clients, made["river"], info_streams["public"])
+    return {"golive": {k: v["id"] for k, v in made.items()}, "watch": watch}
+
+
+async def seed_stream_chat(stage: Stage, clients: dict, river_stream: dict, alex_stream_id: int) -> dict:
+    """The stream chat controls (1.17.0): river's live stream gets a mod (casey, an ordinary
+    member, so the badge reads Mod and not staff), talk in its own chat and one pinned message.
+    alex's stream gets two mods for the settings window. The viewer count is made by the
+    shooter (it needs the viewers' browsers to send the heartbeat)."""
+    river, alex = clients["river"], clients["alex"]
+    rid = river_stream["id"]
+    detail = (await river.api("GET", f"/api/streams/{rid}")).get("stream") or {}
+    chan = detail.get("chat_channel_id")
+    if not chan:
+        raise Fail("river's stream has no chat channel of its own")
+    await river.api("POST", f"/api/streams/{rid}/mods", {"user_id": clients["casey"].user_id})
+    await alex.api("POST", f"/api/streams/{alex_stream_id}/mods", {"user_id": clients["casey"].user_id})
+    await alex.api("POST", f"/api/streams/{alex_stream_id}/mods", {"user_id": clients["jordan"].user_id})
+    socks = {}
+    for name in ("river", "casey", "jordan", "alex", "sam"):
+        ch = Chat(clients[name])
+        await ch.open()
+        await ch.send(type="join", channel_id=chan)
+        socks[name] = ch
+    await asyncio.sleep(1.0)
+    await socks["river"].say("Welcome in. Tonight I am inking the lighthouse from the sketch I posted last week.")
+    await socks["jordan"].say("That linework is so clean, what pen is that?")
+    pen = await socks["river"].say("A 0.3 fineliner, and a brush pen for the shadows.")
+    await socks["alex"].say("Will you do the sea next?")
+    rules = await socks["casey"].say("Reminder: questions are welcome, spoilers for the new comic are not.")
+    await socks["sam"].say("Loving the colours so far.")
+    mark = len(socks["river"].frames)
+    await socks["river"].send(type="pin_message", message_id=rules)
+    await socks["river"].wait_for("message_pinned", mark)
+    for ch in socks.values():
+        await ch.close()
+    return {"stream_id": rid, "public_key": detail.get("public_key") or river_stream.get("public_key")}
 
 
 async def seed_everything(stage: Stage) -> dict:
@@ -1315,7 +1373,7 @@ async def seed_everything(stage: Stage) -> dict:
         info.update(await seed_operations(stage, clients))
         spread_timestamps(stage)
         mark_index_complete(stage)
-        info.update(await seed_golive(stage, clients))
+        info.update(await seed_golive(stage, clients, info["streams"]))
         return info
     finally:
         for c in clients.values():

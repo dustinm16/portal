@@ -217,11 +217,11 @@ check("Live Streaming describes read access, follows, audience, message, cards, 
 check("Live Streaming no longer says private streams send no go-live notification",
       "private streams send no go-live notification" not in lstext)
 shots = Path(__file__).resolve().parent.parent / "docs" / "screenshots"
-for pic in ("streams", "streams-settings", "chat-golive"):
+for pic in ("streams", "streams-settings", "chat-golive", "watch-chat"):
     check(f"README shows docs/screenshots/{pic}.png and the file exists",
           f"docs/screenshots/{pic}.png" in text and (shots / f"{pic}.png").is_file())
 mk = (Path(__file__).resolve().parent.parent / "tools" / "make_screenshots.py").read_text()
-check("make_screenshots takes the stream pictures", all(f'@shot("{n}")' in mk for n in ("streams", "streams-settings", "chat-golive")))
+check("make_screenshots takes the stream pictures", all(f'@shot("{n}")' in mk for n in ("streams", "streams-settings", "chat-golive", "watch-chat")))
 
 # --- 1.17.0: the feature sections and the other docs say what the code does ------------------
 ms = re.search(r"### Moderation and Anonymous Posting\n(.*?)\n### ", text, re.S)

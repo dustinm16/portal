@@ -195,11 +195,14 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 ### Streams
 
 ![Streams](docs/screenshots/streams.png)
-*Community Streams — public streams with a Follow toggle on each stream that is not yours, two of them live*
+*Community Streams — public streams with their game under the title and a Follow toggle on each stream that is not yours, two of them live with the viewer count on the thumbnail*
 
 <img src="docs/screenshots/streams-settings.png" alt="Stream settings" width="360">
 
-*Stream settings — OBS server and masked stream key, the go-live message and who is told when you go live (followers or everyone), public and unauthenticated switches, viewing key, playback URL, and Regenerate Key and Rotate Share Link*
+*Stream settings — OBS server and masked stream key, the game field, the go-live message and who is told when you go live (followers or everyone), public and unauthenticated switches, viewing key, playback URL, the Chat Moderators list with the member search, and Regenerate Key and Rotate Share Link*
+
+![Watch page with stream chat](docs/screenshots/watch-chat.png)
+*The watch page of a live stream: the game next to the title, the viewer count, the Streamer and Mod badges in the chat and a pinned message banner above it*
 
 ![Go-live cards in chat](docs/screenshots/chat-golive.png)
 *Go-live cards in the announce channel, the Live now strip above the messages, and live streams in the channel list*
