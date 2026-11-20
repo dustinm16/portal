@@ -7361,7 +7361,7 @@ async def _record_stream_offline(stream: dict) -> None:
     except Exception as e:
         logger.warning(f"Stream {stream_id} could not be read again for the offline record: {type(e).__name__}")
         current = None
-    now = current or {**stream, "is_public": 0}
+    now = {**stream, **current} if current else {**stream, "is_public": 0}
     name = now.get("name", stream.get("name", "?"))
     await db.log_activity(now.get("user_id", stream.get("user_id")), get_display_name(now),
                           _stream_activity_type("stream_offline", now), f"Stream '{name}' went offline")
@@ -19660,7 +19660,12 @@ async def http_add_channel_member(request: web.Request) -> web.Response:
     if member_role == "moderator" and _real_stream_chat(await db.get_stream_by_chat_channel(channel_id)):
         return web.json_response({"error": "Appoint chat mods through the stream's mods list"}, status=400)
 
+    # Adding a stream mod as a plain member replaces the row: that ends the appointment
+    was_mod_of = await _mod_row_of(channel_id, target_id)
     await db.add_channel_member(channel_id, target_id, role=member_role, added_by=token.user_id)
+    if was_mod_of and member_role != "moderator":
+        await _stream_mod_ended(channel, was_mod_of, token.user_id,
+                                user["username"] if user else "unknown", user_role, target_id)
 
     await audit_log("channel_member_add", token.user_id, user["username"] if user else "unknown",
                     target_id=target_id, target_type="user",
@@ -20359,7 +20364,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "deleted_by": None if (is_mod and _anon_actor(user_role, my_state)) else user_id
                             }, anon_subject=del_msg["user_id"] if del_msg.get("anonymous") else None)
                             asyncio.create_task(fire_webhook_event("message.deleted", _message_deleted_webhook_payload(
-                                message_id, current_channel, user_id, del_msg),
+                                message_id, current_channel,
+                                None if (is_mod and _anon_actor(user_role, my_state)) else user_id, del_msg),
                                 meta={"channel_id": del_ch["id"]}))
                             if is_mod:
                                 await _audit_chat_mod("message_delete", user_id, username, mod_level, del_ch,

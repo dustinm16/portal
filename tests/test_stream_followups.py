@@ -104,6 +104,8 @@ def test_offline_is_logged_and_announced_by_what_the_stream_is_now():
                     rows = await activity(w, owner)
                     meta = [c[2] for c in off.calls if c[0] == "stream.offline"]
                     assert len(rows) == 1 and len(meta) == 1, (path, case, rows, meta)
+                    cur = await w.db.conn.execute("SELECT username FROM activity_log")
+                    assert [r[0] for r in await cur.fetchall()] == ["owner"], (path, case)
                     if case == "still public":
                         assert rows[0][0] == "stream_offline" and meta[0]["stream_public"] is True, (path, rows, meta)
                     else:

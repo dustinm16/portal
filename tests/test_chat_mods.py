@@ -977,9 +977,21 @@ def test_an_anonymous_owner_or_mod_is_one_label_to_the_room_and_in_lists():
         got = await plain.wait(lambda e: e.get("type") == "user_banned", mark)
         assert got["banned_by"] == label, got
         mark = plain.mark()
-        await mod.act("message_deleted", type="delete", message_id=m2)
-        got = await plain.wait(lambda e: e.get("type") == "message_deleted", mark)
+        hooks = []
+
+        async def record(event, payload, *, meta=None):
+            hooks.append((event, payload))
+            return 0
+        saved_hook, server.fire_webhook_event = server.fire_webhook_event, record
+        try:
+            await mod.act("message_deleted", type="delete", message_id=m2)
+            got = await plain.wait(lambda e: e.get("type") == "message_deleted", mark)
+            await asyncio.sleep(0.1)
+        finally:
+            server.fire_webhook_event = saved_hook
         assert got["deleted_by"] is None, got
+        sent = [p for e, p in hooks if e == "message.deleted"]
+        assert sent and sent[0]["deleted_by"] is None, hooks
         # the audit log still has the real actors
         entries = await d.get_audit_log(limit=200, channel_id=cid)
         assert any(e["action"] == "user_ban" and e["actor_id"] == u["owner"] for e in entries)
@@ -1067,6 +1079,15 @@ def test_ending_a_mod_through_the_generic_routes_is_audited_and_pushed():
         rows = await audit("stream_mod_remove", u["plain"])
         assert rows and rows[0]["actor_id"] == u["plain"], rows
         assert rows[0]["details"] is not None and server.CHAT_LEVEL_NAMES[MOD] in str(rows[0]["details"]), rows[0]
+        # added as a plain member over the generic route: the appointment ends the same way
+        st, _ = await env.call("POST", u["owner"], f"/api/streams/{w.stream['a']}/mods", json={"user_id": u["plain"]})
+        assert st == 201
+        before = len(await audit("stream_mod_remove", u["plain"]))
+        st, _ = await env.call("POST", u["admin"], f"/api/chat/channels/{cid}/members",
+                               json={"user_id": u["plain"], "role": "member"})
+        assert st == 201
+        assert len(await audit("stream_mod_remove", u["plain"])) == before + 1
+        assert u["plain"] not in await d.get_channel_moderator_ids(cid)
         await asyncio.wait_for(asyncio.gather(*list(server._mod_level_tasks)), 4)
     run(body)
 
