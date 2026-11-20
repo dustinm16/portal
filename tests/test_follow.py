@@ -564,6 +564,20 @@ async def test_a_card_goes_to_the_streams_own_chat_with_a_fallback_text(w):
 
 
 @case
+async def test_a_stream_created_with_a_go_live_message_and_audience_keeps_them(w):
+    status, body = await w.call("POST", "owner", "/api/streams", json={
+        "name": "Fresh", "golive_message": "{streamer} is on: {title}", "golive_audience": "everyone"})
+    assert status in (200, 201), (status, body)
+    sid = (body.get("stream") or body)["id"]
+    row = await w.db.get_user_stream(sid)
+    assert row["golive_message"] == "{streamer} is on: {title}" and row["golive_audience"] == "everyone", dict(row)
+    status, body = await w.call("POST", "owner", "/api/streams", json={"name": "Plain"})
+    assert status in (200, 201), (status, body)
+    plain = await w.db.get_user_stream((body.get("stream") or body)["id"])
+    assert not plain["golive_message"] and plain["golive_audience"] == "followers"
+
+
+@case
 async def test_a_card_is_stored_under_the_account_username_not_the_display_name(w):
     sid, key = await w.stream("a", public=True, audience="followers")
     cid = (await w.db.get_user_stream(sid))["chat_channel_id"]

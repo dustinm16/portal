@@ -5525,7 +5525,8 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
             public_key=public_key,
             description=description,
             is_public=is_public,
-            golive_audience=audience
+            golive_audience=audience,
+            golive_message=clean.get("golive_message")
         )
 
         # Create a chat channel for every stream

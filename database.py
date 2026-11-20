@@ -3957,7 +3957,8 @@ class Database:
         public_key: str = None,
         description: str = None,
         is_public: bool = False,
-        golive_audience: str = "followers"
+        golive_audience: str = "followers",
+        golive_message: str = None
     ) -> int:
         """Create a new user stream.
 
@@ -3969,6 +3970,7 @@ class Database:
             description: Stream description
             is_public: Whether stream is publicly visible
             golive_audience: 'followers' (the default for a new stream) or 'everyone'
+            golive_message: the owner's go-live message template (already validated), or None
         """
         if golive_audience not in ("followers", "everyone"):
             golive_audience = "followers"
@@ -3979,11 +3981,12 @@ class Database:
 
         cursor = await self.conn.execute(
             """INSERT INTO user_streams (user_id, name, stream_key, stream_key_hash,
-               public_key, public_key_hash, description, is_public, created_at, golive_audience)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               public_key, public_key_hash, description, is_public, created_at, golive_audience,
+               golive_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, name, sk_encrypted, sk_hash, pk_encrypted, pk_hash,
              description, 1 if is_public else 0,
-             datetime.now(timezone.utc).isoformat(), golive_audience)
+             datetime.now(timezone.utc).isoformat(), golive_audience, golive_message or None)
         )
         await self.conn.commit()
         return cursor.lastrowid
