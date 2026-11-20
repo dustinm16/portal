@@ -29,7 +29,7 @@ check("the form says the grantee gets a shell without knowing the password",
       index.count("without knowing the password") >= 2)
 check("the stored password input is a password field the browser does not fill",
       re.search(r'<input type="password" id="connection-ssh-stored-password" autocomplete="new-password"', index) is not None)
-check("the script version in index.html was bumped", "user-connections.js?v=54" in index)
+check("the script version in index.html was bumped", "user-connections.js?v=55" in index)
 check("the edit form records the switch state it opened with and passes it on",
       "pwField.dataset.initialPrompt = " in js and "collectSSHCredential(type, isEdit, pwFieldNow.dataset.hadStored === '1', initialPrompt)" in js)
 check("the edit form reads has_stored_password and never puts a value in the field", "config.has_stored_password" in js and "pwField.value = '';" in js)
@@ -96,6 +96,56 @@ console.log(JSON.stringify(out));
     check("key authentication sends prompt (the server drops any stored password)", got.get("key") == {"credential_mode": "prompt"})
     check("an SFTP connection sends the password only when one was typed",
           got.get("sftpEmpty") == {} and got.get("sftp") == {"credential_mode": "stored", "password": "typed"})
+
+# editConnection resets the SSH credential state for every row type, so an SSH row opened before
+# cannot leave its mode, "had a password" flag or typed password behind for the next row.
+m = re.search(r"async function editConnection\(.*?\n}\n", js, re.S)
+check("editConnection is present", m is not None)
+if m:
+    script = """
+const els = new Proxy({}, { get(t, id) {
+  if (!(id in t)) t[id] = { value: '', checked: false, placeholder: '', textContent: '', dataset: {}, style: {}, classList: { add() {}, remove() {} } };
+  return t[id];
+} });
+global.document = { getElementById: (id) => els[id], querySelector: () => null, querySelectorAll: () => [] };
+let conns = {};
+global.Portal = { fetch: async (url) => ({ ok: true, json: async () => conns[url.split('/').pop()] }), toast() {} };
+global.connectionTypeSchemas = { x: 1 };
+global.onConnectionTypeChange = () => {};
+global.onSSHAuthChange = () => {};
+global.populateDynamicConfigFields = () => {};
+global.showModal = () => {};
+""" + m.group(0) + """
+conns.ssh = { id: 'ssh', name: 'a', type: 'ssh', host: 'h', port: 22,
+              config: { username: 'u', auth_method: 'password', has_stored_password: true, credential_mode: 'stored' } };
+conns.db = { id: 'db', name: 'b', type: 'database', host: 'h', port: 3306, config: { db_type: 'mysql' } };
+conns.old = { id: 'old', name: 'c', type: 'ssh', host: 'h', port: 22, config: { username: 'u', auth_method: 'password', has_stored_password: true } };
+(async () => {
+  const pw = els['connection-ssh-stored-password'], sw = els['connection-ssh-prompt'];
+  const out = {};
+  await editConnection('ssh');
+  out.ssh = { had: pw.dataset.hadStored, initial: pw.dataset.initialPrompt, prompt: sw.checked, ph: pw.placeholder };
+  pw.value = 'typed-by-hand';
+  await editConnection('db');
+  out.db = { had: pw.dataset.hadStored, initial: pw.dataset.initialPrompt === undefined ? 'undefined' : pw.dataset.initialPrompt,
+             prompt: sw.checked, ph: pw.placeholder, value: pw.value };
+  await editConnection('old');
+  out.old = { had: pw.dataset.hadStored, initial: pw.dataset.initialPrompt, prompt: sw.checked };
+  console.log(JSON.stringify(out));
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "run.js"
+        f.write_text(script)
+        r = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30, cwd=d)
+    import json
+    got = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
+    check("node ran editConnection", bool(got), r.stderr[-300:])
+    check("a stored SSH row opens with the switch off and its state recorded",
+          got.get("ssh", {}).get("had") == "1" and got["ssh"].get("initial") == "0" and got["ssh"].get("prompt") is False, str(got.get("ssh")))
+    check("opening a non-SSH row after it leaves no SSH credential state behind",
+          got.get("db") == {"had": "", "initial": "undefined", "prompt": True, "ph": "", "value": ""}, str(got.get("db")))
+    check("a mode-less older SSH row opens with the switch on", got.get("old", {}).get("initial") == "1" and got["old"].get("prompt") is True, str(got.get("old")))
 
 if failures:
     print(f"\ntest_sshpass_ui: {len(failures)} FAILED: " + "; ".join(failures))

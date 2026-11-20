@@ -1400,6 +1400,18 @@ async function editConnection(connectionId) {
         // Reset preset
         document.getElementById('connection-preset').value = '';
 
+        // Reset the SSH credential state for every row type, so what a previously opened SSH
+        // row left in the form (its mode, its "had a password" flag, a typed password) cannot
+        // carry over; an SSH or SFTP row sets it again below.
+        {
+            const pwReset = document.getElementById('connection-ssh-stored-password');
+            pwReset.value = '';
+            pwReset.placeholder = '';
+            pwReset.dataset.hadStored = '';
+            delete pwReset.dataset.initialPrompt;
+            document.getElementById('connection-ssh-prompt').checked = true;
+        }
+
         // Show type-specific fields
         onConnectionTypeChange();
 
