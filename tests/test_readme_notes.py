@@ -318,7 +318,7 @@ check("docs/API.md no longer says an omitted expiry never expires", "omit (or `0
 says18("sign-in blocking: off by default, the counter, no lockout", "sign-in blocking (off by default)",
        "nothing is blocked until you turn it on", "no per-account lockout", "/api/admin/login-ban")
 says18("sign-in blocking: doubling, cap, never permanent", "doubles", "24 hours", "never permanent", "7 days")
-says18("sign-in blocking: exemptions", "never-ban helper", "`never_ban_cidrs`", "30 days", "that account only")
+says18("sign-in blocking: exemptions", "never-ban helper", "`never_ban_cidrs`", "30 days", "any account signed in from")
 says18("sign-in blocking: stored bans, events, unblock", "`kind` `login`", "survives a restart", "ip_blocked", "clear-bans")
 says18("scanner blocking: stored and escalating, still off", "`probe_block_strikes` is still 0", "kind `probe`", "no longer says")
 says18("sign-in blocking: migration and rollback", "blocked_ips.kind", "ip_ban_history", "login_addresses", "1.17.0 starts on the migrated database")

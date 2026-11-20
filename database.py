@@ -7081,6 +7081,22 @@ class Database:
             (user_id, window))
         return any(ipguard.canonical_ip(r["ip"]) == canon for r in await cursor.fetchall())
 
+    async def has_recent_login_from_anyone(self, ip_address: str) -> bool:
+        """True when any account signed in from this address within LOGIN_ADDRESS_DAYS days
+        (login_addresses, and the creation address of a session that began before that table)."""
+        canon = ipguard.canonical_ip(ip_address)
+        if canon is None:
+            return False
+        window = f"-{self.LOGIN_ADDRESS_DAYS} days"
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM login_addresses WHERE ip_address = ? AND last_login_at >= datetime('now', ?) LIMIT 1",
+            (canon, window))
+        if await cursor.fetchone():
+            return True
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM tokens WHERE ip = ? AND created_at >= datetime('now', ?) LIMIT 1", (canon, window))
+        return await cursor.fetchone() is not None
+
     async def unblock_ip(self, ip_address: str) -> bool:
         """Remove an IP block. The address is matched in its canonical form
         (a row written before addresses were canonicalised is matched as typed)."""

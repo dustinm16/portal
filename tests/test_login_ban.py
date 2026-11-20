@@ -324,7 +324,23 @@ async def main():
             check("household: typos against the same user from a known address never ban",
                   not await rows(d, GLOBAL_C) and not server._login_fails.get(GLOBAL_C))
             await flood(GLOBAL_C, "bob_lb", 20)
-            check("household: the exemption is for that user only", bool(await rows(d, GLOBAL_C)))
+            check("household: failures against another account from that address never ban either",
+                  not await rows(d, GLOBAL_C) and not server._is_ip_blocked(GLOBAL_C) and not server._login_fails.get(GLOBAL_C))
+            await flood(GLOBAL_C, "no_such_name_lb", 40)
+            check("household: failures against an unknown name from that address never ban either",
+                  not await rows(d, GLOBAL_C) and not server._is_ip_blocked(GLOBAL_C) and not server._login_fails.get(GLOBAL_C))
+            server._login_known_cache.clear()
+            await d.conn.execute("DELETE FROM tokens WHERE user_id = ?", (alice,))
+            await d.conn.commit()
+            await flood(GLOBAL_C, "bob_lb", 40, via="token")
+            check("household: still no ban once the session tokens and the cache are gone",
+                  not await rows(d, GLOBAL_C) and not server._is_ip_blocked(GLOBAL_C))
+            await d.conn.execute("UPDATE login_addresses SET last_login_at = datetime('now', '-31 days') WHERE ip_address = ?", (GLOBAL_C,))
+            await d.conn.commit()
+            server._login_known_cache.clear()
+            await flood(GLOBAL_C, "bob_lb", 20)
+            check("household: with no sign-in from the address in 30 days the same failures do ban",
+                  bool(await rows(d, GLOBAL_C)))
             reset_state()
             await d.conn.execute("DELETE FROM blocked_ips")
             await d.conn.commit()
@@ -579,7 +595,7 @@ async def main():
             # ---- fix pass: a wrong password costs the same lookups for a known and an unknown name
             reset_state()
             calls = {}
-            real = {n: getattr(d, n) for n in ("get_user_by_username", "has_recent_login_from")}
+            real = {n: getattr(d, n) for n in ("get_user_by_username", "has_recent_login_from_anyone")}
 
             def counting(name):
                 async def wrapper(*a, **kw):
@@ -600,7 +616,7 @@ async def main():
                 for n in real:
                     delattr(d, n)
             check("timing: a known and an unknown name run the same database lookups before the 401",
-                  known == unknown and known.get("has_recent_login_from") == 1 and known.get("get_user_by_username") == 2,
+                  known == unknown and known.get("has_recent_login_from_anyone") == 1 and known.get("get_user_by_username") == 2,
                   f"known {known} unknown {unknown}")
             check("timing: the dummy lookup leaves the known-address cache alone", not server._login_known_cache)
 

@@ -6398,13 +6398,13 @@
                 <input type="number" id="${id}" value="${parseInt(d[key]) || 0}" min="${lim[key].min}" max="${lim[key].max}" style="${NB_FIELD_STYLE}">`;
             const mine = d.your_ip_exempt
                 ? `Your address ${escapeHtml(d.your_ip)} is exempt from automatic blocks (${escapeHtml(d.your_ip_exempt)}).`
-                : `Your address ${escapeHtml(d.your_ip)} is not exempt. A sign-in from an address you have signed in from in the last 30 days is not counted against that account, but add it to the never-ban list to be sure.`;
+                : `Your address ${escapeHtml(d.your_ip)} is not exempt. A failed sign-in from an address that any account has signed in from in the last 30 days is not counted, but add it to the never-ban list to be sure.`;
             el.innerHTML = `
                 <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
                     Counts wrong passwords, wrong 2FA codes and failed token requests per address. Past the limit the address is
                     blocked for a limited time (listed under System, Network, Blocked IPs as <em>login</em>). A repeat within ${parseInt(d.repeat_days)} days
                     doubles the time, up to ${parseInt(d.cap_hours)} hours; it is never permanent. It is off until you turn it on.
-                    Addresses on the never-ban list, and an address that signed in to the same account in the last 30 days, are not blocked.
+                    Addresses on the never-ban list, and an address that any account signed in from in the last 30 days, are not blocked.
                 </p>
                 <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" id="lb-enabled" ${d.enabled ? 'checked' : ''}> Block addresses after repeated failed sign-ins</label>
                 ${num('lb-max', 'max_failures', 'Failures allowed')}

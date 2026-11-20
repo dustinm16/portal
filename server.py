@@ -1206,7 +1206,7 @@ _LOGIN_KNOWN_TTL = 300
 _login_ban_cfg: dict = dict(LOGIN_BAN_DEFAULTS)
 _login_fails: dict[str, deque] = {}                   # canonical address -> monotonic times of failures
 _login_ban_pending: set[str] = set()                  # addresses whose ban is being written
-_login_known_cache: dict[tuple, float] = {}           # (address, user id) -> monotonic expiry of a "known" answer
+_login_known_cache: dict[tuple, float] = {}           # (address, 0) -> monotonic expiry of a "known" answer
 _bg_tasks: set = set()
 
 
@@ -1308,13 +1308,13 @@ async def _load_login_ban_state() -> None:
     _login_ban_cfg.update(cfg)
 
 
-async def _login_address_known(canon: str, user_id: int) -> bool:
-    """True when this user signed in from this address in the last 30 days."""
-    key = (canon, user_id)
+async def _login_address_known(canon: str) -> bool:
+    """True when any account signed in from this address in the last 30 days."""
+    key = (canon, 0)
     now = monotonic()
     if _login_known_cache.get(key, 0) > now:
         return True
-    if not await db.has_recent_login_from(user_id, canon):
+    if not await db.has_recent_login_from_anyone(canon):
         return False
     if len(_login_known_cache) >= _LOGIN_TABLE_MAX:
         _login_known_cache.clear()
@@ -1325,21 +1325,19 @@ async def _login_address_known(canon: str, user_id: int) -> bool:
 async def _count_login_failure(ip: str, user_id: Optional[int] = None) -> None:
     """Count one failed sign-in (wrong password, wrong 2FA code) against the caller's address.
 
-    The count always runs; the ban only when the setting is on. A failure against an account
-    the same address signed in to within 30 days is not counted, so a household behind one
-    address cannot ban itself with typos. Exempt addresses are not counted at all. Never raises.
+    The count always runs; the ban only when the setting is on. A failure from an address that
+    any account signed in from within 30 days is not counted, so members behind one address
+    cannot be locked out by a neighbour's failures. Exempt addresses are not counted at all.
+    Never raises.
     """
     try:
         canon = ipguard.canonical_ip(ip)
         if canon is None or _never_ban_reason(canon) is not None:
             return
-        if user_id:
-            if await _login_address_known(canon, user_id):
-                return
-        else:
-            # An unknown name runs the same lookup (answer ignored, cache untouched), so a
-            # wrong password costs the same database work whether or not the account exists.
-            await db.has_recent_login_from(-1, canon)
+        # An address any account signed in from lately is never counted or banned, whichever
+        # account the failure is against (a known or an unknown name runs the same lookup).
+        if await _login_address_known(canon):
+            return
         now = monotonic()
         cfg = _login_ban_cfg
         window = cfg["find_minutes"] * 60
