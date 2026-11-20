@@ -280,6 +280,30 @@ def test_admin_gets_the_public_key_of_a_private_stream_never_the_stream_key():
     run(body)
 
 
+# --- 6. text SQLite cannot store --------------------------------------------
+
+def test_lone_surrogates_in_stream_text_are_a_400():
+    async def body(w):
+        await w.db.set_setting("allow_user_streams", "true")
+        sid = str(w.streams["private"]["id"])
+        for field in ("name", "description", "golive_message"):
+            for bad in ("a\ud800b", "\udfff", "ok\udc00"):
+                payload = {"name": "fine", field: bad}
+                r = await server.http_update_user_stream(api(w, "PUT", "/x", "owner", payload, match={"id": sid}))
+                assert r.status == 400, (field, r.status)
+                r = await server.http_create_user_stream(api(w, "POST", "/api/streams", "owner", payload))
+                assert r.status == 400, (field, r.status)
+        clean, problem = server._validate_stream_fields({"name": "bad\ud800"})
+        assert clean is None and problem
+        # real text, including characters outside the basic plane, is untouched
+        good = {"name": "caf\u00e9 \U00010348", "description": "d\u00e9j\u00e0", "golive_message": "{title} \u2014 live"}
+        clean, problem = server._validate_stream_fields(good)
+        assert problem is None and clean["name"] == good["name"]
+        r = await server.http_update_user_stream(api(w, "PUT", "/x", "owner", good, match={"id": sid}))
+        assert r.status == 200, r.status
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

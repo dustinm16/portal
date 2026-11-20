@@ -5095,6 +5095,16 @@ def _strip_control_chars(text: str) -> str:
     return "".join(out)
 
 
+def _has_surrogate(text: str) -> bool:
+    """True when the text holds a lone surrogate code point (JSON allows "\\ud800"; UTF-8
+    cannot encode it, so storing or sending it later fails with a 500)."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
 def _validate_stream_fields(data: dict):
     """Check the types of the stream settings a client sent (create and update).
 
@@ -5110,6 +5120,10 @@ def _validate_stream_fields(data: dict):
                 clean[key] = int(v)
             else:
                 return None, f"{key} must be true, false, 0 or 1"
+    for key in ("name", "description", "golive_message"):
+        v = data.get(key)
+        if isinstance(v, str) and _has_surrogate(v):
+            return None, f"{key} contains characters that cannot be stored"
     if "name" in data:
         v = data["name"]
         if not isinstance(v, str) or not v.strip():
