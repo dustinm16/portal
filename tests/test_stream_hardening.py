@@ -84,6 +84,57 @@ def test_private_stream_is_not_in_members_activity():
     run(body)
 
 
+def test_stored_activity_rows_follow_the_stream_into_private_and_through_a_rename():
+    async def body(w):
+        db = w.db
+        owner = w.users["owner"]
+
+        async def actions(detail):
+            cur = await db.conn.execute("SELECT action FROM activity_log WHERE detail = ? ORDER BY id", (detail,))
+            return [r["action"] for r in await cur.fetchall()]
+
+        def feed():
+            return db.get_recent_activity(limit=100, user_id=w.users["member"])
+
+        async def put(stream, body):
+            sid = str(w.streams[stream]["id"])
+            resp = await server.http_update_user_stream(
+                api(w, "PUT", f"/api/streams/{sid}", "owner", body=body, match={"id": sid}))
+            assert resp.status == 200, resp.body
+
+        # 1. rows stored while the stream was public go to the private types when it is switched
+        await db.log_activity(owner, "owner", "stream_live", "Stream 'public' went live")
+        await db.log_activity(owner, "owner", "stream_offline", "Stream 'public' went offline")
+        await db.log_activity(owner, "owner", "stream_live", "Stream 'open' went live")
+        assert "Stream 'public' went live" in [a["detail"] for a in await feed()]
+        await put("public", {"is_public": False})
+        assert await actions("Stream 'public' went live") == ["stream_live_private"]
+        assert await actions("Stream 'public' went offline") == ["stream_offline_private"]
+        assert await actions("Stream 'open' went live") == ["stream_live"], "another stream's row is left alone"
+        # 2. renaming it (now not public) brings nothing back: not under the old, not under the new name
+        await put("public", {"name": "renamed"})
+        shown = [a["detail"] for a in await feed()]
+        assert not [d for d in shown if "'public'" in d or "'renamed'" in d], shown
+        assert "Stream 'open' went live" in shown
+        # 3. old rows of a stream that was already private (stored public-typed) go on a rename too
+        await db.log_activity(owner, "owner", "stream_live", "Stream 'private' went live")
+        await db.conn.execute("UPDATE activity_log SET action = 'stream_live' WHERE detail = ?",
+                              ("Stream 'private' went live",))
+        await db.conn.commit()
+        await put("private", {"name": "elsewhere"})
+        assert await actions("Stream 'private' went live") == ["stream_live_private"]
+        assert not [a for a in await feed() if "'private'" in a["detail"] or "'elsewhere'" in a["detail"]]
+        # 4. start-up pass: relabels what is left for non-public streams, not a public stream's rows,
+        # and a second pass changes nothing
+        await db.log_activity(owner, "owner", "stream_live", "Stream 'elsewhere' went live")
+        assert await actions("Stream 'elsewhere' went live") == ["stream_live"]
+        await db._relabel_private_stream_activity_at_start()
+        assert await actions("Stream 'elsewhere' went live") == ["stream_live_private"]
+        assert await actions("Stream 'open' went live") == ["stream_live"]
+        assert await db.relabel_private_stream_activity(owner, ["elsewhere", "renamed"]) == 0
+    run(body)
+
+
 # --- 2. ids the database cannot hold ---------------------------------------
 
 HUGE = "9" * 25

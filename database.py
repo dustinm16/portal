@@ -1322,6 +1322,7 @@ class Database:
 
         # One-time: rotate playback keys of private streams, scrub go-live notifications
         await self._migrate_private_stream_keys()
+        await self._relabel_private_stream_activity_at_start()
 
         # Generate UUIDs for any connections that don't have one
         await self._populate_connection_uuids()
@@ -2097,6 +2098,42 @@ class Database:
             await self._connection.commit()
         except Exception:
             pass
+
+    async def relabel_private_stream_activity(self, user_id: int, names, commit: bool = True) -> int:
+        """Turn the stored 'stream_live' / 'stream_offline' activity rows of one owner that name
+        one of these streams into 'stream_live_private' / 'stream_offline_private', which no
+        other member is shown. The rows carry no stream id, only the name in their text
+        ("Stream 'x' went live"), so the match is by owner and exact text; it uses the
+        user_id index, so it costs one pass over that owner's rows. Idempotent."""
+        total = 0
+        for name in {n for n in names if n}:
+            for verb in ("live", "offline"):
+                cursor = await self.conn.execute(
+                    "UPDATE activity_log SET action = ? WHERE user_id = ? AND action = ? AND detail = ?",
+                    (f"stream_{verb}_private", user_id, f"stream_{verb}", f"Stream '{name}' went {verb}"))
+                total += cursor.rowcount or 0
+        if commit and total:
+            await self.conn.commit()
+        return total
+
+    async def _relabel_private_stream_activity_at_start(self) -> None:
+        """Every start: relabel the stored activity rows of every stream that is not public (a
+        stream made private while rows from its public time were stored, or a rename that
+        brought them back through the read-time name match). Cheap: one indexed pass per
+        non-public stream; nothing to do once the rows are relabelled."""
+        import logging
+        try:
+            cursor = await self._connection.execute(
+                "SELECT user_id, name FROM user_streams WHERE COALESCE(is_public, 0) = 0")
+            total = 0
+            for row in await cursor.fetchall():
+                total += await self.relabel_private_stream_activity(row["user_id"], [row["name"]], commit=False)
+            await self._connection.commit()
+            if total:
+                logging.getLogger("portal.database").info(
+                    "Relabelled %d stored activity row(s) of non-public streams", total)
+        except Exception as e:
+            logging.getLogger("portal.database").warning("Relabelling private stream activity failed: %s", e)
 
     async def _migrate_private_stream_keys(self) -> None:
         """Rotate the playback key of every private stream and strip the key from

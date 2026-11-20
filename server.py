@@ -5735,6 +5735,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             # here: an edit of a stream that is already private must keep the follows its
             # owner and administrators made.
             await _remove_stream_cards(stream_id, only_open_to_members=True)
+            # Its stored "went live / went offline" activity rows (found by the stream's name) go
+            # to the private types, under the old and the new name, so a rename cannot bring
+            # them back into other members' feed.
+            await db.relabel_private_stream_activity(
+                stream["user_id"], [stream.get("name"), data.get("name")])
         # Revoke all RTMP tokens if rtmp_enabled was toggled off
         if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
             revoked = await db.revoke_rtmp_tokens_for_stream(stream_id)
