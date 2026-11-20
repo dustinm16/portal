@@ -177,6 +177,10 @@ class World:
 def with_world(fn):
     def runner():
         async def body(env):
+            # The server's lock is made at import and binds to the first loop that uses it; every
+            # test runs in its own loop, so each gets a fresh one (test side only: the claim
+            # must be decided by the conditional UPDATE, not by a failure to take the lock).
+            server._stream_state_lock = asyncio.Lock()
             w = await World().build(env)
             try:
                 await fn(w)
@@ -667,6 +671,22 @@ async def test_a_browser_publish_over_whip_is_announced_once(w):
 
 @with_world
 async def test_whip_and_the_media_hook_together_announce_once(w):
+    import logging
+    records = []
+
+    class Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    catch = Catch(level=logging.INFO)
+    server.logger.addHandler(catch)
+    try:
+        await _whip_and_hook_together(w, records)
+    finally:
+        server.logger.removeHandler(catch)
+
+
+async def _whip_and_hook_together(w, records):
     async with FakeMediaMTX():
         assert await _whip(w) == 201
         assert await w.publish() == 200                       # MediaMTX's own publish hook after it
@@ -682,6 +702,9 @@ async def test_whip_and_the_media_hook_together_announce_once(w):
         first, second = await asyncio.gather(_whip(w), w.publish())
         assert (first, second) == (201, 200)
     assert len(await w.notes("m1")) == 3 and len(w.live_events("sys")) == 3
+    # the lock never failed (no "bound to a different event loop" turned into a skipped claim):
+    # whatever order the concurrent pair ran in, the conditional claim decided and one announced
+    assert not [m for m in records if "claim" in m and "failed" in m], records
 
 
 @with_world
@@ -690,7 +713,7 @@ async def test_shutdown_cancels_and_awaits_pending_announcements(w):
     gate = asyncio.Event()
     real = server._notify_go_live
 
-    async def slow(stream, payload):
+    async def slow(stream, payload, *rest):
         await gate.wait()              # never set: the announcement is still running at shutdown
         raise AssertionError("ran on after the shutdown cancelled it")
     server._notify_go_live = slow
