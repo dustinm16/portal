@@ -799,6 +799,61 @@ def test_vod_routes_refuse_a_stream_key():
         assert "_stream_user_auth(" in chunk and "await authenticate_request(request)" not in chunk, h
 
 
+_ELSEWHERE_CALLS = [
+    ("http_list_users", "GET", "/api/users", None),
+    ("http_create_user", "POST", "/api/users", {"username": "intruder", "password": "Intruder-pass-12345", "role": "user"}),
+    ("http_update_user_role", "PUT", "/api/users/{uid}/role", {"role": "moderator"}),
+    ("http_reset_user_password", "POST", "/api/users/{uid}/reset-password", {"new_password": "Taken-over-pass-123"}),
+    ("http_delete_user", "DELETE", "/api/users/{uid}", None),
+    ("http_create_api_key", "POST", "/api/api-keys", {"name": "persist", "scopes": ["services:read", "access:*"]}),
+    ("http_list_api_keys", "GET", "/api/api-keys", None),
+    ("http_get_current_user", "GET", "/api/me", None),
+    ("http_get_notifications", "GET", "/api/notifications", None),
+    ("http_get_dm_conversations", "GET", "/api/dm/conversations", None),
+]
+
+
+def test_a_stream_key_signs_in_nowhere_not_even_as_an_admin():
+    async def body(w):
+        member = w.users["member"]
+        for role in ("admin", "superadmin"):
+            await w.db.set_user_role(w.users["owner"], role)
+            before = await w.db.get_user_by_id(member)
+            owner_keys_before = len(await w.db.get_user_api_keys(w.users["owner"]))
+            for hdrs in ({"X-Stream-Key": w.streams["private"]["live"]},
+                         {"Authorization": "Stream-Key " + w.streams["private"]["live"]}):
+                # no handler gets a credential out of the key, and its role is only that of a user
+                assert await server.authenticate_request(make_mocked_request(
+                    "GET", "/api/me", headers=hdrs, transport=Transport())) is None
+                tok = server.TokenPayload({"jti": "streamkey-1", "sub": str(w.users["owner"]), "scopes": ["*"]})
+                assert await server.get_user_role_from_token(tok) == "user"
+                for name, method, tmpl, payload in _ELSEWHERE_CALLS:
+                    path = tmpl.format(uid=member)
+                    req = make_mocked_request(method, path, headers=dict(hdrs), match_info={"id": str(member)},
+                                              transport=Transport())
+                    if payload is not None:
+                        async def _json(p=payload):
+                            return p
+                        req.json = _json
+                    resp = await getattr(server, name)(req)
+                    assert resp.status in (401, 403), (role, name, resp.status, resp.body)
+            after = await w.db.get_user_by_id(member)
+            assert after["password_hash"] == before["password_hash"] and after["role"] == before["role"]
+            assert await w.db.get_user_by_username("intruder") is None
+            assert len(await w.db.get_user_api_keys(w.users["owner"])) == owner_keys_before
+        await w.db.set_user_role(w.users["owner"], "user")
+    run(body)
+
+
+def test_authenticate_request_has_no_stream_key_branch():
+    import inspect
+    src = (ROOT / "server.py").read_text()
+    assert "allow_stream_key" not in src
+    # nothing outside its own definition calls authenticate_stream_key, so no route can sign a key in
+    assert src.count("authenticate_stream_key(") == 1
+    assert list(inspect.signature(server.authenticate_request).parameters) == ["request"]
+
+
 # stream handlers that only publish (the MediaMTX hooks and WHIP): the key in the body or URL
 # is the publish credential. Anything else under these prefixes must refuse stream keys.
 _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",

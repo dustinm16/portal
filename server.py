@@ -879,8 +879,23 @@ def load_static_file(filename: str, use_cache: bool = False) -> str:
     return f"<h1>404 - {filename} not found</h1>"
 
 
+def _stream_key_refusal(request: web.Request) -> Optional[web.Response]:
+    """403 when the request offers a stream key, else None. authenticate_request never
+    signs a stream key in; this only says why the request got nowhere."""
+    if request.headers.get("X-Stream-Key") or request.headers.get("Authorization", "").startswith("Stream-Key "):
+        return web.json_response(
+            {"error": "A stream key authorises publishing only; it cannot be used on this route"}, status=403)
+    return None
+
+
 def unauthorized_response(request: web.Request) -> web.Response:
-    """Return appropriate unauthorized response based on client type."""
+    """Return appropriate unauthorized response based on client type.
+
+    A request that offers a stream key (and nothing that signs in) gets 403 with the
+    reason: the key authorises publishing only, it is not a credential for this route."""
+    refusal = _stream_key_refusal(request)
+    if refusal is not None:
+        return refusal
     # Check if client expects JSON (API client) vs HTML (browser)
     accept = request.headers.get("Accept", "")
     if "application/json" in accept:
@@ -2044,11 +2059,13 @@ def create_ssl_context() -> ssl.SSLContext:
 _AUTH_VIA_QUERY_TOKEN = "auth_via_query_token"
 
 
-async def authenticate_request(request: web.Request, allow_stream_key: bool = True) -> Optional[TokenPayload]:
+async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
     """Authenticate a request via header, query param, session cookie, or API key.
 
-    allow_stream_key=False ignores Stream-Key / X-Stream-Key (a stream key is not
-    a way to sign in as its owner, for example to watch other streams)."""
+    A stream key (live_, sent as Stream-Key or X-Stream-Key) authorises publishing
+    only, so it is never a way to sign in here: it is ignored on every route. The
+    publish side (MediaMTX hook, RTMPS, WHIP, stream events) reads the key from its
+    body or URL and never calls this."""
     # Check Authorization header for Bearer token
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -2057,29 +2074,15 @@ async def authenticate_request(request: web.Request, allow_stream_key: bool = Tr
         except AuthError:
             pass
 
-    # Check for API key or Stream key authentication
     # API keys: Authorization: Api-Key portal_xxx or X-API-Key header
-    # Stream keys: Authorization: Stream-Key live_xxx or X-Stream-Key header
     api_key = None
-    stream_key = None
-
     if auth_header.startswith("Api-Key "):
         api_key = auth_header[8:].strip()
-    elif auth_header.startswith("Stream-Key "):
-        stream_key = auth_header[11:].strip()
-    elif request.headers.get("X-API-Key"):
+    elif request.headers.get("X-API-Key") and not auth_header.startswith("Stream-Key "):
         api_key = request.headers.get("X-API-Key").strip()
-    elif request.headers.get("X-Stream-Key"):
-        stream_key = request.headers.get("X-Stream-Key").strip()
 
-    # Stream keys and API keys are interchangeable for stream-related operations
     if api_key:
         token_payload = await authenticate_api_key(api_key)
-        if token_payload:
-            return token_payload
-
-    if stream_key and allow_stream_key:
-        token_payload = await authenticate_stream_key(stream_key)
         if token_payload:
             return token_payload
 
@@ -9086,7 +9089,7 @@ async def _stream_read_access(request: web.Request, key: str) -> tuple[Optional[
     if not stream:
         return None, _STREAM_NOT_FOUND
     user_id, role = None, "user"
-    token = await authenticate_request(request, allow_stream_key=False)
+    token = await authenticate_request(request)
     if token is not None and has_full_user_scope(token):
         user_id = token.user_id
         role = await get_user_role_from_token(token)
@@ -22519,6 +22522,8 @@ async def http_2fa_disable(request: web.Request) -> web.Response:
 
 async def get_user_role_from_token(token) -> str:
     """Get the role of the user from their token."""
+    if str(getattr(token, "token_id", "") or "").startswith("streamkey-"):
+        return "user"      # a stream key authorises publishing only, whatever its owner's role
     user = await db.get_user_by_id(token.user_id)
     if not user:
         return "user"
@@ -23318,7 +23323,8 @@ async def _backup_superadmin(request: web.Request, cookie_only: bool = False):
     else:
         token = await authenticate_request(request)
     if not token:
-        return None, web.json_response({"error": "Unauthorized"}, status=401)
+        return None, (_stream_key_refusal(request)
+                      or web.json_response({"error": "Unauthorized"}, status=401))
     if not token.has_scope("admin"):
         return None, web.json_response({"error": "Superadmin required"}, status=403)
     user = await db.get_user_by_id(token.user_id)
