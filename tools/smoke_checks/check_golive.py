@@ -45,8 +45,9 @@ async def main():
     await db.set_user_role(out["users"]["adm"], "admin")
     for label, public in (("pub", True), ("priv", False)):
         sk, pk = server.generate_stream_key(), server.generate_public_key()
+        # this check is about the everyone audience (the follow check covers followers)
         sid = await db.create_user_stream(user_id=out["users"]["owner"], name=P["pre"] + label, stream_key=sk,
-                                          public_key=pk, is_public=public)
+                                          public_key=pk, is_public=public, golive_audience="everyone")
         out["streams"][label] = {"id": sid, "live": sk, "pub": pk}
     await db.close()
     print("RESULT " + json.dumps(out))
@@ -88,6 +89,10 @@ class Req:
 async def drain():
     for _ in range(5):
         await asyncio.sleep(0)
+    # the announcement runs in a background task of its own (it starts the webhook task)
+    fan = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and t.get_name() == "golive-fanout"]
+    if fan:
+        await asyncio.gather(*fan, return_exceptions=True)
     pend = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()
             and ("fire_webhook_event" in repr(t.get_coro()) or "_deliver_webhook" in repr(t.get_coro()))]
     if pend:
@@ -174,6 +179,14 @@ async def run(ctx):
                 and f'"stream_id": {sid}' in (n.get("data") or "")]
         return rows
 
+    async def settle(sess, sid):
+        """The announcement is made in the background: wait (up to 10 s) for the first expected
+        notification, then judge both the expected and the missing ones."""
+        for _ in range(50):
+            if await notes(sess, sid):
+                return
+            await asyncio.sleep(0.2)
+
     async def publish(sess, s):
         async with sess.post(ctx.base_url + "/api/stream/auth", headers={"Host": "evil.example.invalid"},
                              json={"action": "publish", "path": "live/" + s["live"], "password": s["live"],
@@ -226,6 +239,7 @@ async def run(ctx):
                 ok(f"stream taken offline before restart {cycle}", rc == 0, out[-200:])
             status = await publish(hook, pub)
             ok(f"publish hook accepts the public stream (start {cycle + 1})", status == 200, str(status))
+        await settle(adm, pub["id"])
         rows_m, rows_a, rows_o = await notes(member, pub["id"]), await notes(adm, pub["id"]), await notes(owner, pub["id"])
         ok("three starts give each member one notification", len(rows_m) == 1 and len(rows_a) == 1,
            f"{len(rows_m)} {len(rows_a)}")
@@ -245,6 +259,7 @@ async def run(ctx):
             if cycle:
                 await ctx.run_py(OFFLINE % {"sid": priv["id"]})
             await publish(hook, priv)
+        await settle(adm, priv["id"])
         pm, pa, po = await notes(member, priv["id"]), await notes(adm, priv["id"]), await notes(owner, priv["id"])
         ok("a private stream notifies its administrator once", len(pa) == 1, str(len(pa)))
         ok("a private stream notifies no ordinary member and not its owner", not pm and not po, f"{len(pm)} {len(po)}")

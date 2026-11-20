@@ -1187,11 +1187,26 @@ Update stream settings.
 }
 ```
 
-Only `name`, `description`, `is_public`, `allow_unauthenticated`, `rtmp_enabled` and `golive_message` are taken from the request; server-owned fields (`chat_channel_id`, `is_live`, `viewer_count`, `started_at`, `ended_at`) are ignored, and a request with none of the editable fields answers `400`. Setting `is_public` to `false` also removes members who can no longer read the stream's chat from its room.
+Only `name`, `description`, `is_public`, `allow_unauthenticated`, `rtmp_enabled`, `golive_message` and `golive_audience` are taken from the request; server-owned fields (`chat_channel_id`, `is_live`, `viewer_count`, `started_at`, `ended_at`) are ignored, and a request with none of the editable fields answers `400`. Setting `is_public` to `false` also removes members who can no longer read the stream's chat from its room.
 
 **`golive_message` (1.16.0):** the owner's go-live message, a string of at most 200 characters (`400` above that, or when it is not a string or `null`; a body-sized value is refused before it is cleaned, so a message longer than 1000 characters is refused even if control characters would shrink it below 200); control characters are removed (tab and line break become a space) and an empty string or `null` clears it, so the default (`{title} just went live`) is used. Only `{streamer}`, `{title}` and `{url}` are replaced, by literal text in a single pass; any other brace text (for example `{0.__class__}`) is kept as typed. It is the text of the go-live notification and the `message` of the `stream.live` webhook payload. A stream is announced at most once per 10 minutes (stored in the database), however often it starts again. The field is returned with the stream.
 
 Changing `is_public` from `true` to `false` rotates the stream's playback key automatically; the old key stops resolving at once. The response then also carries the new key as `public_key` (alongside the updated `stream` object).
+
+**`golive_audience` (1.16.0):** who is notified when the stream goes live, `"followers"` (members who follow it) or `"everyone"` (every member who may watch it); anything else is a `400`. A stream created through `POST /api/streams` is `"followers"` unless the request says otherwise; a stream that existed before 1.16.0 is `"everyone"`. In both modes a notification goes only to a member who may watch the stream at that moment, and never to its owner. The field is returned with the stream. Changing `is_public` from `true` to `false` also removes every follow of the stream and deletes its go-live cards from every channel ordinary members can read; making it public again does not bring the follows back.
+
+The owner's own responses (`GET /api/streams`, `GET /api/streams/{id}`) carry `follower_count`, a number: who follows is never returned to anyone, the owner and administrators included.
+
+---
+
+#### PUT /api/streams/{id}/follow  and  DELETE /api/streams/{id}/follow
+Follow a stream, or stop following it (1.16.0). Needs a signed-in member with a full credential (a browser session, or a token or API key with `*`); a stream key is refused (`401`). `PUT` answers `{"following": true, "stream_id": 5}`. A member may follow only a stream they may watch (the playback rule: the owner and administrators always, other members only a public stream); an unknown, a non-numeric and an unviewable stream all answer the same `404 {"error": "Stream not found"}`. A member may follow at most 200 streams (`400`). `DELETE` removes the member's own follow and answers `{"following": false, "stream_id": 5}` whatever the stream is (it reveals nothing). A follow is for the in-portal go-live notification of a stream whose audience is `followers`.
+
+#### GET /api/me/follows
+The streams the signed-in member follows: `{"stream_ids": [5, 9]}`. Only the member's own list exists; there is no route that lists who follows a stream. `GET /api/streams/public` and `GET /api/streams/{id}` carry `following` (the viewer's own state) for a full credential only; a request made with a stream key gets no `following` field, as it gets no follow list.
+
+#### GET /api/streams/live
+The streams that are live now and that the signed-in member may watch (same rule as playback), for the chat page's "Live now" strip: `{"streams": [{"id": 5, "name": "...", "streamer": "alice", "viewer_count": 3, "started_at": "...", "following": true}]}`. It carries no stream key, `pub_` key or RTMP address; watch a stream at `/watch/{id}`.
 
 ---
 
@@ -1750,6 +1765,7 @@ Read older messages of a channel, or a window around one message (for a link to 
 - Anonymous posts are masked for ordinary members exactly as in the join history: no account id, role, nickname, avatar or name, in the message, its reactions, reply previews and poll. Moderators, admins and the author keep the id.
 - Messages older than the chat retention (`retention_chat_days`, one setting for every channel) no longer exist and are never returned.
 - Reading never marks anything as read and sends no notification.
+- A go-live card (1.16.0) is a message with `"message_type": "stream_card"` and `"card": {"stream_id": 5, "streamer": "alice", "title": "..."}`; `message` holds a plain-text fallback (`alice is live: title - https://host/watch/5`) for a client that does not know the type. A client builds the watch link from `card.stream_id` (`/watch/{id}`). The card is a system post written through the normal encrypted insert, authored by the streamer's account, and cannot be edited. It is posted into the stream's own chat and, for a public stream, into the announce channel an administrator chose; it is never posted into a channel ordinary members can read for a stream that is not public. It is deleted from every channel except the stream's own closed chat when the stream becomes private (also from a channel that was made private later and has members) and everywhere when the stream is deleted, and the chat retention removes it like any message. It carries no stream key and no thumbnail. The room receives `message_deleted` when it is removed.
 - The chat of a stream that is not public (`is_public` off) can be read, joined and written to only by the stream's owner and admins; everyone else gets the answer for a missing channel. The answer carries `Cache-Control: private, no-store`.
 
 **Errors:** `400` (bad parameter), `401` (not authenticated), `404 {"error": "Channel not found"}` for a channel the caller cannot read (private and not a member, banned from the stream chat, removed member, the chat of a stream that is not public and the caller is neither owner nor admin) and for one that does not exist, `429` with `Retry-After` when the caller made more than 30 history requests in a minute (this budget is shared with the WebSocket `history_page` message and all of the caller's sockets).
@@ -2645,7 +2661,7 @@ The browser's `Notification` API is used for **desktop alerts** when the page is
 
 **Notification types:** `stream_live`, `stream_offline`, `dm_received`, `mention`, `system`
 
-**`stream_live` (1.16.0):** sent once per 10 minutes per stream, to the members who may watch it: everybody except the owner for a public stream, the administrators for a private one. `data` has `stream_id`, `streamer`, `title` and `url` (the logged-in watch page, built from `PUBLIC_BASE_URL` or `HOSTNAME`, never from a request header); it never carries a stream key, a `pub_` key or an RTMP address. `message` is the owner's go-live message, filled in.
+**`stream_live` (1.16.0):** sent once per 10 minutes per stream, to the stream's audience (`golive_audience`: its followers, or everyone) and only to members who may watch it at that moment: a public stream's audience members, the audience's administrators for a private one; never the owner. It is written in the background in batches, a moment after the stream goes live. `data` has `stream_id`, `streamer`, `title` and `url` (the logged-in watch page, built from `PUBLIC_BASE_URL` or `HOSTNAME`, never from a request header); it never carries a stream key, a `pub_` key or an RTMP address. `message` is the owner's go-live message, filled in.
 
 ---
 
@@ -3591,6 +3607,11 @@ Update the server hostname in the configuration.
   "hostname": "new-hostname.example.com"
 }
 ```
+
+---
+
+#### GET /api/settings/permissions  and  PUT /api/settings/permissions
+Feature switches (admin). `allow_user_connections` and `allow_user_streams` are booleans. **`stream_announce_channel_id` (1.16.0)** is the channel a go-live card of a public stream is posted into, in addition to the stream's own chat: a channel id, or `null` for none (the default). The channel must exist (`404`), must not be a stream's own chat (`400`) and must be readable by every member, not private (`400`); the same is checked again at every go-live, so a channel made private later receives nothing.
 
 ---
 

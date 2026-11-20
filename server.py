@@ -5058,10 +5058,13 @@ async def http_list_user_streams(request: web.Request) -> web.Response:
         return unauthorized_response(request)
 
     streams = await db.get_user_streams(token.user_id)
+    # How many members follow each of the owner's streams: a number, never names
+    counts = await db.count_followers_for_streams([s["id"] for s in streams])
     # Strip internal hash fields — these are implementation details not needed by clients
     for stream in streams:
         stream.pop("stream_key_hash", None)
         stream.pop("public_key_hash", None)
+        stream["follower_count"] = counts.get(stream["id"], 0)
     return web.json_response({"streams": streams})
 
 
@@ -5069,6 +5072,7 @@ _STREAM_NAME_MAX = 100
 _STREAM_DESCRIPTION_MAX = 2000
 _STREAM_FLAG_FIELDS = ("is_public", "allow_unauthenticated", "rtmp_enabled")
 _GOLIVE_MESSAGE_MAX = 200
+_GOLIVE_AUDIENCES = ("followers", "everyone")
 # Looked at before the per-character control-character strip, so a huge body cannot keep the
 # event loop busy; generous enough that a message of mostly control characters still passes.
 _GOLIVE_MESSAGE_PRESTRIP_MAX = 1000
@@ -5129,6 +5133,11 @@ def _validate_stream_fields(data: dict):
         if len(v) > _GOLIVE_MESSAGE_MAX:
             return None, f"golive_message must be at most {_GOLIVE_MESSAGE_MAX} characters"
         clean["golive_message"] = v or None      # empty: the default message is used
+    if "golive_audience" in data:
+        v = data["golive_audience"]
+        if v not in _GOLIVE_AUDIENCES:
+            return None, "golive_audience must be \"followers\" or \"everyone\""
+        clean["golive_audience"] = v
     return clean, None
 
 
@@ -5200,28 +5209,201 @@ def _golive_payload(stream: dict) -> dict:
     }
 
 
+_GOLIVE_BATCH = 100               # notifications inserted per transaction
+_golive_tasks: set = set()        # strong references: a task nobody holds can be collected mid-run
+
+
+def _spawn_go_live(stream_id: int) -> asyncio.Task:
+    """Start the announcement in the background so the publish hook answers at once."""
+    task = asyncio.create_task(_announce_go_live(stream_id), name="golive-fanout")
+    _golive_tasks.add(task)
+    task.add_done_callback(_golive_tasks.discard)
+    return task
+
+
+def _go_live_card_text(payload: dict) -> str:
+    """The plain-text fallback of a go-live card (what a client that does not know
+    the stream_card type shows): streamer, title and the logged-in watch link."""
+    text = f"{payload['streamer']} is live: {payload['title']}"
+    return f"{text} - {payload['url']}" if payload.get("url") else text
+
+
+async def _channel_open_to_members(channel) -> bool:
+    """Whether an ordinary member (any member, no special standing) can read the channel."""
+    return bool(await _can_read_channel(channel, 0, "user"))
+
+
+async def _announce_channel(stream: dict):
+    """The admin's announce channel when a card for this stream may go there, else
+    None. Only for a public stream, and only while the channel is one an ordinary
+    member can read (not private, not the chat of a stream that is not public).
+    Judged again at every announcement, not only when the setting was saved."""
+    if not stream.get("is_public"):
+        return None
+    raw = await db.get_setting("stream_announce_channel_id")
+    if not raw or not str(raw).isdigit():
+        return None
+    channel = await db.get_chat_channel(int(raw))
+    if not channel or not await _channel_open_to_members(channel):
+        return None
+    return channel
+
+
+async def _post_go_live_card(stream: dict, payload: dict, channel: dict) -> Optional[int]:
+    """Insert one stream_card message (a system post by the stream's owner, through
+    the normal encrypted insert) into `channel` and show it to the people in it.
+    Returns the message id. If the card cannot be linked to its stream, the message is
+    removed again and the error is raised."""
+    streamer = payload["streamer"]
+    msg_id = await db.create_chat_message(
+        channel["id"], stream["user_id"], streamer, _go_live_card_text(payload), message_type="stream_card")
+    try:
+        await db.add_stream_card(msg_id, stream["id"], channel["id"], streamer, payload["title"])
+    except Exception:
+        # The stream is gone (foreign key) or the insert failed: nothing else can find
+        # this message, so it goes now, with its search entry, and the caller logs it.
+        try:
+            await db.delete_chat_message(msg_id)
+        except Exception as e:
+            logger.warning(f"Removing the unlinked go-live card {msg_id} failed: {type(e).__name__}: {e}")
+        raise
+    await broadcast_to_channel(channel["name"], {
+        "type": "message", "id": msg_id, "user_id": stream["user_id"], "username": streamer,
+        "message": _go_live_card_text(payload), "message_type": "stream_card",
+        "card": {"stream_id": stream["id"], "streamer": streamer, "title": payload["title"]},
+        "role": "user", "anonymous": False, "avatar": {}, "reactions": [],
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    return msg_id
+
+
+async def _remove_stream_cards(stream_id: int, only_open_to_members: bool) -> int:
+    """Delete a stream's go-live cards and tell the rooms they were in.
+
+    With only_open_to_members, only the card in the stream's own chat stays, and only
+    while that chat is closed to ordinary members (the stream is not public), so the
+    owner and admins keep it. A card in any other channel goes, whoever can read that
+    channel (a private channel with members is no reason to keep it: those members
+    may not watch the stream). Without it (the stream is deleted) every card goes.
+    Never raises."""
+    removed = 0
+    try:
+        own_id = None
+        if only_open_to_members:
+            stream = await db.get_user_stream(stream_id)
+            own_id = stream.get("chat_channel_id") if stream else None
+        for card in await db.get_cards_of_stream(stream_id):
+            channel = await db.get_chat_channel(card["channel_id"])
+            if (only_open_to_members and channel and own_id and card["channel_id"] == own_id
+                    and not await _channel_open_to_members(channel)):
+                continue
+            await db.scrub_reply_previews(card["message_id"])     # a reply keeps no copy of the card's text
+            if await db.delete_chat_message(card["message_id"]):
+                removed += 1
+                if channel:
+                    await broadcast_to_channel(channel["name"], {
+                        "type": "message_deleted", "message_id": card["message_id"], "deleted_by": None})
+    except Exception as e:
+        logger.warning(f"Removing go-live cards of stream {stream_id} failed: {type(e).__name__}: {e}")
+    return removed
+
+
+async def _post_go_live_cards(stream: dict, payload: dict) -> None:
+    """The announce card: into the stream's own chat and, when allowed, the announce channel.
+
+    A stream that is not public never gets a card in a channel ordinary members can
+    read (its own chat is closed to them, except a default channel, which is
+    skipped for that reason)."""
+    targets = []
+    own = await db.get_chat_channel(stream["chat_channel_id"]) if stream.get("chat_channel_id") else None
+    if own and (stream.get("is_public") or not await _channel_open_to_members(own)):
+        targets.append(own)
+    extra = await _announce_channel(stream)
+    if extra and not any(extra["id"] == t["id"] for t in targets):
+        targets.append(extra)
+    written = []          # (message id, channel) of the cards this run wrote
+    for channel in targets:
+        try:
+            written.append((await _post_go_live_card(stream, payload, channel), channel))
+        except Exception as e:
+            logger.warning(f"Go-live card for stream {stream['id']} in channel {channel['id']} failed: "
+                           f"{type(e).__name__}: {e}")
+    # The stream may have been made private while the cards were being written
+    fresh = await db.get_user_stream(stream["id"])
+    if fresh and not fresh.get("is_public"):
+        await _remove_stream_cards(stream["id"], only_open_to_members=True)
+    elif fresh is None:
+        # The stream was deleted while they were written: its card rows went with it
+        # (cascade), so _remove_stream_cards cannot find them. Remove the messages
+        # written in this run directly. Never raises.
+        for msg_id, channel in written:
+            try:
+                await db.scrub_reply_previews(msg_id)
+                if await db.delete_chat_message(msg_id):
+                    await broadcast_to_channel(channel["name"], {
+                        "type": "message_deleted", "message_id": msg_id, "deleted_by": None})
+            except Exception as e:
+                logger.warning(f"Removing go-live card {msg_id} of deleted stream {stream['id']} failed: "
+                               f"{type(e).__name__}: {e}")
+
+
+async def _notify_go_live(stream: dict, payload: dict) -> int:
+    """The in-portal notification for a go-live, to the stream's audience.
+
+    'followers': the members who follow it; 'everyone': every member. In both cases
+    only a member who may watch the stream at that moment (checked again for each
+    batch against the stream as it is then) and never the streamer. Inserted in
+    batches of _GOLIVE_BATCH, one commit each, yielding to the event loop between
+    batches, then pushed to the sockets that are open. Returns the number notified."""
+    stream_id = stream["id"]
+    if (stream.get("golive_audience") or "everyone") == "followers":
+        candidates = await db.get_follower_audience(stream_id)
+    else:
+        candidates = await db.get_all_users()
+    data = {"stream_id": stream_id, "streamer": payload["streamer"], "title": payload["title"]}
+    if payload["url"]:
+        data["url"] = payload["url"]
+    title = f"{payload['streamer']} is live!"
+    notified = 0
+    for i in range(0, len(candidates), _GOLIVE_BATCH):
+        current = await db.get_user_stream(stream_id) or None      # access as it is now
+        if not current:
+            break
+        rows = []
+        for user in candidates[i:i + _GOLIVE_BATCH]:
+            uid = user["id"]
+            role = user.get("role") or ("admin" if user.get("is_admin") else "user")
+            if uid == current.get("user_id") or not _stream_read_allowed(current, uid, role, False):
+                continue
+            rows.append((uid, "stream_live", title, payload["message"], data))
+        if rows:
+            for uid, notif_id in await db.create_notifications_bulk(rows):
+                await _push_notification_frame(uid, notif_id, "stream_live", title, payload["message"], data)
+            notified += len(rows)
+        await asyncio.sleep(0)
+    return notified
+
+
 async def _announce_go_live(stream_id: int) -> None:
-    """Tell people a stream went live: the in-portal notification (only to those
-    who may watch it) and the stream.live webhook. The caller has already won the
-    cooldown (db.claim_golive); this never raises."""
+    """Tell people a stream went live: the stream.live webhook, the announce card(s)
+    in chat and the in-portal notification to the stream's audience (only to those
+    who may watch it). The caller has already won the cooldown (db.claim_golive);
+    this runs in the background and never raises."""
     try:
         stream = await db.get_user_stream(stream_id)
         if not stream:
             return
         payload = _golive_payload(stream)
-        data = {"stream_id": stream_id, "streamer": payload["streamer"], "title": payload["title"]}
-        if payload["url"]:
-            data["url"] = payload["url"]
-        for user in await db.get_all_users():
-            if user["id"] == stream.get("user_id"):
-                continue
-            if _stream_read_allowed(stream, user["id"], user.get("role") or "user", False):
-                await send_notification(user["id"], "stream_live", f"{payload['streamer']} is live!",
-                                        payload["message"], data)
         asyncio.create_task(fire_webhook_event(
             "stream.live", payload, meta={"stream_public": bool(stream.get("is_public"))}))
     except Exception as e:
         logger.warning(f"Go-live announcement for stream {stream_id} failed: {type(e).__name__}: {e}")
+        return
+    for step in (_post_go_live_cards, _notify_go_live):
+        try:
+            await step(stream, payload)
+        except Exception as e:
+            logger.warning(f"Go-live {step.__name__.strip('_')} for stream {stream_id} failed: "
+                           f"{type(e).__name__}: {e}")
 
 
 async def http_create_user_stream(request: web.Request) -> web.Response:
@@ -5251,6 +5433,7 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
     name = clean["name"]
     description = clean.get("description") or ""
     is_public = bool(clean.get("is_public", 0))
+    audience = clean.get("golive_audience", "followers")      # a new stream announces to followers
 
     # Generate unique keys
     stream_key = generate_stream_key()  # Private key for publishing
@@ -5263,7 +5446,8 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
             stream_key=stream_key,
             public_key=public_key,
             description=description,
-            is_public=is_public
+            is_public=is_public,
+            golive_audience=audience
         )
 
         # Create a chat channel for every stream
@@ -5341,13 +5525,18 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
         # Also hide public_key for private streams
         if not is_public:
             stream.pop("public_key", None)
+    if is_owner:
+        stream["follower_count"] = await db.count_followers(stream["id"])    # a number, never names
+    if has_full_user_scope(token):      # a stream key is not a login as its owner: no follow state
+        stream["following"] = stream["id"] in set(await db.get_followed_stream_ids(token.user_id))
 
     return web.json_response({"stream": stream})
 
 
 # The stream fields a client may change (what the stream settings screen sends)
 _STREAM_CLIENT_FIELDS = frozenset({"name", "description", "is_public",
-                                   "allow_unauthenticated", "rtmp_enabled", "golive_message"})
+                                   "allow_unauthenticated", "rtmp_enabled", "golive_message",
+                                   "golive_audience"})
 
 
 async def http_update_user_stream(request: web.Request) -> web.Response:
@@ -5411,6 +5600,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         # playlist or segment from here on.
         _stream_access_changed(stream_id, drop_sessions=any(
             k in data and bool(data[k]) != bool(stream.get(k)) for k in ("is_public", "allow_unauthenticated")))
+        if "is_public" in data and bool(data["is_public"]) != bool(stream.get("is_public")):
+            # A visibility change in either direction starts follows afresh. Going private
+            # drops them all; going public drops what is left from while it was private (an
+            # administrator who followed it and was demoted since), so no stale follow wakes up.
+            await db.remove_stream_follows(stream_id)
         rotated_key = None
         if became_private:
             rotated_key = generate_public_key()
@@ -5425,6 +5619,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             # request did not carry is_public (the stream was private already: the
             # room may still hold sockets from before).
             await _evict_unreadable_by_id(stream.get("chat_channel_id") or data.get("chat_channel_id"))
+            # Its go-live cards leave every channel ordinary members can read (the
+            # announce channel). Follows are cleared by the visibility change above, not
+            # here: an edit of a stream that is already private must keep the follows its
+            # owner and administrators made.
+            await _remove_stream_cards(stream_id, only_open_to_members=True)
         # Revoke all RTMP tokens if rtmp_enabled was toggled off
         if data.get("rtmp_enabled") is False or data.get("rtmp_enabled") == 0:
             revoked = await db.revoke_rtmp_tokens_for_stream(stream_id)
@@ -5462,6 +5661,8 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if stream["user_id"] is not None and stream["user_id"] != token.user_id:
         return web.json_response({"error": "Stream not found"}, status=404)
 
+    # The go-live cards are chat messages; they are removed with the stream
+    await _remove_stream_cards(stream_id, only_open_to_members=False)
     success = await db.delete_user_stream(stream_id, user_id=token.user_id)
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
@@ -5884,12 +6085,111 @@ async def http_get_public_streams(request: web.Request) -> web.Response:
 
     # Remove private stream keys and internal hashes from public listing (security)
     # Keep public_key for playback URLs
+    full = has_full_user_scope(token)       # a stream key is not a login as its owner: no follow state
+    followed = set(await db.get_followed_stream_ids(token.user_id)) if full else set()
     for stream in streams:
         stream.pop("stream_key", None)
         stream.pop("stream_key_hash", None)
         stream.pop("public_key_hash", None)
+        if full:
+            stream["following"] = stream["id"] in followed  # the viewer's own follow only
 
     return web.json_response({"streams": streams})
+
+
+# ---------------------------------------------------------------------------
+# Follows and the live-now list
+# ---------------------------------------------------------------------------
+
+_STREAM_FOLLOW_NOT_FOUND = {"error": "Stream not found"}
+
+
+async def _follow_context(request: web.Request):
+    """(token, user_id, role) of a member using a full-authority credential, or a
+    response to return. A stream key is not a way to sign in as its owner."""
+    token = await authenticate_request(request, allow_stream_key=False)
+    if not token:
+        return None, unauthorized_response(request)
+    if not has_full_user_scope(token):
+        return None, forbidden_response(request)
+    return (token, token.user_id, await get_user_role_from_token(token)), None
+
+
+async def _viewable_stream_for_follow(request: web.Request, user_id: int, role: str):
+    """The stream named in the path when this member may watch it, else None. A
+    non-numeric id, an unknown stream and a stream the member may not watch are
+    all the same answer: a private stream's existence is not revealed."""
+    try:
+        stream_id = int(request.match_info.get("id", ""))
+    except (ValueError, TypeError):
+        return None
+    stream = await db.get_user_stream(stream_id)
+    if not stream or not _stream_read_allowed(stream, user_id, role, False):
+        return None
+    return stream
+
+
+async def http_follow_stream(request: web.Request) -> web.Response:
+    """PUT /api/streams/{id}/follow: follow a stream the member may watch."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    _token, user_id, role = ctx
+    stream = await _viewable_stream_for_follow(request, user_id, role)
+    if not stream:
+        return web.json_response(_STREAM_FOLLOW_NOT_FOUND, status=404)
+    result = await db.follow_stream(user_id, stream["id"])
+    if result == "limit":
+        return web.json_response(
+            {"error": f"You can follow at most {db.FOLLOW_LIMIT_PER_USER} streams"}, status=400)
+    return web.json_response({"following": True, "stream_id": stream["id"]})
+
+
+async def http_unfollow_stream(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/follow: stop following. Always answers the same
+    (own follow only), whatever the stream is, so it reveals nothing."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    _token, user_id, _role = ctx
+    try:
+        stream_id = int(request.match_info.get("id", ""))
+    except (ValueError, TypeError):
+        return web.json_response(_STREAM_FOLLOW_NOT_FOUND, status=404)
+    await db.unfollow_stream(user_id, stream_id)
+    return web.json_response({"following": False, "stream_id": stream_id})
+
+
+async def http_my_follows(request: web.Request) -> web.Response:
+    """GET /api/me/follows: the streams this member follows (their own list only)."""
+    ctx, refusal = await _follow_context(request)
+    if refusal is not None:
+        return refusal
+    _token, user_id, _role = ctx
+    return web.json_response({"stream_ids": await db.get_followed_stream_ids(user_id)})
+
+
+async def http_live_now(request: web.Request) -> web.Response:
+    """GET /api/streams/live: the streams live now that this member may watch, from
+    the same state the chat's stream_status frames carry. No key of any kind."""
+    token = await authenticate_request(request, allow_stream_key=False)
+    if not token:
+        return unauthorized_response(request)
+    user_id, role = token.user_id, "user"
+    if has_full_user_scope(token):
+        role = await get_user_role_from_token(token)
+    else:
+        user_id = None          # a narrow credential is not a viewer: nothing is listed
+    followed = set(await db.get_followed_stream_ids(token.user_id)) if user_id else set()
+    out = []
+    for st in await db.get_live_streams():
+        if user_id is None or not _stream_read_allowed(st, user_id, role, False):
+            continue
+        out.append({"id": st["id"], "name": st["name"],
+                    "streamer": st.get("owner_nickname") or st.get("owner_username") or "Someone",
+                    "viewer_count": st.get("viewer_count") or 0, "started_at": st.get("started_at"),
+                    "following": st["id"] in followed})
+    return web.json_response({"streams": out})
 
 
 async def http_get_open_streams(request: web.Request) -> web.Response:
@@ -8397,7 +8697,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                 logger.warning(f"Go-live claim for stream {stream_id} failed: {type(e).__name__}: {e}")
                 announce = False
             if announce:
-                await _announce_go_live(stream_id)
+                _spawn_go_live(stream_id)          # fan-out in the background: the hook answers at once
             else:
                 logger.info(f"Stream {stream['name']}: go-live not announced again (cooldown)")
 
@@ -11221,9 +11521,11 @@ async def http_get_feature_permissions(request: web.Request) -> web.Response:
 
     allow_connections = await db.get_setting("allow_user_connections")
     allow_streams = await db.get_setting("allow_user_streams")
+    announce = await db.get_setting("stream_announce_channel_id")
     return web.json_response({
         "allow_user_connections": allow_connections != "false",
         "allow_user_streams": allow_streams != "false",
+        "stream_announce_channel_id": int(announce) if announce and announce.isdigit() else None,
     })
 
 
@@ -11244,6 +11546,21 @@ async def http_update_feature_permissions(request: web.Request) -> web.Response:
         await db.set_setting("allow_user_connections", "true" if data["allow_user_connections"] else "false")
     if "allow_user_streams" in data:
         await db.set_setting("allow_user_streams", "true" if data["allow_user_streams"] else "false")
+    if "stream_announce_channel_id" in data:
+        value = data["stream_announce_channel_id"]
+        if value is None or value == "":
+            await db.set_setting("stream_announce_channel_id", "")
+        else:
+            if type(value) is not int or value < 1:
+                return web.json_response({"error": "stream_announce_channel_id must be a channel id or null"}, status=400)
+            channel = await db.get_chat_channel(value)
+            if not channel:
+                return web.json_response({"error": "Channel not found"}, status=404)
+            if await db.get_stream_by_chat_channel(value):
+                return web.json_response({"error": "A stream's own chat cannot be the announce channel"}, status=400)
+            if not await _channel_open_to_members(channel):
+                return web.json_response({"error": "The announce channel must be readable by every member (not private)"}, status=400)
+            await db.set_setting("stream_announce_channel_id", str(value))
 
     logger.info(f"Feature permissions updated by user {token.user_id}: {data}")
     return web.json_response({"success": True})
@@ -17889,6 +18206,13 @@ async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, chann
                     "deleted": True
                 }
     msg_ids = [m["id"] for m in messages]
+    card_ids = [m["id"] for m in messages if m.get("message_type") == "stream_card"]
+    if card_ids:
+        cards = await db.get_stream_cards(card_ids)
+        for m in messages:
+            c = cards.get(m["id"])
+            if c:
+                m["card"] = {"stream_id": c["stream_id"], "streamer": c["streamer"], "title": c["title"]}
     all_reactions = await db.get_bulk_reactions(msg_ids)
     await _mask_reactor_ids(all_reactions, viewer_id, viewer_role)
     all_polls = await db.get_polls_by_message_ids(msg_ids)
@@ -21500,7 +21824,12 @@ async def send_notification(user_id: int, type: str, title: str,
                             message: str = "", data: dict = None):
     """Create a notification and push it to connected WebSockets."""
     notif_id = await db.create_notification(user_id, type, title, message, data)
-    # Push to connected subscribers
+    await _push_notification_frame(user_id, notif_id, type, title, message, data)
+
+
+async def _push_notification_frame(user_id: int, notif_id: int, type: str, title: str,
+                                   message: str = "", data: dict = None):
+    """Push an already stored notification to the member's connected WebSockets."""
     if user_id in notification_subscribers:
         dead = set()
         payload = {
@@ -23168,6 +23497,10 @@ def create_app() -> web.Application:
     app.router.add_get("/api/streams", http_list_user_streams)
     app.router.add_post("/api/streams", http_create_user_stream)
     app.router.add_get("/api/streams/public", http_get_public_streams)
+    app.router.add_get("/api/streams/live", http_live_now)
+    app.router.add_get("/api/me/follows", http_my_follows)
+    app.router.add_put("/api/streams/{id}/follow", http_follow_stream)
+    app.router.add_delete("/api/streams/{id}/follow", http_unfollow_stream)
     app.router.add_get("/api/streams/open", http_get_open_streams)
     app.router.add_get("/api/streams/{id}", http_get_user_stream)
     app.router.add_put("/api/streams/{id}", http_update_user_stream)

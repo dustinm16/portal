@@ -1767,6 +1767,13 @@
                                     <p style="font-size:0.75rem; color:var(--text-muted); margin:0.15rem 0 0;">When disabled, only admins can create new live streams</p>
                                 </div>
                             </label>
+                            <div>
+                                <label for="perm-announce-channel" style="color:var(--text-primary); font-size:0.9rem;">Go-live announce channel</label>
+                                <select id="perm-announce-channel" onchange="saveAnnounceChannel()" style="display:block; margin-top:0.25rem; max-width:20rem;">
+                                    <option value="">None (a card goes only to the stream's own chat)</option>
+                                </select>
+                                <p style="font-size:0.75rem; color:var(--text-muted); margin:0.15rem 0 0;">A card with a Watch link is posted here when a public stream goes live. Only channels every member can read are listed; a private stream's card never goes here.</p>
+                            </div>
                         </div>
                     </div>
 
@@ -5465,8 +5472,49 @@
                     const data = await resp.json();
                     document.getElementById('perm-allow-connections').checked = data.allow_user_connections !== false;
                     document.getElementById('perm-allow-streams').checked = data.allow_user_streams !== false;
+                    await loadAnnounceChannels(data.stream_announce_channel_id);
                 }
             } catch (e) {}
+        }
+
+        async function loadAnnounceChannels(selectedId) {
+            const sel = document.getElementById('perm-announce-channel');
+            if (!sel) return;
+            try {
+                const resp = await Portal.fetch('/api/chat/channels');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                while (sel.options.length > 1) sel.remove(1);
+                for (const ch of (data.channels || [])) {
+                    if (ch.visibility === 'private' || ch.is_stream_channel) continue;
+                    const opt = document.createElement('option');
+                    opt.value = String(ch.id);
+                    opt.textContent = '#' + ch.name;
+                    sel.appendChild(opt);
+                }
+                sel.value = selectedId ? String(selectedId) : '';
+            } catch (e) {}
+        }
+
+        async function saveAnnounceChannel() {
+            const sel = document.getElementById('perm-announce-channel');
+            const value = sel.value ? parseInt(sel.value, 10) : null;
+            try {
+                const resp = await Portal.fetch('/api/settings/permissions', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({stream_announce_channel_id: value})
+                });
+                if (resp.ok) {
+                    Portal.toast('Announce channel updated', 'success');
+                } else {
+                    const data = await resp.json().catch(() => ({}));
+                    Portal.toast(data.error || 'Failed to update the announce channel', 'error');
+                    loadFeaturePermissions();
+                }
+            } catch (e) {
+                Portal.toast('Failed to update the announce channel', 'error');
+            }
         }
 
         async function saveFeaturePermissions() {

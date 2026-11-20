@@ -214,6 +214,25 @@
             opacity: 1;
         }
 
+        .stream-follow-btn {
+            background: transparent;
+            border: 1px solid var(--border-color, rgba(128,128,128,0.4));
+            color: var(--text-muted);
+            border-radius: 999px;
+            padding: 0.15rem 0.7rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            margin-left: auto;
+        }
+
+        .stream-follow-btn:hover { color: var(--text-primary); }
+
+        .stream-follow-btn.following {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: white;
+        }
+
         .stream-popout-btn {
             position: absolute;
             top: 0.5rem;
@@ -1364,11 +1383,48 @@
                         <div class="stream-broadcaster">
                             <div class="stream-broadcaster-avatar">${initial}</div>
                             ${escapeHtml(displayName)}
+                            ${currentUser && stream.user_id === currentUser.id ? '' : followButtonHtml(stream)}
                         </div>
                     </div>
                 </div>
             `;
         }
+
+        // Follow: hear when a stream goes live. The state is the member's own, kept on the server.
+        function followButtonHtml(stream) {
+            const on = !!stream.following;
+            return `<button type="button" class="stream-follow-btn${on ? ' following' : ''}" data-follow-stream="${Number(stream.id)}" aria-pressed="${on}" title="${on ? 'Stop following this stream' : 'Tell me when this stream goes live'}">${on ? 'Following' : 'Follow'}</button>`;
+        }
+
+        async function toggleFollow(btn) {
+            const id = btn.dataset.followStream;
+            const on = btn.getAttribute('aria-pressed') !== 'true';
+            btn.disabled = true;
+            try {
+                const resp = await Portal.fetch(`/api/streams/${encodeURIComponent(id)}/follow`, { method: on ? 'PUT' : 'DELETE' });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    Portal.toast(err.error || 'Could not change follow', 'error');
+                    return;
+                }
+                btn.setAttribute('aria-pressed', String(on));
+                btn.classList.toggle('following', on);
+                btn.textContent = on ? 'Following' : 'Follow';
+                btn.title = on ? 'Stop following this stream' : 'Tell me when this stream goes live';
+            } catch (e) {
+                Portal.toast('Could not change follow', 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest ? e.target.closest('.stream-follow-btn[data-follow-stream]') : null;
+            if (!btn) return;
+            e.stopPropagation();      // the card behind it opens the stream
+            e.preventDefault();
+            toggleFollow(btn);
+        }, true);
 
         function openStreamNewWindow(publicKey, event) {
             // Prevent the card click from also triggering

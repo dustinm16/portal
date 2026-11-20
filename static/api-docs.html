@@ -1559,6 +1559,28 @@
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/streams/{id}/follow</span>
+                        <span class="endpoint-desc">Follow a stream (DELETE stops following)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Follow a stream to be told when it goes live (1.16.0). Needs a signed-in member with a full credential; a stream key is refused (<code>401</code>). Answers <code>{"following": true, "stream_id": 5}</code>. A member may follow only a stream they may watch; an unknown stream, a non-numeric id and a stream they may not watch all answer the same <code>404 {"error": "Stream not found"}</code>. At most 200 follows per member (<code>400</code>). <code>DELETE</code> removes the member's own follow and answers <code>{"following": false, ...}</code> whatever the stream is. Who follows whom is private: <code>GET /api/me/follows</code> returns only the caller's own <code>{"stream_ids": [...]}</code>, the owner of a stream sees a <code>follower_count</code> number only, and no route lists followers. <code>following</code> in <code>GET /api/streams/public</code> and <code>GET /api/streams/{id}</code> is the viewer's own state, and is left out of the answer to a stream key. Making a stream private removes all its follows.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/live</span>
+                        <span class="endpoint-desc">Streams live now that the member may watch</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Used by the chat page's "Live now" strip (1.16.0): <code>{"streams": [{"id", "name", "streamer", "viewer_count", "started_at", "following"}]}</code>, only streams the member may watch (the playback rule), no stream key, <code>pub_</code> key or RTMP address. Open a stream at <code>/watch/{id}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
                         <span class="endpoint-path">/api/streams/public</span>
                         <span class="endpoint-desc">List public streams</span>
@@ -1635,6 +1657,11 @@
                                 <td><span class="param-name">golive_message</span></td>
                                 <td><span class="param-type">string</span></td>
                                 <td>The go-live message (1.16.0), at most 200 characters (<code>400</code> above that or when not a string; a value over 1000 characters is refused before control characters are removed, which are otherwise dropped; empty or <code>null</code> clears it, the default is <code>{title} just went live</code>). Only <code>{streamer}</code>, <code>{title}</code> and <code>{url}</code> are replaced, by literal text; other brace text such as <code>{0.__class__}</code> is kept as typed. A stream is announced at most once per 10 minutes.</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">golive_audience</span></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Who is notified when the stream goes live (1.16.0): <code>"followers"</code> or <code>"everyone"</code> (every member who may watch it); anything else is a <code>400</code>. New streams default to <code>"followers"</code>, streams that existed before 1.16.0 are <code>"everyone"</code>. Never the owner, and only members who may watch the stream at that moment. Making the stream private removes its follows and deletes its go-live cards from channels members can read. The owner's stream responses carry <code>follower_count</code> (a number, never names).</td>
                             </tr>
                         </table>
                     </div>
@@ -2884,6 +2911,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 }</pre>
                         </div>
                         <p><code>has_more</code>: older messages exist. <code>has_newer</code>: newer messages than the window shows (<code>around_id</code> only). <code>found</code> is <code>false</code>, with an empty list, when <code>around_id</code> is not a message of this channel (deleted, removed by the chat retention, or elsewhere). Messages older than the chat retention (<code>retention_chat_days</code>, one setting for all channels) no longer exist. Reading marks nothing as read. The chat of a stream that is not public can be read, joined and written to only by the stream's owner and admins. The answer carries <code>Cache-Control: private, no-store</code>.</p>
+                        <p><strong>Go-live cards (1.16.0):</strong> a message with <code>"message_type": "stream_card"</code> and <code>"card": {"stream_id", "streamer", "title"}</code>; <code>message</code> is a plain-text fallback (<code>alice is live: title - https://host/watch/5</code>) for a client that does not know the type, and a client builds the watch link as <code>/watch/{stream_id}</code>. It is a system post through the normal encrypted insert, cannot be edited, carries no stream key or thumbnail, and is posted into the stream's own chat and, for a <em>public</em> stream, into the announce channel an administrator chose; never into a channel members can read for a stream that is not public. It is deleted from every channel except the stream's own closed chat when the stream becomes private, also from a channel that was made private later and has members (the room receives <code>message_deleted</code>) and everywhere when the stream is deleted; the chat retention removes it like any message.</p>
                         <h4>Errors</h4>
                         <p><code>400</code> bad parameter. <code>401</code> not authenticated. <code>404</code> <code>{"error": "Channel not found"}</code> for a channel the caller cannot read (private and not a member, banned from the stream chat, removed member, the chat of a stream that is not public and the caller is neither owner nor admin) and for one that does not exist. <code>429</code> with <code>Retry-After</code> after 30 history requests in a minute; the budget is shared with the WebSocket <code>history_page</code> message and all of the caller's sockets.</p>
                     </div>
@@ -5325,6 +5353,23 @@ Headers:
                     </div>
                     <div class="endpoint-body">
                         <p>Returns <code>{"hostname": "...", "port": 443}</code></p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/settings/permissions</span>
+                        <span class="endpoint-desc">Feature switches and the go-live announce channel</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><td><code>allow_user_connections</code></td><td>boolean</td><td>Members may add connections</td></tr>
+                            <tr><td><code>allow_user_streams</code></td><td>boolean</td><td>Members may create streams</td></tr>
+                            <tr><td><code>stream_announce_channel_id</code></td><td>integer or null</td><td>1.16.0: the channel a go-live card of a <em>public</em> stream is posted into besides the stream's own chat. It must exist (<code>404</code>), must not be a stream's own chat and must be readable by every member, not private (<code>400</code>); this is checked again at every go-live. <code>null</code> means none (the default). <code>GET</code> returns the current value.</td></tr>
+                        </table>
                     </div>
                 </div>
 

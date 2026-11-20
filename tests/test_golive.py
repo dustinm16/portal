@@ -95,7 +95,8 @@ class World:
             sk = LIVE_KEY if label == "pub" else "live_" + "Q" * 24
             pk = PUB_KEY if label == "pub" else "pub_" + "R" * 24
             self.sid[label] = await d.create_user_stream(
-                self.ids["owner"], "Show " + label, sk, public_key=pk, is_public=bool(public))
+                self.ids["owner"], "Show " + label, sk, public_key=pk, is_public=bool(public),
+                golive_audience="everyone")      # these tests are about everyone-audience streams
         self.keys = {"pub": LIVE_KEY, "priv": "live_" + "Q" * 24}
         self.pubkeys = {"pub": PUB_KEY, "priv": "pub_" + "R" * 24}
         # a system generic hook, a member's own generic hook, a system discord hook
@@ -139,6 +140,10 @@ class World:
     async def drain(self):
         for _ in range(5):
             await asyncio.sleep(0)
+        # the announcement runs in the background (it fires the webhook task itself)
+        fanout = [t for t in list(server._golive_tasks) if t is not asyncio.current_task()]
+        if fanout:
+            await asyncio.gather(*fanout, return_exceptions=True)
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()
                    and ("_deliver_webhook" in repr(t.get_coro()) or "fire_webhook_event" in repr(t.get_coro()))]
         if pending:

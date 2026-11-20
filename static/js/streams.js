@@ -326,6 +326,14 @@ async function showStreamDetails(streamId) {
                         <small>Plain text, up to 200 characters. You can use {streamer}, {title} and {url}; anything else is shown as typed. Sent once per 10 minutes when you go live. Leave empty for the default.</small>
                     </div>
                     <div class="form-group">
+                        <label>Who is told when you go live</label>
+                        <select id="stream-golive-audience" onchange="updateStreamGoLiveAudience(${stream.id}, this.value)">
+                            <option value="followers">Members who follow this stream</option>
+                            <option value="everyone">Every member who can watch it</option>
+                        </select>
+                        <small>${Number(stream.follower_count) || 0} ${Number(stream.follower_count) === 1 ? 'member follows' : 'members follow'} this stream (a number only: who follows is private). A notification goes only to members who can watch the stream at that moment, never to you.</small>
+                    </div>
+                    <div class="form-group">
                         <label class="checkbox-label">
                             <input type="checkbox" ${stream.is_public ? 'checked' : ''} onchange="toggleStreamPublic(${stream.id}, this.checked)">
                             <span>Public stream (visible to all users)</span>
@@ -401,6 +409,7 @@ async function showStreamDetails(streamId) {
         // Set as a property, not rendered into the markup: escapeHtml leaves double quotes alone,
         // so a message containing one would cut the attribute short
         document.getElementById('stream-golive-input').value = stream.golive_message || '';
+        document.getElementById('stream-golive-audience').value = stream.golive_audience === 'everyone' ? 'everyone' : 'followers';
 
         showModal('stream-details-modal');
 
@@ -528,6 +537,27 @@ async function updateStreamGoLiveMessage(streamId) {
         Portal.toast('Failed to update the go-live message', 'error');
     } finally {
         Portal.setButtonLoading(btn, false);
+    }
+}
+
+/**
+ * Choose who a go-live is announced to: followers or everyone who can watch
+ */
+async function updateStreamGoLiveAudience(streamId, golive_audience) {
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ golive_audience })
+        });
+        if (response.ok) {
+            Portal.toast('Go-live audience updated', 'success');
+        } else {
+            const data = await response.json().catch(() => ({}));
+            Portal.toast(data.error || 'Failed to update the go-live audience', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update the go-live audience', 'error');
     }
 }
 

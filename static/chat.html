@@ -2543,6 +2543,49 @@
             opacity: 0.6;
         }
 
+        /* Live-now strip and go-live card */
+        .live-now-strip {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.35rem 0.75rem;
+            border-bottom: 1px solid var(--border-color, rgba(128,128,128,0.25));
+            font-size: 0.8rem;
+        }
+        .live-now-strip .live-now-label { color: var(--text-muted); margin-right: 0.25rem; }
+        .live-now-strip a {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.1rem 0.6rem;
+            border-radius: 999px;
+            background: var(--bg-tertiary, rgba(128,128,128,0.15));
+            color: var(--text-primary);
+            text-decoration: none;
+        }
+        .live-now-strip a:hover { background: var(--accent-blue); color: white; }
+        .live-now-strip .live-now-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-red, #e53935); }
+        .stream-card-msg {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            max-width: 28rem;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--border-color, rgba(128,128,128,0.3));
+            border-left: 3px solid var(--accent-red, #e53935);
+            border-radius: 6px;
+        }
+        .stream-card-msg .stream-card-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .stream-card-msg .stream-card-title { font-weight: 600; }
+        .stream-card-msg a.stream-card-watch {
+            padding: 0.25rem 0.8rem;
+            border-radius: 4px;
+            background: var(--accent-blue);
+            color: white;
+            text-decoration: none;
+        }
+
         /* Attachment file card */
         .attachment-file {
             margin-top: 0.5rem;
@@ -2927,6 +2970,7 @@
                 </div>
                 <video class="screen-share-video" id="screen-share-video" autoplay playsinline></video>
             </div>
+            <div class="live-now-strip" id="live-now-strip" style="display:none;" aria-label="Live now"></div>
             <div class="chat-messages" id="chat-messages">
                 <!-- Messages populated by JS -->
             </div>
@@ -3210,12 +3254,52 @@
 
         // Per-channel/stream desktop notification subscriptions (localStorage)
         let _subscribedChannels = new Set(JSON.parse(localStorage.getItem('portal_notif_channels') || '[]'));
-        let _subscribedStreams = new Set(JSON.parse(localStorage.getItem('portal_notif_streams') || '[]'));
+        // Streams are followed on the server (the member's own list), not in localStorage:
+        // a follow also brings the in-app go-live notification, on any device.
+        let _followedStreams = new Set();
+        try { localStorage.removeItem('portal_notif_streams'); } catch (e) { /* ignore */ }
         function _saveNotifSubscriptions() {
             localStorage.setItem('portal_notif_channels', JSON.stringify([..._subscribedChannels]));
-            localStorage.setItem('portal_notif_streams', JSON.stringify([..._subscribedStreams]));
+        }
+        async function loadFollowedStreams() {
+            try {
+                const res = await fetch('/api/me/follows', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                _followedStreams = new Set((data.stream_ids || []).map(Number));
+                renderChannels(channelsList);
+            } catch (e) { /* ignore */ }
+        }
+        async function toggleStreamFollow(channelName, e) {
+            if (e) e.stopPropagation();
+            const ch = channelsList.find(c => c.name === channelName && c.is_stream_channel);
+            if (!ch || !ch.stream_id) return;
+            const on = !_followedStreams.has(Number(ch.stream_id));
+            try {
+                const res = await fetch(`/api/streams/${encodeURIComponent(ch.stream_id)}/follow`,
+                    { method: on ? 'PUT' : 'DELETE', credentials: 'include' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    Portal.toast(err.error || 'Could not change follow', 'error');
+                    return;
+                }
+            } catch (err) {
+                Portal.toast('Could not change follow', 'error');
+                return;
+            }
+            if (on) {
+                _followedStreams.add(Number(ch.stream_id));
+                Portal.toast(`Following ${channelName}: you will be told when it goes live`, 'success');
+                // the desktop alert (when the browser allows it) is a bonus on top of the in-app notification
+                if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+            } else {
+                _followedStreams.delete(Number(ch.stream_id));
+                Portal.toast('Stopped following ' + channelName, 'info');
+            }
+            renderChannels(channelsList);
         }
         function toggleChannelNotif(channelName, isStream, e) {
+            if (isStream) return toggleStreamFollow(channelName, e);
             if (e) e.stopPropagation();
             if (!('Notification' in window)) {
                 Portal.toast('Desktop notifications not supported in this browser', 'error');
@@ -3226,13 +3310,8 @@
                 return;
             }
             const doToggle = () => {
-                if (isStream) {
-                    if (_subscribedStreams.has(channelName)) { _subscribedStreams.delete(channelName); Portal.toast('Stream live alerts off', 'info'); }
-                    else { _subscribedStreams.add(channelName); Portal.toast(`Will alert when ${channelName} goes live`, 'success'); }
-                } else {
-                    if (_subscribedChannels.has(channelName)) { _subscribedChannels.delete(channelName); Portal.toast('Message alerts off for #' + channelName, 'info'); }
-                    else { _subscribedChannels.add(channelName); Portal.toast('Will alert on new messages in #' + channelName, 'success'); }
-                }
+                if (_subscribedChannels.has(channelName)) { _subscribedChannels.delete(channelName); Portal.toast('Message alerts off for #' + channelName, 'info'); }
+                else { _subscribedChannels.add(channelName); Portal.toast('Will alert on new messages in #' + channelName, 'success'); }
                 _saveNotifSubscriptions();
                 renderChannels(channelsList);
             };
@@ -3351,6 +3430,8 @@
             await loadUserInfo();
             await loadCustomEmotes();
             await loadChannels();
+            loadFollowedStreams();
+            startLiveNow();
             await loadBlockedUsers();
             // Link to one message: /chat?channel_id=<id>&message_id=<id> (notifications)
             {
@@ -3679,9 +3760,9 @@
             const lockIcon = ch.visibility === 'private' ? '<span title="Private" style="opacity:0.5;margin-right:2px;">&#128274;</span>' : '';
             const readonlyIcon = ch.mode === 'readonly' ? '<span title="Read-only" style="opacity:0.5;margin-right:2px;">&#128263;</span>' : '';
             const isStream = !!ch.is_stream_channel;
-            const notifActive = isStream ? _subscribedStreams.has(ch.name) : _subscribedChannels.has(ch.name);
+            const notifActive = isStream ? _followedStreams.has(Number(ch.stream_id)) : _subscribedChannels.has(ch.name);
             const bellTitle = isStream
-                ? (notifActive ? 'Stop stream live alerts' : 'Alert me when stream goes live')
+                ? (notifActive ? 'Stop following this stream' : 'Follow: tell me when this stream goes live')
                 : (notifActive ? 'Stop message alerts' : 'Alert me on new messages');
             const bellBtn = `<button class="ch-notif-bell${notifActive ? ' active' : ''}" onclick="toggleChannelNotif('${CSS.escape(ch.name)}',${isStream},event)" title="${bellTitle}"><svg width="12" height="12" viewBox="0 0 24 24" fill="${notifActive ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>`;
             return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
@@ -4128,6 +4209,34 @@
                 });
             }
 
+            // A go-live card: the message text is the plain-text fallback for clients that do not
+            // know the type; this one shows a card. Built from text nodes, the link from the
+            // numeric stream id only.
+            if (data.message_type === 'stream_card' && data.card && Number.isInteger(Number(data.card.stream_id))) {
+                div.classList.add('stream-card-message');
+                const textEl = div.querySelector('.message-text');
+                if (textEl) {
+                    const card = document.createElement('div');
+                    card.className = 'stream-card-msg';
+                    const text = document.createElement('div');
+                    text.className = 'stream-card-text';
+                    const who = document.createElement('div');
+                    who.textContent = (data.card.streamer || 'Someone') + ' is live';
+                    const title = document.createElement('div');
+                    title.className = 'stream-card-title';
+                    title.textContent = data.card.title || '';
+                    text.append(who, title);
+                    const link = document.createElement('a');
+                    link.className = 'stream-card-watch';
+                    link.href = '/watch/' + Number(data.card.stream_id);
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    link.textContent = 'Watch';
+                    card.append(text, link);
+                    textEl.replaceChildren(card);
+                }
+            }
+
             // If message has a poll, replace the message text with poll card
             if (data.poll) {
                 div.classList.add('poll-message');
@@ -4140,7 +4249,7 @@
             if (data.id && !(opts && opts.fetched)) observeMessageForRead(div);
 
             // Fetch link previews for URLs in message (skip poll messages)
-            if (data.message && !data.poll) {
+            if (data.message && !data.poll && !data.card) {
                 const urls = data.message.match(/https?:\/\/[^\s<>)"']+/g);
                 if (urls) fetchLinkPreviews(div, urls);
             }
@@ -4236,6 +4345,45 @@
             }
         }
 
+        // Live now: streams that are live and that this member may watch (the server decides),
+        // refreshed when a stream_status frame arrives and every 30 seconds.
+        let _liveNowTimer = null;
+        let _liveNowBusy = false;
+        function startLiveNow() {
+            refreshLiveNow();
+            if (!_liveNowTimer) _liveNowTimer = setInterval(() => { if (!document.hidden) refreshLiveNow(); }, 30000);
+        }
+        async function refreshLiveNow() {
+            if (_liveNowBusy) return;
+            _liveNowBusy = true;
+            try {
+                const res = await fetch('/api/streams/live', { credentials: 'include' });
+                if (!res.ok) return;
+                renderLiveNow((await res.json()).streams || []);
+            } catch (e) { /* ignore */ } finally { _liveNowBusy = false; }
+        }
+        function renderLiveNow(streams) {
+            const strip = document.getElementById('live-now-strip');
+            if (!strip) return;
+            strip.replaceChildren();
+            if (!streams.length) { strip.style.display = 'none'; return; }
+            const label = document.createElement('span');
+            label.className = 'live-now-label';
+            label.textContent = 'Live now';
+            strip.append(label);
+            for (const st of streams) {
+                const a = document.createElement('a');
+                a.href = '/watch/' + Number(st.id);
+                a.target = '_blank';
+                a.rel = 'noopener';
+                const dot = document.createElement('span');
+                dot.className = 'live-now-dot';
+                a.append(dot, document.createTextNode(`${st.streamer}: ${st.name}`));
+                strip.append(a);
+            }
+            strip.style.display = '';
+        }
+
         function updateStreamStatus(data) {
             // Update watch button for current channel
             if (data.stream_id === currentStreamId) {
@@ -4258,10 +4406,11 @@
                 const wasLive = ch.stream_is_live;
                 ch.stream_is_live = data.is_live;
                 renderChannels(channelsList);
-                if (data.is_live === 1 && wasLive !== 1 && _subscribedStreams.has(ch.name)) {
+                if (data.is_live === 1 && wasLive !== 1 && _followedStreams.has(Number(ch.stream_id))) {
                     _sendStreamLiveDesktopNotification(ch);
                 }
             }
+            refreshLiveNow();
         }
 
         function updateUserList(users) {

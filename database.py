@@ -646,6 +646,33 @@ MIGRATIONS = [
     # announced (epoch seconds; kept across restarts, it is the go-live cooldown)
     "ALTER TABLE user_streams ADD COLUMN golive_message TEXT",
     "ALTER TABLE user_streams ADD COLUMN golive_announced_at INTEGER",
+    # Who a go-live is announced to: 'followers' or 'everyone' (every member who may watch).
+    # Rows that exist now keep today's behaviour ('everyone') through this default; a stream
+    # created from now on is inserted with 'followers'.
+    "ALTER TABLE user_streams ADD COLUMN golive_audience TEXT DEFAULT 'everyone'",
+    # Follows: a member follows a stream to hear when it goes live. Private to the member.
+    """CREATE TABLE IF NOT EXISTS stream_follow (
+        user_id INTEGER NOT NULL,
+        stream_id INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, stream_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_stream_follow_stream ON stream_follow(stream_id)",
+    # The go-live card posted into a chat channel: which message, for which stream, and what
+    # it shows. The message text is the plain-text fallback; this row lets history rebuild
+    # the card and lets the card be removed when the stream becomes private or is deleted.
+    """CREATE TABLE IF NOT EXISTS stream_cards (
+        message_id INTEGER PRIMARY KEY,
+        stream_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        streamer TEXT NOT NULL,
+        title TEXT NOT NULL,
+        FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_stream_cards_stream ON stream_cards(stream_id)",
     # RTMP temporary publish tokens
     """CREATE TABLE IF NOT EXISTS rtmp_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2356,6 +2383,8 @@ class Database:
             ("dm_conversations", "DELETE FROM dm_conversations WHERE created_by = ? AND id NOT IN (SELECT conversation_id FROM dm_participants)"),
             # Stream bans (as banned user)
             ("stream_bans", "DELETE FROM stream_bans WHERE user_id = ?"),
+            # Stream follows
+            ("stream_follow", "DELETE FROM stream_follow WHERE user_id = ?"),
             # Recordings
             ("recordings", "DELETE FROM recordings WHERE user_id = ?"),
             # SSH keys
@@ -3927,7 +3956,8 @@ class Database:
         stream_key: str,
         public_key: str = None,
         description: str = None,
-        is_public: bool = False
+        is_public: bool = False,
+        golive_audience: str = "followers"
     ) -> int:
         """Create a new user stream.
 
@@ -3938,7 +3968,10 @@ class Database:
             public_key: Public key for viewing (HLS/WebRTC)
             description: Stream description
             is_public: Whether stream is publicly visible
+            golive_audience: 'followers' (the default for a new stream) or 'everyone'
         """
+        if golive_audience not in ("followers", "everyone"):
+            golive_audience = "followers"
         sk_hash = hash_stream_key(stream_key)
         sk_encrypted = encrypt_config(stream_key) if CRYPTO_AVAILABLE else stream_key
         pk_hash = hash_stream_key(public_key) if public_key else None
@@ -3946,11 +3979,11 @@ class Database:
 
         cursor = await self.conn.execute(
             """INSERT INTO user_streams (user_id, name, stream_key, stream_key_hash,
-               public_key, public_key_hash, description, is_public, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               public_key, public_key_hash, description, is_public, created_at, golive_audience)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, name, sk_encrypted, sk_hash, pk_encrypted, pk_hash,
              description, 1 if is_public else 0,
-             datetime.now(timezone.utc).isoformat())
+             datetime.now(timezone.utc).isoformat(), golive_audience)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -4067,7 +4100,8 @@ class Database:
         """Update a user stream. If user_id is provided, verify ownership."""
         allowed_fields = {"name", "description", "is_public", "is_live", "viewer_count",
                          "chat_channel_id", "thumbnail_url", "started_at", "ended_at",
-                         "allow_unauthenticated", "rtmp_enabled", "golive_message"}
+                         "allow_unauthenticated", "rtmp_enabled", "golive_message",
+                         "golive_audience"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:
@@ -4101,6 +4135,141 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount == 1
+
+    # ------------------------------------------------------------------
+    # Follows. Who follows whom is private: nothing here returns the follower
+    # ids of a stream to a route. get_follower_audience is for the go-live
+    # fan-out only; the owner sees count_followers, never names.
+    # ------------------------------------------------------------------
+
+    FOLLOW_LIMIT_PER_USER = 200
+
+    async def follow_stream(self, user_id: int, stream_id: int) -> str:
+        """Follow a stream. Returns 'followed', 'already' or 'limit'."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM stream_follow WHERE user_id = ? AND stream_id = ?", (user_id, stream_id))
+        if await cursor.fetchone():
+            return "already"
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM stream_follow WHERE user_id = ?", (user_id,))
+        if (await cursor.fetchone())["n"] >= self.FOLLOW_LIMIT_PER_USER:
+            return "limit"
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO stream_follow (user_id, stream_id) VALUES (?, ?)", (user_id, stream_id))
+        await self.conn.commit()
+        return "followed"
+
+    async def unfollow_stream(self, user_id: int, stream_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM stream_follow WHERE user_id = ? AND stream_id = ?", (user_id, stream_id))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_followed_stream_ids(self, user_id: int) -> list[int]:
+        """The streams this member follows (their own list only)."""
+        cursor = await self.conn.execute(
+            "SELECT stream_id FROM stream_follow WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+        return [r["stream_id"] for r in await cursor.fetchall()]
+
+    async def count_followers(self, stream_id: int) -> int:
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM stream_follow WHERE stream_id = ?", (stream_id,))
+        return (await cursor.fetchone())["n"]
+
+    async def count_followers_for_streams(self, stream_ids: list[int]) -> dict:
+        """Follower counts for several streams (the owner's own list)."""
+        if not stream_ids:
+            return {}
+        marks = ",".join("?" * len(stream_ids))
+        cursor = await self.conn.execute(
+            f"SELECT stream_id, COUNT(*) AS n FROM stream_follow WHERE stream_id IN ({marks}) GROUP BY stream_id",
+            list(stream_ids))
+        return {r["stream_id"]: r["n"] for r in await cursor.fetchall()}
+
+    async def remove_stream_follows(self, stream_id: int) -> int:
+        """Remove every follow of a stream (it became private)."""
+        cursor = await self.conn.execute("DELETE FROM stream_follow WHERE stream_id = ?", (stream_id,))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def get_follower_audience(self, stream_id: int) -> list[dict]:
+        """Id and role of each follower, for the go-live fan-out only."""
+        cursor = await self.conn.execute(
+            """SELECT u.id, u.role, u.is_admin FROM stream_follow f
+               JOIN users u ON u.id = f.user_id WHERE f.stream_id = ? ORDER BY u.id""", (stream_id,))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_live_streams(self) -> list[dict]:
+        """Streams that are live now, with the streamer's names and no key at all."""
+        cursor = await self.conn.execute(
+            """SELECT us.id, us.user_id, us.name, us.is_public, us.is_live, us.viewer_count,
+                      us.started_at, u.username AS owner_username, u.nickname AS owner_nickname
+               FROM user_streams us LEFT JOIN users u ON us.user_id = u.id
+               WHERE us.is_live = 1 ORDER BY us.started_at DESC, us.id DESC""")
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Go-live cards and notification batches
+    # ------------------------------------------------------------------
+
+    async def add_stream_card(self, message_id: int, stream_id: int, channel_id: int,
+                              streamer: str, title: str) -> None:
+        """Store what a card shows. The streamer and the title are encrypted at rest like
+        the message text: a renamed stream's old title must not stay readable here."""
+        await self.conn.execute(
+            "INSERT INTO stream_cards (message_id, stream_id, channel_id, streamer, title) VALUES (?, ?, ?, ?, ?)",
+            (message_id, stream_id, channel_id, encrypt_message(streamer), encrypt_message(title)))
+        await self.conn.commit()
+
+    async def scrub_reply_previews(self, message_id: int) -> int:
+        """Forget the preview text stored with replies to a message that is about to be removed."""
+        cursor = await self.conn.execute(
+            """UPDATE chat_messages SET reply_preview_text = NULL, reply_preview_username = NULL
+               WHERE reply_to = ?""", (message_id,))
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def get_stream_cards(self, message_ids) -> dict:
+        """The card data of the given messages, by message id."""
+        ids = list(message_ids)
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        cursor = await self.conn.execute(
+            f"SELECT message_id, stream_id, channel_id, streamer, title FROM stream_cards WHERE message_id IN ({marks})",
+            ids)
+        out = {}
+        for r in await cursor.fetchall():
+            row = dict(r)
+            row["streamer"] = decrypt_message(row["streamer"])
+            row["title"] = decrypt_message(row["title"])
+            out[row["message_id"]] = row
+        return out
+
+    async def get_cards_of_stream(self, stream_id: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            "SELECT message_id, stream_id, channel_id FROM stream_cards WHERE stream_id = ?", (stream_id,))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def create_notifications_bulk(self, rows: list) -> list[tuple[int, int]]:
+        """Insert several notifications in one transaction (one commit).
+
+        `rows` is a list of (user_id, type, title, message, data). Returns
+        [(user_id, notification_id)] in the same order."""
+        out = []
+        try:
+            for user_id, type_, title, message, data in rows:
+                cursor = await self.conn.execute(
+                    """INSERT INTO notifications (user_id, type, title, message, data)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (user_id, type_, encrypt_message(title) if title else title,
+                     encrypt_message(message) if message else message, json.dumps(data or {})))
+                out.append((user_id, cursor.lastrowid))
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+        return out
 
     async def reset_all_streams_offline(self) -> int:
         """Reset all streams to offline. Called on server startup."""
@@ -5808,6 +5977,8 @@ class Database:
         """True if msg is the user's own and still inside the edit window."""
         if not msg or msg["user_id"] != user_id:
             return False
+        if msg.get("message_type") == "stream_card":
+            return False        # a go-live card is a system post: its author may not reword it
         created = datetime.fromisoformat(msg["created_at"])
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)

@@ -28,7 +28,8 @@ async def main():
         sk = server.generate_stream_key()
         pk = server.generate_public_key()
         sid = await db.create_user_stream(user_id=uid, name="smoke " + label, stream_key=sk,
-                                          public_key=pk, is_public=public)
+                                          public_key=pk, is_public=public,
+                                          golive_audience="everyone")   # this check is about who is told, not followers
         cid = await db.create_chat_channel(name="stream-str_owner-%%d" %% sid, created_by=uid)
         await db.update_user_stream(sid, chat_channel_id=cid)
         out[label] = {"id": sid, "stream_key": sk, "public_key": pk}
@@ -160,8 +161,12 @@ async def run(ctx):
                 ctx.ok(f"streams: publish hook accepts the {label} stream",
                        r.status == 200 and body.get("allowed") is True, f"status {r.status}")
 
-        # --- the other user's notifications
-        status, body, text = await _get_json(other, ctx, "/api/notifications")
+        # --- the other user's notifications (written by a background task after the hook answered)
+        for _ in range(50):
+            status, body, text = await _get_json(other, ctx, "/api/notifications")
+            if any(f'"stream_id": {pub["id"]}' in (n.get("data") or "") for n in body.get("notifications", [])):
+                break
+            await asyncio.sleep(0.2)
         ctx.ok("streams: other user's notifications contain no private-stream key",
                status == 200 and priv["public_key"] not in text and "pub_" not in text.replace(pub["public_key"], ""),
                f"status {status}")

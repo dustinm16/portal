@@ -118,7 +118,7 @@ says16("cache time and invalidation", "5 seconds", "signed out", "rotated")
 says16("internal consumers", "relays", "recorder", "thumbnail capture", "loopback", "authhttpexclude")
 says16("webrtc media is outside the rule", "webrtc media", "keeps flowing")
 says16("the query token is not passed on", "?token=", "no longer passed on")
-says16("the database columns and the one static version that moved", "two columns", "golive_message", "`?v=42`")
+says16("the database columns and the one static version that moved", "two columns", "golive_message", "`?v=43`", "golive_audience", "stream_follow", "stream_cards")
 says16("the go-live cooldown", "one announcement per 10 minutes", "stored in the database", "stream state lock", "`stream.offline`")
 says16("the go-live message", "200 characters", "`{streamer}`, `{title}` and `{url}`", "`{0.__class__}`", "literal text")
 says16("the payload change, no keys, where the URL comes from", "`public_key` is removed", "`public_key`", "`url`", "public_base_url", "host header")
@@ -128,6 +128,18 @@ check("1.16.0 does not say {{title}} is shown exactly as typed",
       not re.search(r"\{\{title\}\}`?,? is shown exactly as typed", sec16) and "`{0}` and `{{title}}`" not in sec16)
 says16("braces around a placeholder stay and the placeholder inside is filled", "braces around a placeholder stay",
        "`{{title}}`", "filled in")
+
+says16("follows: who may follow, one 404, the cap", "following and go-live announcements", "`put /api/streams/{id}/follow`", "same `404`", "200 follows")
+says16("who follows whom is private: a count for the owner, no list for anyone", "private", "number of followers", "never a name", "no route that returns one")
+says16("a stream made private loses its follows and they do not come back", "making a stream private removes every follow", "does not bring old follows back")
+says16("the audience: new streams follow, old streams stay on everyone", "golive_audience", "new stream defaults to followers", "exist before the upgrade stay on everyone")
+says16("the hook answers at once and the cooldown still holds", "answers at once", "background task", "batches of 100", "10-minute cooldown")
+says16("cards: stream_card, fallback text, no key or thumbnail, retention, not for a stream that is not public", "stream_card", "plain-text fallback", "no key and no thumbnail", "chat retention removes them", "not public")
+says16("the announce channel: public streams only, checked again, deleted when private", "announce channel", "stream_announce_channel_id", "every member", "again at every go-live", "deleted from the announce channel")
+says16("the old localStorage gate is replaced", "localstorage", "follow again")
+says16("the live-now strip", "live now", "/api/streams/live")
+check("1.16.0 does not still say a public stream notifies everybody except the owner as before",
+      "for a public stream everybody except the owner, as before" not in sec16)
 
 says16("rollback", "rollback", "1.15.0")
 says16("what was not tested", "not tested", "vlc", "cloudflare")
