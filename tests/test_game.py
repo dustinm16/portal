@@ -449,6 +449,37 @@ def test_a_change_followed_by_making_the_stream_private_sends_nothing_to_members
     run(body)
 
 
+def test_the_create_stream_window_has_a_game_field_that_is_sent():
+    import re
+    import subprocess
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    js = (ROOT / "static" / "js" / "streams.js").read_text(encoding="utf-8")
+    modal = html[html.index('id="create-stream-modal"'):]
+    modal = modal[:modal.index("</form>")]
+    assert re.search(r'<input[^>]*id="stream-game"[^>]*maxlength="60"', modal)
+    # its own suggestion list: the settings form's list id is rendered by the details view
+    assert 'list="create-stream-game-list"' in modal and 'id="create-stream-game-list"' in modal
+    create = js[js.index("async function createStream("):]
+    create = create[:create.index("\n}\n")]
+    assert "getElementById('stream-game')" in create
+    assert re.search(r"postJSON\('/api/streams', \{[^}]*\bgame\b", create)
+    show = js[js.index("function showCreateStreamModal("):]
+    assert "loadGameSuggestions('create-stream-game-list')" in show[:show.index("\n}\n")]
+    assert "async function loadGameSuggestions(listId" in js
+    if subprocess.run(["which", "node"], capture_output=True).returncode == 0:
+        r = subprocess.run(["node", "--check", str(ROOT / "static" / "js" / "streams.js")], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+    async def body(env):
+        ids = await users(env.db)
+        # what the window sends when the field is left empty or filled, to the real create route
+        st, b = await env.call("POST", ids["owner"], "/api/streams", json={"name": "c1", "description": "", "game": "", "is_public": False})
+        assert st == 201 and b["stream"]["game"] is None, b
+        st, b = await env.call("POST", ids["owner"], "/api/streams", json={"name": "c2", "description": "", "game": "Tetris", "is_public": False})
+        assert st == 201 and b["stream"]["game"] == "Tetris", b
+    run(body)
+
+
 def test_the_games_route_starts_with_the_stream_user_auth():
     src = (ROOT / "server.py").read_text()
     start = src.index("async def http_stream_games(")

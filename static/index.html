@@ -1838,6 +1838,11 @@
                     <input type="text" id="stream-name" required placeholder="My Live Stream">
                 </div>
                 <div class="form-group">
+                    <label for="stream-game">Game</label>
+                    <input type="text" id="stream-game" maxlength="60" list="create-stream-game-list" placeholder="Optional, shown next to the title" autocomplete="off">
+                    <datalist id="create-stream-game-list"></datalist>
+                </div>
+                <div class="form-group">
                     <label for="stream-description">Description</label>
                     <textarea id="stream-description" rows="2" placeholder="What will you be streaming?"></textarea>
                 </div>
@@ -2049,7 +2054,7 @@
         </div>
     </div>
 
-    <script src="/static/js/streams.js?v=47"></script>
+    <script src="/static/js/streams.js?v=48"></script>
     <script src="/static/js/vods.js?v=6"></script>
     <script>
         function openLocalTerminal() {

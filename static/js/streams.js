@@ -186,6 +186,7 @@ function renderStreamCard(stream, isOwner = false) {
 function showCreateStreamModal() {
     document.getElementById('create-stream-form').reset();
     showModal('create-stream-modal');
+    loadGameSuggestions('create-stream-game-list');
 }
 
 /**
@@ -196,6 +197,7 @@ async function createStream(event) {
 
     const name = document.getElementById('stream-name').value.trim();
     const description = document.getElementById('stream-description').value.trim();
+    const game = document.getElementById('stream-game').value.trim();
     const isPublic = document.getElementById('stream-public').checked;
     const submitBtn = event.target.querySelector('button[type="submit"]');
 
@@ -209,6 +211,7 @@ async function createStream(event) {
         const response = await Portal.postJSON('/api/streams', {
             name,
             description,
+            game,
             is_public: isPublic
         });
 
@@ -512,11 +515,12 @@ async function updateStreamName(streamId) {
 }
 
 /**
- * Fill the game field's suggestions: the games used before and those of public streams.
+ * Fill a game field's suggestions (the settings form's, or the create window's with its own
+ * list id): the games used before and those of public streams.
  * Option values are set as properties, never as markup.
  */
-async function loadGameSuggestions() {
-    const list = document.getElementById('stream-game-list');
+async function loadGameSuggestions(listId = 'stream-game-list') {
+    const list = document.getElementById(listId);
     if (!list) return;
     try {
         const response = await Portal.fetch('/api/streams/games');
