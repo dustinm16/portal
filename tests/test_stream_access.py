@@ -849,8 +849,8 @@ def test_authenticate_request_has_no_stream_key_branch():
     import inspect
     src = (ROOT / "server.py").read_text()
     assert "allow_stream_key" not in src
-    # nothing outside its own definition calls authenticate_stream_key, so no route can sign a key in
-    assert src.count("authenticate_stream_key(") == 1
+    # the function that signed a key in is gone, so no route can call it
+    assert "authenticate_stream_key" not in src
     assert list(inspect.signature(server.authenticate_request).parameters) == ["request"]
 
 
@@ -858,7 +858,7 @@ def test_authenticate_request_has_no_stream_key_branch():
 # is the publish credential. Anything else under these prefixes must refuse stream keys.
 _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",
                  "http_get_open_streams"}     # the last one needs no credential at all (open links only)
-_REFUSES_STREAM_KEYS = ("_stream_user_auth(", "_follow_context(", "allow_stream_key=False",
+_REFUSES_STREAM_KEYS = ("_stream_user_auth(", "_follow_context(",
                         "_validate_stream_access(", "_authorize_webrtc_session(")
 
 

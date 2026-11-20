@@ -2296,43 +2296,6 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
     })
 
 
-async def authenticate_stream_key(stream_key: str) -> Optional[TokenPayload]:
-    """Authenticate using a stream key.
-
-    Stream keys can be used as API keys for stream-related operations.
-    This allows OBS and other tools to use the stream key for both
-    publishing AND API access (e.g., checking stream status).
-
-    Args:
-        stream_key: The full stream key (live_xxx...)
-
-    Returns:
-        TokenPayload if valid, None otherwise
-    """
-    # Ensure proper format
-    if not stream_key.startswith("live_"):
-        return None
-
-    # Look up stream by key
-    stream = await db.get_stream_by_key(stream_key)
-    if not stream:
-        return None
-
-    # Get the stream owner's info
-    user = await db.get_user_by_id(stream["user_id"])
-    if not user:
-        return None
-
-    # Create a TokenPayload with stream-related scopes
-    # Stream keys grant access to stream operations only
-    return TokenPayload({
-        "sub": str(user["id"]),
-        "scopes": ["stream", "stream:read", "stream:write"],
-        "iat": int(datetime.now(timezone.utc).timestamp()),
-        "jti": f"streamkey-{stream['id']}"
-    })
-
-
 # =============================================================================
 # HTTP API Endpoints
 # =============================================================================

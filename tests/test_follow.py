@@ -70,12 +70,12 @@ class Tok:
         return "*" in self.scopes or scope in self.scopes
 
 
-async def fake_auth(request, allow_stream_key=True):
+async def fake_auth(request):
     uid = request.headers.get("X-Test-User")
     if not uid:
         return None
     if request.headers.get("X-Test-Streamkey"):
-        return Tok(int(uid), streamkey=True) if allow_stream_key else None
+        return Tok(int(uid), streamkey=True)
     return Tok(int(uid))
 
 
