@@ -16,7 +16,7 @@ All API endpoints require authentication via one of:
 1. **Session Cookie** - Obtained via `/login` form submission
 2. **Bearer Token** - `Authorization: Bearer <jwt_token>`
 3. **API Key** - `Authorization: Api-Key portal_xxx` or `X-API-Key: portal_xxx`
-4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx` (publishing only since 1.16.0: it signs in on no route, and a request that offers one is refused with `403`; see below)
+4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx` (publishing only since 1.16.0: it signs in on no route, and a request that offers one is refused (`403` where the route reports why, otherwise `401`); see below)
 
 An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Authorization: Bearer` accepts JWTs only, so a `portal_...` key sent as a Bearer token is rejected with `401`. Checking a key that has not been used since the server started is deliberately rate limited: when too many such checks are pending for one key, the request is answered with `503` and a `Retry-After` header instead of `401`. Retry after the given delay; the key itself is not affected.
 
@@ -24,9 +24,9 @@ An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Au
 
 **A stream key authorises publishing only (changed in 1.16.0).** Use it for:
 - Publishing the stream (RTMP authentication; WHIP only where the WebRTC media port is reachable, see Streaming Configuration)
-- The stream event and status calls MediaMTX or an encoder makes
+- The stream event call MediaMTX makes (`/api/stream/event`)
 
-It is **not** a way to sign in as the stream's owner, on any route: no route of the portal accepts a stream key as a login, and a request that offers one as its credential is refused with `403`. Every route under `/api/streams` and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope, and a non-administrator's API key is always made with the scoped `services:read,access:*` set, so a non-administrator has no API-key path to these routes. The playback routes under `/api/stream/{key}/` (HLS, thumbnail, info, WHEP and its sessions) ignore a stream key and answer `404` as described under Access; the publish-side routes (`/api/stream/auth`, `/api/stream/event` for MediaMTX on the host, and WHIP, which takes the `live_` key in its URL) keep working; `/api/streams/open` needs no credential.
+It is **not** a way to sign in as the stream's owner, on any route: no route of the portal accepts a stream key as a login, and a request that offers one as its credential is refused (`403` where the route reports why, otherwise `401`). Every route under `/api/streams` and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope, and a non-administrator's API key is always made with the scoped `services:read,access:*` set, so a non-administrator has no API-key path to these routes. The playback routes under `/api/stream/{key}/` (HLS, thumbnail, info, WHEP and its sessions) ignore a stream key and answer `404` as described under Access; the publish-side routes (`/api/stream/auth`, `/api/stream/event` for MediaMTX on the host, and WHIP, which takes the `live_` key in its URL) keep working; `/api/streams/open` needs no credential.
 
 **Example - what no longer works:**
 ```bash

@@ -785,7 +785,7 @@
                     </tbody>
                 </table>
                 <p>Manage your stream keys and generate RTMP tokens from the <strong>My Streams</strong> tab on the Dashboard.</p>
-                <p>A stream key authorises publishing only: it signs in nowhere on the portal, and a request that offers one as its credential is refused. Anything other than publishing needs your login or an API key.</p>
+                <p>A stream key authorises publishing only: it signs in nowhere on the portal, and a request that offers one as its credential is refused. Anything other than publishing needs your login; scripts use a bearer token from <code>/api/token</code>, or for administrators an API key with the <code>*</code> scope.</p>
 
                 <h3>Streaming Features</h3>
                 <ul>
