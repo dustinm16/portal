@@ -5602,6 +5602,16 @@ def _row_id(raw) -> int:
     return value
 
 
+def _ws_id(raw) -> int:
+    """An id sent over the chat socket, ready for the database: int(), and a number SQLite
+    cannot hold is a ValueError (the handler answers its ordinary error), never an
+    OverflowError that would end the socket. Negative ids are kept (nothing matches them)."""
+    value = int(raw)
+    if abs(value) > _SQLITE_INT_MAX:
+        raise ValueError("id out of range")
+    return value
+
+
 async def http_get_user_stream(request: web.Request) -> web.Response:
     """Get a specific stream by numeric ID or public key (pub_xxx).
 
@@ -20205,8 +20215,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not message_id:
                             continue
                         try:
-                            message_id = int(message_id)
+                            message_id = _ws_id(message_id)
                         except (ValueError, TypeError):
+                            await ws.send_json({"type": "error", "message": "Invalid message_id"})
                             continue
                         # Verify message belongs to current channel
                         del_msg = await db.get_chat_message(message_id)
@@ -20341,8 +20352,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not message_id:
                             continue
                         try:
-                            message_id = int(message_id)
+                            message_id = _ws_id(message_id)
                         except (ValueError, TypeError):
+                            await ws.send_json({"type": "error", "message": "Invalid message_id"})
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if not channel:
@@ -20380,8 +20392,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not message_id:
                             continue
                         try:
-                            message_id = int(message_id)
+                            message_id = _ws_id(message_id)
                         except (ValueError, TypeError):
+                            await ws.send_json({"type": "error", "message": "Invalid message_id"})
                             continue
                         # Verify message belongs to current channel (if it still exists)
                         unpin_ch = await db.get_chat_channel_by_name(current_channel)
@@ -20424,15 +20437,16 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         msg_anon = False      # the post was anonymous: stays so even if the author has since switched it off
                         try:
                             if target_user_id:
-                                target_user_id = int(target_user_id)
+                                target_user_id = _ws_id(target_user_id)
                             elif data.get("message_id") is not None:
-                                t_msg = await db.get_chat_message(int(data.get("message_id")))
+                                t_msg = await db.get_chat_message(_ws_id(data.get("message_id")))
                                 if not t_msg or t_msg.get("channel_id") != channel["id"]:
                                     continue
                                 target_user_id = t_msg.get("user_id")
                                 msg_anon = bool(t_msg.get("anonymous"))
                             duration = max(1, min(int(duration), 86400 * 30))  # max 30 days
                         except (ValueError, TypeError):
+                            await ws.send_json({"type": "error", "message": "Invalid message_id, user_id or duration"})
                             continue
                         if not target_user_id:
                             continue
@@ -20488,8 +20502,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not target_user_id:
                             continue
                         try:
-                            target_user_id = int(target_user_id)
+                            target_user_id = _ws_id(target_user_id)
                         except (ValueError, TypeError):
+                            await ws.send_json({"type": "error", "message": "Invalid user_id"})
                             continue
                         target_user = await db.get_user_by_id(target_user_id)
                         if not target_user:
@@ -20538,8 +20553,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not target_user_id:
                             continue
                         try:
-                            target_user_id = int(target_user_id)
+                            target_user_id = _ws_id(target_user_id)
                         except (ValueError, TypeError):
+                            await ws.send_json({"type": "error", "message": "Invalid user_id"})
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
@@ -20567,7 +20583,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not message_id:
                             continue
                         try:
-                            message_id = int(message_id)
+                            message_id = _ws_id(message_id)
                         except (ValueError, TypeError):
                             continue
                         channel = await db.get_chat_channel_by_name(current_channel)
@@ -20700,7 +20716,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if poll_id is None or option_index is None:
                             continue
                         try:
-                            poll_id = int(poll_id)
+                            poll_id = _ws_id(poll_id)
                             option_index = int(option_index)
                         except (ValueError, TypeError):
                             continue
@@ -20755,7 +20771,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not poll_id:
                             continue
                         try:
-                            poll_id = int(poll_id)
+                            poll_id = _ws_id(poll_id)
                         except (ValueError, TypeError):
                             continue
                         poll = await db.get_poll(poll_id)
@@ -20798,9 +20814,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         ban_msg_anonymous = False
                         try:
                             if by_message:
-                                ban_message_id = int(data.get("message_id"))
+                                ban_message_id = _ws_id(data.get("message_id"))
                             else:
-                                target_user_id = int(data.get("user_id"))
+                                target_user_id = _ws_id(data.get("user_id"))
                         except (TypeError, ValueError):
                             await ws.send_json({"type": "error",
                                                 "message": "Invalid message_id" if by_message else "Invalid user_id"})
@@ -20932,9 +20948,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         by_ban_id = data.get("user_id") is None and data.get("ban_id") is not None
                         try:
                             if by_ban_id:
-                                target_ban_id = int(data.get("ban_id"))
+                                target_ban_id = _ws_id(data.get("ban_id"))
                             else:
-                                target_user_id = int(data.get("user_id"))
+                                target_user_id = _ws_id(data.get("user_id"))
                         except (TypeError, ValueError):
                             await ws.send_json({"type": "error",
                                                 "message": "Invalid ban_id" if by_ban_id else "Invalid user_id"})

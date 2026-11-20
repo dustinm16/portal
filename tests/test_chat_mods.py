@@ -908,6 +908,39 @@ def test_parallel_mod_appointments_keep_the_cap():
     run(body)
 
 
+def test_ids_beyond_the_sqlite_range_answer_an_error_and_keep_the_socket():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        huge = 2 ** 70
+        owner = await joined(env, w, "owner")
+        admin = await joined(env, w, "admin")
+        cases = [(owner, {"type": "pin_message", "message_id": huge}),
+                 (owner, {"type": "unpin_message", "message_id": huge}),
+                 (owner, {"type": "delete", "message_id": huge}),
+                 (owner, {"type": "timeout_user", "target_user_id": huge}),
+                 (owner, {"type": "timeout_user", "message_id": huge}),
+                 (owner, {"type": "ban", "user_id": huge}),
+                 (owner, {"type": "ban", "message_id": huge}),
+                 (owner, {"type": "unban", "user_id": huge}),
+                 (owner, {"type": "unban", "ban_id": huge}),
+                 (admin, {"type": "mute_user", "target_user_id": huge}),
+                 (admin, {"type": "unmute_user", "target_user_id": huge}),
+                 (owner, {"type": "close_poll", "poll_id": huge}),
+                 (owner, {"type": "vote_poll", "poll_id": huge, "option_index": 0}),
+                 (owner, {"type": "mark_read", "message_id": huge})]
+        for sock, payload in cases:
+            if payload["type"] in ("close_poll", "vote_poll", "mark_read"):
+                await sock.send(**payload)         # silent refusals: only the socket must survive
+            else:
+                got = await sock.act("error", **payload)
+                assert got and got["type"] == "error", (payload, got)
+            assert not sock.ws.closed, payload
+            got = await sock.act("slowmode_changed", type="set_slowmode", seconds=0)
+            assert got["type"] == "slowmode_changed", (payload, got)
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
