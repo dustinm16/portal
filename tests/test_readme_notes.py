@@ -223,6 +223,25 @@ for pic in ("streams", "streams-settings", "chat-golive"):
 mk = (Path(__file__).resolve().parent.parent / "tools" / "make_screenshots.py").read_text()
 check("make_screenshots takes the stream pictures", all(f'@shot("{n}")' in mk for n in ("streams", "streams-settings", "chat-golive")))
 
+# --- 1.17.0: the feature sections and the other docs say what the code does ------------------
+ms = re.search(r"### Moderation and Anonymous Posting\n(.*?)\n### ", text, re.S)
+mstext = (ms.group(1) if ms else "").lower()
+check("Live Streaming describes the portal-side count, last session figures, game field, live updates, mods and the playback ban",
+      all(n in lstext for n in ("viewer count", "last session", "game", "stream mod", "pin a message", "slow mode", "poll", "badge", "banned")),
+      lstext[:80])
+check("Live Streaming says direct RTMPS and RTSP readers are not counted", "rtmps" in lstext and "not counted" in lstext)
+check("Moderation describes stream mods and keeps stream slow mode apart from the channel one",
+      all(n in mstext for n in ("stream mod", "time out", "5, 15 or 30 seconds", "5, 10 or 30 seconds")), mstext[:80])
+api_html = (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8")
+check("api-docs.html states the heartbeat limit of the code, not an old one",
+      f"{_server._VIEWER_BEAT_LIMIT} per minute" in api_html and "120 per minute" not in api_html
+      and f"{_server._VIEWER_REFUSED_LIMIT} refused" in api_html)
+about = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
+check("about.html does not say the viewer count is polled every 10 seconds", "polled every 10 seconds" not in about)
+check("about.html says the owner and stream mods can pin in a stream chat", "stream mod" in about.lower())
+api_md = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+check("docs/API.md does not say that only stream owners ban", "Stream owners can ban users from their stream's chat." not in api_md)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

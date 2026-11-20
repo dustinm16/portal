@@ -1506,7 +1506,7 @@ curl -H "X-API-Key: portal_xxx..." https://portal.example.com/api/streams
 
 ### Stream Moderation
 
-Stream owners can ban users from their stream's chat.
+The stream's owner, its stream mods and staff can ban members from the stream (chat and signed-in viewing).
 
 #### GET /api/streams/:id/bans
 List banned users for a stream (owner, the stream's mods and staff).

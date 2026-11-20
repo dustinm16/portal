@@ -791,7 +791,8 @@
                 <ul>
                     <li><strong>Dual Publishing</strong> &mdash; Publish via secure RTMPS (port 1936) or standard RTMP (port 1935) with temporary tokens</li>
                     <li><strong>Dynamic Thumbnails</strong> &mdash; Auto-generated preview images from your live stream, updated every 15 seconds</li>
-                    <li><strong>Viewer Count</strong> &mdash; Real-time viewer count displayed on the stream page, polled every 10 seconds</li>
+                    <li><strong>Viewer Count</strong> &mdash; The number of signed-in members and open-link players whose player passed the portal's playback check lately, shown on cards and the stream page and refreshed every 15 seconds. One account counts once; somebody reading straight from the RTMPS or RTSP port is not counted. The owner also sees the peak and the number of different viewers of the last live session.</li>
+                    <li><strong>Game</strong> &mdash; An optional game of up to 60 characters shown next to the title, with suggestions; changing the title or game while live updates open watch pages at once</li>
                     <li><strong>Quality Selector</strong> &mdash; Viewers can choose stream quality when available</li>
                     <li><strong>Public/Private Toggle</strong> &mdash; Control whether your stream appears on the community Streams page</li>
                     <li><strong>Popout Player</strong> &mdash; Watch streams in a floating overlay or separate window</li>
@@ -843,7 +844,7 @@
                     <li><strong>Replies &amp; Threads</strong> &mdash; Click the reply icon to respond to a message. Click any reply preview to open a thread panel showing the full reply chain.</li>
                     <li><strong>Emoji Reactions</strong> &mdash; React to any message with emoji. Right-click a message and choose "React" to pick an emoji, or click an existing reaction pill to toggle yours.</li>
                     <li><strong>Message Editing</strong> &mdash; Edit your own messages within 5 minutes of sending. Right-click and select "Edit" to modify inline. Edited messages show an <em>(edited)</em> indicator.</li>
-                    <li><strong>Pinned Messages</strong> &mdash; Moderators and admins can pin important messages. A pinned banner at the top of chat shows the count and expands to reveal all pinned messages.</li>
+                    <li><strong>Pinned Messages</strong> &mdash; Moderators and admins can pin important messages; in a stream's own chat the stream owner and the stream mods the owner appointed can too. A pinned banner at the top of chat shows the count and expands to reveal all pinned messages.</li>
                     <li><strong>Link Previews</strong> &mdash; URLs in messages automatically generate preview cards with title, description, and thumbnail from OpenGraph metadata.</li>
                     <li><strong>YouTube Embeds</strong> &mdash; YouTube links are automatically embedded as inline video players (privacy-enhanced mode via youtube-nocookie.com).</li>
                     <li><strong>Image Sharing</strong> &mdash; Upload images via the attachment button or paste from clipboard. Uploaded files are sanitized &mdash; only safe types render inline; HTML/JS/SVG are forced to download to prevent XSS.</li>
@@ -1003,6 +1004,7 @@
                     <li><strong>Public / Private</strong> &mdash; Public channels are visible to everyone. Private channels require explicit membership &mdash; non-members can't see or join them.</li>
                     <li><strong>Open / Read-Only</strong> &mdash; Open channels let all members post. Read-only channels restrict posting to moderators and channel moderators.</li>
                     <li><strong>Channel Members</strong> &mdash; Admins, creators, and channel moderators can add and remove members from private channels.</li>
+                    <li><strong>Stream Mods</strong> &mdash; A stream owner can appoint up to 20 stream mods in the stream settings. In that stream's chat only, the owner and the mods can pin, time out, delete, ban, run polls and set slow mode (0, 5, 15 or 30 seconds) from the watch page, where they carry a Streamer or Mod badge. A member banned from a stream cannot watch it while signed in.</li>
                     <li><strong>Channel Moderators</strong> &mdash; Promote members to channel moderator for per-channel moderation control without granting server-wide mod powers.</li>
                     <li><strong>Visual Indicators</strong> &mdash; Private channels show a lock icon; read-only channels show a muted speaker icon.</li>
                 </ul>
