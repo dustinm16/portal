@@ -878,7 +878,7 @@ def test_pinned_list_on_join_does_not_name_an_anonymous_pinner():
         mid = await d.create_chat_message(cid, w.u["plain"], "plain", "pin me")
         f = await joined(env, w, "friend")
         got = await f.act("message_pinned", type="pin_message", message_id=mid)
-        assert got["type"] == "message_pinned" and got["pinned_by"] == "Anonymous", got
+        assert got["type"] == "message_pinned" and got["pinned_by"] == server.ANON_MODERATOR_LABEL, got
         for name in ("plain", "owner", "admin"):
             s = await env.sock(w.u[name])
             start = s.mark()
@@ -939,6 +939,78 @@ def test_ids_beyond_the_sqlite_range_answer_an_error_and_keep_the_socket():
             got = await sock.act("slowmode_changed", type="set_slowmode", seconds=0)
             assert got["type"] == "slowmode_changed", (payload, got)
     run(body)
+
+
+def test_an_anonymous_owner_or_mod_is_one_label_to_the_room_and_in_lists():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        cid, sid, u = w.chat["a"], w.stream["a"], w.u
+        label = server.ANON_MODERATOR_LABEL
+        for name in ("owner", "friend"):
+            await d.conn.execute("UPDATE users SET chat_anonymous = 1 WHERE id = ?", (u[name],))
+        await d.conn.commit()
+        server.chat_user_state.clear()
+        owner = await joined(env, w, "owner")
+        mod = await joined(env, w, "friend")
+        plain = await joined(env, w, "plain")
+        m1 = await d.create_chat_message(cid, u["plain"], "plain", "one")
+        m2 = await d.create_chat_message(cid, u["plain"], "plain", "two")
+
+        def clean(frame, *keys):
+            text = json.dumps(frame)
+            for who in ("owner", "friend"):
+                assert who not in text.replace('"%s"' % label, ""), (who, frame)
+                assert '%d' % u[who] not in [str(frame.get(k)) for k in keys], (who, frame)
+
+        mark = plain.mark()
+        await owner.act("message_pinned", type="pin_message", message_id=m1)
+        got = await plain.wait(lambda e: e.get("type") == "message_pinned", mark)
+        assert got["pinned_by"] == label, got
+        clean(got)
+        mark = plain.mark()
+        await mod.act("user_timed_out", type="timeout_user", target_user_id=u["spammer"], duration=60)
+        got = await plain.wait(lambda e: e.get("type") == "user_timed_out", mark)
+        assert got["moderator"] == label, got
+        mark = plain.mark()
+        await owner.act("ban_success", type="ban", user_id=u["spammer"], reason="x")
+        got = await plain.wait(lambda e: e.get("type") == "user_banned", mark)
+        assert got["banned_by"] == label, got
+        mark = plain.mark()
+        await mod.act("message_deleted", type="delete", message_id=m2)
+        got = await plain.wait(lambda e: e.get("type") == "message_deleted", mark)
+        assert got["deleted_by"] is None, got
+        # the audit log still has the real actors
+        entries = await d.get_audit_log(limit=200, channel_id=cid)
+        assert any(e["action"] == "user_ban" and e["actor_id"] == u["owner"] for e in entries)
+        assert any(e["action"] == "user_timeout" and e["actor_id"] == u["friend"] for e in entries)
+        # ban list: ordinary members (here the other mod) and the owner's own view
+        st, got = await env.call("GET", u["mod2"], f"/api/streams/{sid}/bans")
+        assert st == 200 and got["bans"][0]["banned_by"] is None, got
+        assert got["bans"][0]["banned_by_username"] == label, got
+        assert "banned_by_anonymous" not in got["bans"][0] and "banned_by_role" not in got["bans"][0]
+        st, got = await env.call("GET", u["admin"], f"/api/streams/{sid}/bans")
+        assert got["bans"][0]["banned_by"] == u["owner"] and got["bans"][0]["banned_by_username"] == "owner", got
+        st, got = await env.call("GET", u["owner"], f"/api/streams/{sid}/bans")
+        assert got["bans"][0]["banned_by"] == u["owner"], got
+        # a history page and the join frames never carry the pinner's id to an ordinary member
+        late = await env.sock(u["mod2"])
+        start = late.mark()
+        await late.send(type="join", channel_id=cid)
+        hist = await late.wait(lambda e: e.get("type") == "history", start)
+        pinned = [m for m in hist["messages"] if m["id"] == m1]
+        assert pinned and "pinned_by" not in pinned[0], pinned
+        # global staff keep their naming
+        await d.conn.execute("UPDATE users SET chat_anonymous = 1 WHERE id = ?", (u["admin"],))
+        await d.conn.commit()
+        server.chat_user_state.pop(u["admin"], None)
+        admin = await joined(env, w, "admin")
+        mark = plain.mark()
+        await admin.act("user_timed_out", type="timeout_user", target_user_id=u["mod2"], duration=60)
+        got = await plain.wait(lambda e: e.get("type") == "user_timed_out", mark)
+        assert got["moderator"] == "admin", got
+    run(body)
+    server.chat_user_state.clear()
 
 
 if __name__ == "__main__":

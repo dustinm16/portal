@@ -18285,6 +18285,17 @@ def _viewer_sees_identity(viewer_id, viewer_role, subject_id) -> bool:
     return viewer_id == subject_id or (viewer_role or "") in _CHAT_STAFF_ROLES
 
 
+ANON_MODERATOR_LABEL = "Moderator"
+
+
+def _anon_actor(actor_role, actor_state) -> bool:
+    """True for an ordinary member (owner of a stream or a stream mod) acting with
+    anonymous chat on: what the room is told about such an actor is the fixed label
+    ANON_MODERATOR_LABEL, with no account id and no name. Global staff keep their
+    naming (1.16.0); the audit log always records the real actor."""
+    return bool((actor_state or {}).get("anonymous")) and (actor_role or "") not in _CHAT_STAFF_ROLES
+
+
 def _mask_anonymous_author(m: dict, viewer_id, viewer_role=None) -> None:
     """Strip the author's identity from an anonymous chat message payload.
 
@@ -18320,6 +18331,13 @@ def _mask_ban_rows(bans, viewer_id, viewer_role=None) -> list:
         if b.get("anonymous") and not _viewer_sees_identity(viewer_id, viewer_role, b.get("user_id")):
             b["user_id"] = None
             b["banned_username"] = "Anonymous"
+        # An ordinary member who banned with anonymous chat on is not named to anybody
+        # but staff and himself (one rule with the live frames, see _anon_actor)
+        by_anon = b.pop("banned_by_anonymous", None) and (b.pop("banned_by_role", None) or "") not in _CHAT_STAFF_ROLES
+        b.pop("banned_by_role", None)
+        if by_anon and not _viewer_sees_identity(viewer_id, viewer_role, b.get("banned_by")):
+            b["banned_by"] = None
+            b["banned_by_username"] = ANON_MODERATOR_LABEL
         out.append(b)
     return out
 
@@ -18818,6 +18836,9 @@ async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, chann
         }
     # Display priority: Anon > Nickname > Username, from the per-message flag
     for m in messages:
+        # who pinned it is an account id: not for an ordinary viewer (the pinner may be anonymous)
+        if (viewer_role or "") not in _CHAT_STAFF_ROLES:
+            m.pop("pinned_by", None)
         ui = users_map.get(m.get("user_id"), {})
         was_anonymous = bool(m.get("anonymous"))
         m["nickname"] = ui.get("nickname") if not was_anonymous else None
@@ -20248,7 +20269,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await broadcast_to_channel(current_channel, {
                                 "type": "message_deleted",
                                 "message_id": message_id,
-                                "deleted_by": user_id
+                                "deleted_by": None if (is_mod and _anon_actor(user_role, my_state)) else user_id
                             }, anon_subject=del_msg["user_id"] if del_msg.get("anonymous") else None)
                             asyncio.create_task(fire_webhook_event("message.deleted", _message_deleted_webhook_payload(
                                 message_id, current_channel, user_id, del_msg),
@@ -20371,7 +20392,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         success = await db.pin_message(message_id, user_id)
                         if success:
                             my_state = chat_user_state.get(user_id, {})
-                            display_name = "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username)
+                            display_name = (ANON_MODERATOR_LABEL if _anon_actor(user_role, my_state) else
+                                            "Anonymous" if my_state.get("anonymous") else (my_state.get("nickname") or username))
                             msg_author = msg.get("username", "Unknown")
                             if msg.get("anonymous"):
                                 msg_author = "Anonymous"
@@ -20466,7 +20488,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                                 continue
                         await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
-                        display_name = my_state.get("nickname") or username
+                        display_name = (ANON_MODERATOR_LABEL if _anon_actor(user_role, my_state)
+                                        else my_state.get("nickname") or username)
                         target_anon = msg_anon or bool(target_user.get("chat_anonymous"))
                         target_name = "Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])
                         await broadcast_to_channel(current_channel, {
@@ -20907,7 +20930,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "type": "user_banned",
                                 "user_id": target_user_id,
                                 "username": "Anonymous" if banned_anon else banned_username,
-                                "banned_by": username,
+                                "banned_by": ANON_MODERATOR_LABEL if _anon_actor(user_role, my_state) else username,
                                 "reason": reason
                             }, anon_subject=target_user_id if banned_anon else None)
 

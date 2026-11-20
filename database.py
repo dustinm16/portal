@@ -4754,7 +4754,8 @@ class Database:
         cursor = await self.conn.execute(
             """SELECT sb.id, sb.stream_id, sb.user_id, sb.banned_by, sb.reason, sb.created_at,
                       sb.anonymous,
-                      u.username as banned_username, ub.username as banned_by_username
+                      u.username as banned_username, ub.username as banned_by_username,
+                      ub.chat_anonymous as banned_by_anonymous, ub.role as banned_by_role
                FROM stream_bans sb
                JOIN users u ON sb.user_id = u.id
                JOIN users ub ON sb.banned_by = ub.id
