@@ -2483,6 +2483,8 @@ Binary noVNC protocol relay.
 
 Users can configure remote SFTP storage for recorded VODs (MKV files). Each user has their own storage configuration.
 
+**Credentials (1.16.0):** every route in this section needs a browser session or a token or API key with the all-scope `*`. A stream key (`live_`) authorises publishing only and a narrowly scoped API key is not enough: both get `403`.
+
 #### GET /api/vods/storage
 Get current user's VOD storage configuration.
 

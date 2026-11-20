@@ -10191,9 +10191,9 @@ async def _connect_vod_sftp(user_id: int):
 
 async def http_get_vod_storage(request: web.Request) -> web.Response:
     """Get current user's VOD storage config (password/key redacted)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     storage = await db.get_vod_storage(token.user_id)
     if not storage:
@@ -10219,9 +10219,9 @@ async def http_get_vod_storage(request: web.Request) -> web.Response:
 
 async def http_save_vod_storage(request: web.Request) -> web.Response:
     """Create or update VOD storage config."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     try:
         data = await request.json()
@@ -10309,9 +10309,9 @@ async def http_save_vod_storage(request: web.Request) -> web.Response:
 
 async def http_delete_vod_storage(request: web.Request) -> web.Response:
     """Delete VOD storage config."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     deleted = await db.delete_vod_storage(token.user_id)
     if not deleted:
@@ -10414,11 +10414,9 @@ async def http_accept_vod_host_key(request: web.Request) -> web.Response:
     """POST /api/vods/storage/host-key/accept - pin (or replace) the VOD storage
     host key. The storage belongs to the signed-in user alone. The fingerprint
     must be the refused one the settings page showed; anything else is a 409."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
-    if not has_full_user_scope(token):
-        return full_scope_required_response()
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
     fp, err = await _accepted_fingerprint(request)
     if err:
         return err
@@ -10447,9 +10445,9 @@ async def http_accept_vod_host_key(request: web.Request) -> web.Response:
 
 async def http_test_vod_storage(request: web.Request) -> web.Response:
     """Test SFTP connection with provided or saved credentials."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     try:
         data = await request.json()
@@ -10560,9 +10558,9 @@ async def http_list_vods(request: web.Request) -> web.Response:
     Returns files with paths relative to the VOD root, e.g.
     "StreamName/2026-02-08_12-00-00/chunk_000.mkv" or "old_recording.mkv".
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     storage = await db.get_vod_storage(token.user_id)
     if not storage:
@@ -10628,9 +10626,9 @@ async def http_download_vod(request: web.Request) -> web.Response:
 
     Supports subdirectory paths like "StreamName/session/chunk_000.mkv".
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     filename = request.match_info.get("filename", "")
 
@@ -10690,9 +10688,9 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
 
     POST body: {"files": ["StreamName/session/chunk_000.mkv", ...]}
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     try:
         data = await request.json()
@@ -10849,9 +10847,9 @@ async def http_download_vod_archive(request: web.Request) -> web.Response:
 
 async def http_delete_vod(request: web.Request) -> web.Response:
     """Delete a VOD file from remote SFTP storage."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)    # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
 
     filename = request.match_info.get("filename", "")
 

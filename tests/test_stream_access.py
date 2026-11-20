@@ -769,6 +769,36 @@ def test_stream_detail_carries_only_allow_listed_columns_for_non_owners():
     run(body)
 
 
+def test_vod_routes_refuse_a_stream_key():
+    import re
+    async def body(w):
+        owner_key = w.streams["private"]["live"]
+        for h, method in (("http_get_vod_storage", "GET"), ("http_save_vod_storage", "POST"),
+                          ("http_delete_vod_storage", "DELETE"), ("http_test_vod_storage", "POST"),
+                          ("http_accept_vod_host_key", "POST"), ("http_list_vods", "GET"),
+                          ("http_download_vod", "GET"), ("http_download_vod_archive", "POST"),
+                          ("http_delete_vod", "DELETE")):
+            for hdrs in ({"X-Stream-Key": owner_key}, {"Authorization": "Stream-Key " + owner_key}):
+                req = make_mocked_request(method, "/api/vods/x", match_info={"filename": "x"}, headers=hdrs,
+                                          transport=Transport())
+                resp = await getattr(server, h)(req)
+                assert resp.status == 403, (h, resp.status)
+        # the owner's own session still gets past authentication (no storage set up: 404)
+        req = make_mocked_request("GET", "/api/vods", headers={
+            "Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['owner']}"}, transport=Transport())
+        assert (await server.http_list_vods(req)).status == 404
+    run(body)
+    # source guard: no /api/vods handler authenticates with the plain call
+    src = (ROOT / "server.py").read_text()
+    routes = re.findall(r'app\.router\.add_\w+\("(/api/vods[^"]*)", (\w+)', src)
+    assert len(routes) >= 9, routes
+    for _p, h in routes:
+        start = src.index(f"async def {h}(")
+        m = re.search(r"\n(?:async def|def) ", src[start + 10:])
+        chunk = src[start:start + 10 + m.start()]
+        assert "_stream_user_auth(" in chunk and "await authenticate_request(request)" not in chunk, h
+
+
 # stream handlers that only publish (the MediaMTX hooks and WHIP): the key in the body or URL
 # is the publish credential. Anything else under these prefixes must refuse stream keys.
 _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",
