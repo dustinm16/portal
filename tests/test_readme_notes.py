@@ -243,6 +243,9 @@ api_md = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
 check("docs/API.md does not say that only stream owners ban", "Stream owners can ban users from their stream's chat." not in api_md)
 
 # --- 1.18.0 notes: expiring shares and grants -----------------------------------------
+import apikey_policy as _apikey_policy  # noqa: E402
+
+# --- 1.18.0 notes: API key least privilege --------------------------------------------
 m18 = re.search(r"### Upgrade notes for 1\.18\.0\n(.*?)(?=\n## |\n### )", text, re.S)
 check("README has an 'Upgrade notes for 1.18.0' section after the 1.17.0 one",
       m18 is not None and text.index("### Upgrade notes for 1.18.0") > text.index("### Upgrade notes for 1.17.0"))
@@ -267,8 +270,8 @@ says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
 check("1.18.0: the user-connections, dashboard and terminal versions stated are the ones the pages load",
-      re.search(r"user-connections\.js\?v=49", (ROOT / "static" / "index.html").read_text())
-      and "`user-connections.js` is now version 49" in sec18
+      re.search(r"user-connections\.js\?v=50", (ROOT / "static" / "index.html").read_text())
+      and "`user-connections.js` is now version 50" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and re.search(r"terminal\.js\?v=6", (ROOT / "static" / "terminal.html").read_text()) and "`terminal.js` 6" in sec18)
 check("README feature section says a share can expire", "the card shows the time left" in text and "All grants on the portal" in text)
@@ -291,6 +294,27 @@ check("README says in Sharing Access that a share of a stored password gives a s
 check("docs/API.md and api-docs.html document the stored password",
       all(n in (ROOT / "docs" / "API.md").read_text(encoding="utf-8") for n in ("has_stored_password", "credential_mode", "stored_password_cleared"))
       and all(n in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8") for n in ("has_stored_password", "credential_mode", "stored_password_cleared")))
+says18("API keys: binding", "allowed_cidrs", "at most 10", "`/0`", "`\"any\"`", "generic `401`", "api_key_ip_denied")
+says18("API keys: proxy trust must be clean first", "proxy-trust self-check is clean", "trusted_proxies", "/api/admin/proxy-trust")
+says18("API keys: scope registry and the 400", "apikey_policy.py", "/api/api-keys/scopes", "`400`", "required_scopes")
+says18("API keys: default expiry and what breaks", "90 days", "\"never\"", "breaking", "expires_in_days")
+says18("API keys: last used and stale", "last_used_ip", "created_ip", "once a minute", "stale")
+says18("API keys: migration, existing keys and rollback", "allowed_cidrs", "existing keys are unchanged", "works from any address again after a rollback")
+says18("API keys: what is not tested", "not tested", "browser", "cloudflare")
+check("1.18.0: the key defaults stated are the ones in the code",
+      f"{_apikey_policy.DEFAULT_EXPIRY_DAYS} days" in sec18 and f"at most {_apikey_policy.MAX_CIDRS}" in sec18
+      and f"from 1 to {_apikey_policy.MAX_EXPIRY_DAYS}" in sec18 and f"{_apikey_policy.STALE_DAYS} days" in sec18)
+api_md18 = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+api_html18 = (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8")
+check("docs/API.md and api-docs.html describe the binding, the default expiry, the scope route and the stale flag",
+      all(n in api_md18 for n in ("allowed_cidrs", "last_used_ip", "GET /api/api-keys/scopes", "expires in 90 days", "stale"))
+      and all(n in api_html18 for n in ("allowed_cidrs", "last_used_ip", "/api/api-keys/scopes", "Omitted: 90 days", "stale")))
+says18("API keys: only a sign-in creates keys, playback cache keyed on the address", "apikey-", "`403`", "only a sign-in creates keys", "caller's address")
+check("docs/API.md and api-docs.html say an API key cannot create keys",
+      "A key cannot create keys" in api_md18 and "API key gets 403" in api_html18)
+check("docs/API.md no longer says an omitted expiry never expires", "omit (or `0`) for a key that never expires" not in api_md18)
+about18 = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
+check("about.html no longer lists scopes the code does not check", "<code>chat</code> &mdash; Send and receive chat messages" not in about18)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

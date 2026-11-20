@@ -234,9 +234,9 @@ async def test_throttle(uid):
         key_writes = []
         real_key_touch = db.update_api_key_last_used
 
-        async def counting_key(kid):
+        async def counting_key(kid, ip=None):
             key_writes.append(kid)
-            await real_key_touch(kid)
+            await real_key_touch(kid, ip)
 
         db.update_api_key_last_used = counting_key
         try:

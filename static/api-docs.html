@@ -527,14 +527,17 @@
 
                 <!-- API Keys Section -->
                 <h2 id="api-keys">API Keys</h2>
-                <p>API keys provide long-lived authentication for scripts and integrations. Keys can be scoped to limit access. Send a key as <code>Authorization: Api-Key portal_...</code> or <code>X-API-Key: portal_...</code>; <code>Bearer</code> accepts JWTs only. Keys are stored as an Argon2id hash plus a 10-character prefix, so a lost key cannot be recovered. Each successful use updates <code>last_used_at</code>.</p>
+                <p>API keys provide long-lived authentication for scripts and integrations. Keys can be scoped to limit access. Send a key as <code>Authorization: Api-Key portal_...</code> or <code>X-API-Key: portal_...</code>; <code>Bearer</code> accepts JWTs only. Keys are stored as an Argon2id hash plus a 10-character prefix, so a lost key cannot be recovered. Each successful use updates <code>last_used_at</code> and <code>last_used_ip</code> (at most once a minute per key). A key can be bound to networks with <code>allowed_cidrs</code>; used from any other address it answers the same <code>401</code> as a wrong key.</p>
+                <div class="alert alert-warning">
+                    <strong>Before binding keys:</strong> the portal judges the address it sees through its trusted-proxy setting (<code>TRUSTED_PROXIES</code>). If that is wrong, every request looks like one address and a bound key fails for everybody. Check that <code>GET /api/admin/proxy-trust</code> reports <code>suspect: false</code> (no Proxy Trust note in Admin &gt; Overview) first, then bind one key and test it.
+                </div>
                 <p>Checking a key that has not been used since the server started is rate limited: when too many such checks are pending for one key, the request is answered with <code>503</code> and a <code>Retry-After</code> header instead of <code>401</code>. Retry after the given delay; the key itself is not affected.</p>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
                         <span class="endpoint-path">/api/api-keys</span>
-                        <span class="endpoint-desc">Create new API key</span>
+                        <span class="endpoint-desc">Create new API key (a browser session or bearer token; a request authenticated with an API key gets 403)</span>
                     </div>
                     <div class="endpoint-body">
                         <h4>Request Body</h4>
@@ -548,12 +551,17 @@
                             <tr>
                                 <td><span class="param-name">scopes</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>Comma-separated scopes (default: "*" for full access). Admin only; non-admin keys always get <code>services:read,access:*</code></td>
+                                <td>Comma-separated scopes or a list (default: "*" for full access). An unknown scope is a <code>400</code>; see <code>GET /api/api-keys/scopes</code>. Admin only; non-admin keys always get <code>services:read,access:*</code></td>
                             </tr>
                             <tr>
                                 <td><span class="param-name">expires_days</span></td>
-                                <td><span class="param-type">integer</span></td>
-                                <td>Days until expiration (omit for never)</td>
+                                <td><span class="param-type">integer or "never"</span></td>
+                                <td>Days until expiration, 1 to 3650. <strong>Omitted: 90 days.</strong> <code>"never"</code> (or <code>0</code>) for no expiry; a <code>"*"</code> key with no expiry gets an <code>expiry_warning</code> in the response. Anything unreadable is a <code>400</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><span class="param-name">allowed_cidrs</span></td>
+                                <td><span class="param-type">list or string</span></td>
+                                <td>Up to 10 IPv4 or IPv6 addresses or networks the key may be used from. A <code>/0</code> is refused; <code>"any"</code> (alone) or omitted means anywhere.</td>
                             </tr>
                         </table>
                         <div class="alert alert-warning">
@@ -566,8 +574,10 @@
   <span class="string">"name"</span>: <span class="string">"My Integration"</span>,
   <span class="string">"key"</span>: <span class="string">"portal_abc123..."</span>,
   <span class="string">"prefix"</span>: <span class="string">"portal_abc"</span>,
-  <span class="string">"scopes"</span>: <span class="string">"*"</span>,
-  <span class="string">"expires_at"</span>: <span class="keyword">null</span>
+  <span class="string">"scopes"</span>: <span class="string">"services:read"</span>,
+  <span class="string">"expires_at"</span>: <span class="string">"2027-02-18T00:00:00+00:00"</span>,
+  <span class="string">"allowed_cidrs"</span>: [<span class="string">"203.0.113.0/24"</span>],
+  <span class="string">"created_ip"</span>: <span class="string">"198.51.100.7"</span>
 }</pre>
                         </div>
                     </div>
@@ -580,7 +590,18 @@
                         <span class="endpoint-desc">List your API keys</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns all API keys for the authenticated user. Keys are shown with prefix only (not full key).</p>
+                        <p>Returns all API keys for the authenticated user. Keys are shown with prefix only (not full key), with their bound networks, the address each was created from and last used from (<code>created_ip</code>, <code>last_used_ip</code>). For an administrator each key also has <code>stale</code>: not used for 90 days.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/api-keys/scopes</span>
+                        <span class="endpoint-desc">Scopes a key can carry</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>The scope registry (every scope the portal checks, with a description), plus the scopes services require (administrators only), <code>can_choose</code>, the <code>limited_scopes</code> a non-admin key always gets, and <code>default_expiry_days</code>.</p>
                     </div>
                 </div>
 

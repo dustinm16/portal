@@ -372,17 +372,20 @@ function renderApiKeys() {
         const isExpired = key.expires_at && new Date(key.expires_at) < new Date();
         const statusClass = isRevoked ? 'badge-danger' : (isExpired ? 'badge-warning' : 'badge-success');
         const statusText = isRevoked ? 'Revoked' : (isExpired ? 'Expired' : 'Active');
+        const cidrs = Array.isArray(key.allowed_cidrs) ? key.allowed_cidrs : [];
 
         return `
             <tr class="${isRevoked || isExpired ? 'row-inactive' : ''}">
                 <td>${escapeHtml(key.name)}</td>
-                <td class="monospace">${key.key_prefix}...</td>
-                <td><span class="badge badge-secondary">${key.scopes || '*'}</span></td>
-                <td>${formatDate(key.created_at)}</td>
-                <td>${key.last_used_at ? formatDate(key.last_used_at) : 'Never'}</td>
+                <td class="monospace">${escapeHtml(key.key_prefix)}...</td>
+                <td><span class="badge badge-secondary">${escapeHtml(key.scopes || '*')}</span></td>
+                <td>${cidrs.length ? cidrs.map(c => `<span class="badge badge-secondary monospace">${escapeHtml(c)}</span>`).join(' ') : 'Anywhere'}</td>
+                <td>${formatDate(key.created_at)}${key.created_ip ? `<br><small class="monospace">${escapeHtml(key.created_ip)}</small>` : ''}</td>
+                <td>${key.last_used_at ? formatDate(key.last_used_at) : 'Never'}${key.last_used_ip ? `<br><small class="monospace">${escapeHtml(key.last_used_ip)}</small>` : ''}</td>
                 <td>${key.expires_at ? formatDate(key.expires_at) : 'Never'}</td>
                 <td>
                     <span class="badge ${statusClass}">${statusText}</span>
+                    ${key.stale ? '<span class="badge badge-warning" title="Not used for 90 days. Revoke it if it is no longer needed.">Stale</span>' : ''}
                     ${!isRevoked ? `
                         <button class="btn btn-sm btn-warning" onclick="confirmRevokeApiKey(${key.id}, '${escapeHtml(key.name).replace(/'/g, "\\'")}')" title="Revoke key">
                             Revoke
@@ -405,6 +408,66 @@ function renderApiKeys() {
 function showCreateApiKeyForm() {
     document.getElementById('create-api-key-form').style.display = 'block';
     document.getElementById('api-key-name').focus();
+    loadApiKeyScopePicker();
+}
+
+let apiKeyScopeInfo = null;
+
+/**
+ * Fill the scope picker from the server's registry (GET /api/api-keys/scopes).
+ * A member who is not an administrator cannot choose: the server gives such a key
+ * its limited scopes, and the picker says so.
+ */
+async function loadApiKeyScopePicker() {
+    const box = document.getElementById('api-key-scope-picker');
+    const note = document.getElementById('api-key-scope-note');
+    try {
+        const response = await Portal.fetch('/api/api-keys/scopes');
+        if (!response.ok) throw new Error('scopes');
+        apiKeyScopeInfo = await response.json();
+    } catch (e) {
+        apiKeyScopeInfo = null;
+        box.textContent = 'Could not load the scope list.';
+        return;
+    }
+    box.innerHTML = '';
+    apiKeyScopeInfo.scopes.forEach(sc => {
+        const label = document.createElement('label');
+        label.style.display = 'block';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'api-key-scope-cb';
+        cb.value = sc.scope;
+        cb.checked = sc.scope === 'services:read' || sc.scope === 'access:*';
+        cb.disabled = !apiKeyScopeInfo.can_choose;
+        cb.addEventListener('change', updateApiKeyWarning);
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' ' + sc.scope + ' - ' + sc.description));
+        box.appendChild(label);
+    });
+    if (!apiKeyScopeInfo.can_choose) {
+        note.textContent = 'Keys of your account always carry ' + apiKeyScopeInfo.limited_scopes.join(', ') + '.';
+    }
+    updateApiKeyWarning();
+}
+
+function selectedApiKeyScopes() {
+    return Array.from(document.querySelectorAll('.api-key-scope-cb'))
+        .filter(cb => cb.checked).map(cb => cb.value);
+}
+
+/** Warn while the form describes a full-access key that never expires. */
+function updateApiKeyWarning() {
+    const el = document.getElementById('api-key-create-warning');
+    if (!el) return;
+    const never = document.getElementById('api-key-expiry').value === 'never';
+    const full = selectedApiKeyScopes().includes('*');
+    if (never && full) {
+        el.textContent = 'This key has full access and never expires. Give it an expiry or narrower scopes, and bind it to the addresses it is used from.';
+        el.style.display = 'block';
+    } else {
+        el.style.display = 'none';
+    }
 }
 
 /**
@@ -413,8 +476,9 @@ function showCreateApiKeyForm() {
 function hideCreateApiKeyForm() {
     document.getElementById('create-api-key-form').style.display = 'none';
     document.getElementById('api-key-name').value = '';
-    document.getElementById('api-key-scopes').value = '*';
-    document.getElementById('api-key-expiry').value = '0';
+    document.getElementById('api-key-expiry').value = '90';
+    document.getElementById('api-key-cidrs').value = '';
+    document.getElementById('api-key-create-warning').style.display = 'none';
 }
 
 /**
@@ -424,8 +488,17 @@ async function submitCreateApiKey(event) {
     event.preventDefault();
 
     const name = document.getElementById('api-key-name').value.trim();
-    const scopes = document.getElementById('api-key-scopes').value.trim() || '*';
-    const expiryDays = parseInt(document.getElementById('api-key-expiry').value) || 0;
+    if (!apiKeyScopeInfo) {
+        Portal.toast('The scope list is not loaded yet', 'error');
+        return;
+    }
+    const scopes = selectedApiKeyScopes();
+    if (apiKeyScopeInfo.can_choose && scopes.length === 0) {
+        Portal.toast('Choose at least one scope', 'error');
+        return;
+    }
+    const expiry = document.getElementById('api-key-expiry').value;
+    const cidrs = document.getElementById('api-key-cidrs').value.trim();
 
     if (!name) {
         Portal.toast('Key name is required', 'error');
@@ -438,8 +511,9 @@ async function submitCreateApiKey(event) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name,
-                scopes,
-                expires_in_days: expiryDays > 0 ? expiryDays : null
+                scopes: apiKeyScopeInfo.can_choose ? scopes : apiKeyScopeInfo.limited_scopes,
+                expires_days: expiry === 'never' ? 'never' : parseInt(expiry, 10),
+                allowed_cidrs: cidrs
             })
         });
 
@@ -471,6 +545,12 @@ async function submitCreateApiKey(event) {
 function showNewApiKeyDisplay(keyData) {
     document.getElementById('new-api-key-name').textContent = keyData.name;
     document.getElementById('new-api-key-value').value = keyData.key;
+    document.getElementById('new-api-key-expiry').textContent = keyData.expires_at ? formatDate(keyData.expires_at) : 'Never';
+    document.getElementById('new-api-key-cidrs').textContent =
+        (keyData.allowed_cidrs && keyData.allowed_cidrs.length) ? keyData.allowed_cidrs.join(', ') : 'Anywhere';
+    const warn = document.getElementById('new-api-key-warning');
+    warn.textContent = keyData.expiry_warning || '';
+    warn.style.display = keyData.expiry_warning ? 'block' : 'none';
     document.getElementById('new-api-key-display').style.display = 'block';
 }
 

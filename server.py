@@ -143,6 +143,7 @@ import vod_staging
 import automod
 import chat_search
 import secevents
+import apikey_policy
 import webhook_formats
 setup_logging()
 logger = logging.getLogger("portal")
@@ -2136,7 +2137,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
         api_key = request.headers.get("X-API-Key").strip()
 
     if api_key:
-        token_payload = await authenticate_api_key(api_key)
+        token_payload = await authenticate_api_key(api_key, get_client_ip(request), request=request)
         if token_payload:
             return token_payload
 
@@ -2290,14 +2291,19 @@ async def _verify_api_key_offloop(key_id: int, api_key: str, stored_hash: str) -
             _api_key_verify_pending_by_key.pop(key_id, None)
 
 
-async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
+async def authenticate_api_key(api_key: str, client_ip: Optional[str] = None,
+                               request: Optional[web.Request] = None) -> Optional[TokenPayload]:
     """Authenticate using an API key.
 
     Args:
         api_key: The full API key (portal_xxx...)
+        client_ip: The caller's address from get_client_ip (the trusted-proxy rule).
+            A key bound to networks (allowed_cidrs) is refused without it.
+        request: Only used to record the refusal as a security event.
 
     Returns:
-        TokenPayload if valid, None otherwise
+        TokenPayload if valid, None otherwise. A refusal for the address answers
+        exactly like a wrong key; the real reason goes to the security events.
     """
     from auth import parse_api_key
 
@@ -2329,6 +2335,16 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
         except ValueError:
             pass
 
+    # Address binding: before the hash check (a caller outside the networks must not
+    # cost an Argon2 run) and before the verified-key cache (a key that was verified
+    # from inside must still be refused from outside). Same generic answer as a wrong key.
+    cidrs = apikey_policy.cidrs_from_text(key_record.get("allowed_cidrs"))
+    if cidrs and not apikey_policy.client_in_cidrs(client_ip, cidrs):
+        await security_event("api_key_ip_denied", request=request, ip=client_ip or "unknown",
+                             user_id=key_record["user_id"], result="address_not_allowed",
+                             details={"key_id": key_record["id"], "key_prefix": prefix})
+        return None
+
     # Verify the key hash (skipped for a key already verified against this
     # exact stored hash; the checks above ran against the database just now)
     if not _api_key_cached_ok(key_record["id"], api_key, key_record["key_hash"]):
@@ -2338,7 +2354,7 @@ async def authenticate_api_key(api_key: str) -> Optional[TokenPayload]:
 
     # Update last used timestamp, at most once a minute per key (see auth.TOUCH_INTERVAL)
     if touch_due(f"apikey-{key_record['id']}"):
-        await db.update_api_key_last_used(key_record["id"])
+        await db.update_api_key_last_used(key_record["id"], client_ip)
 
     # Create a TokenPayload for the API key
     scopes = key_record.get("scopes", "*").split(",")
@@ -4104,31 +4120,40 @@ async def http_create_api_key(request: web.Request) -> web.Response:
     token = await authenticate_request(request)
     if not token:
         return unauthorized_response(request)
+    # Only a sign-in can mint a key. A key that is bound to networks or expires must
+    # not be able to make one that is neither.
+    if str(token.token_id or "").startswith("apikey-"):
+        return web.json_response({"error": "An API key cannot create API keys; sign in to create one"},
+                                 status=403)
 
     try:
         data = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    name = data.get("name", "").strip()
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    name = data.get("name", "")
+    name = name.strip() if isinstance(name, str) else ""
     if not name:
         return web.json_response({"error": "API key name required"}, status=400)
 
-    # Optional: scopes (comma-separated) and expiration
-    # Enforce: non-admin users cannot request admin/"*" scopes
-    scopes = data.get("scopes", "*")
+    # Optional: scopes, expiration and the networks the key may be used from.
+    # Every request is checked first (an unknown scope, a bad network or a bad
+    # expiry is a 400); a member who is not an administrator then gets the limited
+    # scopes whatever he asked for.
+    try:
+        requested = apikey_policy.normalise_scopes(
+            data.get("scopes", "*"), extra_known=await db.get_service_scope_names())
+        cidrs = apikey_policy.normalise_cidrs(data.get("allowed_cidrs"))
+        expires_at, expires_days = apikey_policy.resolve_expiry(data)
+    except apikey_policy.PolicyError as e:
+        return web.json_response({"error": str(e)}, status=400)
     if not token.has_scope("admin") and not token.has_scope("*"):
-        scopes = "services:read,access:*"
-    expires_days = data.get("expires_days")  # None = never expires
-
-    expires_at = None
-    if expires_days:
-        try:
-            expires_days = int(expires_days)
-            if expires_days > 0:
-                expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
-        except ValueError:
-            pass
+        scopes_list = apikey_policy.LIMITED_SCOPES.split(",")
+    else:
+        scopes_list = requested
+    scopes = ",".join(scopes_list)
 
     try:
         # Generate the API key
@@ -4141,31 +4166,50 @@ async def http_create_api_key(request: web.Request) -> web.Response:
             key_hash=key_hash,
             key_prefix=key_prefix,
             scopes=scopes,
-            expires_at=expires_at
+            expires_at=expires_at,
+            allowed_cidrs=apikey_policy.cidrs_to_text(cidrs),
+            created_ip=get_client_ip(request)
         )
 
         logger.info(f"API key '{name}' created for user {token.user_id}")
         await security_event("api_key_created", request=request, user_id=token.user_id,
                              username=await _username_of(token.user_id),
                              details={"key_id": key_id, "name": name, "scopes": scopes,
-                                      "expires_at": expires_at})
+                                      "expires_at": expires_at,
+                                      "allowed_cidrs": ",".join(cidrs) if cidrs else None})
 
         # Return the full key ONLY ONCE - it cannot be retrieved later
-        return web.json_response({
+        result = {
             "id": key_id,
             "name": name,
             "key": full_key,  # Only shown once!
             "prefix": key_prefix,
             "scopes": scopes,
             "expires_at": expires_at,
+            "expires_days": expires_days,
+            "allowed_cidrs": cidrs or [],
+            "created_ip": get_client_ip(request),
             "warning": "Save this key now - it cannot be retrieved later!"
-        }, status=201)
+        }
+        no_expiry = apikey_policy.no_expiry_warning(scopes_list, expires_at)
+        if no_expiry:
+            result["expiry_warning"] = no_expiry
+        return web.json_response(result, status=201)
 
     except Exception as e:
         if "UNIQUE constraint" in str(e):
             return web.json_response({"error": "API key with this name already exists"}, status=400)
         logger.error(f"Failed to create API key: {e}")
         return web.json_response({"error": "Failed to create API key"}, status=500)
+
+
+def _api_key_public(key: dict, *, show_stale: bool) -> dict:
+    """A key row as the owner sees it: no hash, the bound networks as a list."""
+    out = dict(key)
+    out["allowed_cidrs"] = apikey_policy.cidrs_from_text(out.get("allowed_cidrs"))
+    if show_stale:
+        out["stale"] = apikey_policy.is_stale(out)
+    return out
 
 
 async def http_list_api_keys(request: web.Request) -> web.Response:
@@ -4176,10 +4220,37 @@ async def http_list_api_keys(request: web.Request) -> web.Response:
 
     try:
         keys = await db.get_user_api_keys(token.user_id)
-        return web.json_response({"api_keys": keys})
+        # The stale flag is for administrators; judged by the database role.
+        role = await get_user_role_from_token(token)
+        show_stale = role in ("admin", "superadmin")
+        return web.json_response({
+            "api_keys": [_api_key_public(k, show_stale=show_stale) for k in keys],
+            "stale_after_days": apikey_policy.STALE_DAYS if show_stale else None,
+        })
     except Exception as e:
         logger.error(f"Failed to list API keys: {e}")
         return web.json_response({"error": "Failed to list API keys"}, status=500)
+
+
+async def http_api_key_scopes(request: web.Request) -> web.Response:
+    """The scopes a key can carry, for the key window's picker, and the defaults."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    can_choose = token.has_scope("admin") or token.has_scope("*")
+    registry = [{"scope": k, "description": v, "kind": "built-in"}
+                for k, v in apikey_policy.SCOPE_REGISTRY.items()]
+    extra = []
+    if can_choose:
+        extra = [{"scope": n, "description": "Required by a service", "kind": "service"}
+                 for n in await db.get_service_scope_names() if n not in apikey_policy.SCOPE_REGISTRY]
+    return web.json_response({
+        "scopes": registry + extra,
+        "can_choose": can_choose,
+        "limited_scopes": apikey_policy.LIMITED_SCOPES.split(","),
+        "default_expiry_days": apikey_policy.DEFAULT_EXPIRY_DAYS,
+        "max_cidrs": apikey_policy.MAX_CIDRS,
+    })
 
 
 async def http_revoke_api_key(request: web.Request) -> web.Response:
@@ -9313,7 +9384,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             stream = await db.get_stream_by_key(stream_key_from_path)
         user_id, role = None, "user"
         if stream and password:
-            token = await authenticate_api_key(password)
+            token = await authenticate_api_key(password, ip)
             if token is not None and has_full_user_scope(token):
                 user_id = token.user_id
                 role = await get_user_role_from_token(token)
@@ -9506,7 +9577,10 @@ def _stream_member_lost_access(stream_id: int, user_id: int) -> None:
 def _playback_fingerprint(request: web.Request) -> str:
     """A fingerprint of the credentials a request carries ("anon" for none).
     Stream keys do not count: they are not a way to watch. It is taken without any
-    database read so a cached decision can be found before authenticating."""
+    database read so a cached decision can be found before authenticating. The
+    caller's address is part of it whenever a credential is present: an API key can be
+    bound to networks, so a decision made for one address must not be reused for
+    another."""
     parts = []
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith(("Bearer ", "Api-Key ")):
@@ -9522,6 +9596,7 @@ def _playback_fingerprint(request: web.Request) -> str:
         parts.append("c:" + cookie)
     if not parts:
         return "anon"
+    parts.append("i:" + (get_client_ip(request) or ""))
     return hashlib.sha256("\0".join(parts).encode("utf-8", "surrogatepass")).hexdigest()[:32]
 
 
@@ -24621,6 +24696,7 @@ def create_app() -> web.Application:
     # API Keys
     app.router.add_post("/api/api-keys", http_create_api_key)
     app.router.add_get("/api/api-keys", http_list_api_keys)
+    app.router.add_get("/api/api-keys/scopes", http_api_key_scopes)
     app.router.add_post("/api/api-keys/{id}/revoke", http_revoke_api_key)
     app.router.add_delete("/api/api-keys/{id}", http_delete_api_key)
 

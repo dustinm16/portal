@@ -371,18 +371,22 @@ View all user registrations that used a specific invite code.
 #### POST /api/api-keys
 Create a new API key.
 
+A key cannot create keys: a request authenticated with an API key (any scopes) gets `403`. Use a browser session or a bearer token from `POST /api/token`.
+
 **Request:**
 ```json
 {
   "name": "My Script",
-  "scopes": "*",
-  "expires_days": 90
+  "scopes": "services:read",
+  "expires_days": 90,
+  "allowed_cidrs": ["203.0.113.0/24", "2001:db8::/32"]
 }
 ```
 
 - `name` - required, unique per user.
-- `scopes` - comma-separated, default `*`. Only admins can choose scopes; for non-admin users the value is ignored and the key always gets `services:read,access:*`.
-- `expires_days` - optional; omit (or `0`) for a key that never expires.
+- `scopes` - comma-separated text or a list, default `*`. Every scope is checked against the scope registry (below); an unknown one is a `400`. Only admins can choose scopes: for a non-admin user a valid request is accepted but the key always gets `services:read,access:*`.
+- `expires_days` - a whole number of days from 1 to 3650, or `"never"`. **When omitted (or `null`) the key expires in 90 days.** `0` also means no expiry (kept for old scripts). A value that is not a number of days, is negative or is above 3650 is a `400` (it used to be ignored, which meant "never"). The older spelling `expires_in_days` is read when `expires_days` is absent.
+- `allowed_cidrs` - optional, a list or comma-separated text of at most 10 addresses or networks, IPv4 or IPv6 (`203.0.113.0/24`, `2001:db8::/32`, a bare address is a /32 or /128; host bits are cleared). The key then works only from those addresses, judged by the address the portal sees (see the proxy-trust note below); from any other address it answers the same `401` as a wrong key. A `/0` network is a `400`; write `"any"` (alone) for a key that works from anywhere, which is also what omitting it means. Bad input is a `400`.
 
 **Response (201):**
 ```json
@@ -391,20 +395,50 @@ Create a new API key.
   "name": "My Script",
   "key": "portal_a1b2c3d4...",  // Only shown once!
   "prefix": "portal_a1b",
-  "scopes": "*",
-  "expires_at": "2026-05-06T00:00:00Z",
+  "scopes": "services:read",
+  "expires_at": "2027-02-18T00:00:00+00:00",
+  "expires_days": 90,
+  "allowed_cidrs": ["203.0.113.0/24", "2001:db8::/32"],
+  "created_ip": "198.51.100.7",
   "warning": "Save this key now - it cannot be retrieved later!"
 }
 ```
 
-Keys are `portal_` followed by 64 hex characters. Only an Argon2id hash and the 10-character prefix (`portal_` + 3 hex) are stored; the full key cannot be recovered, so a lost key must be replaced. A key authenticates while it is not revoked and not past `expires_at`; each successful use updates `last_used_at`, which is the quickest way to confirm a key is actually being used.
+A key with scope `*` and no expiry also carries `expiry_warning` (text); the key is still created. Creating a key writes the security event `api_key_created` (scopes, expiry and the binding, never the key).
+
+Keys are `portal_` followed by 64 hex characters. Only an Argon2id hash and the 10-character prefix (`portal_` + 3 hex) are stored; the full key cannot be recovered, so a lost key must be replaced. A key authenticates while it is not revoked, not past `expires_at` and used from an allowed address; each successful use updates `last_used_at` and `last_used_ip` (written at most once a minute per key), which is the quickest way to confirm a key is actually being used.
+
+**Address binding and proxy trust.** The address checked is the one `get_client_ip` returns: the connecting address, or the `CF-Connecting-IP` / `X-Forwarded-For` value when the connection comes from a proxy listed in `TRUSTED_PROXIES`. If that setting is wrong, every request looks like one address (the proxy's) and a bound key stops working for everybody. **Before binding keys, check that the proxy-trust self-check is clean** (`GET /api/admin/proxy-trust` reports `suspect: false`, and the admin Overview shows no Proxy Trust note), then bind one key and test it. A bound key is refused when the address is unknown. A refusal for the address is recorded as the security event `api_key_ip_denied` (result `address_not_allowed`, with the key id and prefix; aggregated per source and minute); the caller only sees the generic `401`.
 
 **Verifying a key** - any authenticated endpoint works; private search is a convenient one:
 ```bash
 curl -H "Authorization: Api-Key $PORTAL_KEY" \
   "https://your-domain/search/search?q=test&format=json"
 ```
-`200` with a `results` array means the key is valid. `401` means the key is wrong, revoked, expired, or was sent as `Bearer`. `503` means the key is fine but SearXNG is disabled or stopped.
+`200` with a `results` array means the key is valid. `401` means the key is wrong, revoked, expired, used from an address it is not bound to, or was sent as `Bearer`. `503` means the key is fine but SearXNG is disabled or stopped.
+
+---
+
+#### GET /api/api-keys/scopes
+The scopes a key can carry, for the key window's picker.
+
+**Response:**
+```json
+{
+  "scopes": [
+    {"scope": "*", "description": "Everything the account may do...", "kind": "built-in"},
+    {"scope": "admin", "description": "Administrator routes...", "kind": "built-in"},
+    {"scope": "services:read", "description": "...", "kind": "built-in"},
+    {"scope": "access:*", "description": "...", "kind": "built-in"}
+  ],
+  "can_choose": true,
+  "limited_scopes": ["services:read", "access:*"],
+  "default_expiry_days": 90,
+  "max_cidrs": 10
+}
+```
+
+The registry is the module `apikey_policy.py`; it lists every scope the portal's own code checks. Scopes that an administrator made up for a service (`required_scopes`) are also accepted, and are listed (kind `service`) for administrators only; a wildcard such as `relay:*` is accepted when it covers one of them. `can_choose` is false for a non-admin user, whose keys always get `limited_scopes`.
 
 ---
 
@@ -418,15 +452,23 @@ List user's API keys.
     {
       "id": 1,
       "name": "My Script",
-      "prefix": "portal_a1b",
-      "scopes": "*",
-      "created_at": "2026-02-05T00:00:00Z",
-      "last_used_at": "2026-02-05T12:00:00Z",
-      "revoked": false
+      "key_prefix": "portal_a1b",
+      "scopes": "services:read",
+      "allowed_cidrs": ["203.0.113.0/24"],
+      "created_at": "2026-02-05 00:00:00",
+      "created_ip": "198.51.100.7",
+      "last_used_at": "2026-02-05 12:00:00",
+      "last_used_ip": "203.0.113.9",
+      "expires_at": "2026-05-06T00:00:00+00:00",
+      "revoked": 0,
+      "stale": false
     }
-  ]
+  ],
+  "stale_after_days": 90
 }
 ```
+
+`created_ip` and `last_used_ip` are shown to the key's owner only; they are empty for a key made or used before 1.18.0. `stale` (and `stale_after_days`) appear only for an administrator (database role admin or superadmin): a key that is not revoked, not expired and has not been used for 90 days (or was never used and is 90 days old). For anybody else both are absent.
 
 ---
 

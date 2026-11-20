@@ -1099,14 +1099,15 @@
                     </tbody>
                 </table>
 
-                <h3>API Key Scopes</h3>
-                <p>When creating an API key, select which features it can access:</p>
+                <h3>API Key Scopes, Expiry and Addresses</h3>
+                <p>When creating an API key, pick the scopes it needs from the list:</p>
                 <ul>
-                    <li><code>chat</code> &mdash; Send and receive chat messages</li>
-                    <li><code>stream</code> &mdash; Manage streams and stream keys</li>
-                    <li><code>connections</code> &mdash; Manage user connections</li>
-                    <li><code>admin</code> &mdash; Admin-level operations (requires admin role)</li>
+                    <li><code>*</code> &mdash; everything your account can do</li>
+                    <li><code>admin</code> &mdash; administrator routes (requires the admin role)</li>
+                    <li><code>services:read</code> and <code>access:*</code> &mdash; member access; every key of a member who is not an administrator carries these two</li>
+                    <li>any scope an administrator made up for a service</li>
                 </ul>
+                <p>A new key expires after 90 days unless you choose another time or &quot;Never&quot; (a full-access key that never expires is flagged with a warning). You can also bind a key to the addresses or networks it is used from; from anywhere else it is refused like a wrong key. The key list shows where each key was created and last used from. Administrators see a &quot;Stale&quot; flag on keys unused for 90 days.</p>
 
                 <h3>Two-Factor Authentication (2FA)</h3>
                 <p>Enable TOTP-based two-factor authentication for your account:</p>

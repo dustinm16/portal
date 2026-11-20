@@ -1222,6 +1222,11 @@ MIGRATIONS = [
     "ALTER TABLE tokens ADD COLUMN ip TEXT",
     "ALTER TABLE tokens ADD COLUMN user_agent TEXT",
     "ALTER TABLE tokens ADD COLUMN last_ip TEXT",
+    # API keys: address binding (comma-separated networks, NULL = not bound), where the key was
+    # made and where it was last used
+    "ALTER TABLE api_keys ADD COLUMN allowed_cidrs TEXT",
+    "ALTER TABLE api_keys ADD COLUMN created_ip TEXT",
+    "ALTER TABLE api_keys ADD COLUMN last_used_ip TEXT",
     # Search operators: link and file flags next to has_image (filled for old rows by the backfill)
     "ALTER TABLE chat_fts_map ADD COLUMN has_link INTEGER DEFAULT 0",
     "ALTER TABLE chat_fts_map ADD COLUMN has_file INTEGER DEFAULT 0",
@@ -3467,13 +3472,20 @@ class Database:
         key_hash: str,
         key_prefix: str,
         scopes: str = "*",
-        expires_at: Optional[str] = None
+        expires_at: Optional[str] = None,
+        allowed_cidrs: Optional[str] = None,
+        created_ip: Optional[str] = None
     ) -> int:
-        """Create a new API key and return its ID."""
+        """Create a new API key and return its ID.
+
+        allowed_cidrs is the comma-separated, already validated list of networks the
+        key may be used from (None: not bound); created_ip is the address it was made from.
+        """
         cursor = await self.conn.execute(
-            """INSERT INTO api_keys (user_id, name, key_hash, key_prefix, scopes, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, name, key_hash, key_prefix, scopes, expires_at)
+            """INSERT INTO api_keys (user_id, name, key_hash, key_prefix, scopes, expires_at,
+                                     allowed_cidrs, created_ip)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, key_hash, key_prefix, scopes, expires_at, allowed_cidrs, created_ip)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -3493,7 +3505,8 @@ class Database:
     async def get_user_api_keys(self, user_id: int) -> list[dict]:
         """Get all API keys for a user (excluding hash for security)."""
         cursor = await self.conn.execute(
-            """SELECT id, name, key_prefix, scopes, expires_at, last_used_at, created_at, revoked
+            """SELECT id, name, key_prefix, scopes, expires_at, last_used_at, created_at, revoked,
+                      allowed_cidrs, created_ip, last_used_ip
                FROM api_keys
                WHERE user_id = ?
                ORDER BY created_at DESC""",
@@ -3502,13 +3515,31 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def update_api_key_last_used(self, key_id: int) -> None:
-        """Update last_used_at timestamp for an API key."""
-        await self.conn.execute(
-            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (key_id,)
-        )
+    async def update_api_key_last_used(self, key_id: int, ip: Optional[str] = None) -> None:
+        """Update last_used_at (and, when known, last_used_ip) for an API key."""
+        if ip:
+            await self.conn.execute(
+                "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP, last_used_ip = ? WHERE id = ?",
+                (ip, key_id)
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (key_id,)
+            )
         await self.conn.commit()
+
+    async def get_service_scope_names(self) -> list[str]:
+        """Every scope some service requires (an administrator makes these up per service)."""
+        cursor = await self.conn.execute(
+            "SELECT required_scopes FROM services WHERE required_scopes IS NOT NULL AND required_scopes != ''")
+        names: set[str] = set()
+        for row in await cursor.fetchall():
+            for part in str(row[0]).split(","):
+                part = part.strip().lower()
+                if part:
+                    names.add(part)
+        return sorted(names)
 
     async def revoke_api_key(self, key_id: int, user_id: int) -> bool:
         """Revoke an API key (user must own it)."""

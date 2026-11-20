@@ -59,6 +59,7 @@ EVENTS = {
     "api_key_created": "security",
     "api_key_revoked": "security",
     "api_key_deleted": "security",
+    "api_key_ip_denied": "security",
     "password_changed": "security",
     "password_change_failed": "security",
     "password_reset": "security",
@@ -93,6 +94,9 @@ AGGREGATED = frozenset({
     "login_failed", "2fa_required", "2fa_failed", "2fa_throttled",
     "register_failed", "password_change_failed", "2fa_disable_failed",
     "probe_block", "rate_limited",
+    # A key whose prefix matches, used from outside its bound networks: the prefix is 12 bits,
+    # so anybody can make this happen without knowing the key.
+    "api_key_ip_denied",
 })
 
 # Admin and configuration actions. They need an authenticated staff session (or run from

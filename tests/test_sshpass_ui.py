@@ -29,7 +29,7 @@ check("the form says the grantee gets a shell without knowing the password",
       index.count("without knowing the password") >= 2)
 check("the stored password input is a password field the browser does not fill",
       re.search(r'<input type="password" id="connection-ssh-stored-password" autocomplete="new-password"', index) is not None)
-check("the script version in index.html was bumped", "user-connections.js?v=49" in index)
+check("the script version in index.html was bumped", "user-connections.js?v=50" in index)
 check("the edit form reads has_stored_password and never puts a value in the field", "config.has_stored_password" in js and "pwField.value = '';" in js)
 check("the share dialog warns for any connection that holds a password and does not prompt", "share-stored-password-warning" in js and "credential_mode !== 'prompt'" in js)
 

@@ -1204,14 +1204,26 @@
                             <input type="text" id="api-key-name" required placeholder="My Application">
                         </div>
                         <div class="form-group">
-                            <label for="api-key-scopes">Scopes (comma-separated)</label>
-                            <input type="text" id="api-key-scopes" placeholder="*" value="*">
-                            <small style="color: var(--text-muted);">Use * for full access, or specific scopes like "relay:read,connections:write"</small>
+                            <label>Scopes</label>
+                            <div id="api-key-scope-picker" class="api-key-scope-picker"></div>
+                            <small id="api-key-scope-note" style="color: var(--text-muted);">Give the key only what the script needs. "*" is everything the account can do.</small>
                         </div>
                         <div class="form-group">
-                            <label for="api-key-expiry">Expiration (days, 0 = never)</label>
-                            <input type="number" id="api-key-expiry" min="0" value="0" placeholder="0">
+                            <label for="api-key-expiry">Expires</label>
+                            <select id="api-key-expiry" onchange="updateApiKeyWarning()">
+                                <option value="30">in 30 days</option>
+                                <option value="90" selected>in 90 days (default)</option>
+                                <option value="180">in 180 days</option>
+                                <option value="365">in 1 year</option>
+                                <option value="never">Never</option>
+                            </select>
                         </div>
+                        <div class="form-group">
+                            <label for="api-key-cidrs">Only from these addresses (optional)</label>
+                            <textarea id="api-key-cidrs" rows="2" placeholder="203.0.113.0/24, 2001:db8::/32"></textarea>
+                            <small style="color: var(--text-muted);">Up to 10 addresses or networks, IPv4 or IPv6, separated by commas. Empty means the key works from anywhere. A request from any other address is refused as if the key were wrong. Before binding keys, check that Admin &gt; Overview shows no Proxy Trust warning: if the portal does not see real visitor addresses, a bound key will fail for everyone.</small>
+                        </div>
+                        <div id="api-key-create-warning" class="alert alert-warning" style="display: none;"></div>
                         <div class="form-actions">
                             <button type="button" class="btn btn-secondary" onclick="hideCreateApiKeyForm()">Cancel</button>
                             <button type="submit" class="btn btn-primary">Create</button>
@@ -1226,7 +1238,10 @@
                     </div>
                     <div class="key-info">
                         <p><strong>Name:</strong> <span id="new-api-key-name"></span></p>
+                        <p><strong>Expires:</strong> <span id="new-api-key-expiry"></span></p>
+                        <p><strong>Allowed from:</strong> <span id="new-api-key-cidrs"></span></p>
                     </div>
+                    <div id="new-api-key-warning" class="alert alert-warning" style="display: none;"></div>
                     <div class="form-group">
                         <label>API Key</label>
                         <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -1253,6 +1268,7 @@
                             <th>Name</th>
                             <th>Prefix</th>
                             <th>Scopes</th>
+                            <th>Allowed from</th>
                             <th>Created</th>
                             <th>Last Used</th>
                             <th>Expires</th>
@@ -2007,7 +2023,7 @@
     <script src="/static/js/dashboard.js?v=59"></script>
     <script src="/static/js/admin.js?v=37"></script>
     <script src="/static/js/ssh-keys.js?v=24"></script>
-    <script src="/static/js/user-connections.js?v=49"></script>
+    <script src="/static/js/user-connections.js?v=50"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>
