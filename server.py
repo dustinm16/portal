@@ -21955,15 +21955,6 @@ async def _push_notification_frame(user_id: int, notif_id: int, type: str, title
         notification_subscribers[user_id] -= dead
 
 
-async def broadcast_notification(type: str, title: str, message: str = "",
-                                  data: dict = None, exclude_user_id: int = None):
-    """Send a notification to all users (e.g., stream went live)."""
-    users = await db.get_all_users()
-    for user in users:
-        if user["id"] != exclude_user_id:
-            await send_notification(user["id"], type, title, message, data)
-
-
 async def http_get_notifications(request: web.Request) -> web.Response:
     """Get notifications for the current user."""
     token = await authenticate_request(request)

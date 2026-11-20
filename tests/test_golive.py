@@ -712,6 +712,15 @@ async def test_shutdown_cancels_and_awaits_pending_announcements(w):
 
 
 @with_world
+async def test_the_unused_broadcast_notification_function_is_gone(w):
+    """Nothing called it (a go-live fans out through _notify_go_live, batched and gated by access);
+    a send-to-everybody helper left lying around is one wrong call from notifying members who
+    may not watch the stream. send_notification, the per-user sender, stays."""
+    assert not hasattr(server, "broadcast_notification")
+    assert hasattr(server, "send_notification")
+
+
+@with_world
 async def test_a_database_made_before_the_columns_existed_is_upgraded_on_connect(w):
     """An existing database (here: one with the columns removed, as 1.15.0 left it) gets the two
     columns when the new code connects, and the claim works at once."""
