@@ -135,6 +135,11 @@ IMMEDIATE_MAX_KEYS = 5000       # distinct such keys remembered for the current 
 EXPORT_MAX_ROWS = 50000
 EXPORT_PAGE = 500
 OVERFLOW_IP = "*"
+# api_key_ip_denied is counted per key id (two members' keys refused from one address are two
+# rows, each under its own account). Distinct key rows per address and minute are capped;
+# the rest are folded into the address's row that has neither user nor key.
+KEY_EVENT = "api_key_ip_denied"
+KEY_ROWS_PER_ADDRESS = 5
 
 # Control characters, line and paragraph separators (U+2028, U+2029), zero-width
 # characters (U+200B-U+200F, U+FEFF) and bidi overrides and isolates (U+202A-U+202E,
@@ -311,6 +316,8 @@ class SecurityEventLog:
         # cap below limits rows written per minute, not just keys per flush.
         self._minute_keys: dict = {}
         # (minute, who, event) -> immediate rows written; only the current minute is kept.
+        self._key_rows_minute: str = ""
+        self._key_rows: dict = {}     # address -> key ids that have a row this minute
         self._immediate_minute: str = ""
         self._immediate_counts: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -347,7 +354,9 @@ class SecurityEventLog:
             minute = row["ts"][:16]
             row["ip"] = aggregate_ip(row["ip"])
             key = (row["ip"], event, row["result"] or "", minute)
-            if event not in AGGREGATED and row["user_id"] is not None:
+            if event == KEY_EVENT:
+                key = self._key_event_key(key, row, details, minute)
+            elif event not in AGGREGATED and row["user_id"] is not None:
                 # An event over the immediate cap (see write): two accounts behind one
                 # address are counted apart, so a count is never filed under another account.
                 key += (f"u{row['user_id']}",)
@@ -388,6 +397,26 @@ class SecurityEventLog:
             entry["count"] += 1
         except Exception:
             logger.debug("security event not buffered", exc_info=True)
+
+    def _key_event_key(self, base: tuple, row: dict, details, minute: str) -> tuple:
+        """The aggregate key for an api_key_ip_denied: the base key plus the key id, or, past
+        KEY_ROWS_PER_ADDRESS distinct keys from one address in the minute, the base key with the
+        row stripped of user and key (a count that is never filed under somebody's account)."""
+        if minute != self._key_rows_minute:
+            self._key_rows_minute = minute
+            self._key_rows = {}
+        kid = details.get("key_id") if isinstance(details, dict) else None
+        if isinstance(kid, int) and not isinstance(kid, bool) and row["user_id"] is not None:
+            ids = self._key_rows.get(row["ip"])
+            if ids is None and len(self._key_rows) < MINUTE_MAX_KEYS:
+                ids = self._key_rows[row["ip"]] = set()
+            if ids is not None and (kid in ids or len(ids) < KEY_ROWS_PER_ADDRESS):
+                ids.add(kid)
+                return base + (f"k{kid}",)
+        row["user_id"] = None
+        row["username_tried"] = None
+        row["details"] = None
+        return base
 
     def pending(self) -> int:
         return sum(e["count"] for e in self._agg.values())

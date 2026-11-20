@@ -41,7 +41,15 @@ SCOPE_REGISTRY: dict[str, str] = {
     "access:*": "Member access: the rest of what a signed-in member's browser session carries.",
 }
 
-_SCOPE_RE = re.compile(r"^[a-z0-9_*.\-]{1,64}(:[a-z0-9_*.\-]{1,64}){0,3}$")
+# A scope is compared exactly as written (TokenPayload.has_scope is case sensitive), so a
+# service scope such as "Relay:Media" or "files/read" is stored as the administrator typed
+# it. Only a sane length and no control characters (or comma, which separates the stored list).
+SCOPE_MAX_CHARS = 128
+_SCOPE_BAD_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029,]")
+
+
+def _scope_text_ok(scope: str) -> bool:
+    return 0 < len(scope) <= SCOPE_MAX_CHARS and not _SCOPE_BAD_CHARS.search(scope)
 
 
 class PolicyError(ValueError):
@@ -76,17 +84,21 @@ def normalise_scopes(value, extra_known: Iterable[str] = ()) -> list[str]:
 
     A scope is known when it is in SCOPE_REGISTRY, is one a service requires
     (`extra_known`), or is a wildcard such as ``relay:*`` that covers one of those.
+    Scopes are kept exactly as written, case included. `None` (the field absent or
+    null) is the default ``["*"]``; an empty list or text is refused.
     """
+    if value is None:
+        return ["*"]
     items = _as_list(value, "scopes")
     if not items:
-        return ["*"]
+        raise PolicyError("scopes is empty; leave it out for the default or name the scopes the key needs")
     known = list(SCOPE_REGISTRY) + [s for s in extra_known if isinstance(s, str) and s]
     out: list[str] = []
     for item in items:
         if not isinstance(item, str):
             raise PolicyError("Each scope must be text")
-        s = item.strip().lower()
-        if not _SCOPE_RE.match(s):
+        s = item.strip()
+        if not _scope_text_ok(s):
             raise PolicyError(f"Unknown scope: {s[:40]!r}")
         if not any(_scope_covers(s, k) for k in known):
             raise PolicyError(f"Unknown scope: {s[:40]!r}")
@@ -120,6 +132,8 @@ def normalise_cidrs(value) -> Optional[list[str]]:
         s = item.strip()
         if not s:
             raise PolicyError("An allowed address is empty")
+        if "%" in s:
+            raise PolicyError(f"An address with a zone id is not allowed: {s[:60]!r}")
         if s.lower() == "any":
             saw_any = True
             continue

@@ -3512,17 +3512,26 @@ class Database:
         await self.conn.commit()
         return cursor.lastrowid
 
-    async def get_api_key_by_prefix(self, prefix: str) -> Optional[dict]:
-        """Get API key by prefix for authentication."""
+    API_KEY_PREFIX_CANDIDATES = 4
+
+    async def get_api_keys_by_prefix(self, prefix: str) -> list[dict]:
+        """Every live (not revoked) API key with this prefix, oldest first, at most
+        API_KEY_PREFIX_CANDIDATES. The prefix is 12 bits, so two keys can share one."""
         cursor = await self.conn.execute(
             """SELECT ak.*, u.username
                FROM api_keys ak
                JOIN users u ON ak.user_id = u.id
-               WHERE ak.key_prefix = ? AND ak.revoked = 0""",
-            (prefix,)
+               WHERE ak.key_prefix = ? AND ak.revoked = 0
+               ORDER BY ak.id
+               LIMIT ?""",
+            (prefix, self.API_KEY_PREFIX_CANDIDATES)
         )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_api_key_by_prefix(self, prefix: str) -> Optional[dict]:
+        """The first live key with this prefix (see get_api_keys_by_prefix for all of them)."""
+        rows = await self.get_api_keys_by_prefix(prefix)
+        return rows[0] if rows else None
 
     async def get_user_api_keys(self, user_id: int) -> list[dict]:
         """Get all API keys for a user (excluding hash for security)."""
@@ -3558,7 +3567,7 @@ class Database:
         names: set[str] = set()
         for row in await cursor.fetchall():
             for part in str(row[0]).split(","):
-                part = part.strip().lower()
+                part = part.strip()
                 if part:
                     names.add(part)
         return sorted(names)

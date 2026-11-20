@@ -117,6 +117,15 @@ def test_policy():
     check("scopes: a scope a service requires is accepted, with a wildcard that covers it",
           s("relay:read", extra_known=["relay:read"]) == ["relay:read"]
           and s("relay:*", extra_known=["relay:read"]) == ["relay:*"] and raises(s, "relay:*"))
+    check("scopes: a service scope is kept exactly as stored (case, slash), a wildcard over it too",
+          s("Relay:Media", extra_known=["Relay:Media"]) == ["Relay:Media"]
+          and s(["files/read"], extra_known=["files/read"]) == ["files/read"]
+          and s("Relay:*", extra_known=["Relay:Media"]) == ["Relay:*"]
+          and raises(s, "relay:media", ["Relay:Media"]) and raises(s, "Relay:Media")
+          and raises(s, "x" * 129, ["x" * 129]) and raises(s, ["a\x00b"], ["a\x00b"]))
+    check("scopes: an explicitly empty value is refused, only a missing or null one is the default",
+          raises(s, []) and raises(s, "") and raises(s, "  , ") and s(None) == ["*"])
+    check("cidr: an address with a zone id is refused", raises(n, "fe80::1%eth0") and raises(n, ["fe80::/64%eth0"]))
     many = [f"svc{i}" for i in range(25)]
     check("scopes: more than 20 are refused", raises(lambda: s(many, extra_known=many)))
 
@@ -376,6 +385,141 @@ async def test_auth_and_routes():
     check("revoke: a revoked bound key no longer works from inside", out is None)
 
 
+async def test_fix_b1():
+    admin = await make_user("b1_admin", "admin")
+    member = await make_user("b1_member")
+    ah = await bearer(admin, ["*"])
+    mh = await bearer(member, ["services:read", "access:*"])
+
+    # 1. service scopes are stored and honoured exactly
+    await db.conn.execute("INSERT INTO services (name, path, required_scopes) VALUES ('b1svc', '/b1svc', 'Relay:Media, files/read, svc:lower')")
+    await db.conn.commit()
+    check("scope names: read back exactly as stored", {"Relay:Media", "files/read"} <= set(await db.get_service_scope_names()))
+    st, d = await create(ah, {"name": "b1-case", "scopes": ["Relay:Media", "files/read"]})
+    check("create: a service scope with capitals or a slash is accepted and stored exactly",
+          st == 201 and d["scopes"] == "Relay:Media,files/read", str(d))
+    out = await server.authenticate_api_key(d["key"], "198.51.100.7")
+    service = {"required_scopes": ["Relay:Media"]}
+    check("key: the stored scope opens the service that requires it",
+          out is not None and server.check_service_authorization(service, out)
+          and not server.check_service_authorization({"required_scopes": ["relay:media"]}, out))
+
+    # 2. a member's answer does not depend on which service scopes exist
+    st1, d1 = await create(mh, {"name": "b1-m1", "scopes": "svc:lower"})
+    st2, d2 = await create(mh, {"name": "b1-m2", "scopes": "svc:made"})
+    check("create: a member gets the same answer for a real and a made-up service scope",
+          st1 == st2 == 400 and d1["error"].replace("svc:lower", "") == d2["error"].replace("svc:made", ""), f"{d1} {d2}")
+    names_calls = []
+    real_names = db.get_service_scope_names
+
+    async def spy():
+        names_calls.append(1)
+        return await real_names()
+
+    db.get_service_scope_names = spy
+    try:
+        await create(mh, {"name": "b1-m3", "scopes": "services:read"})
+        member_calls = len(names_calls)
+        await create(ah, {"name": "b1-a3", "scopes": "services:read"})
+    finally:
+        db.get_service_scope_names = real_names
+    check("create: service scope names are read only for a caller who may choose scopes",
+          member_calls == 0 and len(names_calls) == 1, str(names_calls))
+
+    # 4. empty scopes
+    for i, v in enumerate(([], "", " ")):
+        st, d = await create(ah, {"name": f"b1-empty{i}", "scopes": v})
+        check(f"create: an administrator's empty scopes {v!r} is a 400", st == 400, str(d))
+    st, d = await create(ah, {"name": "b1-missing"})
+    check("create: a missing scopes field is still the default", st == 201 and d["scopes"] == "*", str(d))
+
+    # 5. zone id, and the stale text
+    st, d = await create(ah, {"name": "b1-zone", "allowed_cidrs": "fe80::1%eth0"})
+    check("create: an allowed address with a zone id is a 400", st == 400, str(d))
+    adata = body_of(await server.http_list_api_keys(FakeRequest(headers=ah)))
+    mdata = body_of(await server.http_list_api_keys(FakeRequest(headers=mh)))
+    check("list: stale_after_days is present for an administrator and absent for a member",
+          adata.get("stale_after_days") == 90 and "stale_after_days" not in mdata)
+    doc = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+    check("docs: the text says both stale fields are absent for anybody else", "For anybody else both are absent." in doc)
+
+    # 3. the denial event is counted per key
+    u1 = await make_user("b1_u1")
+    u2 = await make_user("b1_u2")
+    keys = []
+    for uid, nm in ((u1, "b1-bound1"), (u2, "b1-bound2")):
+        hdr = await bearer(uid, ["services:read", "access:*"])
+        st, k = await create(hdr, {"name": nm, "allowed_cidrs": "203.0.113.0/24"})
+        keys.append((uid, k))
+    for uid, k in keys:
+        await server.authenticate_api_key(k["key"], "198.51.100.77")
+    rows = [e for e in await events("api_key_ip_denied") if e["ip"] == "198.51.100.77"]
+    check("denial: two members' keys refused from one address are two rows, each under its own user",
+          sorted(r["user_id"] for r in rows) == sorted([u1, u2])
+          and {json.loads(r["details"])["key_id"] for r in rows} == {k["id"] for _, k in keys}, str(rows))
+    lg = secevents.SecurityEventLog()
+    for i in range(9):
+        lg.note("api_key_ip_denied", ip="203.0.113.250", user_id=100 + i, result="address_not_allowed",
+                details={"key_id": 500 + i, "key_prefix": "portal_abc"}, now=1_800_000_000)
+    for i in range(9):
+        lg.note("api_key_ip_denied", ip="203.0.113.250", user_id=100 + i, result="address_not_allowed",
+                details={"key_id": 500 + i, "key_prefix": "portal_abc"}, now=1_800_000_001)
+    ents = list(lg._agg.values())
+    keyed = [e for e in ents if e["user_id"] is not None]
+    folded = [e for e in ents if e["user_id"] is None]
+    check("denial: rows per address and minute are capped, the rest folded into one row without user and key",
+          len(keyed) == secevents.KEY_ROWS_PER_ADDRESS and len(folded) == 1
+          and folded[0]["details"] is None and folded[0]["count"] == 2 * (9 - secevents.KEY_ROWS_PER_ADDRESS)
+          and all(e["count"] == 2 for e in keyed), str([(e["user_id"], e["count"]) for e in ents]))
+
+    # 6. two live keys that share a prefix both work
+    import secrets
+    pfx = "portal_f0f"
+    made = []
+    for uid, nm in ((u1, "b1-share1"), (u2, "b1-share2")):
+        full = pfx + secrets.token_hex(31)[:61]
+        full = full[:71]
+        kid = await db.create_api_key(user_id=uid, name=nm, key_hash=auth.hash_password(full), key_prefix=pfx[:10],
+                                      scopes="services:read", expires_at=None)
+        made.append((uid, kid, full))
+    check("prefix: the lookup returns every live key with the prefix",
+          [r["id"] for r in await db.get_api_keys_by_prefix(pfx[:10])] == [m[1] for m in made])
+    ok = True
+    for uid, kid, full in made:
+        out = await server.authenticate_api_key(full, "198.51.100.7")
+        ok = ok and out is not None and out.token_id == f"apikey-{kid}" and out.user_id == uid
+    check("prefix: both keys sharing a prefix authenticate, each as its own key", ok)
+    out = await server.authenticate_api_key(made[0][2][:-1] + ("0" if made[0][2][-1] != "0" else "1"), "198.51.100.7")
+    check("prefix: a wrong key with the shared prefix is the generic refusal", out is None)
+    check("prefix: the verified-key cache holds one entry per key and neither vouches for the other",
+          not server._api_key_cached_ok(made[0][1], made[1][2], (await db.get_api_keys_by_prefix(pfx[:10]))[0]["key_hash"]))
+    cred_a = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": made[1][2]}))
+    cred_b = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": made[0][2]}))
+    cred_x = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": made[0][2][:-1] + "z"}))
+    check("prefix: the proxy limit's credential test sees both verified keys and not a forged one",
+          cred_a and cred_b and not cred_x)
+    await db.revoke_api_key(made[0][1], made[0][0])
+    out0 = await server.authenticate_api_key(made[0][2], "198.51.100.7")
+    out1 = await server.authenticate_api_key(made[1][2], "198.51.100.7")
+    check("prefix: revoking one leaves the other working", out0 is None and out1 is not None)
+    # the bound one is refused from outside but the other key with the prefix still works
+    bound_full = "portal_f1f" + "a" * 61
+    bk = await db.create_api_key(user_id=u1, name="b1-sb", key_hash=auth.hash_password(bound_full), key_prefix="portal_f1f",
+                                 scopes="services:read", allowed_cidrs="203.0.113.0/24")
+    free_full = "portal_f1f" + "b" * 61
+    fk = await db.create_api_key(user_id=u2, name="b1-sf", key_hash=auth.hash_password(free_full), key_prefix="portal_f1f",
+                                 scopes="services:read")
+    outf = await server.authenticate_api_key(free_full, "198.51.100.8")
+    outb = await server.authenticate_api_key(bound_full, "198.51.100.8")
+    outb_in = await server.authenticate_api_key(bound_full, "203.0.113.8")
+    check("prefix: a bound key and an unbound one sharing a prefix each behave by their own binding",
+          outf is not None and outf.token_id == f"apikey-{fk}" and outb is None
+          and outb_in is not None and outb_in.token_id == f"apikey-{bk}")
+    rows = [e for e in await events("api_key_ip_denied") if e["ip"] == "198.51.100.8"]
+    check("prefix: the denial is logged for the bound key only when nobody else accepted the request",
+          [json.loads(r["details"])["key_id"] for r in rows] == [bk], str(rows))
+
+
 async def test_playback_cache_and_minting():
     import secrets
     owner = await make_user("pc_owner", "user")
@@ -437,6 +581,7 @@ async def main():
     secevents.log.bind(db)
     try:
         await test_auth_and_routes()
+        await test_fix_b1()
         await test_playback_cache_and_minting()
     finally:
         await db.close()

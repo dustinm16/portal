@@ -438,7 +438,7 @@ The scopes a key can carry, for the key window's picker.
 }
 ```
 
-The registry is the module `apikey_policy.py`; it lists every scope the portal's own code checks. Scopes that an administrator made up for a service (`required_scopes`) are also accepted, and are listed (kind `service`) for administrators only; a wildcard such as `relay:*` is accepted when it covers one of them. `can_choose` is false for a non-admin user, whose keys always get `limited_scopes`.
+The registry is the module `apikey_policy.py`; it lists every scope the portal's own code checks. Scopes that an administrator made up for a service (`required_scopes`) are also accepted, and are listed (kind `service`) for administrators only; a wildcard such as `relay:*` is accepted when it covers one of them. A scope is compared and stored exactly as written (case included; a service scope such as `Relay:Media` or `files/read` is accepted as the service lists it, up to 128 characters, no control characters or commas), and only a caller who may choose scopes (an administrator) can name a service scope; for anybody else a service scope is as unknown as a made-up one (`400`). An empty `scopes` (`[]` or `""`) is a `400`; leave the field out for the default `*`. An `allowed_cidrs` entry with an IPv6 zone id (`fe80::1%eth0`) is a `400`. Two live keys may share the first 10 characters (12 bits of the key); every non-revoked key with the prefix is checked (at most 4), and a failed check is the same generic `401`. `can_choose` is false for a non-admin user, whose keys always get `limited_scopes`.
 
 ---
 

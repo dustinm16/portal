@@ -2526,6 +2526,32 @@ async def _verify_api_key_offloop(key_id: int, api_key: str, stored_hash: str) -
             _api_key_verify_pending_by_key.pop(key_id, None)
 
 
+def _api_key_viable_candidates(candidates: list[dict], client_ip: Optional[str]) -> tuple[list[dict], list[dict]]:
+    """Split the keys sharing a prefix into those that may still be checked and those
+    refused for the caller's address. A revoked or expired key is dropped. Address
+    binding is judged before the hash and before the verified-key cache (a key that
+    was verified from inside must still be refused from outside)."""
+    viable: list[dict] = []
+    denied: list[dict] = []
+    now = datetime.now(timezone.utc)
+    for rec in candidates:
+        if rec.get("revoked"):
+            continue
+        expires_at = rec.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.fromisoformat(expires_at.replace("Z", "+00:00")) < now:
+                    continue
+            except ValueError:
+                pass
+        cidrs = apikey_policy.cidrs_from_text(rec.get("allowed_cidrs"))
+        if cidrs and not apikey_policy.client_in_cidrs(client_ip, cidrs):
+            denied.append(rec)
+            continue
+        viable.append(rec)
+    return viable, denied
+
+
 async def authenticate_api_key(api_key: str, client_ip: Optional[str] = None,
                                request: Optional[web.Request] = None) -> Optional[TokenPayload]:
     """Authenticate using an API key.
@@ -2547,45 +2573,44 @@ async def authenticate_api_key(api_key: str, client_ip: Optional[str] = None,
     if not prefix:
         return None
 
-    # Look up key by prefix
-    key_record = await db.get_api_key_by_prefix(prefix)
-    if not key_record:
+    # Look up the keys with this prefix. The prefix is short (12 bits), so two live keys
+    # can share one: every non-revoked candidate is considered (a small bounded number,
+    # see Database.API_KEY_PREFIX_CANDIDATES), not just the first row.
+    candidates = await db.get_api_keys_by_prefix(prefix)
+    if not candidates:
         # Unknown or revoked prefix: reject without running the expensive hash.
         # The lookup prefix is short (12 bits), so this only cheaply discards
         # most forged keys; keys that share a real prefix are bounded by the
         # per-key pending-check cap in _verify_api_key_offloop.
         return None
 
-    # Check if revoked
-    if key_record.get("revoked"):
+    viable, denied = _api_key_viable_candidates(candidates, client_ip)
+
+    # Verify the key hash (skipped for a key already verified against this exact stored
+    # hash; the checks above ran against the database just now). The cache is keyed by key
+    # id and holds the digest of the whole key, so two keys never vouch for each other.
+    key_record = None
+    for rec in viable:
+        if _api_key_cached_ok(rec["id"], api_key, rec["key_hash"]):
+            key_record = rec
+            break
+    if key_record is None:
+        for rec in viable:
+            if await _verify_api_key_offloop(rec["id"], api_key, rec["key_hash"]):
+                _api_key_remember(rec["id"], api_key, rec["key_hash"])
+                key_record = rec
+                break
+
+    if key_record is None:
+        # Address binding: a bound key used from outside its networks is refused before the
+        # hash check (a caller outside the networks must not cost an Argon2 run) with the
+        # same generic answer as a wrong key; the real reason goes to the security events,
+        # but only when no other key with the prefix accepted the request.
+        for rec in denied:
+            await security_event("api_key_ip_denied", request=request, ip=client_ip or "unknown",
+                                 user_id=rec["user_id"], result="address_not_allowed",
+                                 details={"key_id": rec["id"], "key_prefix": prefix})
         return None
-
-    # Check expiration
-    expires_at = key_record.get("expires_at")
-    if expires_at:
-        try:
-            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if exp_dt < datetime.now(timezone.utc):
-                return None
-        except ValueError:
-            pass
-
-    # Address binding: before the hash check (a caller outside the networks must not
-    # cost an Argon2 run) and before the verified-key cache (a key that was verified
-    # from inside must still be refused from outside). Same generic answer as a wrong key.
-    cidrs = apikey_policy.cidrs_from_text(key_record.get("allowed_cidrs"))
-    if cidrs and not apikey_policy.client_in_cidrs(client_ip, cidrs):
-        await security_event("api_key_ip_denied", request=request, ip=client_ip or "unknown",
-                             user_id=key_record["user_id"], result="address_not_allowed",
-                             details={"key_id": key_record["id"], "key_prefix": prefix})
-        return None
-
-    # Verify the key hash (skipped for a key already verified against this
-    # exact stored hash; the checks above ran against the database just now)
-    if not _api_key_cached_ok(key_record["id"], api_key, key_record["key_hash"]):
-        if not await _verify_api_key_offloop(key_record["id"], api_key, key_record["key_hash"]):
-            return None
-        _api_key_remember(key_record["id"], api_key, key_record["key_hash"])
 
     # Update last used timestamp, at most once a minute per key (see auth.TOUCH_INTERVAL)
     if touch_due(f"apikey-{key_record['id']}"):
@@ -4379,14 +4404,20 @@ async def http_create_api_key(request: web.Request) -> web.Response:
     # Every request is checked first (an unknown scope, a bad network or a bad
     # expiry is a 400); a member who is not an administrator then gets the limited
     # scopes whatever he asked for.
+    # The names of scopes services require are offered only to a caller who may choose
+    # scopes: for anybody else a made-up scope answers the same whether or not a service
+    # happens to require it. A missing (or null) scopes field is the default; an empty
+    # one is a 400.
+    can_choose = token.has_scope("admin") or token.has_scope("*")
     try:
         requested = apikey_policy.normalise_scopes(
-            data.get("scopes", "*"), extra_known=await db.get_service_scope_names())
+            data.get("scopes"),
+            extra_known=await db.get_service_scope_names() if can_choose else ())
         cidrs = apikey_policy.normalise_cidrs(data.get("allowed_cidrs"))
         expires_at, expires_days = apikey_policy.resolve_expiry(data)
     except apikey_policy.PolicyError as e:
         return web.json_response({"error": str(e)}, status=400)
-    if not token.has_scope("admin") and not token.has_scope("*"):
+    if not can_choose:
         scopes_list = apikey_policy.LIMITED_SCOPES.split(",")
     else:
         scopes_list = requested
@@ -4460,10 +4491,10 @@ async def http_list_api_keys(request: web.Request) -> web.Response:
         # The stale flag is for administrators; judged by the database role.
         role = await get_user_role_from_token(token)
         show_stale = role in ("admin", "superadmin")
-        return web.json_response({
-            "api_keys": [_api_key_public(k, show_stale=show_stale) for k in keys],
-            "stale_after_days": apikey_policy.STALE_DAYS if show_stale else None,
-        })
+        out = {"api_keys": [_api_key_public(k, show_stale=show_stale) for k in keys]}
+        if show_stale:
+            out["stale_after_days"] = apikey_policy.STALE_DAYS
+        return web.json_response(out)
     except Exception as e:
         logger.error(f"Failed to list API keys: {e}")
         return web.json_response({"error": "Failed to list API keys"}, status=500)
@@ -24597,13 +24628,9 @@ async def _has_valid_credential(request: web.Request) -> bool:
     if api_key and len(api_key) <= _PROXY_LIMIT_MAX_TOKEN_LEN:
         try:
             prefix = parse_api_key(api_key)
-            record = await db.get_api_key_by_prefix(prefix) if prefix else None
-            if record and not record.get("revoked") and _api_key_cached_ok(record["id"], api_key, record["key_hash"]):
-                exp = record.get("expires_at")
-                if exp and datetime.fromisoformat(exp.replace("Z", "+00:00")) < datetime.now(timezone.utc):
-                    return False
-                cidrs = apikey_policy.cidrs_from_text(record.get("allowed_cidrs"))
-                return not cidrs or apikey_policy.client_in_cidrs(get_client_ip(request), cidrs)
+            records = await db.get_api_keys_by_prefix(prefix) if prefix else []
+            viable, _denied = _api_key_viable_candidates(records, get_client_ip(request))
+            return any(_api_key_cached_ok(r["id"], api_key, r["key_hash"]) for r in viable)
         except Exception:
             return False
     return False
