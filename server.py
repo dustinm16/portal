@@ -5256,11 +5256,11 @@ async def http_accept_connection_host_key(request: web.Request) -> web.Response:
     if err:
         return err
 
-    config = dict(connection.get("config") or {})
-    config[hostkeys.FINGERPRINT_KEY] = fp
-    config.pop(hostkeys.REFUSED_KEY, None)
-    if not await db.update_user_connection_config_if_target(
-            connection["id"], token.user_id, config, connection.get("host"), connection.get("port")):
+    # Only the pin keys are merged, into the config as it is stored now: an edit made while
+    # the prompt was open (mode, username, a cleared password) is not written back over.
+    if not await db.merge_user_connection_host_key(
+            connection["id"], token.user_id, fp, connection.get("host"), connection.get("port"),
+            hostkeys.FINGERPRINT_KEY, hostkeys.REFUSED_KEY):
         return _stale_host_key("The connection was changed while this prompt was open; connect again")
     logger.info(f"SSH host key accepted for connection {connection['id']} by user {token.user_id}: {fp}")
     user = await db.get_user_by_id(token.user_id)

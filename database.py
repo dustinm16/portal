@@ -3751,6 +3751,49 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def merge_user_connection_host_key(
+        self, conn_id: int, user_id: int, fingerprint: str, host: str, port: Optional[int],
+        pin_key: str, refused_key: str,
+    ) -> bool:
+        """Pin a host key on a connection by changing only the pin keys of its CURRENT config.
+
+        The accept route used to write back the whole config it had read earlier, so an edit
+        made while the prompt was open (the mode set to prompt, a new username, a cleared
+        password) was overwritten and the old values came back. Here the row is read again,
+        the pin keys are merged into what is stored now, and the write only lands if the
+        config is still the text that was read (compare and set; retried when somebody wrote
+        in between). False when the connection no longer points at `host`:`port` (a missing
+        port means 22) or is gone, or when its config cannot be read (nothing is written)."""
+        import json
+        for _ in range(8):
+            cursor = await self.conn.execute(
+                "SELECT config, host, port FROM user_connections WHERE id = ? AND user_id = ?",
+                (conn_id, user_id))
+            row = await cursor.fetchone()
+            if not row or row["host"] != host or (row["port"] or 22) != (port or 22):
+                return False
+            stored = row["config"]
+            plain = decrypt_config(stored) if stored else "{}"
+            if stored and stored.startswith("enc:") and plain == "{}":
+                return False        # decryption failed: never write a pin over a config we cannot read
+            try:
+                cfg = json.loads(plain) if plain else {}
+            except json.JSONDecodeError:
+                return False
+            if not isinstance(cfg, dict):
+                return False
+            cfg[pin_key] = fingerprint
+            cfg.pop(refused_key, None)
+            cursor = await self.conn.execute(
+                "UPDATE user_connections SET config = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND user_id = ? AND host = ? AND COALESCE(NULLIF(port, 0), 22) = ? "
+                "AND config IS ?",
+                (encrypt_config(json.dumps(cfg)), conn_id, user_id, host, port or 22, stored))
+            await self.conn.commit()
+            if cursor.rowcount > 0:
+                return True
+        return False
+
     async def delete_user_connection(self, conn_id: int, user_id: int) -> bool:
         """Delete a user connection (must be owned by user)."""
         cursor = await self.conn.execute(
