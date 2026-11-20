@@ -570,6 +570,81 @@ class HookRequest:
         return self._data
 
 
+def test_a_member_banned_from_a_stream_is_refused_on_every_playback_route():
+    """A signed-in member in stream_bans gets the one 404 on HLS, thumbnail, WHEP, info and the
+    heartbeat, at once (the playback cache is cleared on ban and unban); the owner and admins
+    are never refused; a logged-out viewer of an open link is not affected; the detail route
+    says "banned" for a public stream and still 404 for a private one."""
+    async def body(w):
+        pub, opn = w.streams["public"], w.streams["open"]
+        handlers = (server.http_stream_hls_proxy, server.http_stream_thumbnail, server.http_stream_info,
+                    server.http_stream_webrtc_whep, server.http_stream_viewer_beat)
+
+        async def statuses(stream, user, **kw):
+            out = {}
+            for h in handlers:
+                method = "POST" if h in (server.http_stream_webrtc_whep, server.http_stream_viewer_beat) else "GET"
+                resp = await h(w.req(stream["pub"], user, method=method, **kw))
+                out[h.__name__] = resp.status
+            return out
+
+        # before the ban the member watches (this fills the 5 s playback cache)
+        assert (await statuses(pub, "member"))["http_stream_info"] == 200
+        assert (await statuses(pub, "member"))["http_stream_hls_proxy"] == 200
+        ban_id = await w.db.create_stream_ban(pub["id"], w.users["member"], w.users["owner"], "spam")
+        # the route that bans clears the cache; here the helper does what the routes do
+        server._playback_cache_forget(stream_id=pub["id"])
+        got = await statuses(pub, "member")
+        assert set(got.values()) == {404}, got
+        bodies = {(await h(w.req(pub["pub"], "member", method="POST" if h in (
+            server.http_stream_webrtc_whep, server.http_stream_viewer_beat) else "GET"))).body for h in handlers}
+        assert bodies == {NOT_FOUND_BODY}, bodies
+        # the owner and an admin are never banned from viewing, even with a row of their own
+        await w.db.create_stream_ban(pub["id"], w.users["admin"], w.users["owner"], "x")
+        server._playback_cache_forget(stream_id=pub["id"])
+        assert (await statuses(pub, "owner"))["http_stream_info"] == 200
+        assert (await statuses(pub, "admin"))["http_stream_info"] == 200
+        # another member and another stream are unaffected
+        assert (await statuses(pub, "other"))["http_stream_info"] == 200
+        await w.db.create_stream_ban(opn["id"], w.users["member"], w.users["owner"], "x")
+        server._playback_cache_forget(stream_id=opn["id"])
+        assert (await statuses(opn, "member"))["http_stream_info"] == 404
+        # a logged-out viewer of an open link still watches: the ban is a member's
+        assert (await statuses(opn, None))["http_stream_hls_proxy"] == 200
+        # the detail route tells the banned member; a stranger and a private stream stay 404
+        class Info:
+            pass
+        async def detail(sid, user):
+            req = make_mocked_request("GET", f"/api/streams/{sid}", headers={
+                "Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie[user]}"}, match_info={"id": str(sid)},
+                transport=Transport())
+            return await server.http_get_user_stream(req)
+        resp = await detail(pub["id"], "member")
+        assert resp.status == 403 and json.loads(resp.body)["banned"] is True, (resp.status, resp.body)
+        assert (await detail(pub["id"], "other")).status == 200
+        priv = w.streams["private"]
+        await w.db.create_stream_ban(priv["id"], w.users["member"], w.users["owner"], "x")
+        resp = await detail(priv["id"], "member")
+        assert resp.status == 404 and resp.body == NOT_FOUND_BODY, (resp.status, resp.body)
+        # lifting the ban opens it again at once
+        assert await w.db.remove_stream_ban_by_id(pub["id"], ban_id)
+        server._playback_cache_forget(stream_id=pub["id"])
+        assert (await statuses(pub, "member"))["http_stream_hls_proxy"] == 200
+        assert (await detail(pub["id"], "member")).status == 200
+    run(body)
+
+
+def test_the_decision_carries_the_ban():
+    allowed = server._stream_read_allowed
+    pubs = {"user_id": 1, "is_public": 1, "allow_unauthenticated": 1}
+    assert allowed(pubs, 2, "user", False, False) is True
+    assert allowed(pubs, 2, "user", False, True) is False
+    assert allowed(pubs, 1, "user", False, True) is True       # the owner
+    assert allowed(pubs, 3, "admin", False, True) is True      # an admin
+    assert allowed(pubs, 3, "moderator", False, True) is False  # a moderator is not an administrator
+    assert allowed(pubs, None, "user", True, False) is True    # logged out on an open link
+
+
 def test_hook_read_action():
     async def body(w):
         async def hook(path, ip, password="", action="read", peer="127.0.0.1"):
@@ -636,6 +711,9 @@ _MANAGEMENT_CALLS = [
     ("http_create_stream_ban", "POST", "/api/streams/{id}/bans"),
     ("http_remove_stream_ban", "DELETE", "/api/streams/{id}/bans/{user_id}"),
     ("http_remove_stream_ban_by_id", "DELETE", "/api/streams/{id}/bans/id/{ban_id}"),
+    ("http_list_stream_mods", "GET", "/api/streams/{id}/mods"),
+    ("http_add_stream_mod", "POST", "/api/streams/{id}/mods"),
+    ("http_remove_stream_mod", "DELETE", "/api/streams/{id}/mods/{user_id}"),
     ("http_list_relay_destinations", "GET", "/api/streams/{id}/relays"),
     ("http_create_relay_destination", "POST", "/api/streams/{id}/relays"),
     ("http_update_relay_destination", "PUT", "/api/streams/{id}/relays/{relay_id}"),

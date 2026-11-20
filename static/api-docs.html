@@ -1845,6 +1845,44 @@
                     </div>
                 </div>
 
+                <h3>Stream Chat Moderators</h3>
+                <p>The ban routes above and the chat actions pin, unpin, timeout, delete, ban, unban and poll creation are open to global staff, to the stream's owner and to <em>stream mods</em> appointed by the owner. A stream mod's power exists only in that stream's own chat and only while they can still read it; a mod acts only on ordinary members, never on the owner, another mod, global staff or themselves. The owner never acts on staff. A ban also applies to the member's signed-in viewing: HLS, thumbnail, info, WHEP and the viewer heartbeat answer the same <code>404</code> as for a stream that does not exist, and <code>GET /api/streams/{id}</code> answers <code>403</code> with <code>{"banned": true}</code> for a public stream. Owner and administrators are never banned from viewing; an open-link stream can still be watched signed out.</p>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/streams/{id}/mods</span>
+                        <span class="endpoint-desc">List the stream's chat mods</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Owner and administrators only; anybody else and an unknown stream get <code>404</code>. A stream with no chat of its own (a default or shared channel) lists no mods. Returns <code>{"max": 20, "mods": [{"user_id", "username", "nickname", "added_at"}]}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/streams/{id}/mods</span>
+                        <span class="endpoint-desc">Appoint a chat mod</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{"user_id": 7}</code>. Owner and administrators only (<code>404</code> otherwise). <code>201</code> on success; <code>404</code> unknown user; <code>400</code> bad id, the owner or a member banned from the stream; <code>409</code> already a mod, 20 mods already, or the stream has no chat of its own. Appointing does not let the member watch or read a private stream.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/streams/{id}/mods/{user_id}</span>
+                        <span class="endpoint-desc">Remove a chat mod</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Owner and administrators only; <code>404</code> when the member is not a mod of this stream; <code>409</code> when the stream has no chat of its own (a default or shared channel). The generic <code>/api/chat/channels/{id}/members</code> routes cannot make or remove a stream chat's mods.</p>
+                    </div>
+                </div>
+
+                <p>Chat socket: <code>{"type": "set_slowmode", "seconds": 15}</code> (0, 5, 15 or 30; owner, mods and staff; stream chat only) answers the room with <code>slowmode_changed</code>. <code>timeout_user</code> takes <code>target_user_id</code> or the <code>message_id</code> of one of the member's messages (also for an anonymous post). <code>channel_info</code> carries <code>slowmode_seconds</code>, <code>mod_level</code> (<code>none</code>, <code>mod</code>, <code>owner</code>, <code>staff</code>) and <code>stream_chat</code>; messages of the owner and mods carry <code>stream_role</code>. A change of a member's level sends them a <code>mod_level</code> frame. Refusals on a target all read <code>Not allowed</code>.</p>
+
                 <h3>Watching Streams</h3>
                 <p>All stream traffic routes through Portal on port 443. Viewers can watch streams using HLS.js in browser or any HLS-compatible player:</p>
                 <div class="code-block">
@@ -3058,7 +3096,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 {<span class="string">"type"</span>: <span class="string">"message_unpinned"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>}
 
 <span class="comment">// Pinned messages list (sent on channel join)</span>
-{<span class="string">"type"</span>: <span class="string">"pinned_messages"</span>, <span class="string">"messages"</span>: [{<span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Important info"</span>, <span class="string">"pinned_by"</span>: <span class="number">1</span>, <span class="string">"pinned_at"</span>: <span class="string">"..."</span>}]}
+{<span class="string">"type"</span>: <span class="string">"pinned_messages"</span>, <span class="string">"messages"</span>: [{<span class="string">"id"</span>: <span class="number">42</span>, <span class="string">"username"</span>: <span class="string">"alice"</span>, <span class="string">"message"</span>: <span class="string">"Important info"</span>, <span class="string">"pinned_at"</span>: <span class="string">"..."</span>}]}
 
 <span class="comment">// User blocked/unblocked confirmation</span>
 {<span class="string">"type"</span>: <span class="string">"user_blocked"</span>, <span class="string">"user_id"</span>: <span class="number">5</span>, <span class="string">"username"</span>: <span class="string">"bob"</span>}

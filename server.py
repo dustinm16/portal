@@ -5406,10 +5406,12 @@ async def _notify_go_live(stream: dict, payload: dict, broad: bool = True) -> in
         if not current:
             break
         rows = []
+        banned_ids = await db.get_banned_user_ids(stream_id)
         for user in candidates[i:i + _GOLIVE_BATCH]:
             uid = user["id"]
             role = user.get("role") or ("admin" if user.get("is_admin") else "user")
-            if uid == current.get("user_id") or not _stream_read_allowed(current, uid, role, False):
+            if uid == current.get("user_id") or not _stream_read_allowed(current, uid, role, False,
+                                                                       uid in banned_ids):
                 continue
             rows.append((uid, "stream_live", title, payload["message"], data))
         if rows:
@@ -5631,9 +5633,15 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     role = await get_user_role_from_token(token)
     is_owner = stream["user_id"] == token.user_id
 
-    # Everybody else gets 404 for a private stream (no enumeration)
+    # Everybody else gets 404 for a private stream (no enumeration). A member banned from
+    # a stream they could otherwise see is told so (the page explains it); the question
+    # "could they otherwise see it" is asked first, so a ban never confirms a private stream.
     if not _stream_read_allowed(stream, token.user_id, role, False):
         return web.json_response({"error": "Stream not found"}, status=404)
+    if not is_owner and await db.is_user_banned_from_stream(stream["id"], token.user_id) \
+            and not _stream_read_allowed(stream, token.user_id, role, False, True):
+        return web.json_response({"error": "banned", "banned": True,
+                                  "message": "You are banned from this stream"}, status=403)
 
     # Always strip internal hash fields — these are implementation details
     stream.pop("stream_key_hash", None)
@@ -6032,6 +6040,43 @@ async def _chat_role_of_user(user_id) -> str:
     return user.get("role") or ("superadmin" if user.get("is_admin") else "user")
 
 
+async def _stream_route_mod_level(stream: dict, user_id: int, role: str):
+    """(level, channel) of a member on the stream routes that moderate a stream: the
+    owner of the stream always counts as the owner here (a ban is a stream matter:
+    it holds whatever chat the stream is bound to); a stream mod of its own chat and
+    global staff count through chat_mod_level."""
+    channel = await db.get_chat_channel(stream["chat_channel_id"]) if stream.get("chat_channel_id") else None
+    if channel:
+        level = await chat_mod_level(channel, {"id": user_id, "role": role})
+    else:
+        level = CHAT_LEVEL_STAFF if role in ("admin", "superadmin") else CHAT_LEVEL_NONE
+    if stream.get("user_id") == user_id and level < CHAT_LEVEL_OWNER:
+        level = CHAT_LEVEL_OWNER
+    return level, channel
+
+
+async def _stream_route_may_ban(stream: dict, channel, level: int, actor_id: int, actor_role: str,
+                                target_id: int) -> bool:
+    """The target rules of a stream ban or unban made over HTTP (see _chat_may_act_on):
+    never oneself or the stream's owner."""
+    if target_id == actor_id or target_id == stream.get("user_id"):
+        return False
+    target = await db.get_user_by_id(target_id)
+    if not target:
+        return False
+    t_role = _user_role_of(target)
+    t_rank = await _chat_rank(channel, target_id, t_role) if channel else (
+        CHAT_LEVEL_STAFF if t_role in _CHAT_STAFF_ROLES else CHAT_LEVEL_NONE)
+    return _chat_may_act_on(level, actor_role, t_rank, t_role)
+
+
+def _role_lifts_any_ban(role: str) -> bool:
+    """Lifting a stream ban is not ranked for an admin or a superadmin: a stream ban on
+    staff made by an owner (1.16.0 allowed that) must stay liftable, and a banned
+    admin has no chat level (_can_read_channel applies the ban), so the role decides."""
+    return role in ("admin", "superadmin")
+
+
 async def http_get_stream_bans(request: web.Request) -> web.Response:
     """Get all bans for a stream (stream owner only)."""
     token, refusal = await _stream_user_auth(request)
@@ -6043,14 +6088,13 @@ async def http_get_stream_bans(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "Invalid stream ID"}, status=400)
 
-    # Verify ownership
+    # The owner, a stream mod of its chat and staff (chat_mod_level)
     stream = await db.get_user_stream(stream_id)
-    if not stream or stream["user_id"] != token.user_id:
-        # Allow admins to view bans
-        if not token.has_scope("admin") and not token.has_scope("*"):
-            return web.json_response({"error": "Not authorized"}, status=403)
-
     viewer_role = await _chat_role_of_user(token.user_id)
+    level = (await _stream_route_mod_level(stream, token.user_id, viewer_role))[0] if stream else CHAT_LEVEL_NONE
+    if level == CHAT_LEVEL_NONE:
+        return web.json_response({"error": "Not authorized"}, status=403)
+
     bans = _mask_ban_rows(await db.get_stream_bans(stream_id), token.user_id, viewer_role)
     return web.json_response({"bans": bans})
 
@@ -6076,10 +6120,11 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Only owner or admin can ban
-    if stream["user_id"] != token.user_id:
-        if not token.has_scope("admin") and not token.has_scope("*"):
-            return web.json_response({"error": "Not authorized"}, status=403)
+    # The owner, a stream mod of its chat and staff ban (chat_mod_level)
+    actor_role = await _chat_role_of_user(token.user_id)
+    level, ban_chan = await _stream_route_mod_level(stream, token.user_id, actor_role)
+    if level == CHAT_LEVEL_NONE:
+        return web.json_response({"error": "Not authorized"}, status=403)
 
     try:
         data = await request.json()
@@ -6093,13 +6138,9 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     if abs(user_id) > _SQLITE_INT_MAX:
         return web.json_response({"error": "Valid user_id required"}, status=400)
 
-    # Can't ban yourself
-    if user_id == token.user_id:
-        return web.json_response({"error": "Cannot ban yourself"}, status=400)
-
-    # Can't ban the stream owner
-    if user_id == stream["user_id"]:
-        return web.json_response({"error": "Cannot ban the stream owner"}, status=400)
+    # Not oneself, not the stream's owner, not another mod, not staff
+    if not await _stream_route_may_ban(stream, ban_chan, level, token.user_id, actor_role, user_id):
+        return web.json_response({"error": "Not allowed"}, status=400)
 
     reason = data.get("reason", "")
 
@@ -6111,12 +6152,17 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     )
 
     if ban_id:
+        _playback_cache_forget(stream_id=stream_id)      # playback is refused from the next request
         # A banned member does not stay in the stream chat's text room or its voice call.
         await _evict_unreadable_by_id(stream.get("chat_channel_id"))
         await _voice_eject_if_not_allowed(user_id)
         # Get banned user's username for the response
         banned_user = await db.get_user_by_id(user_id)
         logger.info(f"User {banned_user['username'] if banned_user else user_id} banned from stream {stream['name']} by user {token.user_id}")
+        await _audit_chat_mod("user_ban", token.user_id, (await db.get_user_by_id(token.user_id) or {}).get("username", "?"),
+                              level, ban_chan, target_id=user_id,
+                              target_name=banned_user["username"] if banned_user else str(user_id),
+                              extra={"reason": reason, "stream": stream["name"], "stream_id": stream_id})
         # Same alert as a ban over the websocket (and the same cooldown key). A target who
         # chats anonymously, or who cannot be found, is never named.
         banner = await db.get_user_by_id(token.user_id)
@@ -6155,17 +6201,26 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Only owner or admin can unban
-    if stream["user_id"] != token.user_id:
-        if not token.has_scope("admin") and not token.has_scope("*"):
-            return web.json_response({"error": "Not authorized"}, status=403)
+    # The owner, a stream mod of its chat and staff unban (chat_mod_level)
+    caller_role = await _chat_role_of_user(token.user_id)
+    level, ban_chan = await _stream_route_mod_level(stream, token.user_id, caller_role)
+    lifts_any = _role_lifts_any_ban(caller_role)
+    if lifts_any:
+        level = CHAT_LEVEL_STAFF
+    if level == CHAT_LEVEL_NONE:
+        return web.json_response({"error": "Not authorized"}, status=403)
+    if not lifts_any and user_id != token.user_id and not await _stream_route_may_ban(
+            stream, ban_chan, level, token.user_id, caller_role, user_id):
+        return web.json_response({"error": "Not allowed"}, status=400)
 
     # Without staff rights only the named ban goes: a ban made from an anonymous
     # post must not react to an account id the caller guessed.
-    caller_role = await _chat_role_of_user(token.user_id)
     success = await db.remove_stream_ban(
         stream_id, user_id, include_anonymous=caller_role in _CHAT_STAFF_ROLES)
     if success:
+        _playback_cache_forget(stream_id=stream_id)
+        await _audit_chat_mod("user_unban", token.user_id, (await db.get_user_by_id(token.user_id) or {}).get("username", "?"),
+                              level, ban_chan, target_id=user_id, extra={"stream_id": stream_id})
         logger.info(f"User {user_id} unbanned from stream {stream['name']} by user {token.user_id}")
         return web.json_response({"success": True, "message": "User unbanned"})
 
@@ -6192,16 +6247,172 @@ async def http_remove_stream_ban_by_id(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
-    # Only owner or admin can unban
-    if stream["user_id"] != token.user_id:
-        if not token.has_scope("admin") and not token.has_scope("*"):
-            return web.json_response({"error": "Not authorized"}, status=403)
-
+    # The owner, a stream mod of its chat and staff unban (chat_mod_level)
+    caller_role = await _chat_role_of_user(token.user_id)
+    level, ban_chan = await _stream_route_mod_level(stream, token.user_id, caller_role)
+    lifts_any = _role_lifts_any_ban(caller_role)
+    if lifts_any:
+        level = CHAT_LEVEL_STAFF
+    if level == CHAT_LEVEL_NONE:
+        return web.json_response({"error": "Not authorized"}, status=403)
+    pending = await db.get_stream_ban(stream_id, ban_id)
+    if not pending:
+        return web.json_response({"error": "Ban not found"}, status=404)
+    if not lifts_any and pending["user_id"] != token.user_id and not await _stream_route_may_ban(
+            stream, ban_chan, level, token.user_id, caller_role, pending["user_id"]):
+        return web.json_response({"error": "Not allowed"}, status=400)
     removed = await db.remove_stream_ban_by_id(stream_id, ban_id)
     if not removed:
         return web.json_response({"error": "Ban not found"}, status=404)
+    _playback_cache_forget(stream_id=stream_id)
+    await _audit_chat_mod("user_unban", token.user_id, (await db.get_user_by_id(token.user_id) or {}).get("username", "?"),
+                          level, ban_chan, target_id=pending["user_id"],
+                          target_name="Anonymous" if pending.get("anonymous") else None,
+                          extra={"stream_id": stream_id, "ban_id": ban_id})
     logger.info(f"Ban {ban_id} removed from stream {stream['name']} by user {token.user_id}")
     return web.json_response({"success": True, "message": "User unbanned"})
+
+
+# ---------------------------------------------------------------------------
+# Stream mods: the owner (and admins) appoint members as moderators of one stream's chat
+
+async def _stream_mods_context(request: web.Request, token):
+    """((token, stream, channel, role), None) for the stream-mod routes, or (None,
+    response). `token` is what _stream_user_auth gave the handler. Only the stream's
+    owner and admins get past: anybody else, and an unknown stream, is the same 404
+    (a private stream's existence is not shown)."""
+    try:
+        stream_id = _row_id(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return None, web.json_response({"error": "Stream not found"}, status=404)
+    stream = await db.get_user_stream(stream_id)
+    role = await _chat_role_of_user(token.user_id)
+    if not stream or (stream["user_id"] != token.user_id and role not in ("admin", "superadmin")):
+        return None, web.json_response({"error": "Stream not found"}, status=404)
+    channel = await db.get_chat_channel(stream["chat_channel_id"]) if stream.get("chat_channel_id") else None
+    return (token, stream, channel, role), None
+
+
+def _mods_chat_refusal(stream: dict, channel, bound) -> Optional[web.Response]:
+    """Mods are appointed in a chat that belongs to this stream alone."""
+    if not channel or not _real_stream_chat(bound) or bound.get("id") != stream["id"]:
+        return web.json_response(
+            {"error": "This stream has no chat of its own, so it has no chat mods"}, status=409)
+    return None
+
+
+async def _push_mod_level(channel, user_id: int) -> None:
+    """Tell the member's open sockets in this chat what they are now (a `mod_level`
+    frame), so their page shows or hides the moderator controls at once."""
+    try:
+        member = await db.get_user_by_id(user_id)
+        if not member:
+            return
+        level = await chat_mod_level(channel, {"id": user_id, "role": _user_role_of(member)})
+        for entry in list(chat_rooms.get(channel["name"], ())):
+            if entry[1] == user_id and not entry[0].closed:
+                await entry[0].send_json({"type": "mod_level", "channel_id": channel["id"],
+                                          "mod_level": CHAT_LEVEL_NAMES[level]})
+    except Exception as e:
+        logger.debug(f"[Chat] mod_level push failed: {e}")
+
+
+async def http_list_stream_mods(request: web.Request) -> web.Response:
+    """GET /api/streams/{id}/mods: the chat mods of a stream (owner and admins only)."""
+    token, refusal = await _stream_user_auth(request)       # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
+    ctx, refusal = await _stream_mods_context(request, token)
+    if refusal is not None:
+        return refusal
+    stream, channel, _role = ctx[1:]
+    bound = await db.get_stream_by_chat_channel(channel["id"]) if channel else None
+    if _mods_chat_refusal(stream, channel, bound) is not None:
+        # A default or shared channel's moderator rows belong to the channel, not to this stream
+        return web.json_response({"mods": [], "max": MAX_STREAM_MODS})
+    mods = [m for m in await db.get_channel_members(channel["id"]) if m.get("role") == "moderator"]
+    return web.json_response({"max": MAX_STREAM_MODS, "mods": [
+        {"user_id": m["user_id"], "username": m["username"], "nickname": m.get("nickname"),
+         "added_at": m.get("created_at")} for m in mods]})
+
+
+async def http_add_stream_mod(request: web.Request) -> web.Response:
+    """POST /api/streams/{id}/mods {user_id}: appoint an existing member as a mod of
+    this stream's chat (owner and admins only; at most MAX_STREAM_MODS)."""
+    token, refusal = await _stream_user_auth(request)       # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
+    ctx, refusal = await _stream_mods_context(request, token)
+    if refusal is not None:
+        return refusal
+    _t, stream, channel, role = ctx
+    bound = await db.get_stream_by_chat_channel(channel["id"]) if channel else None
+    refusal = _mods_chat_refusal(stream, channel, bound)
+    if refusal is not None:
+        return refusal
+    try:
+        data = await request.json()
+        target_id = int(data.get("user_id"))
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        return web.json_response({"error": "Valid user_id required"}, status=400)
+    if target_id <= 0 or target_id > _SQLITE_INT_MAX:
+        return web.json_response({"error": "Valid user_id required"}, status=400)
+    target = await db.get_user_by_id(target_id)
+    if not target:
+        return web.json_response({"error": "User not found"}, status=404)
+    if target_id == stream["user_id"]:
+        return web.json_response({"error": "The streamer already has every chat power"}, status=400)
+    if await db.is_user_banned_from_stream(stream["id"], target_id):
+        return web.json_response({"error": "This member is banned from the stream"}, status=400)
+    current = await db.get_channel_moderator_ids(channel["id"])
+    if target_id in current:
+        return web.json_response({"error": "Already a mod"}, status=409)
+    if len(current) >= MAX_STREAM_MODS:
+        return web.json_response({"error": f"At most {MAX_STREAM_MODS} mods per stream"}, status=409)
+    if not await db.add_channel_member(channel["id"], target_id, role="moderator", added_by=token.user_id):
+        return web.json_response({"error": "Could not appoint the mod"}, status=500)
+    actor_level, _ = await _stream_route_mod_level(stream, token.user_id, role)
+    actor = await db.get_user_by_id(token.user_id)
+    await _audit_chat_mod("stream_mod_add", token.user_id, (actor or {}).get("username", "?"), actor_level,
+                          channel, target_id=target_id, target_name=target["username"],
+                          extra={"stream_id": stream["id"]})
+    await _push_mod_level(channel, target_id)
+    return web.json_response({"success": True, "user_id": target_id, "username": target["username"]},
+                             status=201)
+
+
+async def http_remove_stream_mod(request: web.Request) -> web.Response:
+    """DELETE /api/streams/{id}/mods/{user_id}: end a mod's appointment (owner and admins only)."""
+    token, refusal = await _stream_user_auth(request)       # a stream key (live_) publishes only
+    if refusal is not None:
+        return refusal
+    ctx, refusal = await _stream_mods_context(request, token)
+    if refusal is not None:
+        return refusal
+    _t, stream, channel, role = ctx
+    try:
+        target_id = _row_id(request.match_info.get("user_id"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid ID"}, status=400)
+    bound = await db.get_stream_by_chat_channel(channel["id"]) if channel else None
+    refusal = _mods_chat_refusal(stream, channel, bound)
+    if refusal is not None:
+        return refusal
+    if target_id not in await db.get_channel_moderator_ids(channel["id"]):
+        return web.json_response({"error": "Not a mod of this stream"}, status=404)
+    if channel.get("visibility", "public") == "private":
+        # A private channel's membership is its read list: the mod stays a member
+        await db.add_channel_member(channel["id"], target_id, role="member", added_by=token.user_id)
+    else:
+        await db.remove_channel_member(channel["id"], target_id)
+    target = await db.get_user_by_id(target_id)
+    actor_level, _ = await _stream_route_mod_level(stream, token.user_id, role)
+    actor = await db.get_user_by_id(token.user_id)
+    await _audit_chat_mod("stream_mod_remove", token.user_id, (actor or {}).get("username", "?"), actor_level,
+                          channel, target_id=target_id, target_name=(target or {}).get("username"),
+                          extra={"stream_id": stream["id"]})
+    await _push_mod_level(channel, target_id)
+    return web.json_response({"success": True})
 
 
 async def http_get_public_streams(request: web.Request) -> web.Response:
@@ -6255,7 +6466,8 @@ async def _viewable_stream_for_follow(request: web.Request, user_id: int, role: 
     except (ValueError, TypeError):
         return None
     stream = await db.get_user_stream(stream_id)
-    if not stream or not _stream_read_allowed(stream, user_id, role, False):
+    if not stream or not _stream_read_allowed(
+            stream, user_id, role, False, await db.is_user_banned_from_stream(stream["id"], user_id)):
         return None
     return stream
 
@@ -6311,9 +6523,10 @@ async def http_live_now(request: web.Request) -> web.Response:
     user_id = token.user_id
     role = await get_user_role_from_token(token)
     followed = set(await db.get_followed_stream_ids(user_id))
+    banned_from = await db.get_banned_stream_ids(user_id)
     out = []
     for st in await db.get_live_streams():
-        if not _stream_read_allowed(st, user_id, role, False):
+        if not _stream_read_allowed(st, user_id, role, False, st["id"] in banned_from):
             continue
         out.append({"id": st["id"], "name": st["name"],
                     "game": st.get("game"),
@@ -8879,7 +9092,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             if token is not None and has_full_user_scope(token):
                 user_id = token.user_id
                 role = await get_user_role_from_token(token)
-        if stream and user_id is not None and _stream_read_allowed(stream, user_id, role, False):
+        if stream and user_id is not None and _stream_read_allowed(
+                stream, user_id, role, False, await db.is_user_banned_from_stream(stream["id"], user_id)):
             return web.json_response({"allowed": True})
 
         # Default deny for unrecognized streams or unauthorized access
@@ -8989,17 +9203,23 @@ def _stream_is_open(stream: dict) -> bool:
     return bool(stream.get("is_public")) and bool(stream.get("allow_unauthenticated"))
 
 
-def _stream_read_allowed(stream: dict, user_id: Optional[int], role: str, via_pub_key: bool) -> bool:
+def _stream_read_allowed(stream: dict, user_id: Optional[int], role: str, via_pub_key: bool,
+                         banned: bool = False) -> bool:
     """The one decision on whether somebody may watch a stream (HLS, thumbnail,
-    WHEP, the info route and the MediaMTX hook's read action).
+    WHEP, the info route, the heartbeat and the MediaMTX hook's read action).
 
-    The owner and admins always. Any other logged-in member only when the stream
-    is public. Nobody logged in only when the stream is public with the open
-    link on and the request carries that stream's current pub_ key.
+    The owner and admins always (a stream ban never applies to them). Any other
+    logged-in member only when the stream is public and they are not banned from
+    it (`banned`: the caller looked the member up in stream_bans; every caller that
+    gates playback passes it). Nobody logged in only when the stream is public
+    with the open link on and the request carries that stream's current pub_ key
+    (a ban is a member's, so an open link still plays logged out).
     """
     if user_id is not None:
         if stream.get("user_id") == user_id or role in ("admin", "superadmin"):
             return True
+        if banned:
+            return False
         return bool(stream.get("is_public"))
     return via_pub_key and _stream_is_open(stream)
 
@@ -9103,7 +9323,8 @@ async def _stream_read_access(request: web.Request, key: str) -> tuple[Optional[
     if token is not None and has_full_user_scope(token):
         user_id = token.user_id
         role = await get_user_role_from_token(token)
-    allowed = _stream_read_allowed(stream, user_id, role, via_pub_key)
+    banned = user_id is not None and await db.is_user_banned_from_stream(stream["id"], user_id)
+    allowed = _stream_read_allowed(stream, user_id, role, via_pub_key, banned)
 
     if generation == _playback_auth_generation:
         if len(_playback_auth_cache) >= _PLAYBACK_AUTH_MAX:
@@ -17005,9 +17226,10 @@ async def _chat_member_blocked(ws, channel: dict, *, user_id: int, user_role: st
         return True
     msg_times.append(monotonic())
 
-    # Slowmode check (mods/admins bypass)
+    # Slowmode check (the owner of a stream's chat, its mods and staff bypass)
     slowmode_secs = (channel.get("slowmode_seconds") or 0) if slowmode else 0
-    if slowmode_secs > 0 and user_role not in ("admin", "superadmin", "moderator"):
+    if slowmode_secs > 0 and await chat_mod_level(
+            channel, {"id": user_id, "role": user_role}) == CHAT_LEVEL_NONE:
         last_msg_time = _slowmode_last_msg.get((channel["id"], user_id), 0)
         now_sm = monotonic()
         if now_sm - last_msg_time < slowmode_secs:
@@ -18314,6 +18536,133 @@ async def _socket_may_act_in(ws, channel, user_id: int, user_role: str, notify: 
     return False
 
 
+# ---------------------------------------------------------------------------
+# Stream chat controls: who may moderate which chat
+#
+# chat_mod_level is the one place that says whether a member has moderator powers
+# in a chat channel. It is looked up on every call (nothing is cached across
+# requests). Order of strength: global staff (moderator, admin, superadmin role) >
+# the owner of the stream the channel belongs to > a stream mod (a 'moderator'
+# row in channel_members of that same channel) > nobody. Owner and stream-mod
+# powers exist only in a real stream chat: a channel bound by the server to exactly
+# one stream, never a default or shared channel. A member who can no longer read the
+# channel (_can_read_channel: stream ban, stream made private) has no power in it.
+# What one rank may do to another is _chat_may_act_on.
+CHAT_LEVEL_NONE, CHAT_LEVEL_MOD, CHAT_LEVEL_OWNER, CHAT_LEVEL_STAFF = 0, 1, 2, 3
+CHAT_LEVEL_NAMES = {CHAT_LEVEL_NONE: "none", CHAT_LEVEL_MOD: "mod",
+                    CHAT_LEVEL_OWNER: "owner", CHAT_LEVEL_STAFF: "staff"}
+MAX_STREAM_MODS = 20
+STREAM_SLOWMODE_CHOICES = (0, 5, 15, 30)
+_CHAT_REFUSED_TARGET = "Not allowed"       # one text for every refusal on a target: it names no rank
+
+
+def _real_stream_chat(stream) -> bool:
+    """True for a stream bound by the server to this channel alone (the channel is
+    neither shared by several streams nor a default channel)."""
+    return bool(stream) and not stream.get("chat_channel_shared") and not stream.get("chat_channel_default")
+
+
+def _user_role_of(user: Optional[dict]) -> str:
+    if not user:
+        return "user"
+    return user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+
+
+async def _chat_rank(channel, user_id: int, role: str, stream=_STREAM_UNSET) -> int:
+    """What a member is in this channel, whatever they can read: staff, the owner of
+    its stream, a stream mod or none. Used for targets (a member who cannot read the
+    chat is still the owner or staff); an actor goes through chat_mod_level."""
+    if role in _CHAT_STAFF_ROLES:
+        return CHAT_LEVEL_STAFF
+    if not channel or user_id is None:
+        return CHAT_LEVEL_NONE
+    if stream is _STREAM_UNSET:
+        stream = await db.get_stream_by_chat_channel(channel["id"])
+    if not _real_stream_chat(stream):
+        return CHAT_LEVEL_NONE
+    if stream.get("user_id") == user_id:
+        return CHAT_LEVEL_OWNER
+    if await db.get_channel_member_role(channel["id"], user_id) == "moderator":
+        return CHAT_LEVEL_MOD
+    return CHAT_LEVEL_NONE
+
+
+async def _stream_badge(channel, user_id: int) -> Optional[str]:
+    """"owner" or "mod" for the badge next to a member's name in the chat of a
+    stream's own channel, else None (also the answer for any anonymous post: the
+    caller does not ask)."""
+    stream = await db.get_stream_by_chat_channel(channel["id"])
+    if not _real_stream_chat(stream):
+        return None
+    if stream.get("user_id") == user_id:
+        return "owner"
+    if await db.get_channel_member_role(channel["id"], user_id) == "moderator":
+        return "mod"
+    return None
+
+
+async def chat_mod_level(channel, user, stream=_STREAM_UNSET) -> int:
+    """The moderator level of `user` (a dict with "id" and, optionally, "role") in
+    `channel`: CHAT_LEVEL_STAFF, _OWNER, _MOD or _NONE. Looked up afresh each call."""
+    if not channel or not user or user.get("id") is None:
+        return CHAT_LEVEL_NONE
+    uid = user["id"]
+    role = user.get("role")
+    if role is None:
+        role = _user_role_of(await db.get_user_by_id(uid))
+    if stream is _STREAM_UNSET:
+        stream = await db.get_stream_by_chat_channel(channel["id"])
+    if not await _can_read_channel(channel, uid, role, stream):
+        return CHAT_LEVEL_NONE
+    return await _chat_rank(channel, uid, role, stream)
+
+
+def _chat_may_act_on(actor_level: int, actor_role: str, target_rank: int, target_role: str) -> bool:
+    """May an actor of this level act against (time out, ban, delete the message of)
+    a member of this rank? A stream mod only on ordinary members; the owner on
+    ordinary members and stream mods, never on staff; staff keep the global
+    role order (a moderator cannot act on an admin or another moderator)."""
+    if actor_level == CHAT_LEVEL_STAFF:
+        if target_rank == CHAT_LEVEL_STAFF:
+            return get_role_level(target_role) < get_role_level(actor_role)
+        return True
+    if actor_level == CHAT_LEVEL_OWNER:
+        return target_rank in (CHAT_LEVEL_NONE, CHAT_LEVEL_MOD)
+    if actor_level == CHAT_LEVEL_MOD:
+        return target_rank == CHAT_LEVEL_NONE
+    return False
+
+
+async def chat_mod_may_act(channel, actor: dict, target_id: int, stream=_STREAM_UNSET) -> bool:
+    """chat_mod_level of the actor plus the target rules: nobody acts on themselves,
+    the target must exist, and _chat_may_act_on must allow the pair."""
+    if target_id is None or target_id == actor.get("id"):
+        return False
+    if stream is _STREAM_UNSET:
+        stream = await db.get_stream_by_chat_channel(channel["id"]) if channel else None
+    level = await chat_mod_level(channel, actor, stream)
+    if level == CHAT_LEVEL_NONE:
+        return False
+    target = await db.get_user_by_id(target_id)
+    if not target:
+        return False
+    t_role = _user_role_of(target)
+    t_rank = await _chat_rank(channel, target_id, t_role, stream)
+    return _chat_may_act_on(level, actor.get("role") or "user", t_rank, t_role)
+
+
+async def _audit_chat_mod(action: str, actor_id: int, actor_name: str, level: int, channel, *,
+                          target_id=None, target_type="user", target_name=None, extra: Optional[dict] = None) -> None:
+    """One audit entry for a stream chat control: actor, target, channel and the
+    level the actor acted at."""
+    details = {"level": CHAT_LEVEL_NAMES.get(level, "none")}
+    if extra:
+        details.update(extra)
+    await audit_log(action, actor_id, actor_name, target_id=target_id, target_type=target_type,
+                    target_name=target_name, channel_id=channel["id"] if channel else None,
+                    channel_name=channel["name"] if channel else None, details=json.dumps(details))
+
+
 async def _evict_unreadable_sockets(channel) -> int:
     """After access to a channel was lost (stream made not public, member removed
     from a private channel, stream ban, channel made private): put every socket in
@@ -18484,6 +18833,18 @@ async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, chann
                     "message": m.get("reply_preview_text") or "",
                     "deleted": True
                 }
+    # A badge for the owner of a stream's own chat and for its mods. Never on an
+    # anonymous post: a badge would say who wrote it.
+    badge_stream = await db.get_stream_by_chat_channel(channel_id)
+    if _real_stream_chat(badge_stream):
+        badge_mods = set(await db.get_channel_moderator_ids(channel_id))
+        for m in messages:
+            if m.get("anonymous") or not m.get("user_id"):
+                continue
+            if m["user_id"] == badge_stream.get("user_id"):
+                m["stream_role"] = "owner"
+            elif m["user_id"] in badge_mods:
+                m["stream_role"] = "mod"
     msg_ids = [m["id"] for m in messages]
     card_ids = [m["id"] for m in messages if m.get("message_type") == "stream_card"]
     if card_ids:
@@ -19124,9 +19485,20 @@ async def http_get_channel_members(request: web.Request) -> web.Response:
 
     if not is_mod and not is_member:
         return web.json_response({"error": "Access denied"}, status=403)
+    if await _member_routes_closed(channel, user_role):
+        return web.json_response({"error": "Access denied"}, status=403)
 
     members = await db.get_channel_members(channel_id)
     return web.json_response({"members": members})
+
+
+async def _member_routes_closed(channel: dict, user_role: str) -> bool:
+    """True when the generic channel-member routes must refuse this caller: the
+    channel is the chat of one stream (its mods are managed on the stream's own
+    /mods routes, by its owner and admins) and the caller is not an admin."""
+    if user_role in ("admin", "superadmin"):
+        return False
+    return _real_stream_chat(await db.get_stream_by_chat_channel(channel["id"]))
 
 
 async def http_add_channel_member(request: web.Request) -> web.Response:
@@ -19151,6 +19523,8 @@ async def http_add_channel_member(request: web.Request) -> web.Response:
     ch_role = await db.get_channel_member_role(channel_id, token.user_id)
     if not is_mod and ch_role != "moderator":
         return web.json_response({"error": "Moderator access required"}, status=403)
+    if await _member_routes_closed(channel, user_role):
+        return web.json_response({"error": "Moderator access required"}, status=403)
 
     try:
         data = await request.json()
@@ -19173,6 +19547,9 @@ async def http_add_channel_member(request: web.Request) -> web.Response:
     # Only admin+ can set channel moderator role
     if member_role == "moderator" and not is_mod:
         return web.json_response({"error": "Admin access required to set moderator role"}, status=403)
+    # A stream chat's mods are appointed on /api/streams/{id}/mods (cap, audit, checks)
+    if member_role == "moderator" and _real_stream_chat(await db.get_stream_by_chat_channel(channel_id)):
+        return web.json_response({"error": "Appoint chat mods through the stream's mods list"}, status=400)
 
     await db.add_channel_member(channel_id, target_id, role=member_role, added_by=token.user_id)
 
@@ -19215,6 +19592,8 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
 
     # Otherwise need mod/channel-mod access
     if not is_mod and ch_role != "moderator":
+        return web.json_response({"error": "Moderator access required"}, status=403)
+    if await _member_routes_closed(channel, user_role):
         return web.json_response({"error": "Moderator access required"}, status=403)
 
     await db.remove_channel_member(channel_id, target_id)
@@ -19268,6 +19647,10 @@ async def http_update_channel_member_role(request: web.Request) -> web.Response:
     new_role = data.get("role", "member")
     if new_role not in ("member", "moderator"):
         return web.json_response({"error": "Role must be 'member' or 'moderator'"}, status=400)
+    if await _member_routes_closed(channel, user_role):
+        return web.json_response({"error": "Moderator access required"}, status=403)
+    if new_role == "moderator" and _real_stream_chat(await db.get_stream_by_chat_channel(channel_id)):
+        return web.json_response({"error": "Appoint chat mods through the stream's mods list"}, status=400)
 
     # Remove and re-add with new role
     await db.remove_channel_member(channel_id, target_id)
@@ -19501,7 +19884,12 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "topic": channel.get("topic"),
                             "visibility": channel.get("visibility", "public"),
                             "mode": channel.get("mode", "open"),
-                            "can_send": can_send
+                            "can_send": can_send,
+                            "slowmode_seconds": channel.get("slowmode_seconds") or 0,
+                            # what this member may do here (chat_mod_level), for the page's menus
+                            "mod_level": CHAT_LEVEL_NAMES[await chat_mod_level(
+                                channel, {"id": user_id, "role": user_role}, check_stream)],
+                            "stream_chat": _real_stream_chat(check_stream)
                         }
                         if stream:
                             channel_info["stream_id"] = stream["id"]
@@ -19528,6 +19916,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         pinned = await db.get_pinned_messages(channel["id"])
                         if pinned:
                             await _enrich_channel_messages(pinned, user_id, user_role, channel["id"])
+                            for p_msg in pinned:
+                                # who pinned it is not sent: a pinner may be anonymous
+                                p_msg.pop("pinned_by", None)
+                                p_msg.pop("pinned_by_username", None)
                             await ws.send_json({
                                 "type": "pinned_messages",
                                 "messages": pinned
@@ -19743,6 +20135,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if reply_to_id and reply_preview:
                             broadcast_payload["reply_to"] = reply_to_id
                             broadcast_payload["reply_preview"] = reply_preview
+                        if not my_state["anonymous"]:
+                            badge = await _stream_badge(channel, user_id)
+                            if badge:
+                                broadcast_payload["stream_role"] = badge
                         if image_url:
                             broadcast_payload["image_url"] = image_url
                         if attachment_url:
@@ -19818,8 +20214,18 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         if not await _socket_may_act_in(ws, del_ch, user_id, user_role):
                             continue
-                        # Admins/mods can delete any; users delete own only
-                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        # Moderators (chat_mod_level) delete the messages of members they
+                        # may act on; everybody deletes their own
+                        is_mod = False
+                        mod_level = CHAT_LEVEL_NONE
+                        if del_msg.get("user_id") != user_id:
+                            mod_level = await chat_mod_level(del_ch, {"id": user_id, "role": user_role})
+                            if del_msg.get("user_id") is None:
+                                # No author (a system post): the owner and staff only
+                                is_mod = mod_level in (CHAT_LEVEL_OWNER, CHAT_LEVEL_STAFF)
+                            else:
+                                is_mod = mod_level != CHAT_LEVEL_NONE and await chat_mod_may_act(
+                                    del_ch, {"id": user_id, "role": user_role}, del_msg.get("user_id"))
                         if is_mod:
                             success = await db.delete_chat_message(message_id)
                         else:
@@ -19834,11 +20240,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 message_id, current_channel, user_id, del_msg),
                                 meta={"channel_id": del_ch["id"]}))
                             if is_mod:
-                                channel_obj = await db.get_chat_channel_by_name(current_channel)
-                                await audit_log("message_delete", user_id, username,
-                                                target_id=message_id, target_type="message",
-                                                channel_id=channel_obj["id"] if channel_obj else None,
-                                                channel_name=current_channel)
+                                await _audit_chat_mod("message_delete", user_id, username, mod_level, del_ch,
+                                                      target_id=message_id, target_type="message")
 
                     elif msg_type == "react":
                         if not current_channel:
@@ -19931,10 +20334,6 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                     elif msg_type == "pin_message":
                         if not current_channel:
                             continue
-                        is_mod = user_role in ("admin", "superadmin", "moderator")
-                        if not is_mod:
-                            await ws.send_json({"type": "error", "message": "Only moderators can pin messages"})
-                            continue
                         message_id = data.get("message_id")
                         if not message_id:
                             continue
@@ -19946,6 +20345,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if not channel:
                             continue
                         if not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
+                        mod_level = await chat_mod_level(channel, {"id": user_id, "role": user_role})
+                        if mod_level == CHAT_LEVEL_NONE:
+                            await ws.send_json({"type": "error", "message": "Only moderators can pin messages"})
                             continue
                         msg = await db.get_chat_message(message_id)
                         if not msg or msg["channel_id"] != channel["id"]:
@@ -19964,16 +20367,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": msg_author,
                                 "pinned_by": display_name
                             })
-                            await audit_log("pin_message", user_id, username,
-                                            target_id=message_id, target_type="message",
-                                            channel_name=current_channel)
+                            await _audit_chat_mod("pin_message", user_id, username, mod_level, channel,
+                                                  target_id=message_id, target_type="message")
 
                     elif msg_type == "unpin_message":
                         if not current_channel:
-                            continue
-                        is_mod = user_role in ("admin", "superadmin", "moderator")
-                        if not is_mod:
-                            await ws.send_json({"type": "error", "message": "Only moderators can unpin messages"})
                             continue
                         message_id = data.get("message_id")
                         if not message_id:
@@ -19986,6 +20384,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         unpin_ch = await db.get_chat_channel_by_name(current_channel)
                         if not unpin_ch or not await _socket_may_act_in(ws, unpin_ch, user_id, user_role):
                             continue
+                        mod_level = await chat_mod_level(unpin_ch, {"id": user_id, "role": user_role})
+                        if mod_level == CHAT_LEVEL_NONE:
+                            await ws.send_json({"type": "error", "message": "Only moderators can unpin messages"})
+                            continue
                         unpin_msg = await db.get_chat_message(message_id)
                         if unpin_msg and unpin_msg["channel_id"] != unpin_ch["id"]:
                             continue
@@ -19997,40 +20399,58 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "type": "message_unpinned",
                             "message_id": message_id
                         })
-                        await audit_log("unpin_message", user_id, username,
-                                        target_id=message_id, target_type="message",
-                                        channel_name=current_channel)
+                        await _audit_chat_mod("unpin_message", user_id, username, mod_level, unpin_ch,
+                                              target_id=message_id, target_type="message")
 
                     elif msg_type == "timeout_user":
                         if not current_channel:
                             continue
-                        is_mod = user_role in ("admin", "superadmin", "moderator")
-                        if not is_mod:
-                            await ws.send_json({"type": "error", "message": "Moderator access required"})
-                            continue
-                        target_user_id = data.get("target_user_id") or data.get("user_id")
-                        duration = data.get("duration", 300)
-                        reason = data.get("reason", "")
-                        if not target_user_id:
-                            continue
-                        try:
-                            target_user_id = int(target_user_id)
-                            duration = min(int(duration), 86400 * 30)  # max 30 days
-                        except (ValueError, TypeError):
-                            continue
-                        target_user = await db.get_user_by_id(target_user_id)
-                        if not target_user:
-                            continue
-                        target_role = target_user.get("role") or "user"
-                        if get_role_level(target_role) >= get_role_level(user_role):
-                            await ws.send_json({"type": "error", "message": "Cannot timeout users with equal or higher role"})
-                            continue
                         channel = await db.get_chat_channel_by_name(current_channel)
                         if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
                             continue
+                        mod_level = await chat_mod_level(channel, {"id": user_id, "role": user_role})
+                        if mod_level == CHAT_LEVEL_NONE:
+                            await ws.send_json({"type": "error", "message": "Moderator access required"})
+                            continue
+                        duration = data.get("duration", 300)
+                        reason = str(data.get("reason", ""))[:200]
+                        # The target is named by account id, or by the id of one of
+                        # their messages (the only way to name the author of an
+                        # anonymous post: the client never learns that id)
+                        target_user_id = data.get("target_user_id") or data.get("user_id")
+                        msg_anon = False      # the post was anonymous: stays so even if the author has since switched it off
+                        try:
+                            if target_user_id:
+                                target_user_id = int(target_user_id)
+                            elif data.get("message_id") is not None:
+                                t_msg = await db.get_chat_message(int(data.get("message_id")))
+                                if not t_msg or t_msg.get("channel_id") != channel["id"]:
+                                    continue
+                                target_user_id = t_msg.get("user_id")
+                                msg_anon = bool(t_msg.get("anonymous"))
+                            duration = max(1, min(int(duration), 86400 * 30))  # max 30 days
+                        except (ValueError, TypeError):
+                            continue
+                        if not target_user_id:
+                            continue
+                        actor = {"id": user_id, "role": user_role}
+                        target_user = await db.get_user_by_id(target_user_id)
+                        if not target_user or not await chat_mod_may_act(channel, actor, target_user_id):
+                            await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
+                            continue
+                        if mod_level < CHAT_LEVEL_STAFF:
+                            # A new timeout replaces the old penalty row: an owner or a stream mod
+                            # may not use it to drop a mute, a site-wide penalty or one that staff
+                            # (or a mod above them) placed
+                            old_pen = await db.is_user_timed_out(target_user_id, channel["id"])
+                            if old_pen and (old_pen.get("type") != "timeout" or old_pen.get("channel_id") is None
+                                            or (old_pen.get("moderator_id") != user_id
+                                                and not await chat_mod_may_act(channel, actor, old_pen.get("moderator_id")))):
+                                await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
+                                continue
                         await db.create_chat_timeout(target_user_id, user_id, "timeout", channel["id"], reason, duration)
                         display_name = my_state.get("nickname") or username
-                        target_anon = bool(target_user.get("chat_anonymous"))
+                        target_anon = msg_anon or bool(target_user.get("chat_anonymous"))
                         target_name = "Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])
                         await broadcast_to_channel(current_channel, {
                             "type": "user_timed_out",
@@ -20044,11 +20464,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             f"You were timed out in #{current_channel}",
                             f"Duration: {duration}s" + (f" — {reason}" if reason else ""),
                             {"channel": current_channel})
-                        await audit_log("user_timeout", user_id, username,
-                                        target_id=target_user_id, target_type="user",
-                                        target_name=target_name,
-                                        channel_name=current_channel,
-                                        details=json.dumps({"duration": duration, "reason": reason}))
+                        await _audit_chat_mod("user_timeout", user_id, username, mod_level, channel,
+                                              target_id=target_user_id, target_name=target_name,
+                                              extra={"duration": duration, "reason": reason})
                         alerts.moderation_action(
                             "timeout", actor=username, target=target_user["username"], anonymous=target_anon,
                             actor_id=user_id, target_id=target_user_id, channel=current_channel,
@@ -20200,6 +20618,14 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if timeout_info:
                             await ws.send_json({"type": "error", "message": "You are timed out or muted"})
                             continue
+                        # In a stream's own chat only its owner, its mods and staff open polls;
+                        # every other channel keeps its rule (any member)
+                        poll_stream = await db.get_stream_by_chat_channel(channel["id"])
+                        poll_level = await chat_mod_level(channel, {"id": user_id, "role": user_role}, poll_stream)
+                        if _real_stream_chat(poll_stream) and poll_level == CHAT_LEVEL_NONE:
+                            await ws.send_json({"type": "error",
+                                                "message": "Only the streamer and the chat moderators can start polls here"})
+                            continue
 
                         question = data.get("question", "").strip()
                         options = data.get("options", [])
@@ -20260,6 +20686,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": display_name,
                                 "created_at": datetime.now(timezone.utc).isoformat()
                             }, anon_subject=user_id if my_state["anonymous"] else None)
+                            if _real_stream_chat(poll_stream):
+                                await _audit_chat_mod("poll_create", user_id, username, poll_level, channel,
+                                                      target_id=poll_id, target_type="poll",
+                                                      extra={"stream_id": poll_stream["id"]})
 
                     elif msg_type == "vote_poll":
                         poll_id = data.get("poll_id")
@@ -20338,7 +20768,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         # Only creator or mod+ can close
                         is_creator = poll["user_id"] == user_id
-                        is_mod = user_role in ("admin", "superadmin", "moderator")
+                        is_mod = await chat_mod_level(poll_ch, {"id": user_id, "role": user_role}) != CHAT_LEVEL_NONE
                         if not is_creator and not is_mod:
                             await ws.send_json({"type": "error", "message": "Only poll creator or moderators can close polls"})
                             continue
@@ -20388,10 +20818,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Not a stream chat"})
                             continue
 
-                        # Only stream owner or admin can ban
-                        is_owner = stream["user_id"] == user_id and not stream.get("chat_channel_shared")
-                        is_admin = user_role in ("admin", "superadmin")
-                        if not is_owner and not is_admin:
+                        # The owner, a stream mod of this chat and staff ban (chat_mod_level);
+                        # who they may ban is chat_mod_may_act below
+                        if not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
+                        actor = {"id": user_id, "role": user_role}
+                        mod_level = await chat_mod_level(channel, actor, stream)
+                        if mod_level == CHAT_LEVEL_NONE:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
                             continue
 
@@ -20408,12 +20841,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             # switched anonymous mode off since.
                             ban_msg_anonymous = bool(ban_msg.get("anonymous"))
 
-                        # Can't ban yourself or the stream owner
-                        if target_user_id == user_id:
-                            await ws.send_json({"type": "error", "message": "Cannot ban yourself"})
-                            continue
-                        if target_user_id == stream["user_id"]:
-                            await ws.send_json({"type": "error", "message": "Cannot ban stream owner"})
+                        # Not oneself, not the owner, not another mod, not staff (one text for
+                        # all of them: it must not say who an anonymous author is)
+                        if not await chat_mod_may_act(channel, actor, target_user_id, stream):
+                            await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                             continue
 
                         # Create the ban. A ban made from an anonymous post is
@@ -20430,6 +20861,9 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         )
 
                         if ban_id:
+                            # Playback is refused from the next request on, not after the
+                            # cached decision runs out
+                            _playback_cache_forget(stream_id=stream["id"])
                             # A banned member does not stay in the room or the voice call.
                             await _evict_unreadable_sockets(channel)
                             await _voice_eject_if_not_allowed(target_user_id)
@@ -20470,11 +20904,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             })
 
                             logger.info(f"User {banned_username} banned from stream {stream['name']} by {username}")
-                            await audit_log("user_ban", user_id, username,
-                                            target_id=target_user_id, target_type="user",
-                                            target_name=banned_username,
-                                            channel_name=current_channel,
-                                            details=json.dumps({"reason": reason, "stream": stream["name"]}))
+                            await _audit_chat_mod("user_ban", user_id, username, mod_level, channel,
+                                                  target_id=target_user_id,
+                                                  target_name="Anonymous" if banned_anon else banned_username,
+                                                  extra={"reason": reason, "stream": stream["name"],
+                                                         "stream_id": stream["id"]})
                             alerts.moderation_action(
                                 "ban", actor=username, target=banned_username,
                                 anonymous=bool(banned_anon or (banned_user and banned_user.get("chat_anonymous"))),
@@ -20515,11 +20949,29 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Not a stream chat"})
                             continue
 
-                        # Only stream owner or admin can unban
-                        is_owner = stream["user_id"] == user_id and not stream.get("chat_channel_shared")
-                        is_admin = user_role in ("admin", "superadmin")
-                        if not is_owner and not is_admin:
+                        # The owner, a stream mod of this chat and staff unban
+                        # An admin or superadmin lifts any ban, their own included (see
+                        # _role_lifts_any_ban); everyone else needs to read the chat
+                        lifts_any = _role_lifts_any_ban(user_role)
+                        if not lifts_any and not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
+                        mod_level = (CHAT_LEVEL_STAFF if lifts_any else
+                                     await chat_mod_level(channel, {"id": user_id, "role": user_role}, stream))
+                        if mod_level == CHAT_LEVEL_NONE:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
+                            continue
+
+                        # Who the ban is on is known before anything is deleted: the
+                        # owner and stream mods lift it only for members they may act on
+                        actor = {"id": user_id, "role": user_role}
+                        if by_ban_id:
+                            pending = await db.get_stream_ban(stream["id"], target_ban_id)
+                            unban_target = pending["user_id"] if pending else None
+                        else:
+                            unban_target = target_user_id
+                        if not lifts_any and unban_target is not None and unban_target != user_id and not await chat_mod_may_act(
+                                channel, actor, unban_target, stream):
+                            await ws.send_json({"type": "error", "message": _CHAT_REFUSED_TARGET})
                             continue
 
                         removed_anonymous = False
@@ -20537,6 +20989,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 stream["id"], target_user_id,
                                 include_anonymous=user_role in _CHAT_STAFF_ROLES)
                         if success:
+                            _playback_cache_forget(stream_id=stream["id"])
                             banned_user = await db.get_user_by_id(target_user_id)
                             banned_username = banned_user["username"] if banned_user else f"User {target_user_id}"
                             hide_target = removed_anonymous and not _viewer_sees_identity(
@@ -20548,12 +21001,37 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 "username": "Anonymous" if hide_target else banned_username
                             })
                             logger.info(f"User {banned_username} unbanned from stream {stream['name']} by {username}")
-                            await audit_log("user_unban", user_id, username,
-                                            target_id=target_user_id, target_type="user",
-                                            target_name=banned_username,
-                                            channel_name=current_channel)
+                            await _audit_chat_mod("user_unban", user_id, username, mod_level, channel,
+                                                  target_id=target_user_id,
+                                                  target_name="Anonymous" if removed_anonymous else banned_username,
+                                                  extra={"stream_id": stream["id"]})
                         else:
                             await ws.send_json({"type": "error", "message": "Ban not found"})
+
+                    elif msg_type == "set_slowmode":
+                        # The owner of this stream's chat, its mods and staff set the wait between
+                        # a viewer's messages: 0, 5, 15 or 30 seconds, in a real stream chat only
+                        # (the HTTP channel route still refuses stream channels)
+                        if not current_channel:
+                            continue
+                        channel = await db.get_chat_channel_by_name(current_channel)
+                        if not channel or not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
+                        sm_stream = await db.get_stream_by_chat_channel(channel["id"])
+                        sm_level = await chat_mod_level(channel, {"id": user_id, "role": user_role}, sm_stream)
+                        if sm_level == CHAT_LEVEL_NONE or not _real_stream_chat(sm_stream):
+                            await ws.send_json({"type": "error", "message": "Not authorized"})
+                            continue
+                        seconds = data.get("seconds")
+                        if isinstance(seconds, bool) or seconds not in STREAM_SLOWMODE_CHOICES:
+                            await ws.send_json({"type": "error", "message": "Slow mode is 0, 5, 15 or 30 seconds"})
+                            continue
+                        await db.update_chat_channel(channel["id"], slowmode_seconds=int(seconds))
+                        await broadcast_to_channel(current_channel, {
+                            "type": "slowmode_changed", "seconds": int(seconds),
+                            "channel_id": channel["id"]})
+                        await _audit_chat_mod("slowmode_set", user_id, username, sm_level, channel,
+                                              extra={"seconds": int(seconds), "stream_id": sm_stream["id"]})
 
                     elif msg_type == "get_bans":
                         # Get list of banned users (stream owner only)
@@ -20569,10 +21047,10 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             await ws.send_json({"type": "error", "message": "Not a stream chat"})
                             continue
 
-                        # Only stream owner or admin can view bans
-                        is_owner = stream["user_id"] == user_id and not stream.get("chat_channel_shared")
-                        is_admin = user_role in ("admin", "superadmin")
-                        if not is_owner and not is_admin:
+                        # The owner, a stream mod of this chat and staff see the ban list
+                        if not await _socket_may_act_in(ws, channel, user_id, user_role):
+                            continue
+                        if await chat_mod_level(channel, {"id": user_id, "role": user_role}, stream) == CHAT_LEVEL_NONE:
                             await ws.send_json({"type": "error", "message": "Not authorized"})
                             continue
 
@@ -23792,6 +24270,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/streams/{id}/bans", http_create_stream_ban)
     app.router.add_delete("/api/streams/{id}/bans/{user_id}", http_remove_stream_ban)
     app.router.add_delete("/api/streams/{id}/bans/id/{ban_id}", http_remove_stream_ban_by_id)
+    app.router.add_get("/api/streams/{id}/mods", http_list_stream_mods)
+    app.router.add_post("/api/streams/{id}/mods", http_add_stream_mod)
+    app.router.add_delete("/api/streams/{id}/mods/{user_id}", http_remove_stream_mod)
     # Stream relay destinations
     app.router.add_get("/api/streams/{id}/relays", http_list_relay_destinations)
     app.router.add_post("/api/streams/{id}/relays", http_create_relay_destination)

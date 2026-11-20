@@ -1507,7 +1507,7 @@ curl -H "X-API-Key: portal_xxx..." https://portal.example.com/api/streams
 Stream owners can ban users from their stream's chat.
 
 #### GET /api/streams/:id/bans
-List banned users for a stream (owner only).
+List banned users for a stream (owner, the stream's mods and staff).
 
 **Response:**
 ```json
@@ -1530,7 +1530,7 @@ List banned users for a stream (owner only).
 ---
 
 #### POST /api/streams/:id/bans
-Ban a user from stream chat (owner only).
+Ban a user from stream chat and from signed-in viewing (owner, the stream's mods and staff; see below for whom).
 
 **Request:**
 ```json
@@ -1552,7 +1552,7 @@ Ban a user from stream chat (owner only).
 ---
 
 #### DELETE /api/streams/:id/bans/:user_id
-Remove a ban from stream chat (owner only).
+Remove a ban from stream chat (owner, the stream's mods and staff). The owner and stream mods lift only bans on members they may act on (`400` "Not allowed" otherwise); an administrator or superadmin lifts any ban, including one on staff and their own. The same holds for `DELETE /api/streams/:id/bans/id/:ban_id` and the `unban` socket message.
 
 **Response:**
 ```json
@@ -1564,9 +1564,41 @@ Remove a ban from stream chat (owner only).
 
 ---
 
+#### Who may moderate (1.17.0)
+
+The ban routes above, and the chat actions below, are open to three kinds of caller, decided by one helper at every request: global staff (moderator, admin, superadmin role), the owner of the stream, and a **stream mod** appointed by the owner. A stream mod's power exists only in that stream's own chat (a channel bound to exactly one stream), and only while the mod can still read it (a ban or a private stream removes it). A stream mod acts only on ordinary members: never on the owner, another mod, global staff or themselves (`400` on the HTTP routes, an `error` frame with the text `Not allowed` on the socket). The owner never acts on staff. Everybody else gets `403`. Each action is written to the audit log with the actor, target, channel and level.
+
+A ban applies to the member's **signed-in viewing** of the stream as well as its chat: the member gets the same `404` as for a stream that does not exist on `/api/stream/{key}/` HLS, thumbnail, info, WHEP and viewer heartbeat, from the next request after the ban. `GET /api/streams/{id}` answers `403 {"error": "banned", "banned": true}` to a banned member of a public stream (still `404` for a stream they could not see anyway). The owner and administrators are never banned from viewing, and a stream with the open link can still be watched signed out.
+
+#### GET /api/streams/:id/mods
+List the chat mods of a stream. Owner and administrators only; anybody else and an unknown stream get `404`. A stream with no chat of its own (a default or shared channel) lists no mods: those rows belong to the channel.
+
+```json
+{ "max": 20, "mods": [ { "user_id": 7, "username": "friend", "nickname": null, "added_at": "2026-11-20 10:00:00" } ] }
+```
+
+#### POST /api/streams/:id/mods
+Appoint a mod: `{"user_id": 7}`. Owner and administrators only (`404` otherwise). `201` on success; `404` for an unknown user; `400` for a bad id, the owner or a member banned from the stream; `409` when already a mod, when the stream already has 20 mods, or when the stream has no chat of its own (a default or shared channel). Appointing does not let the member watch or read a private stream.
+
+#### DELETE /api/streams/:id/mods/:user_id
+End an appointment. Owner and administrators only; `404` when the member is not a mod of this stream; `409` when the stream has no chat of its own (a default or shared channel), whose moderator rows are never removed here. The member's open chat page gets a `mod_level` frame.
+
+The generic `/api/chat/channels/{id}/members` routes do not manage a stream chat's mods: a channel moderator cannot list, add or remove members of a stream's chat, and nobody can set role `moderator` through them there (`400`); use the routes above.
+
+---
+
 ### Stream Chat WebSocket Commands
 
-Additional WebSocket message types for stream chat moderation:
+Additional WebSocket message types for stream chat moderation. `pin_message`, `unpin_message`, `timeout_user` (`duration` in seconds, at least 1; the target is `target_user_id`, or `message_id` of one of the member's messages, which also works for an anonymous post), `delete` of another member's message, `ban`, `unban`, `get_bans` and `create_poll` (in a stream's own chat only the owner, its mods and staff may start a poll) use the helper above. `channel_info` carries `slowmode_seconds`, `mod_level` (`none`, `mod`, `owner`, `staff`) and `stream_chat`; messages of the owner and of mods carry `stream_role` (`owner` or `mod`, never on an anonymous post).
+
+**Set slow mode** (owner, the stream's mods and staff; stream chat only):
+```json
+{
+  "type": "set_slowmode",
+  "seconds": 15
+}
+```
+`seconds` is 0, 5, 15 or 30; anything else is an `error` frame. The room receives `{"type": "slowmode_changed", "seconds": 15, "channel_id": 3}`. Viewers wait that long between messages; the owner, the mods and staff are not held back. A member's mod level changing sends them `{"type": "mod_level", "channel_id": 3, "mod_level": "mod"}`.
 
 **Ban a user:**
 ```json
@@ -2458,7 +2490,7 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 - `reactions`: Array of `{emoji, count, user_ids}` included in history messages. Real-time updates sent as `reaction_update`.
 - `message_edited`: Broadcast when a message is edited (includes new plaintext).
 - `message_pinned` / `message_unpinned`: Broadcast when a mod pins/unpins a message.
-- `pinned_messages`: Sent on channel join with all pinned messages for the channel.
+- `pinned_messages`: Sent on channel join with all pinned messages for the channel. The messages carry no `pinned_by` or `pinned_by_username` (a pinner may chat anonymously).
 - `message_deleted`: Broadcast when a message is deleted.
 - `channel_renamed`: Broadcast when an admin renames a channel via REST API.
 - `channel_deleted`: Broadcast when an admin deletes a channel via REST API.

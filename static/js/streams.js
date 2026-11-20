@@ -403,6 +403,17 @@ async function showStreamDetails(streamId) {
                 </div>
 
                 <div class="info-section">
+                    <h4>Chat Moderators</h4>
+                    <p class="info-description">Moderators you appoint can pin messages, time out and ban viewers, start polls and set slow mode in this stream's chat only. They cannot act on you, on each other or on administrators, and appointing someone does not let them watch a private stream. Up to 20.</p>
+                    <div id="stream-mods-list"></div>
+                    <div class="form-group" style="margin-top: 0.5rem;">
+                        <label for="stream-mod-search">Appoint a member</label>
+                        <input type="text" id="stream-mod-search" maxlength="40" placeholder="Search by name" autocomplete="off">
+                        <div id="stream-mod-results"></div>
+                    </div>
+                </div>
+
+                <div class="info-section">
                     <h4>Multi-Platform Relay</h4>
                     <p class="info-description">Relay your stream to external platforms (Twitch, YouTube, Kick, etc.) simultaneously.</p>
                     <div id="relay-destinations-list"></div>
@@ -431,6 +442,8 @@ async function showStreamDetails(streamId) {
 
         // Load relay destinations
         loadRelayDestinations(streamId);
+        loadStreamMods(streamId);
+        bindStreamModSearch(streamId);
 
         // Bind copy buttons programmatically to avoid inlining secrets in onclick attributes
         const copyValues = {
@@ -1078,6 +1091,94 @@ const RELAY_PLATFORMS = {
     portal: { name: 'Open Relay Portal', color: '#3b82f6' },
     custom: { name: 'Custom', color: '#6b7280' },
 };
+
+/**
+ * Chat moderators of a stream: list, remove, search and appoint. Built from text nodes;
+ * the ids stay in closures, never in attributes.
+ */
+async function loadStreamMods(streamId) {
+    const listEl = document.getElementById('stream-mods-list');
+    if (!listEl) return;
+    try {
+        const data = await Portal.fetchJSON(`/api/streams/${streamId}/mods`);
+        const mods = data.mods || [];
+        listEl.replaceChildren();
+        if (!mods.length) {
+            const none = document.createElement('p');
+            none.className = 'info-description';
+            none.textContent = 'No moderators yet.';
+            listEl.appendChild(none);
+            return;
+        }
+        mods.forEach(m => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:0.5rem;padding:0.3rem 0;';
+            const name = document.createElement('span');
+            name.textContent = m.nickname || m.username;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm btn-secondary';
+            btn.textContent = 'Remove';
+            btn.addEventListener('click', async () => {
+                const r = await Portal.fetch(`/api/streams/${streamId}/mods/${Number(m.user_id)}`, { method: 'DELETE' });
+                if (r.ok) { Portal.toast('Moderator removed', 'success'); loadStreamMods(streamId); }
+                else { Portal.toast('Could not remove the moderator', 'error'); }
+            });
+            row.append(name, btn);
+            listEl.appendChild(row);
+        });
+    } catch (error) {
+        listEl.textContent = 'Could not load the moderators.';
+    }
+}
+
+function bindStreamModSearch(streamId) {
+    const input = document.getElementById('stream-mod-search');
+    const results = document.getElementById('stream-mod-results');
+    if (!input || !results) return;
+    let timer = null;
+    input.addEventListener('input', () => {
+        clearTimeout(timer);
+        const q = input.value.trim();
+        if (q.length < 2) { results.replaceChildren(); return; }
+        timer = setTimeout(async () => {
+            try {
+                const data = await Portal.fetchJSON('/api/chat/users?q=' + encodeURIComponent(q));
+                results.replaceChildren();
+                (data.users || []).forEach(u => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:0.5rem;padding:0.2rem 0;';
+                    const name = document.createElement('span');
+                    name.textContent = u.nickname || u.username;
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'btn btn-sm btn-primary';
+                    btn.textContent = 'Appoint';
+                    btn.addEventListener('click', async () => {
+                        const r = await Portal.fetch(`/api/streams/${streamId}/mods`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ user_id: u.id })
+                        });
+                        if (r.ok) {
+                            Portal.toast('Moderator appointed', 'success');
+                            results.replaceChildren();
+                            input.value = '';
+                            loadStreamMods(streamId);
+                        } else {
+                            const d = await r.json().catch(() => ({}));
+                            Portal.toast(d.error || 'Could not appoint the moderator', 'error');
+                        }
+                    });
+                    row.append(name, btn);
+                    results.appendChild(row);
+                });
+            } catch (error) {
+                results.textContent = 'Search failed.';
+            }
+        }, 250);
+    });
+}
 
 async function loadRelayDestinations(streamId) {
     const listEl = document.getElementById('relay-destinations-list');

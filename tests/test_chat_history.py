@@ -497,13 +497,15 @@ def test_open_socket_cannot_react_poll_or_vote_after_the_chat_closes():
         alice = await env.ws(ids["alice"])
         assert (await bob.join(cid))["type"] == "history"
         assert (await alice.join(cid))["type"] == "history"
-        # while the stream is public all three work
+        # while the stream is public the three actions work
         await bob.send(type="react", message_id=msgs[100]["id"], emoji="p1")
         assert (await bob.until("reaction_update", "error"))["type"] == "reaction_update"
         await bob.send(type="vote_poll", poll_id=poll_id, option_index=0)
         assert (await bob.until("poll_updated", "error"))["type"] == "poll_updated"
-        await bob.send(type="create_poll", question="open?", options=["a", "b"])
-        assert (await bob.until("poll_created", "error"))["type"] == "poll_created"
+        # (a poll in a stream's own chat is the streamer's or a mod's to open: the owner does it)
+        await alice.send(type="create_poll", question="open?", options=["a", "b"])
+        assert (await alice.until("poll_created", "error"))["type"] == "poll_created"
+        assert (await bob.until("poll_created", "error"))["type"] == "poll_created"    # the broadcast reaches bob too
         count = lambda t, w="1": d.conn.execute("SELECT COUNT(*) AS n FROM " + t + " WHERE " + w)
         reacts = (await (await count("chat_reactions")).fetchone())["n"]
         votes = (await (await count("chat_poll_votes")).fetchone())["n"]

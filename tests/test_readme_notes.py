@@ -173,6 +173,20 @@ says17("game field", "live title and game", "60 characters", "`game`", "`stream_
 says17("game privacy", "judged per socket", "owner and administrators", "never contributes its game")
 says17("game not tested", "not tested (game)", "datalist")
 
+says17("chat controls: the helper and its order", "`chat_mod_level(channel, user)`", "looked up on every call", "stream mod", "real stream chat",
+       "stream b", "no longer read", "does not let them watch")
+says17("chat controls: who acts on whom", "never on the owner, another mod or global staff", "never on staff", "role order",
+       "same text", "`message_id`", "global moderator can now ban", "only the owner, its mods and staff can start a poll")
+says17("chat controls: a timeout does not replace a penalty above the actor", "replaces the member's earlier penalty", "site-wide penalty", "automod penalty", "earlier penalty stays")
+says17("chat controls: the mods routes", "/api/streams/{id}/mods", "same `404`", "at most 20", "not banned", "`409`", "/api/chat/channels/{id}/members")
+says17("chat controls: audit", "audit entry", "actor", "target", "channel", "were not audited before")
+says17("chat controls: slow mode", "`set_slowmode`", "0, 5, 15 or 30", "`slowmode_changed`", "http guard", "`mod_level`", "`stream_role`")
+says17("chat controls: watch page", "pop-out", "pinned", "poll", "badge", "go-live cards", "plain text")
+says17("chat controls: playback ban", "`_stream_read_allowed`", "same `404`", "cleared at every ban and unban", "`403` with `{\"banned\": true}`",
+       "never confirms a private stream", "never banned from viewing", "open-link stream can still be watched signed out", "already flowing")
+says17("chat controls: not tested", "not tested (chat controls)", "browser", "real hls playlist")
+says17("chat controls: fixes after review", "fixes after review (chat controls)", "owner-made ban", "lifts any stream ban", "`pinned_by_username`", "not tested (fixes after review)")
+
 # --- README: the live streaming section and the pictures of it ----------------------
 ls = re.search(r"### Live Streaming\n(.*?)\n### ", text, re.S)
 lstext = (ls.group(1) if ls else "").lower()

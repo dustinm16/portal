@@ -4704,6 +4704,26 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def get_stream_ban(self, stream_id: int, ban_id: int) -> Optional[dict]:
+        """One ban of this stream by its ban id (id, user_id, anonymous) or None."""
+        cursor = await self.conn.execute(
+            "SELECT id, user_id, anonymous FROM stream_bans WHERE id = ? AND stream_id = ?",
+            (ban_id, stream_id))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_banned_stream_ids(self, user_id: int) -> set:
+        """The ids of the streams this member is banned from."""
+        cursor = await self.conn.execute(
+            "SELECT DISTINCT stream_id FROM stream_bans WHERE user_id = ?", (user_id,))
+        return {r[0] for r in await cursor.fetchall()}
+
+    async def get_banned_user_ids(self, stream_id: int) -> set:
+        """The ids of the members banned from this stream."""
+        cursor = await self.conn.execute(
+            "SELECT DISTINCT user_id FROM stream_bans WHERE stream_id = ?", (stream_id,))
+        return {r[0] for r in await cursor.fetchall()}
+
     async def remove_stream_ban_by_id(self, stream_id: int, ban_id: int) -> Optional[dict]:
         """Remove one ban of this stream by its ban id. Returns the removed row
         (so the caller can tell whether it was an anonymous one) or None."""
@@ -5375,6 +5395,13 @@ class Database:
             (channel_id,)
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_channel_moderator_ids(self, channel_id: int) -> list:
+        """The user ids with a 'moderator' row in this channel (a stream chat's mods)."""
+        cursor = await self.conn.execute(
+            "SELECT user_id FROM channel_members WHERE channel_id = ? AND role = 'moderator' ORDER BY id",
+            (channel_id,))
+        return [r[0] for r in await cursor.fetchall()]
 
     async def is_channel_member(self, channel_id: int, user_id: int) -> bool:
         """Check if a user is a member of a channel."""

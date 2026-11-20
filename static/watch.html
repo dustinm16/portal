@@ -454,6 +454,48 @@
             margin-left: 0.25rem;
         }
 
+        .mod-badge.stream-owner { background: var(--accent-red, #ef4444); }
+        .mod-badge.stream-mod { background: #16a34a; }
+
+        .watch-pinned {
+            display: none;
+            padding: 0.4rem 0.6rem;
+            background: rgba(250,204,21,0.12);
+            border-bottom: 1px solid rgba(250,204,21,0.35);
+            font-size: 0.8rem;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .watch-pinned.show { display: flex; }
+        .watch-pinned .pin-label { font-weight: 600; white-space: nowrap; }
+        .watch-pinned .pin-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .watch-pinned button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem; }
+
+        .watch-poll { margin-top: 0.25rem; }
+        .watch-poll-question { font-weight: 600; margin-bottom: 0.3rem; overflow-wrap: anywhere; }
+        .watch-poll-option {
+            display: flex; justify-content: space-between; gap: 0.5rem; width: 100%;
+            margin: 0.15rem 0; padding: 0.3rem 0.5rem; border-radius: 4px; cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.05);
+            color: var(--text-primary); font-size: 0.8rem; text-align: left;
+        }
+        .watch-poll-option.mine { border-color: rgba(96,165,250,0.5); background: rgba(96,165,250,0.15); }
+        .watch-poll-option[disabled] { cursor: default; opacity: 0.8; }
+        .watch-poll-foot { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; display: flex; gap: 0.5rem; }
+        .watch-poll-foot button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.7rem; padding: 0; text-decoration: underline; }
+
+        .stream-card-msg {
+            display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
+            padding: 0.5rem 0.6rem; border-radius: 6px; border: 1px solid rgba(239,68,68,0.45);
+            background: rgba(239,68,68,0.1);
+        }
+        .stream-card-title { font-weight: 600; overflow-wrap: anywhere; }
+        .stream-card-game { font-size: 0.75rem; color: var(--text-muted); }
+        .stream-card-watch {
+            background: var(--accent-red, #ef4444); color: white; text-decoration: none;
+            padding: 0.3rem 0.7rem; border-radius: 4px; font-size: 0.8rem; white-space: nowrap;
+        }
+
         .mod-settings-btn {
             background: none;
             border: none;
@@ -830,7 +872,14 @@
                 <div style="display:flex;gap:0.3rem;align-items:center;">
                     <button class="chat-popout-btn" id="chat-popout-btn" type="button" onclick="popOutChat()" title="Open the chat in its own window">Pop out</button>
                     <button class="watch-voice-btn" id="watch-voice-btn" onclick="toggleWatchVoice()">Join Voice</button>
-                    <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()">Bans</button>
+                    <select class="mod-settings-btn" id="slowmode-select" style="display: none;" onchange="setSlowmode(this.value)" title="Slow mode: the wait between one viewer's messages (you and the mods are not held back)">
+                        <option value="0">Slow mode off</option>
+                        <option value="5">Slow 5s</option>
+                        <option value="15">Slow 15s</option>
+                        <option value="30">Slow 30s</option>
+                    </select>
+                    <button class="mod-settings-btn" id="poll-btn" style="display: none;" onclick="startPoll()" title="Start a poll in this chat">Poll</button>
+                    <button class="mod-settings-btn" id="mod-settings-btn" style="display: none;" onclick="showBanList()" title="Members banned from this stream's chat and from watching it while signed in">Bans</button>
                     <button class="chat-close-btn" onclick="toggleChat()" title="Close chat">&times;</button>
                 </div>
             </div>
@@ -849,6 +898,7 @@
                 </div>
                 <video id="watch-screen-share-video" autoplay playsinline></video>
             </div>
+            <div class="watch-pinned" id="watch-pinned" role="status"></div>
             <div class="viewer-chat-messages" id="chat-messages"></div>
             <div class="chat-reply-indicator" id="chat-reply-indicator">
                 <span>Replying to <strong id="reply-to-name"></strong></span>
@@ -866,6 +916,8 @@
         <div class="context-menu-item" onclick="replyToMessage()">↩️ Reply</div>
         <div class="context-menu-item" onclick="copyMessageText()">📋 Copy Text</div>
         <div class="context-menu-item" id="ctx-edit-btn" onclick="editMessage()" style="display:none;">✏️ Edit</div>
+        <div class="context-menu-item" id="ctx-pin-btn" onclick="pinMessage()" style="display:none;">Pin</div>
+        <div class="context-menu-item" id="ctx-timeout-btn" onclick="timeoutAuthor()" style="display:none;">Time out author</div>
         <div class="context-menu-separator" id="ctx-delete-sep" style="display:none;"></div>
         <div class="context-menu-item danger" id="ctx-delete-btn" onclick="deleteMessage()" style="display:none;">🗑️ Delete</div>
     </div>
@@ -888,6 +940,12 @@
         let ctxMessageId = null;
         let ctxMessageUserId = null;
         let ctxMessageText = null;
+        let ctxMessageStaff = false;      // the author of the clicked message cannot be acted on by a mod
+        // What this member may do in this chat, from the server (channel_info / mod_level frames):
+        // 'none', 'mod', 'owner' or 'staff'. The server decides again on every action.
+        let modLevel = 'none';
+        let streamChat = false;           // a chat that belongs to this stream alone
+        let pinnedList = [];
 
         // HLS buffer presets
         const bufferPresets = {
@@ -1015,6 +1073,14 @@
                     return;
                 }
 
+                if (response.status === 403) {
+                    let why = null;
+                    try { why = await response.json(); } catch (e) { /* not json */ }
+                    if (why && why.banned) {
+                        showLoadError('You are banned from this stream by its owner. The ban applies to watching while signed in.');
+                        return;
+                    }
+                }
                 if (!response.ok) {
                     showLoadError('Stream not found');
                     return;
@@ -1498,6 +1564,38 @@
                     (data.messages || []).forEach(msg => appendChatMessage(msg, false));
                     container.scrollTop = container.scrollHeight;
                     break;
+                case 'pinned_messages':
+                    pinnedList = (data.messages || []).map(m => ({ id: m.id, text: m.message, username: m.username }));
+                    renderPinned();
+                    break;
+                case 'message_pinned':
+                    pinnedList = pinnedList.filter(p => p.id !== data.message_id);
+                    pinnedList.unshift({ id: data.message_id, text: data.message, username: data.username });
+                    renderPinned();
+                    break;
+                case 'message_unpinned':
+                    pinnedList = pinnedList.filter(p => p.id !== data.message_id);
+                    renderPinned();
+                    break;
+                case 'poll_created':
+                    appendChatMessage({ id: data.message_id, user_id: data.user_id, username: data.username,
+                                        created_at: data.created_at, message: '', poll: data.poll,
+                                        anonymous: data.username === 'Anonymous' });
+                    break;
+                case 'poll_updated':
+                case 'poll_closed':
+                    updatePollElement(data.poll);
+                    break;
+                case 'mod_level':
+                    applyModLevel(data.mod_level, streamChat);
+                    break;
+                case 'slowmode_changed':
+                    setSlowmodeSelect(data.seconds);
+                    appendSystemMessage(data.seconds > 0 ? `Slow mode is on: ${data.seconds} seconds between messages` : 'Slow mode is off');
+                    break;
+                case 'user_timed_out':
+                    appendSystemMessage(`${data.username} was timed out for ${Math.round((data.duration || 0) / 60)} min by ${data.moderator}${data.reason ? ': ' + data.reason : ''}`);
+                    break;
                 case 'user_banned':
                     appendSystemMessage(`${data.username} has been banned by ${data.banned_by}${data.reason ? ': ' + data.reason : ''}`);
                     break;
@@ -1526,13 +1624,9 @@
                     }
                     break;
                 case 'channel_info':
-                    if (streamData && currentUser && (
-                        streamData.user_id === currentUser.id ||
-                        currentUser.role === 'admin' ||
-                        currentUser.role === 'superadmin'
-                    )) {
-                        document.getElementById('mod-settings-btn').style.display = 'block';
-                    }
+                    streamChat = !!data.stream_chat;
+                    applyModLevel(data.mod_level || 'none', streamChat);
+                    setSlowmodeSelect(data.slowmode_seconds || 0);
                     break;
                 default:
                     if (!chatOnly && data.type && (data.type.startsWith('voice_') || data.type.startsWith('screen_share_'))) {
@@ -1540,6 +1634,174 @@
                     }
                     break;
             }
+        }
+
+        // ---- stream chat controls (the server decides; this only shows or hides the controls) ----
+        function isModLevel() { return modLevel !== 'none'; }
+
+        function applyModLevel(level, isStreamChat) {
+            modLevel = ['mod', 'owner', 'staff'].includes(level) ? level : 'none';
+            const on = modLevel !== 'none';
+            document.getElementById('mod-settings-btn').style.display = on ? 'block' : 'none';
+            // slow mode and polls belong to a chat of this stream alone
+            document.getElementById('slowmode-select').style.display = on && isStreamChat ? 'block' : 'none';
+            document.getElementById('poll-btn').style.display = on && isStreamChat ? 'block' : 'none';
+            renderPinned();
+        }
+
+        function authorOutranks(msg) {
+            if (modLevel === 'staff') return false;            // the server keeps the role order
+            if (msg.role && msg.role !== 'user') return true;  // staff
+            if (modLevel === 'mod') {
+                return !!msg.stream_role || (streamData && msg.user_id != null && msg.user_id === streamData.user_id);
+            }
+            return false;
+        }
+
+        function setSlowmodeSelect(seconds) {
+            const sel = document.getElementById('slowmode-select');
+            if (sel) sel.value = String(seconds || 0);
+        }
+
+        function setSlowmode(value) {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+            chatWs.send(JSON.stringify({ type: 'set_slowmode', seconds: parseInt(value, 10) }));
+        }
+
+        function renderPinned() {
+            const box = document.getElementById('watch-pinned');
+            box.replaceChildren();
+            if (!pinnedList.length) { box.classList.remove('show'); return; }
+            const top = pinnedList[0];
+            const label = document.createElement('span');
+            label.className = 'pin-label';
+            label.textContent = pinnedList.length > 1 ? `Pinned (${pinnedList.length})` : 'Pinned';
+            const text = document.createElement('span');
+            text.className = 'pin-text';
+            text.textContent = (top.username ? top.username + ': ' : '') + (top.text || '');
+            box.append(label, text);
+            if (isModLevel()) {
+                const un = document.createElement('button');
+                un.type = 'button';
+                un.textContent = 'Unpin';
+                un.addEventListener('click', () => {
+                    if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                        chatWs.send(JSON.stringify({ type: 'unpin_message', message_id: top.id }));
+                    }
+                });
+                box.appendChild(un);
+            }
+            box.classList.add('show');
+        }
+
+        function pinMessage() {
+            document.getElementById('msg-context-menu').classList.remove('show');
+            if (!ctxMessageId || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+            chatWs.send(JSON.stringify({ type: 'pin_message', message_id: ctxMessageId }));
+        }
+
+        function timeoutAuthor() {
+            document.getElementById('msg-context-menu').classList.remove('show');
+            if (!ctxMessageId || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+            const minutes = prompt('Time this member out of the chat for how many minutes? (1 to 1440)', '5');
+            if (minutes === null) return;
+            const m = parseInt(minutes, 10);
+            if (!(m >= 1 && m <= 1440)) return;
+            // by the id of the message: the server finds the author, so an anonymous post works too
+            chatWs.send(JSON.stringify({ type: 'timeout_user', message_id: ctxMessageId, duration: m * 60 }));
+        }
+
+        function startPoll() {
+            if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
+            const question = prompt('Poll question:');
+            if (!question || !question.trim()) return;
+            const raw = prompt('Options, separated by commas (2 to 10):');
+            if (raw === null) return;
+            const options = raw.split(',').map(o => o.trim()).filter(Boolean);
+            if (options.length < 2 || options.length > 10) {
+                appendSystemMessage('A poll needs 2 to 10 options', true);
+                return;
+            }
+            chatWs.send(JSON.stringify({ type: 'create_poll', question: question.trim(), options: options }));
+        }
+
+        function buildPollElement(poll) {
+            const box = document.createElement('div');
+            box.className = 'watch-poll';
+            box.dataset.pollId = poll.id;
+            const q = document.createElement('div');
+            q.className = 'watch-poll-question';
+            q.textContent = poll.question || '';
+            box.appendChild(q);
+            const mine = new Set(poll.my_votes || []);
+            (poll.options || []).forEach((opt, i) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'watch-poll-option' + (mine.has(i) ? ' mine' : '');
+                b.disabled = !!poll.is_closed;
+                const label = document.createElement('span');
+                label.textContent = typeof opt === 'string' ? opt : (opt.text || '');
+                const count = document.createElement('span');
+                count.textContent = String((poll.votes || {})[i] || 0);
+                b.append(label, count);
+                b.addEventListener('click', () => {
+                    if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                        chatWs.send(JSON.stringify({ type: 'vote_poll', poll_id: poll.id, option_index: i }));
+                    }
+                });
+                box.appendChild(b);
+            });
+            const foot = document.createElement('div');
+            foot.className = 'watch-poll-foot';
+            const total = document.createElement('span');
+            total.textContent = `${poll.total_votes || 0} votes` + (poll.is_closed ? ', closed' : '');
+            foot.appendChild(total);
+            if (!poll.is_closed && (isModLevel() || poll.user_id === currentUser?.id)) {
+                const close = document.createElement('button');
+                close.type = 'button';
+                close.textContent = 'Close poll';
+                close.addEventListener('click', () => {
+                    if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                        chatWs.send(JSON.stringify({ type: 'close_poll', poll_id: poll.id }));
+                    }
+                });
+                foot.appendChild(close);
+            }
+            box.appendChild(foot);
+            return box;
+        }
+
+        function updatePollElement(poll) {
+            if (!poll) return;
+            const old = document.querySelector(`.watch-poll[data-poll-id="${CSS.escape(String(poll.id))}"]`);
+            if (old) old.replaceWith(buildPollElement(poll));
+        }
+
+        // A go-live card: the text is the plain fallback for clients that do not know the
+        // type. Built from text nodes; the link comes from the numeric stream id only.
+        function buildStreamCard(card) {
+            const wrap = document.createElement('div');
+            wrap.className = 'stream-card-msg';
+            const text = document.createElement('div');
+            const who = document.createElement('div');
+            who.textContent = (card.streamer || 'Someone') + ' is live';
+            const title = document.createElement('div');
+            title.className = 'stream-card-title';
+            title.textContent = card.title || '';
+            text.append(who, title);
+            if (card.game) {
+                const game = document.createElement('div');
+                game.className = 'stream-card-game';
+                game.textContent = card.game;
+                text.appendChild(game);
+            }
+            const link = document.createElement('a');
+            link.className = 'stream-card-watch';
+            link.href = '/watch/' + Number(card.stream_id);
+            link.rel = 'noopener';
+            link.textContent = 'Watch';
+            wrap.append(text, link);
+            return wrap;
         }
 
         function appendSystemMessage(text, isError = false) {
@@ -1564,24 +1826,25 @@
             const avatarColor = msg.anonymous ? '#6b7280' : (avatar.color || '#3b82f6');
             const avatarContent = msg.anonymous ? '?' : (avatar.emoji || (displayName || '?')[0].toUpperCase());
 
-            const canModerate = streamData && currentUser && (
-                streamData.user_id === currentUser.id ||
-                currentUser.role === 'admin' ||
-                currentUser.role === 'superadmin'
-            );
+            const canModerate = isModLevel();
+            // the server refuses a mod acting on the owner, another mod or staff, and the owner
+            // acting on staff: do not offer it
+            const higherAuthor = authorOutranks(msg);
 
             const showBanBtn = canModerate && currentUser && !msg.anonymous &&
                                msg.user_id != null &&
                                msg.user_id !== currentUser.id &&
-                               msg.user_id !== streamData.user_id;
+                               !higherAuthor;
             // The author of an anonymous message is not named to the owner:
             // the ban is requested by message id and the server resolves it.
             const showBanByMessage = canModerate && currentUser &&
                                      msg.anonymous && msg.id != null && msg.user_id !== currentUser.id;
 
-            const roleBadge = msg.role && msg.role !== 'user'
-                ? `<span class="mod-badge">${msg.role}</span>`
-                : '';
+            const roleBadge = (msg.role && msg.role !== 'user'
+                ? `<span class="mod-badge">${escapeHtml(msg.role)}</span>`
+                : '') + (msg.stream_role === 'owner'
+                ? '<span class="mod-badge stream-owner">Streamer</span>'
+                : (msg.stream_role === 'mod' ? '<span class="mod-badge stream-mod">Mod</span>' : ''));
 
             const banBtn = showBanBtn
                 ? `<button class="chat-mod-btn" onclick="banUser(${msg.user_id}, '${escapeHtml(displayName)}')" title="Ban user">Ban</button>`
@@ -1617,6 +1880,16 @@
                     </div>
                 </div>
             `;
+
+            div.dataset.higher = higherAuthor ? '1' : '';
+            if (msg.message_type === 'stream_card' && msg.card && Number.isInteger(Number(msg.card.stream_id))) {
+                const textEl = div.querySelector('.chat-text');
+                if (textEl) textEl.replaceChildren(buildStreamCard(msg.card));
+            }
+            if (msg.poll) {
+                const textEl = div.querySelector('.chat-text');
+                if (textEl) textEl.replaceChildren(buildPollElement(msg.poll));
+            }
 
             container.appendChild(div);
             if (scroll) {
@@ -1701,7 +1974,7 @@
         function banUser(userId, username) {
             if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
 
-            const reason = prompt(`Ban ${username} from this stream's chat?\nEnter reason (optional):`);
+            const reason = prompt(`Ban ${username} from this stream's chat and from watching it while signed in?\n(A stream with an open link can still be watched signed out.)\nEnter reason (optional):`);
             if (reason === null) return;
 
             chatWs.send(JSON.stringify({
@@ -1714,7 +1987,7 @@
         function banMessageAuthor(messageId, username) {
             if (!chatWs || chatWs.readyState !== WebSocket.OPEN) return;
 
-            const reason = prompt(`Ban ${username} from this stream's chat?\nEnter reason (optional):`);
+            const reason = prompt(`Ban ${username} from this stream's chat and from watching it while signed in?\n(A stream with an open link can still be watched signed out.)\nEnter reason (optional):`);
             if (reason === null) return;
 
             chatWs.send(JSON.stringify({
@@ -1780,7 +2053,7 @@
             modal.innerHTML = `
                 <div style="background: var(--surface-color, var(--bg-secondary)); border-radius: 12px; width: 400px; max-width: 90vw; max-height: 80vh; overflow: hidden;">
                     <div style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;">
-                        <h3 style="margin: 0;">Banned Users</h3>
+                        <h3 style="margin: 0;">Banned Users <small style="font-weight: normal; color: var(--text-muted);">(chat and signed-in viewing)</small></h3>
                         <button onclick="document.getElementById('ban-list-modal').remove()"
                                 style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">&times;</button>
                     </div>
@@ -1806,13 +2079,8 @@
             const existing = document.querySelector('.mod-menu');
             if (existing) existing.remove();
 
-            const canModerate = streamData && currentUser && (
-                streamData.user_id === currentUser.id ||
-                currentUser.role === 'admin' ||
-                currentUser.role === 'superadmin'
-            );
-
-            if (!canModerate || userId === streamData.user_id) return;
+            const nameEl = event.target.closest('.chat-message');
+            if (!isModLevel() || userId === streamData.user_id || (nameEl && nameEl.dataset.higher === '1')) return;
 
             const menu = document.createElement('div');
             menu.className = 'mod-menu';
@@ -1821,7 +2089,7 @@
 
             const banItem = document.createElement('div');
             banItem.className = 'mod-menu-item danger';
-            banItem.textContent = 'Ban from chat';
+            banItem.textContent = 'Ban from chat and signed-in viewing';
             banItem.addEventListener('click', () => {
                 banUser(userId, username);
                 menu.remove();
@@ -1890,9 +2158,14 @@
             ctxMessageUserId = parseInt(msgEl.dataset.userId) || null;
             ctxMessageText = msgEl.querySelector('.chat-text')?.textContent || '';
 
-            const isMod = currentUser && ['admin', 'superadmin', 'moderator'].includes(currentUser.role);
+            const isMod = isModLevel();
             const isOwner = ctxMessageUserId === currentUser?.id;
-            const canDelete = isMod || isOwner;
+            ctxMessageStaff = msgEl.dataset.higher === '1';
+            // a mod may delete or time out only members the server lets them act on
+            const canAct = isMod && !isOwner && !ctxMessageStaff;
+            const canDelete = isOwner || canAct;
+            document.getElementById('ctx-pin-btn').style.display = isMod ? '' : 'none';
+            document.getElementById('ctx-timeout-btn').style.display = canAct ? '' : 'none';
             document.getElementById('ctx-edit-btn').style.display = isOwner ? '' : 'none';
             document.getElementById('ctx-delete-sep').style.display = canDelete ? '' : 'none';
             document.getElementById('ctx-delete-btn').style.display = canDelete ? '' : 'none';
