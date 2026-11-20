@@ -4,7 +4,9 @@
 with the standard library. They never start the server, never run migrations
 and never create a missing database. Run them with the server stopped: a
 running server keeps its block list in memory until it restarts, and scanner
-blocks (which are only in memory) disappear on restart. Each removal is also
+blocks of either kind ('login' and 'probe', written to the database with an expiry) are
+removed like any other row, together with the escalation history of the address, so
+the next offence starts at the base duration again. Each removal is also
 recorded as an ``ip_unblocked`` security event (source ``cli``), in the same
 transaction, when the database already has the security event table.
 
@@ -58,8 +60,9 @@ def _rows(conn):
     if not cols:
         return []
     source = "source" if "source" in cols else "'manual' AS source"
+    kind = "kind" if "kind" in cols else "NULL AS kind"
     return list(conn.execute(
-        f"SELECT id, ip_address, reason, expires_at, created_at, {source} FROM blocked_ips ORDER BY id"
+        f"SELECT id, ip_address, reason, expires_at, created_at, {source}, {kind} FROM blocked_ips ORDER BY id"
     ))
 
 
@@ -72,7 +75,8 @@ def _printable(value) -> str:
 def _describe(row) -> str:
     until = _printable(row["expires_at"] or "permanent")
     reason = f" reason: {_printable(row['reason'])}" if row["reason"] else ""
-    return f"  {_printable(row['ip_address'])}  ({_printable(row['source'])}, until {until}){reason}"
+    kind = f", {_printable(row['kind'])}" if row["kind"] else ""
+    return f"  {_printable(row['ip_address'])}  ({_printable(row['source'])}{kind}, until {until}){reason}"
 
 
 def _record_event(conn, details: dict, event: str = "ip_unblocked") -> None:
@@ -96,17 +100,29 @@ def _record_event(conn, details: dict, event: str = "ip_unblocked") -> None:
         tuple(row.get(c) for c in _EVENT_COLUMNS))
 
 
-def _delete(conn, rows, event_details: dict) -> None:
-    """Delete the rows and record the security event in one transaction."""
+def _forget_history(conn, addresses=None) -> None:
+    """Drop the escalation history of the given addresses (all when None), when the table exists."""
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ip_ban_history'").fetchone():
+        return
+    if addresses is None:
+        conn.execute("DELETE FROM ip_ban_history")
+    else:
+        conn.executemany("DELETE FROM ip_ban_history WHERE ip_address = ?", [(a,) for a in addresses])
+
+
+def _delete(conn, rows, event_details: dict, forget=None) -> None:
+    """Delete the rows and record the security event in one transaction.
+    `forget` is the list of addresses whose escalation history goes too (None: all of it)."""
     conn.executemany("DELETE FROM blocked_ips WHERE id = ?", [(r["id"],) for r in rows])
+    _forget_history(conn, forget)
     _record_event(conn, event_details)
     conn.commit()
 
 
 def _after_note(removed: int) -> None:
     if removed:
-        print("Restart the portal if it is running: it keeps its block list in memory.\n"
-              "Temporary scanner blocks are held in memory only and clear on restart.")
+        print("Restart the portal if it is running: it keeps its block list in memory.")
 
 
 def unblock(ip: str, db_path: str) -> int:
@@ -120,10 +136,12 @@ def unblock(ip: str, db_path: str) -> int:
         # Rows hold the text the admin typed, so IPv6 case and compression vary: compare canonically.
         rows = [r for r in _rows(conn) if (_canon(r["ip_address"]) or r["ip_address"]) == want]
         if not rows:
+            _forget_history(conn, [want])
+            conn.commit()
             print(f"No database block found for {want}.")
             _after_note(0)
             return 1
-        _delete(conn, rows, {"target_ip": want, "removed": len(rows)})
+        _delete(conn, rows, {"target_ip": want, "removed": len(rows)}, forget=[want])
     finally:
         conn.close()
     print(f"Removed {len(rows)} block(s) for {want}:")

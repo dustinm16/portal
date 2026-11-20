@@ -1833,6 +1833,19 @@
                         </div>
                     </div>
 
+                    <!-- Failed sign-in blocking Card -->
+                    <div class="admin-card" id="loginban-card">
+                        <h3>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4" />
+                            </svg>
+                            Failed sign-in blocking
+                        </h3>
+                        <div id="loginban-body">
+                            <div class="loading"><div class="spinner"></div> Loading...</div>
+                        </div>
+                    </div>
+
                     <!-- Cloudflare ranges Card -->
                     <div class="admin-card" id="cfranges-card">
                         <h3>
@@ -1981,6 +1994,7 @@
                                 <thead>
                                     <tr>
                                         <th>IP Address</th>
+                                        <th>Kind</th>
                                         <th>Reason</th>
                                         <th>Blocked By</th>
                                         <th>Blocked At</th>
@@ -5376,7 +5390,7 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadCfRanges()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadLoginBan(), loadCfRanges()]);
         }
 
         async function loadCertInfo() {
@@ -5984,7 +5998,7 @@
                 const tbody = document.getElementById('blocked-ips-body');
                 if (!tbody) return;
                 if (blocks.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">No IPs blocked</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">No IPs blocked</td></tr>';
                     return;
                 }
                 tbody.innerHTML = blocks.map(b => {
@@ -5992,6 +6006,7 @@
                     return `
                     <tr${expired ? ' style="opacity:0.5;"' : ''}>
                         <td><strong>${escapeHtml(b.ip_address)}</strong></td>
+                        <td>${escapeHtml(b.kind || '-')}</td>
                         <td>${escapeHtml(b.reason || '-')}</td>
                         <td>${escapeHtml(b.blocked_by_username || 'system')}</td>
                         <td>${escapeHtml(b.created_at)}</td>
@@ -6325,6 +6340,68 @@
             }
         }
 
+        let loginBanState = null;
+
+        async function loadLoginBan() {
+            const el = document.getElementById('loginban-body');
+            if (!el) return;
+            try {
+                const res = await Portal.fetch('/api/admin/login-ban');
+                if (!res.ok) { el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>'; return; }
+                loginBanState = await res.json();
+                renderLoginBan();
+            } catch (e) {
+                el.innerHTML = '<p style="color:var(--text-muted);">Unavailable</p>';
+            }
+        }
+
+        function renderLoginBan(note) {
+            const el = document.getElementById('loginban-body');
+            const d = loginBanState;
+            const lim = d.limits || {};
+            const num = (id, key, label) => `<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-top:0.5rem;">${label}</label>
+                <input type="number" id="${id}" value="${parseInt(d[key]) || 0}" min="${lim[key].min}" max="${lim[key].max}" style="${NB_FIELD_STYLE}">`;
+            const mine = d.your_ip_exempt
+                ? `Your address ${escapeHtml(d.your_ip)} is exempt from automatic blocks (${escapeHtml(d.your_ip_exempt)}).`
+                : `Your address ${escapeHtml(d.your_ip)} is not exempt. A sign-in from an address you have signed in from in the last 30 days is not counted against that account, but add it to the never-ban list to be sure.`;
+            el.innerHTML = `
+                <p style="color:var(--text-muted);font-size:0.8rem;margin:0 0 0.75rem 0;">
+                    Counts wrong passwords, wrong 2FA codes and failed token requests per address. Past the limit the address is
+                    blocked for a limited time (listed under System, Network, Blocked IPs as <em>login</em>). A repeat within ${parseInt(d.repeat_days)} days
+                    doubles the time, up to ${parseInt(d.cap_hours)} hours; it is never permanent. It is off until you turn it on.
+                    Addresses on the never-ban list, and an address that signed in to the same account in the last 30 days, are not blocked.
+                </p>
+                <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" id="lb-enabled" ${d.enabled ? 'checked' : ''}> Block addresses after repeated failed sign-ins</label>
+                ${num('lb-max', 'max_failures', 'Failures allowed')}
+                ${num('lb-find', 'find_minutes', 'Within (minutes)')}
+                ${num('lb-base', 'base_minutes', 'First block lasts (minutes)')}
+                <p style="font-size:0.8rem;margin:0.5rem 0;color:var(--text-muted);">${note ? escapeHtml(note) : mine}</p>
+                <div style="margin:0.5rem 0;"><button class="btn btn-primary" data-loginban-action="save">Save</button></div>`;
+        }
+
+        async function saveLoginBan() {
+            const body = {
+                enabled: document.getElementById('lb-enabled').checked,
+                max_failures: parseInt(document.getElementById('lb-max').value, 10),
+                find_minutes: parseInt(document.getElementById('lb-find').value, 10),
+                base_minutes: parseInt(document.getElementById('lb-base').value, 10)
+            };
+            try {
+                const res = await Portal.fetch('/api/admin/login-ban', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { Portal.toast(data.error || 'Failed to save', 'error'); return; }
+                loginBanState = data;
+                Portal.toast('Saved', 'success');
+                renderLoginBan();
+            } catch (e) {
+                Portal.toast('Failed to save the setting', 'error');
+            }
+        }
+
         async function loadCfRanges() {
             const el = document.getElementById('cfranges-body');
             if (!el) return;
@@ -6442,6 +6519,8 @@
         document.addEventListener('click', function(e) {
             const act = e.target.closest('[data-neverban-action]');
             if (act && act.getAttribute('data-neverban-action') === 'save') saveNeverBan();
+            const lb = e.target.closest('[data-loginban-action]');
+            if (lb && lb.getAttribute('data-loginban-action') === 'save') saveLoginBan();
             const cf = e.target.closest('[data-cfranges-action]');
             if (cf && cf.getAttribute('data-cfranges-action') === 'reset') resetCfRanges();
             if (cf && ['approve', 'dismiss'].includes(cf.getAttribute('data-cfranges-action'))) cfPendingAction(cf.getAttribute('data-cfranges-action'), cf);
@@ -7307,7 +7386,7 @@
             '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'api_key_ip_denied', 'password_changed',
             'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
             'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
-            'never_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed'
+            'never_ban_changed', 'login_ban_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed'
         ];
         let auditView = 'audit';
         let secOffset = 0;

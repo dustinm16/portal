@@ -72,6 +72,7 @@ EVENTS = {
     "ip_unblocked": "security",
     "probe_block": "security",
     "never_ban_changed": "security",
+    "login_ban_changed": "security",
     "cf_ranges_refreshed": "security",
     "cf_ranges_reset": "security",
     "cf_ranges_approved": "security",
@@ -105,7 +106,7 @@ AGGREGATED = frozenset({
 # the aggregate buffer. ip_blocked and ip_unblocked are exempt only with a user id (an
 # administrator's action); without one they take the capped path like any other event.
 CAP_EXEMPT = frozenset({
-    "role_changed", "user_deleted", "password_reset", "never_ban_changed",
+    "role_changed", "user_deleted", "password_reset", "never_ban_changed", "login_ban_changed",
     "cf_ranges_refreshed", "cf_ranges_reset", "cf_refresh_toggled",
     "cf_ranges_approved", "cf_ranges_dismissed",
     "security_retention_changed", "security_events_pruned", "security_log_export",

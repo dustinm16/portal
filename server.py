@@ -276,6 +276,8 @@ def _record_probe(ip: str, path: str, user_agent: Optional[str] = None) -> None:
         security_event_nowait(
             "probe_block", ip=ip, user_agent=user_agent, result="blocked",
             details={"path": path[:80], "seconds": Config.PROBE_BLOCK_SECONDS})
+        # Also store it (temporary, longer on a repeat): it then survives a restart.
+        _spawn(_persist_probe_ban(ip, path))
     else:
         _probe_strikes[ip] = (count, first)
 
@@ -1130,32 +1132,209 @@ def _never_ban_effective() -> list:
     ]
 
 
-async def _auto_block_ip(ip: str, reason: str, duration_seconds: Optional[int]) -> Optional[str]:
-    """The entry point for any automatic block that is stored in the database.
+# ---------------------------------------------------------------------------
+# Automatic bans that are stored in the database: failed sign-ins ('login') and
+# scanner probes ('probe'). Always temporary, doubled on a repeat offence within
+# 7 days up to 24 hours, never for an exempt address (_never_ban_reason).
+# ---------------------------------------------------------------------------
 
-    Returns the exemption reason when `ip` is exempt (nothing is blocked), or
-    None. Whether an existing manual or longer block survives is decided by
-    Database.block_ip(source='auto'). Nothing in this release calls it: the
-    scanner-probe block is in memory and goes through _record_probe, which asks
-    the same _never_ban_reason.
+LOGIN_BAN_DEFAULTS = {"enabled": False, "max_failures": 20, "find_minutes": 10, "base_minutes": 15}
+LOGIN_BAN_LIMITS = {"max_failures": (3, 1000), "find_minutes": (1, 1440), "base_minutes": (1, 1440)}
+LOGIN_BAN_SETTING_PREFIX = "login_ban_"
+AUTO_BAN_CAP_SECONDS = 24 * 3600
+_LOGIN_TABLE_MAX = 10000
+_LOGIN_KNOWN_TTL = 300
+_login_ban_cfg: dict = dict(LOGIN_BAN_DEFAULTS)
+_login_fails: dict[str, deque] = {}                   # canonical address -> monotonic times of failures
+_login_ban_pending: set[str] = set()                  # addresses whose ban is being written
+_login_known_cache: dict[tuple, float] = {}           # (address, user id) -> monotonic expiry of a "known" answer
+_bg_tasks: set = set()
+
+
+def _spawn(coro) -> None:
+    """Run a coroutine in the background from synchronous code; dropped when no loop runs."""
+    try:
+        task = asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        coro.close()
+        return
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+def _ban_seconds(base_seconds: int, offences: int) -> int:
+    """Length of an automatic ban: the base, doubled for each earlier offence within the
+    repeat window, never more than 24 hours (or the base itself when that is longer)."""
+    base = max(1, int(base_seconds))
+    return min(max(AUTO_BAN_CAP_SECONDS, base), base << min(max(offences, 1) - 1, 20))
+
+
+async def _auto_block(ip: str, reason: str, duration_seconds: int, kind: Optional[str] = None):
+    """Write an automatic block. Returns (exempt_reason, expires_at).
+
+    `exempt_reason` is set when `ip` is exempt and nothing was blocked. `expires_at` is the
+    stored expiry when a row was written and None when the existing row was kept
+    (Database.block_ip(source='auto') never overwrites a manual block or shortens an
+    automatic one). The duration is required: an automatic block is never permanent.
     """
     exempt = _never_ban_reason(ip)
     if exempt:
         logger.info(f"Not blocking {ip}: exempt ({exempt})")
-        return exempt
+        return exempt, None
     canon = str(_canon_addr(ip))
-    expires_at = None
-    if duration_seconds:
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)).strftime("%Y-%m-%d %H:%M:%S")
-    if await db.block_ip(canon, reason=(reason or "")[:200] or None, expires_at=expires_at, source="auto"):
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(duration_seconds))).strftime("%Y-%m-%d %H:%M:%S")
+    if await db.block_ip(canon, reason=(reason or "")[:200] or None, expires_at=expires_at,
+                         source="auto", kind=kind):
         _blocked_ips[canon] = expires_at
-    return None
+        return None, expires_at
+    return None, None
+
+
+async def _auto_block_ip(ip: str, reason: str, duration_seconds: int, kind: Optional[str] = None) -> Optional[str]:
+    """The entry point for any automatic block that is stored in the database.
+
+    Returns the exemption reason when `ip` is exempt (nothing is blocked), or None.
+    Failed sign-ins and scanner probes reach it through _escalating_ban; both ask the
+    same _never_ban_reason.
+    """
+    return (await _auto_block(ip, reason, duration_seconds, kind))[0]
+
+
+async def _escalating_ban(ip: str, kind: str, base_seconds: int, reason: str, details: Optional[dict] = None):
+    """Ban `ip` for `kind`, for longer after each repeat offence within 7 days. Returns the
+    stored expiry, or None when nothing was written (exempt address, or a longer block exists)."""
+    if _never_ban_reason(ip) is not None:
+        return None
+    canon = str(_canon_addr(ip))
+    offences = await db.record_ban_offence(canon, kind)
+    seconds = _ban_seconds(base_seconds, offences)
+    exempt, expires_at = await _auto_block(canon, reason, seconds, kind=kind)
+    if exempt or not expires_at:
+        return None
+    logger.warning(f"Blocked {canon} ({kind}) until {expires_at} UTC, offence {offences} within 7 days")
+    await security_event("ip_blocked", ip=canon, result="auto",
+                         details={**(details or {}), "target_ip": canon, "kind": kind,
+                                  "expires_at": expires_at, "seconds": seconds, "offences": offences})
+    return expires_at
+
+
+def _login_ban_setting_value(key: str, value) -> str:
+    return ("1" if value else "0") if key == "enabled" else str(int(value))
+
+
+async def _load_login_ban_state() -> None:
+    """Read the saved sign-in ban settings; a missing or unusable value keeps its default."""
+    cfg = dict(LOGIN_BAN_DEFAULTS)
+    for key in cfg:
+        try:
+            raw = await db.get_setting(LOGIN_BAN_SETTING_PREFIX + key)
+        except Exception:
+            raw = None
+        if raw is None:
+            continue
+        if key == "enabled":
+            cfg[key] = raw.strip() == "1"
+            continue
+        try:
+            n = int(raw)
+        except ValueError:
+            continue
+        lo, hi = LOGIN_BAN_LIMITS[key]
+        if lo <= n <= hi:
+            cfg[key] = n
+    _login_ban_cfg.clear()
+    _login_ban_cfg.update(cfg)
+
+
+async def _login_address_known(canon: str, user_id: int) -> bool:
+    """True when this user signed in from this address in the last 30 days."""
+    key = (canon, user_id)
+    now = monotonic()
+    if _login_known_cache.get(key, 0) > now:
+        return True
+    if not await db.has_recent_login_from(user_id, canon):
+        return False
+    if len(_login_known_cache) >= _LOGIN_TABLE_MAX:
+        _login_known_cache.clear()
+    _login_known_cache[key] = now + _LOGIN_KNOWN_TTL
+    return True
+
+
+async def _count_login_failure(ip: str, user_id: Optional[int] = None) -> None:
+    """Count one failed sign-in (wrong password, wrong 2FA code) against the caller's address.
+
+    The count always runs; the ban only when the setting is on. A failure against an account
+    the same address signed in to within 30 days is not counted, so a household behind one
+    address cannot ban itself with typos. Exempt addresses are not counted at all. Never raises.
+    """
+    try:
+        canon = ipguard.canonical_ip(ip)
+        if canon is None or _never_ban_reason(canon) is not None:
+            return
+        if user_id and await _login_address_known(canon, user_id):
+            return
+        now = monotonic()
+        cfg = _login_ban_cfg
+        window = cfg["find_minutes"] * 60
+        hits = _login_fails.get(canon)
+        if hits is None:
+            while len(_login_fails) >= _LOGIN_TABLE_MAX:
+                del _login_fails[next(iter(_login_fails))]
+            hits = _login_fails[canon] = deque(maxlen=LOGIN_BAN_LIMITS["max_failures"][1])
+        while hits and now - hits[0] > window:
+            hits.popleft()
+        hits.append(now)
+        if len(hits) < cfg["max_failures"] or not cfg["enabled"] or canon in _login_ban_pending:
+            return
+        _login_ban_pending.add(canon)
+        try:
+            failures = len(hits)
+            hits.clear()
+            await _escalating_ban(
+                canon, "login", cfg["base_minutes"] * 60,
+                f"{failures} failed sign-ins within {cfg['find_minutes']} minutes",
+                details={"failures": failures, "find_minutes": cfg["find_minutes"]})
+        finally:
+            _login_ban_pending.discard(canon)
+    except Exception as e:
+        logger.warning(f"Failed-sign-in counting error: {type(e).__name__}: {e}")
+
+
+async def _failure_user_id(username, fail_reason) -> Optional[int]:
+    """Id of the account a wrong password was tried against; None for an unknown name."""
+    if fail_reason != "bad_password":
+        return None
+    try:
+        user = await db.get_user_by_username(username)
+        return user["id"] if user else None
+    except Exception:
+        return None
+
+
+async def _note_login_success(user: dict, ip: str) -> None:
+    """Remember that this user signed in from this address (the household exemption). Never raises."""
+    try:
+        await db.record_login_address(user["id"], ip)
+    except Exception as e:
+        logger.warning(f"Could not record the sign-in address: {type(e).__name__}")
+
+
+async def _persist_probe_ban(ip: str, path: str) -> None:
+    """Store a scanner-probe block in the database, escalating on a repeat. Never raises."""
+    try:
+        expires = await _escalating_ban(
+            ip, "probe", Config.PROBE_BLOCK_SECONDS, f"Scanner probes (last: {path[:60]})",
+            details={"path": path[:80]})
+        if expires:
+            _probe_blocks.pop(ip, None)     # the stored block replaces the short in-memory one
+    except Exception as e:
+        logger.warning(f"Could not store the scanner-probe block: {type(e).__name__}: {e}")
 
 
 def _forget_probe_state(nets) -> int:
-    """Drop in-memory scanner strikes and blocks for addresses now covered by `nets`."""
+    """Drop in-memory scanner strikes and blocks and failed-sign-in counts for addresses now covered by `nets`."""
     dropped = 0
-    for table in (_probe_blocks, _probe_strikes):
+    for table in (_probe_blocks, _probe_strikes, _login_fails):
         for key in list(table):
             addr = _canon_addr(key)
             if addr is not None and ipguard.addr_in_networks(addr, nets):
@@ -2054,6 +2233,7 @@ async def verify_second_factor(user: dict, code, client_ip: str, request=None):
         await security_event("backup_code_used", request=request, ip=client_ip, user=user)
         return "backup", 0
     security_event_nowait("2fa_failed", request=request, ip=client_ip, user=user, result="bad_code")
+    await _count_login_failure(client_ip, user["id"])
     # This wrong code may have used up the per-user budget. Record it now, with
     # the address that spent it, rather than waiting for the next request (which
     # is likely the account holder's) to trip the limit. Checked after the
@@ -2606,6 +2786,7 @@ async def http_create_token(request: web.Request) -> web.Response:
         security_event_nowait("login_failed", request=request, ip=client_ip,
                               username=_tried_name(username, fail_reason),
                               result=fail_reason, details={"via": "token"})
+        await _count_login_failure(client_ip, await _failure_user_id(username, fail_reason))
         return web.json_response({"error": "Invalid credentials"}, status=401)
 
     # Second factor: same verification as the web login. Revealed only after
@@ -2659,6 +2840,7 @@ async def http_create_token(request: web.Request) -> web.Response:
 
     logger.info(f"Token created for user '{username}' from {client_ip}")
     await db.log_activity(user["id"], get_display_name(user), "login", "Signed in", client_ip)
+    await _note_login_success(user, client_ip)
     await security_event("login_success", request=request, ip=client_ip, user=user,
                          details={"via": "token", "token_id": token_id[:8]})
 
@@ -12614,6 +12796,9 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     probe_key = _valid_ip(ip_address) or ip_address
     lifted = _probe_blocks.pop(probe_key, None) is not None
     _probe_strikes.pop(probe_key, None)
+    # Lifting a block also forgets its escalation history and the failed-sign-in count.
+    _login_fails.pop(probe_key, None)
+    await db.forget_ban_history(ip_address)
 
     if removed or lifted:
         admin_user = await db.get_user_by_id(token.user_id)
@@ -15399,6 +15584,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
         security_event_nowait("login_failed", request=request, ip=client_ip,
                               username=_tried_name(username, fail_reason),
                               result=fail_reason, details={"via": "web"})
+        await _count_login_failure(client_ip, await _failure_user_id(username, fail_reason))
         if "application/json" in content_type:
             return web.json_response({"error": "Invalid credentials"}, status=401)
         return web.Response(
@@ -15452,6 +15638,7 @@ async def http_login_submit(request: web.Request) -> web.Response:
     )
 
     logger.info(f"Web login for user '{username}' from {client_ip} (remember={bool(remember_me)})")
+    await _note_login_success(user, client_ip)
     await security_event("login_success", request=request, ip=client_ip, user=user,
                          details={"via": "web", "remember": bool(remember_me),
                                   "token_id": session_token_id[:8]})
@@ -23953,6 +24140,10 @@ async def http_put_never_ban(request: web.Request) -> web.Response:
     await db.set_setting(NEVER_BAN_SETTING, json.dumps([str(n) for n in nets]))
     _never_ban_admin_nets = nets
     cleared = _forget_probe_state(nets)
+    # Stored automatic blocks (sign-in and scanner) on addresses the list now covers go too.
+    for gone in await db.remove_auto_bans_in(nets):
+        _blocked_ips.pop(gone, None)
+        cleared += 1
     saved = [str(n) for n in nets]
     # Counts only, in both records: moderators can read the audit log, the never-ban list is
     # for superadmins, and it names the owner's own addresses.
@@ -23967,6 +24158,67 @@ async def http_put_never_ban(request: web.Request) -> web.Response:
     view = _never_ban_view(request)
     view["saved"] = True
     view["scanner_blocks_cleared"] = cleared
+    return web.json_response(view)
+
+
+def _login_ban_view(request: web.Request) -> dict:
+    my_ip = get_client_ip(request)
+    return {
+        **_login_ban_cfg,
+        "defaults": dict(LOGIN_BAN_DEFAULTS),
+        "limits": {k: {"min": lo, "max": hi} for k, (lo, hi) in LOGIN_BAN_LIMITS.items()},
+        "cap_hours": AUTO_BAN_CAP_SECONDS // 3600,
+        "repeat_days": db.BAN_REPEAT_DAYS,
+        "your_ip": my_ip,
+        "your_ip_exempt": _never_ban_reason(my_ip),
+    }
+
+
+async def http_get_login_ban(request: web.Request) -> web.Response:
+    """GET /api/admin/login-ban - the failed-sign-in ban settings (admin)."""
+    token, err = await _admin_only(request)
+    if err:
+        return err
+    return web.json_response(_login_ban_view(request))
+
+
+async def http_put_login_ban(request: web.Request) -> web.Response:
+    """PUT /api/admin/login-ban - change any of enabled, max_failures, find_minutes, base_minutes (superadmin)."""
+    user, err = await _backup_superadmin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Body must be an object"}, status=400)
+    unknown = sorted(str(k) for k in data if k not in LOGIN_BAN_DEFAULTS)
+    if unknown:
+        return web.json_response({"error": f"Unknown setting: {unknown[0][:40]}"}, status=400)
+    new = {}
+    for key, value in data.items():
+        if key == "enabled":
+            if not isinstance(value, bool):
+                return web.json_response({"error": "enabled must be true or false"}, status=400)
+        else:
+            lo, hi = LOGIN_BAN_LIMITS[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+                return web.json_response({"error": f"{key} must be a whole number from {lo} to {hi}"}, status=400)
+        new[key] = value
+    before = dict(_login_ban_cfg)
+    for key, value in new.items():
+        await db.set_setting(LOGIN_BAN_SETTING_PREFIX + key, _login_ban_setting_value(key, value))
+    _login_ban_cfg.update(new)
+    changed = {k: v for k, v in new.items() if before.get(k) != v}
+    if changed:
+        await security_event("login_ban_changed", request=request, user=user,
+                             details={"was": {k: before[k] for k in changed}, "now": changed})
+        await audit_log("login_ban.update", user["id"], user.get("username", "unknown"),
+                        details={"was": {k: before[k] for k in changed}, "now": changed})
+        logger.info(f"Failed-sign-in ban settings changed by user {user['id']}: {changed}")
+    view = _login_ban_view(request)
+    view["saved"] = True
     return web.json_response(view)
 
 
@@ -24836,6 +25088,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/proxy-trust", http_get_proxy_trust)
     app.router.add_get("/api/admin/cf-ranges", http_get_cf_ranges)
     app.router.add_put("/api/admin/cf-ranges", http_put_cf_ranges)
+    app.router.add_get("/api/admin/login-ban", http_get_login_ban)
+    app.router.add_put("/api/admin/login-ban", http_put_login_ban)
     app.router.add_post("/api/admin/cf-ranges/reset", http_reset_cf_ranges)
     app.router.add_post("/api/admin/cf-ranges/pending/approve", http_approve_cf_pending)
     app.router.add_post("/api/admin/cf-ranges/pending/dismiss", http_dismiss_cf_pending)
@@ -25114,6 +25368,11 @@ class PortalServer:
 
         # Load blocked IPs into the in-process cache the middleware checks
         global _blocked_ips
+        try:
+            await db.sweep_auto_bans()
+        except Exception as e:
+            logger.warning(f"Sweep of expired automatic bans failed: {type(e).__name__}")
+        await _load_login_ban_state()
         _blocked_ips = await db.get_active_blocked_ips()
         if _blocked_ips:
             logger.info(f"Loaded {len(_blocked_ips)} active IP block(s)")
@@ -25381,6 +25640,12 @@ class PortalServer:
                     total += d
                 except Exception as e:
                     logger.error(f"[Retention] Token cleanup failed: {e}")
+
+                # Expired automatic IP bans and their escalation history
+                try:
+                    total += await db.sweep_auto_bans()
+                except Exception as e:
+                    logger.error(f"[Retention] Automatic ban sweep failed: {e}")
 
                 # Service logs
                 try:

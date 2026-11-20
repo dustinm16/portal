@@ -313,6 +313,26 @@ says18("API keys: only a sign-in creates keys, playback cache keyed on the addre
 check("docs/API.md and api-docs.html say an API key cannot create keys",
       "A key cannot create keys" in api_md18 and "API key gets 403" in api_html18)
 check("docs/API.md no longer says an omitted expiry never expires", "omit (or `0`) for a key that never expires" not in api_md18)
+# --- 1.18.0 notes: sign-in blocking ---------------------------------------------------
+
+says18("sign-in blocking: off by default, the counter, no lockout", "sign-in blocking (off by default)",
+       "nothing is blocked until you turn it on", "no per-account lockout", "/api/admin/login-ban")
+says18("sign-in blocking: doubling, cap, never permanent", "doubles", "24 hours", "never permanent", "7 days")
+says18("sign-in blocking: exemptions", "never-ban helper", "`never_ban_cidrs`", "30 days", "that account only")
+says18("sign-in blocking: stored bans, events, unblock", "`kind` `login`", "survives a restart", "ip_blocked", "clear-bans")
+says18("scanner blocking: stored and escalating, still off", "`probe_block_strikes` is still 0", "kind `probe`", "no longer says")
+says18("sign-in blocking: migration and rollback", "blocked_ips.kind", "ip_ban_history", "login_addresses", "1.17.0 starts on the migrated database")
+says18("sign-in blocking: what is not tested", "not tested", "browser", "cloudflare", "rotating ipv6")
+_d = _server.LOGIN_BAN_DEFAULTS
+check("1.18.0: the sign-in blocking defaults stated are the ones in the code",
+      _d["enabled"] is False and f"{_d['max_failures']} failures within {_d['find_minutes']} minutes" in sec18
+      and f"blocked for {_d['base_minutes']} minutes" in sec18 and "15 minutes, 30, 60, up to 24 hours" in sec18
+      and _server.AUTO_BAN_CAP_SECONDS == 24 * 3600)
+check("docs/API.md and api-docs.html describe the sign-in blocking settings route and the kinds",
+      all(n in api_md18 for n in ("GET /api/admin/login-ban", "PUT /api/admin/login-ban", "`login_ban_changed`", "`probe`"))
+      and all(n in api_html18 for n in ("/api/admin/login-ban", "login_ban_changed", "<code>probe</code>")))
+check("docs no longer say an automatic block is held in memory only",
+      "Nothing in 1.13.0 writes an automatic block" not in api_md18 and "Nothing in 1.13.0 writes an automatic block" not in api_html18)
 about18 = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
 check("about.html no longer lists scopes the code does not check", "<code>chat</code> &mdash; Send and receive chat messages" not in about18)
 

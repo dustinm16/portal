@@ -9,6 +9,7 @@ import aiosqlite
 import sqlite3
 import base64
 import hashlib
+import ipaddress
 import os
 import stat
 import time
@@ -1090,6 +1091,26 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip_address)",
     # Who made the block: 'manual' (an admin) or 'auto' (the server). Existing rows are manual.
     "ALTER TABLE blocked_ips ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+    # What an automatic block was for: 'login' (failed sign-ins) or 'probe' (scanner paths).
+    # NULL on manual rows and on rows written before 1.18.0. Older code ignores the column.
+    "ALTER TABLE blocked_ips ADD COLUMN kind TEXT DEFAULT NULL",
+    # Escalation history of automatic bans, so a repeat offence within 7 days lasts longer.
+    # Kept apart from blocked_ips because the sweep and the unblock commands delete those rows.
+    """CREATE TABLE IF NOT EXISTS ip_ban_history (
+        ip_address TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        offences INTEGER NOT NULL DEFAULT 1,
+        last_ban_at TEXT NOT NULL,
+        PRIMARY KEY (ip_address, kind)
+    )""",
+    # Addresses a user has signed in from, written at each successful sign-in. tokens rows are
+    # deleted when a session ends, so they cannot answer "has this user signed in from here lately".
+    """CREATE TABLE IF NOT EXISTS login_addresses (
+        user_id INTEGER NOT NULL,
+        ip_address TEXT NOT NULL,
+        last_login_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, ip_address)
+    )""",
     # Device-wide metrics: one JSON blob row per category per sample tick
     # (category in 'process' | 'port' | 'ip'). Written by device_metrics.py.
     """CREATE TABLE IF NOT EXISTS device_metric_samples (
@@ -2481,6 +2502,7 @@ class Database:
             ("ssh_keys", "DELETE FROM ssh_keys WHERE user_id = ?"),
             # Tokens (no FK cascade)
             ("tokens", "DELETE FROM tokens WHERE user_id = ?"),
+            ("login_addresses", "DELETE FROM login_addresses WHERE user_id = ?"),
             # API keys
             ("api_keys", "DELETE FROM api_keys WHERE user_id = ?"),
             # User connections
@@ -6773,7 +6795,7 @@ class Database:
 
     async def block_ip(self, ip_address: str, reason: str = None,
                         blocked_by: int = None, expires_at: str = None,
-                        source: str = "manual") -> bool:
+                        source: str = "manual", kind: str = None) -> bool:
         """Block an IP address. Returns True when a row was written.
 
         A manual block (an admin's own action) overwrites an existing row for
@@ -6783,9 +6805,14 @@ class Database:
         timed one. It only replaces a row whose own expiry has passed, or
         extends an automatic timed block. It returns False when it left the
         existing row as it was.
+
+        `kind` says what an automatic block was for ('login' or 'probe'); a
+        manual block always clears it.
         """
         if source not in ("manual", "auto"):
             raise ValueError("source must be 'manual' or 'auto'")
+        if kind not in (None, "login", "probe"):
+            raise ValueError("kind must be 'login' or 'probe'")
         ip_address = ipguard.canonical_ip(ip_address) or ip_address
         if source == "manual":
             cursor = await self.conn.execute(
@@ -6796,29 +6823,150 @@ class Database:
                        blocked_by = excluded.blocked_by,
                        created_at = CURRENT_TIMESTAMP,
                        expires_at = excluded.expires_at,
-                       source = 'manual'""",
+                       source = 'manual',
+                       kind = NULL""",
                 (ip_address, reason, blocked_by, expires_at)
             )
         else:
             cursor = await self.conn.execute(
-                """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at, source)
-                   VALUES (?, ?, NULL, ?, 'auto')
+                """INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at, source, kind)
+                   VALUES (?, ?, NULL, ?, 'auto', ?)
                    ON CONFLICT(ip_address) DO UPDATE SET
                        reason = excluded.reason,
                        blocked_by = NULL,
                        created_at = CURRENT_TIMESTAMP,
                        expires_at = excluded.expires_at,
-                       source = 'auto'
+                       source = 'auto',
+                       kind = excluded.kind
                    WHERE (blocked_ips.expires_at IS NOT NULL
                           AND blocked_ips.expires_at <= datetime('now'))
                       OR (blocked_ips.source = 'auto'
                           AND blocked_ips.expires_at IS NOT NULL
                           AND (excluded.expires_at IS NULL
                                OR excluded.expires_at > blocked_ips.expires_at))""",
-                (ip_address, reason, expires_at)
+                (ip_address, reason, expires_at, kind)
             )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    # Escalating automatic bans (failed sign-ins and scanner probes)
+
+    BAN_REPEAT_DAYS = 7
+
+    async def record_ban_offence(self, ip_address: str, kind: str) -> int:
+        """Count one more automatic ban of this address for this kind and return the
+        number of offences within the last BAN_REPEAT_DAYS days, this one included (1 for
+        a first offence). The count restarts at 1 when the last offence is older."""
+        ip_address = ipguard.canonical_ip(ip_address) or ip_address
+        cursor = await self.conn.execute(
+            "SELECT offences, last_ban_at FROM ip_ban_history WHERE ip_address = ? AND kind = ?",
+            (ip_address, kind))
+        row = await cursor.fetchone()
+        cursor = await self.conn.execute(
+            "SELECT datetime('now'), datetime('now', ?)", (f"-{self.BAN_REPEAT_DAYS} days",))
+        now, cutoff = await cursor.fetchone()
+        if row and row["last_ban_at"] > cutoff:
+            offences = int(row["offences"]) + 1
+        else:
+            offences = 1
+        await self.conn.execute(
+            """INSERT INTO ip_ban_history (ip_address, kind, offences, last_ban_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(ip_address, kind) DO UPDATE SET
+                   offences = excluded.offences, last_ban_at = excluded.last_ban_at""",
+            (ip_address, kind, offences, now))
+        await self.conn.commit()
+        return offences
+
+    async def forget_ban_history(self, ip_address: str) -> None:
+        """Drop the escalation history of an address (an administrator lifted its ban)."""
+        ip_address = ipguard.canonical_ip(ip_address) or ip_address
+        await self.conn.execute("DELETE FROM ip_ban_history WHERE ip_address = ?", (ip_address,))
+        await self.conn.commit()
+
+    async def sweep_auto_bans(self) -> int:
+        """Delete expired automatic ban rows, escalation history older than BAN_REPEAT_DAYS and
+        sign-in addresses older than LOGIN_ADDRESS_DAYS. Manual rows are never touched.
+        Returns the number of block rows deleted."""
+        cursor = await self.conn.execute(
+            """DELETE FROM blocked_ips
+               WHERE source = 'auto' AND kind IN ('login', 'probe')
+                 AND expires_at IS NOT NULL AND expires_at <= datetime('now')""")
+        removed = cursor.rowcount
+        await self.conn.execute(
+            "DELETE FROM ip_ban_history WHERE last_ban_at <= datetime('now', ?)",
+            (f"-{self.BAN_REPEAT_DAYS} days",))
+        # Sign-in addresses older than the household window: an account that never signs in
+        # again would otherwise keep its rows.
+        await self.conn.execute(
+            "DELETE FROM login_addresses WHERE last_login_at < datetime('now', ?)",
+            (f"-{self.LOGIN_ADDRESS_DAYS} days",))
+        await self.conn.commit()
+        return removed
+
+    async def remove_auto_bans_in(self, nets) -> list:
+        """Delete automatic (login and probe) block rows for addresses inside `nets` and
+        return their canonical addresses (for the in-memory cache)."""
+        cursor = await self.conn.execute(
+            "SELECT id, ip_address FROM blocked_ips WHERE source = 'auto' AND kind IN ('login', 'probe')")
+        hit = []
+        for r in await cursor.fetchall():
+            canon = ipguard.canonical_ip(r["ip_address"])
+            try:
+                addr = ipaddress.ip_address(canon) if canon else None
+            except ValueError:
+                addr = None
+            if addr is not None and ipguard.addr_in_networks(addr, nets):
+                hit.append((r["id"], canon))
+        if hit:
+            await self.conn.executemany("DELETE FROM blocked_ips WHERE id = ?", [(i,) for i, _ in hit])
+            await self.conn.commit()
+        return [c for _, c in hit]
+
+    # Addresses a user signed in from
+
+    LOGIN_ADDRESS_DAYS = 30
+    LOGIN_ADDRESS_MAX_PER_USER = 50
+
+    async def record_login_address(self, user_id: int, ip_address: str) -> None:
+        """Note a successful sign-in from this address (kept per user, newest 50)."""
+        canon = ipguard.canonical_ip(ip_address)
+        if canon is None or not user_id:
+            return
+        await self.conn.execute(
+            """INSERT INTO login_addresses (user_id, ip_address, last_login_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(user_id, ip_address) DO UPDATE SET last_login_at = excluded.last_login_at""",
+            (user_id, canon))
+        await self.conn.execute(
+            """DELETE FROM login_addresses WHERE user_id = ? AND ip_address NOT IN (
+                   SELECT ip_address FROM login_addresses WHERE user_id = ?
+                   ORDER BY last_login_at DESC LIMIT ?)""",
+            (user_id, user_id, self.LOGIN_ADDRESS_MAX_PER_USER))
+        await self.conn.execute(
+            "DELETE FROM login_addresses WHERE user_id = ? AND last_login_at < datetime('now', ?)",
+            (user_id, f"-{self.LOGIN_ADDRESS_DAYS} days"))
+        await self.conn.commit()
+
+    async def has_recent_login_from(self, user_id: int, ip_address: str) -> bool:
+        """True when this user signed in from this address within LOGIN_ADDRESS_DAYS days.
+
+        Reads login_addresses and, for sessions that began before that table existed, the
+        creation address of the user's tokens."""
+        canon = ipguard.canonical_ip(ip_address)
+        if canon is None or not user_id:
+            return False
+        window = f"-{self.LOGIN_ADDRESS_DAYS} days"
+        cursor = await self.conn.execute(
+            """SELECT 1 FROM login_addresses
+               WHERE user_id = ? AND ip_address = ? AND last_login_at >= datetime('now', ?)""",
+            (user_id, canon, window))
+        if await cursor.fetchone():
+            return True
+        cursor = await self.conn.execute(
+            "SELECT ip FROM tokens WHERE user_id = ? AND created_at >= datetime('now', ?) AND ip IS NOT NULL",
+            (user_id, window))
+        return any(ipguard.canonical_ip(r["ip"]) == canon for r in await cursor.fetchall())
 
     async def unblock_ip(self, ip_address: str) -> bool:
         """Remove an IP block. The address is matched in its canonical form
@@ -6836,7 +6984,9 @@ class Database:
     async def list_blocked_ips(self) -> list[dict]:
         """List all blocked IPs (including expired ones — caller filters)."""
         cursor = await self.conn.execute(
-            """SELECT b.*, u.username AS blocked_by_username
+            """SELECT b.id, b.ip_address, b.reason, b.blocked_by, b.created_at, b.expires_at, b.source,
+                      COALESCE(b.kind, CASE WHEN b.source = 'manual' THEN 'manual' ELSE 'auto' END) AS kind,
+                      u.username AS blocked_by_username
                FROM blocked_ips b
                LEFT JOIN users u ON u.id = b.blocked_by
                ORDER BY b.created_at DESC"""
