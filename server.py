@@ -5359,7 +5359,7 @@ async def http_add_connection_shares(request: web.Request) -> web.Response:
         await audit_log(
             "connection.share", token.user_id, (actor or {}).get("username", "unknown"),
             target_id=connection["id"], target_type="connection",
-            target_name=connection.get("name"), details={"grantees": added, "duration": duration},
+            target_name=connection.get("name"), details={"grantees": added, "duration": duration or "unchanged"},
         )
     return web.json_response({"added": added, "skipped": skipped,
                               "shares": await db.list_connection_shares(connection["id"])})
@@ -14212,7 +14212,7 @@ async def http_add_service_grant(request: web.Request) -> web.Response:
         await audit_log(
             "service.grant", token.user_id, (actor or {}).get("username", "unknown"),
             target_id=sid, target_type="service", target_name=service.get("name"),
-            details={"grantees": added, "actions": actions, "duration": duration},
+            details={"grantees": added, "actions": actions, "duration": duration or "unchanged"},
         )
     return web.json_response({"added": added, "skipped": skipped,
                               "grants": await db.list_service_grants(sid)})

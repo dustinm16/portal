@@ -27,8 +27,11 @@ DURATIONS: dict = {
     "never": None,
 }
 
-# What an API call that omits the field gets (kept for compatibility: before
-# expiry existed every share and grant was permanent). The dialogs preselect UI_DEFAULT.
+# What an API call that omits the field gets when there is no share or grant yet (kept for
+# compatibility: before expiry existed every share and grant was permanent). When a live
+# row already exists, an omitted field keeps its end time (see the add_* functions of the
+# database layer). The dialogs preselect UI_DEFAULT for a new share and "keep" for an
+# existing one.
 API_DEFAULT = "never"
 UI_DEFAULT = "30d"
 
@@ -68,8 +71,9 @@ def live_param() -> str:
     return now_str()
 
 
-def duration_from_body(data) -> str:
-    """The duration key a request asks for; a missing or null field is API_DEFAULT.
+def duration_from_body(data) -> Optional[str]:
+    """The duration key a request asks for; None when the field is missing or null, which
+    means "keep the end time of an existing row, never for a new one".
 
     Raises ValueError (message safe to return) for an unknown key, a non-string
     value, or a body that carries a timestamp of its own."""
@@ -79,14 +83,17 @@ def duration_from_body(data) -> str:
         raise ValueError("Send a duration (expires_in), not a timestamp")
     value = data.get("expires_in")
     if value is None:
-        return API_DEFAULT
+        return None
     if not isinstance(value, str) or value not in DURATIONS:
         raise ValueError("Unknown duration; use one of: " + ", ".join(DURATIONS))
     return value
 
 
-def expires_at_for(duration: str) -> Optional[str]:
-    """The timestamp text stored for a duration key (None for "never")."""
+def expires_at_for(duration: Optional[str]) -> Optional[str]:
+    """The timestamp text stored for a duration key (None for "never"; a missing duration
+    is API_DEFAULT, the value for a row that does not exist yet)."""
+    if duration is None:
+        duration = API_DEFAULT
     seconds = DURATIONS[duration]
     if seconds is None:
         return None

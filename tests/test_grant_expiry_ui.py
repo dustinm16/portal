@@ -36,13 +36,22 @@ for label, html, sel_id in (("share dialog", index, "share-duration"), ("grant d
     m = re.search(rf'<select id="{sel_id}">(.*?)</select>', html, re.S)
     opts = re.findall(r'<option value="([^"]+)"( selected)?>', m.group(1)) if m else []
     check(f"{label} has a duration picker with exactly the server's values",
-          [o[0] for o in opts] == list(grant_expiry.DURATIONS), str(opts))
+          [o[0] for o in opts] == list(grant_expiry.DURATIONS) + ["keep"], str(opts))
     check(f"{label} preselects 30 days (the UI default)", [o[0] for o in opts if o[1]] == [grant_expiry.UI_DEFAULT], str(opts))
 
 check("the share dialog sends the chosen duration, not a timestamp",
-      "expires_in" in ucjs and "expires_at:" not in ucjs and "JSON.stringify({ usernames, expires_in })" in ucjs)
+      "expires_in" in ucjs and "expires_at:" not in ucjs and "if (expires_in) body.expires_in = expires_in;" in ucjs)
 check("the grant dialog sends the chosen duration, not a timestamp",
-      "expires_in: document.getElementById('grant-duration').value" in admin and "expires_at:" not in admin)
+      "if (expires_in) body.expires_in = expires_in;" in admin and "expires_at:" not in admin)
+# "keep current end time": re-opening a dialog for existing access preselects it and omits the field
+check("the share dialog preselects keep when someone already has a share, and omits the field for them",
+      "if (_shareExisting.size) document.getElementById('share-duration').value = 'keep';" in ucjs
+      and "[usernames.filter(n => _shareExisting.has(n.toLowerCase())), null]" in ucjs
+      and "[usernames.filter(n => !_shareExisting.has(n.toLowerCase())), '30d']" in ucjs)
+check("the grant dialog preselects keep when someone already has a grant, and omits the field for them",
+      "if (_grantExisting.size) document.getElementById('grant-duration').value = 'keep';" in admin
+      and "[usernames.filter(n => _grantExisting.has(n.toLowerCase())), null]" in admin
+      and "[usernames.filter(n => !_grantExisting.has(n.toLowerCase())), '30d']" in admin)
 check("a shared card shows the time left (both dashboards)",
       "formatGrantRemaining(conn.share_expires_in)" in ucjs and "formatGrantRemaining(conn.share_expires_in)" in dash)
 check("the share list shows grantor, creation and time left", "describeGrant(s)" in ucjs)

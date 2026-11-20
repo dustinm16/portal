@@ -8,12 +8,15 @@ Run: venv/bin/python tests/test_grant_close.py
 """
 
 import asyncio
+import sys
 import time
+from pathlib import Path
 
 from aiohttp import web
 
-import grant_harness as h
-from grant_harness import check, server
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import grant_harness as h  # noqa: E402
+from grant_harness import check, server  # noqa: E402
 
 
 class StuckSocket(web.WebSocketResponse):

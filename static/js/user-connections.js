@@ -1584,6 +1584,7 @@ function initUserPicker(boxId, inputId, resultsId) {
 }
 
 let _sharePicker = null;
+let _shareExisting = new Set();   // lower-cased usernames that already hold a share of the open connection
 
 async function showShareConnectionModal(uuid, name) {
     const conn = (typeof userConnections !== 'undefined' ? userConnections : []).find(c => c.id === uuid);
@@ -1592,6 +1593,7 @@ async function showShareConnectionModal(uuid, name) {
     if (!_sharePicker) _sharePicker = initUserPicker('share-chip-box', 'share-user-input', 'share-user-results');
     _sharePicker.reset();
     document.getElementById('share-duration').value = '30d';
+    _shareExisting = new Set();
     // The owner is told what a share of a connection with a stored password gives away.
     document.getElementById('share-stored-password-warning').style.display =
         (conn && conn.config && conn.config.has_stored_password && conn.config.credential_mode !== 'prompt') ? 'block' : 'none';
@@ -1600,6 +1602,8 @@ async function showShareConnectionModal(uuid, name) {
     if (typeof showModal === 'function') showModal('share-connection-modal');
     else document.getElementById('share-connection-modal').style.display = 'flex';
     await loadConnectionShares(uuid);
+    // someone already has access: leave their end times alone unless a time is chosen
+    if (_shareExisting.size) document.getElementById('share-duration').value = 'keep';
 }
 
 // Time left on a share or grant, from the server's expires_in (seconds; null = never expires).
@@ -1627,6 +1631,7 @@ async function loadConnectionShares(uuid) {
     try {
         const data = await Portal.fetchJSON(`/api/connections/${uuid}/shares`);
         const shares = data.shares || [];
+        _shareExisting = new Set(shares.map(s => String(s.username).toLowerCase()));
         list.innerHTML = shares.length ? shares.map(s => `
             <div class="userpick-current-row">
                 <span>${escapeHtml(s.username)}
@@ -1662,14 +1667,27 @@ async function submitConnectionShare() {
     const usernames = _sharePicker ? _sharePicker.usernames() : [];
     if (!usernames.length) { Portal.toast('Type a username first', 'error'); return; }
     // the server turns the chosen duration into the end time; the dialog never sends a timestamp
-    const expires_in = document.getElementById('share-duration').value;
+    // "Keep current end time" omits expires_in for people who already have a share; anybody new
+    // in the same request gets 30 days (left out, the server would make theirs permanent).
+    const chosen = document.getElementById('share-duration').value;
+    const groups = chosen === 'keep'
+        ? [[usernames.filter(n => _shareExisting.has(n.toLowerCase())), null],
+           [usernames.filter(n => !_shareExisting.has(n.toLowerCase())), '30d']]
+        : [[usernames, chosen]];
     try {
-        const res = await Portal.fetch(`/api/connections/${uuid}/shares`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ usernames, expires_in }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed');
+        const data = { added: [], skipped: [] };
+        for (const [names, expires_in] of groups) {
+            if (!names.length) continue;
+            const body = { usernames: names };
+            if (expires_in) body.expires_in = expires_in;
+            const res = await Portal.fetch(`/api/connections/${uuid}/shares`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const part = await res.json();
+            if (!res.ok) throw new Error(part.error || 'Failed');
+            data.added.push(...part.added); data.skipped.push(...part.skipped);
+        }
         if (data.added.length) Portal.toast(`Shared with ${data.added.join(', ')}`);
         if (data.skipped.length) Portal.toast(`Skipped: ${data.skipped.join(', ')}`, 'error');
         _sharePicker.reset();

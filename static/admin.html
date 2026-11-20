@@ -959,8 +959,9 @@
                                 <option value="30d" selected>30 days</option>
                                 <option value="90d">90 days</option>
                                 <option value="never">Until revoked</option>
+                                <option value="keep">Keep current end time (new people get 30 days)</option>
                             </select>
-                            <small style="color:var(--text-muted);">Granting again to the same person sets a new time.</small>
+                            <small style="color:var(--text-muted);">Granting again to the same person and a time sets a new end time; "Keep current end time" leaves it as it is.</small>
                         </div>
                         <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
                             <button type="button" class="btn btn-primary" onclick="submitServiceGrant()">Grant</button>
@@ -4483,6 +4484,7 @@
             return { usernames: () => [...chosen.keys()], reset: () => { chosen.clear(); input.value = ''; results.style.display = 'none'; renderChips(); } };
         }
         let _grantPicker = null;
+        let _grantExisting = new Set();   // lower-cased usernames that already hold a grant on the open service
 
         // ---- systemd unit search (hot-filter installed units) ----
         function initUnitPicker(inputId, resultsId) {
@@ -4533,11 +4535,15 @@
             document.getElementById('grant-action-logs').checked = false;
             document.getElementById('grant-action-files').checked = false;
             document.getElementById('grant-duration').value = '30d';
+            _grantExisting = new Set();
             document.getElementById('all-grants-list').style.display = 'none';
             if (!_grantPicker) _grantPicker = adminInitUserPicker('grant-chip-box', 'grant-user-input', 'grant-user-results');
             _grantPicker.reset();
             document.getElementById('service-grant-modal').style.display = 'flex';
-            loadServiceGrants(id);
+            loadServiceGrants(id).then(() => {
+                // someone already has access: leave their end times alone unless a time is chosen
+                if (_grantExisting.size) document.getElementById('grant-duration').value = 'keep';
+            });
         }
 
         // Time left on a grant, from the server's expires_in (seconds; null = never expires).
@@ -4583,6 +4589,7 @@
             try {
                 const data = await Portal.fetchJSON(`/api/managed-services/${id}/grants`);
                 const grants = data.grants || [];
+                _grantExisting = new Set(grants.map(g => String(g.username).toLowerCase()));
                 list.innerHTML = grants.length ? grants.map(g => `
                     <div class="userpick-current-row">
                         <span>${escapeHtml(g.username)} <span style="color:var(--text-muted);font-size:0.75rem;" title="${escapeHtml(g.expires_at || 'never expires')}">${(g.actions || []).join(', ')} &middot; ${describeGrantLine(g)}</span></span>
@@ -4601,12 +4608,27 @@
             if (document.getElementById('grant-action-files').checked) actions.push('files');
             if (!actions.length) { Portal.toast('Pick at least one permission', 'error'); return; }
             try {
-                const res = await Portal.fetch(`/api/managed-services/${id}/grants`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ usernames, actions, expires_in: document.getElementById('grant-duration').value })
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'Failed');
+                // "Keep current end time" omits expires_in for people who already have a grant;
+                // anybody new in the same request gets 30 days (the server would make it permanent).
+                const chosen = document.getElementById('grant-duration').value;
+                const groups = chosen === 'keep'
+                    ? [[usernames.filter(n => _grantExisting.has(n.toLowerCase())), null],
+                       [usernames.filter(n => !_grantExisting.has(n.toLowerCase())), '30d']]
+                    : [[usernames, chosen]];
+                const added = [], skipped = [];
+                for (const [names, expires_in] of groups) {
+                    if (!names.length) continue;
+                    const body = { usernames: names, actions };
+                    if (expires_in) body.expires_in = expires_in;
+                    const res = await Portal.fetch(`/api/managed-services/${id}/grants`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Failed');
+                    added.push(...data.added); skipped.push(...data.skipped);
+                }
+                const data = { added, skipped };
                 if (data.added.length) Portal.toast(`Granted ${data.added.join(', ')}`);
                 if (data.skipped.length) Portal.toast(`Skipped: ${data.skipped.join(', ')}`, 'error');
                 _grantPicker.reset();

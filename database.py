@@ -3907,16 +3907,21 @@ class Database:
         return {"service_grants": grants, "connection_shares": shares}
 
     async def add_connection_share(self, connection_id: int, grantee_id: int, owner_id: int,
-                                   duration: str = grant_expiry.API_DEFAULT) -> bool:
-        """Share a connection; sharing again with the same user replaces the expiry."""
+                                   duration: Optional[str] = grant_expiry.API_DEFAULT) -> bool:
+        """Share a connection; sharing again with the same user replaces the expiry. A
+        duration of None keeps the end time of a live share and gives a new one (or an
+        expired one the sweeper has not deleted yet) the API default, never."""
         expires_at = grant_expiry.expires_at_for(duration)
         try:
             await self.conn.execute(
                 """INSERT INTO connection_shares
                    (connection_id, grantee_user_id, granted_by, expires_at) VALUES (?, ?, ?, ?)
                    ON CONFLICT(connection_id, grantee_user_id)
-                   DO UPDATE SET expires_at = excluded.expires_at""",
-                (connection_id, grantee_id, owner_id, expires_at),
+                   DO UPDATE SET expires_at = CASE
+                       WHEN ? AND (connection_shares.expires_at IS NULL OR connection_shares.expires_at > ?)
+                       THEN connection_shares.expires_at ELSE excluded.expires_at END""",
+                (connection_id, grantee_id, owner_id, expires_at,
+                 1 if duration is None else 0, grant_expiry.live_param()),
             )
             await self.conn.commit()
             return True
@@ -3976,8 +3981,10 @@ class Database:
         return out
 
     async def add_service_grant(self, service_id: int, grantee_id: int, actions: list, granted_by: int,
-                                duration: str = grant_expiry.API_DEFAULT) -> bool:
-        """Grant a service; granting again replaces the actions and the expiry."""
+                                duration: Optional[str] = grant_expiry.API_DEFAULT) -> bool:
+        """Grant a service; granting again replaces the actions and the expiry. A duration
+        of None keeps the end time of a live grant (the actions are still replaced) and
+        gives a new one, or an expired one not yet swept, the API default, never."""
         clean = ",".join(sorted({a for a in actions if a in ("control", "logs", "files")})) or "control"
         expires_at = grant_expiry.expires_at_for(duration)
         try:
@@ -3985,8 +3992,11 @@ class Database:
                 """INSERT INTO service_grants (service_id, grantee_user_id, actions, granted_by, expires_at)
                    VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(service_id, grantee_user_id)
-                   DO UPDATE SET actions = excluded.actions, expires_at = excluded.expires_at""",
-                (service_id, grantee_id, clean, granted_by, expires_at),
+                   DO UPDATE SET actions = excluded.actions, expires_at = CASE
+                       WHEN ? AND (service_grants.expires_at IS NULL OR service_grants.expires_at > ?)
+                       THEN service_grants.expires_at ELSE excluded.expires_at END""",
+                (service_id, grantee_id, clean, granted_by, expires_at,
+                 1 if duration is None else 0, grant_expiry.live_param()),
             )
             await self.conn.commit()
             return True
