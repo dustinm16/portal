@@ -5536,8 +5536,10 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     if not is_owner:
         # Always hide the private stream_key from non-owners
         stream.pop("stream_key", None)
-        # Also hide public_key for private streams
-        if not is_public:
+        # Also hide public_key for private streams, except from an admin by role (not by
+        # token scope): the read gate lets them watch it, and playback needs the key.
+        if not is_public and not (has_full_user_scope(token)
+                                  and await get_user_role_from_token(token) in ("admin", "superadmin")):
             stream.pop("public_key", None)
     if is_owner:
         stream["follower_count"] = await db.count_followers(stream["id"])    # a number, never names

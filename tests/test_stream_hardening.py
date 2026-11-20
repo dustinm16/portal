@@ -251,6 +251,35 @@ def test_full_decision_cache_evicts_expired_then_oldest():
     run(body)
 
 
+# --- 5. the info route for an admin -----------------------------------------
+
+def test_admin_gets_the_public_key_of_a_private_stream_never_the_stream_key():
+    async def body(w):
+        private = w.streams["private"]
+        match = {"id": str(private["id"])}
+        r = await server.http_get_user_stream(api(w, "GET", "/x", "admin", match=match))
+        stream = body_of(r)["stream"]
+        assert r.status == 200 and stream["public_key"] == private["pub"], stream
+        assert "stream_key" not in stream and "stream_key_hash" not in stream and "public_key_hash" not in stream
+        assert private["live"] not in json.dumps(stream)
+        # the owner has both, a member and a moderator are refused, as before
+        stream = body_of(await server.http_get_user_stream(api(w, "GET", "/x", "owner", match=match)))["stream"]
+        assert stream["public_key"] == private["pub"] and stream["stream_key"] == private["live"]
+        for user in ("member", "mod"):
+            r = await server.http_get_user_stream(api(w, "GET", "/x", user, match=match))
+            assert r.status == 404, (user, r.status)
+        # a public stream shows its public key to everybody, never the stream key
+        match = {"id": str(w.streams["public"]["id"])}
+        for user in ("admin", "member"):
+            stream = body_of(await server.http_get_user_stream(api(w, "GET", "/x", user, match=match)))["stream"]
+            assert stream["public_key"] == w.streams["public"]["pub"] and "stream_key" not in stream
+        # the watch page plays and chats with the public key it is given, for any viewer
+        page = (ROOT / "static" / "watch.html").read_text()
+        assert "streamData.public_key || streamData.stream_key" in page
+        assert "/api/stream/${viewKey}/hls/index.m3u8" in page
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
