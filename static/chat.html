@@ -2553,6 +2553,7 @@
             border-bottom: 1px solid var(--border-color, rgba(128,128,128,0.25));
             font-size: 0.8rem;
         }
+        .stream-card-msg .stream-card-game { color: var(--text-muted); font-size: 0.85em; }
         .live-now-strip .live-now-label { color: var(--text-muted); margin-right: 0.25rem; }
         .live-now-strip a {
             display: inline-flex;
@@ -3895,6 +3896,10 @@
                 case 'stream_status':
                     updateStreamStatus(data);
                     break;
+                case 'stream_info':
+                    // The title or game of a live stream changed: the live-now strip follows
+                    refreshLiveNow();
+                    break;
                 case 'notification':
                     if (typeof NotificationBell !== 'undefined' && data.notification) {
                         NotificationBell.handlePush(data.notification);
@@ -4228,6 +4233,12 @@
                     title.className = 'stream-card-title';
                     title.textContent = data.card.title || '';
                     text.append(who, title);
+                    if (data.card.game) {
+                        const game = document.createElement('div');
+                        game.className = 'stream-card-game';
+                        game.textContent = data.card.game;
+                        text.append(game);
+                    }
                     const link = document.createElement('a');
                     link.className = 'stream-card-watch';
                     link.href = '/watch/' + Number(data.card.stream_id);
@@ -4380,7 +4391,7 @@
                 a.rel = 'noopener';
                 const dot = document.createElement('span');
                 dot.className = 'live-now-dot';
-                a.append(dot, document.createTextNode(`${st.streamer}: ${st.name}`));
+                a.append(dot, document.createTextNode(`${st.streamer}: ${st.name}` + (st.game ? ` (${st.game})` : '')));
                 strip.append(a);
             }
             strip.style.display = '';

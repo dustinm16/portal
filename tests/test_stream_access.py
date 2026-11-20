@@ -620,6 +620,7 @@ _MANAGEMENT_CALLS = [
     ("http_create_user_stream", "POST", "/api/streams"),
     ("http_get_public_streams", "GET", "/api/streams/public"),
     ("http_live_now", "GET", "/api/streams/live"),
+    ("http_stream_games", "GET", "/api/streams/games"),
     ("http_my_follows", "GET", "/api/me/follows"),
     ("http_follow_stream", "PUT", "/api/streams/{id}/follow"),
     ("http_unfollow_stream", "DELETE", "/api/streams/{id}/follow"),

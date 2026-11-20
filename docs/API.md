@@ -1090,9 +1090,12 @@ Create a new stream.
 {
   "name": "My Stream",
   "description": "Optional description",
+  "game": "Optional game, at most 60 characters",
   "is_public": false
 }
 ```
+
+`game` (1.17.0) is a string of at most 60 characters or `null`; control characters are removed (tab and line break become a space), an empty string clears it, and a longer value, a lone surrogate or a non-string is a `400`. The same rules apply to `PUT /api/streams/{id}`. A member sees the game of any stream they may see (the public listing, the detail route and the live list); it is never part of a stream the member may not watch.
 
 **Response:**
 ```json
@@ -1184,9 +1187,9 @@ Update stream settings.
 }
 ```
 
-Only `name`, `description`, `is_public`, `allow_unauthenticated`, `rtmp_enabled`, `golive_message` and `golive_audience` are taken from the request; server-owned fields (`chat_channel_id`, `is_live`, `viewer_count`, `started_at`, `ended_at`) are ignored, and a request with none of the editable fields answers `400`. Setting `is_public` to `false` also removes members who can no longer read the stream's chat from its room.
+Only `name`, `description`, `is_public`, `allow_unauthenticated`, `rtmp_enabled`, `game`, `golive_message` and `golive_audience` are taken from the request; server-owned fields (`chat_channel_id`, `is_live`, `viewer_count`, `started_at`, `ended_at`) are ignored, and a request with none of the editable fields answers `400`. Setting `is_public` to `false` also removes members who can no longer read the stream's chat from its room.
 
-**`golive_message` (1.16.0):** the owner's go-live message, a string of at most 200 characters (`400` above that, or when it is not a string or `null`; a body-sized value is refused before it is cleaned, so a message longer than 1000 characters is refused even if control characters would shrink it below 200); control characters are removed (tab and line break become a space) and an empty string or `null` clears it, so the default (`{title} just went live`) is used. Only `{streamer}`, `{title}` and `{url}` are replaced, by literal text in a single pass; any other brace text (for example `{0.__class__}`) is kept as typed. It is the text of the go-live notification and the `message` of the `stream.live` webhook payload. A stream is announced at most once per 10 minutes (stored in the database), however often it starts again. It can be sent to `POST /api/streams` as well as `PUT /api/streams/{id}`; both validate it the same way. The field is returned with the stream.
+**`golive_message` (1.16.0):** the owner's go-live message, a string of at most 200 characters (`400` above that, or when it is not a string or `null`; a body-sized value is refused before it is cleaned, so a message longer than 1000 characters is refused even if control characters would shrink it below 200); control characters are removed (tab and line break become a space) and an empty string or `null` clears it, so the default (`{title} just went live`) is used. Only `{streamer}`, `{title}`, `{game}` (1.17.0, empty when the stream has no game) and `{url}` are replaced, by literal text in a single pass; any other brace text (for example `{0.__class__}`) is kept as typed. It is the text of the go-live notification and the `message` of the `stream.live` webhook payload. A stream is announced at most once per 10 minutes (stored in the database), however often it starts again. It can be sent to `POST /api/streams` as well as `PUT /api/streams/{id}`; both validate it the same way. The field is returned with the stream.
 
 Changing `is_public` from `true` to `false` rotates the stream's playback key automatically; the old key stops resolving at once. The response then also carries the new key as `public_key` (alongside the updated `stream` object).
 
@@ -1202,8 +1205,11 @@ Follow a stream, or stop following it (1.16.0). Needs a signed-in member with a 
 #### GET /api/me/follows
 The streams the signed-in member follows: `{"stream_ids": [5, 9]}`. Only the member's own list exists; there is no route that lists who follows a stream. `GET /api/streams/public` and `GET /api/streams/{id}` carry `following` (the viewer's own state). Both routes, like the follow list, need a full credential: a stream key or a scoped key gets `403`.
 
+#### GET /api/streams/games
+Suggestions for the stream settings form's game field (1.17.0): `{"games": ["Chess", "Doom"]}`, at most 50 distinct values (case-insensitive), first the games the signed-in member used before (a per-member history kept when a game is set on a stream, at most 100 entries, plus the current game of their own streams), newest first, then the current game of streams that are public now. A stream that is not public never contributes its game, whoever owns it (an administrator gets no more than a member), and nobody sees another member's history. Needs a full credential (`403` for a stream key or scoped key, `401` without one).
+
 #### GET /api/streams/live
-The streams that are live now and that the signed-in member may watch (same rule as playback), for the chat page's "Live now" strip: `{"streams": [{"id": 5, "name": "...", "streamer": "alice", "viewer_count": 3, "started_at": "...", "following": true}]}`. It carries no stream key, `pub_` key or RTMP address; watch a stream at `/watch/{id}`. A stream key or a scoped key gets `403` (it was an empty list for a scoped key before this change).
+The streams that are live now and that the signed-in member may watch (same rule as playback), for the chat page's "Live now" strip: `{"streams": [{"id": 5, "name": "...", "game": "Chess", "streamer": "alice", "viewer_count": 3, "started_at": "...", "following": true}]}` (`game` is `null` when the stream has none). It carries no stream key, `pub_` key or RTMP address; watch a stream at `/watch/{id}`. A stream key or a scoped key gets `403` (it was an empty list for a scoped key before this change).
 
 ---
 
@@ -1602,6 +1608,12 @@ Additional WebSocket message types for stream chat moderation:
 ```
 
 The `is_live` field follows the tri-state model: `1`=live (stream started), `2`=encoding (stream ended, VODs finalizing), `0`=offline (all VODs uploaded).
+
+**Stream info frames (1.17.0).** When the owner changes the `name` or `game` of a stream that is live, the sockets in its chat room receive
+```json
+{"type": "stream_info", "stream_id": 3, "name": "New title", "game": "Chess"}
+```
+(`game` is `null` when cleared). It is not a room broadcast: each socket is judged on its own, by the chat read rule and the playback rule, so a stream that is not public sends it only to its owner and administrators (also when it is bound to the default channel), and a member banned from the chat gets nothing. No frame is sent while the stream is offline or when nothing changed. The watch page, the streams page viewer and the chat page's live-now strip update from it without a reload.
 
 ---
 
@@ -3931,7 +3943,7 @@ Formats:
 - `ntfy`, `gotify`, `discord`, `slack`: no signature and no secret. The message carries an event title, a one-line summary and the portal name, nothing else, unless `include_details` is on: then a short allow-listed set of fields of that event is added (for alert events also the address and user agent involved; never email addresses or tokens). Message text is cut to 200 characters. Mentions (`@everyone`, `@here`, `<@id>`, `<!channel>`) are removed; Discord payloads set `allowed_mentions` to none, and markdown link and formatting syntax in Discord text is escaped so `[text](url)` shows as typed; Slack text is escaped. Redirects are not followed. These formats need an `https://` URL unless `allow_private` is on; a hook saved with a plain `http://` URL whose `allow_private` was switched off later is not delivered (the Test route reports it) until the URL is changed to `https://`. ntfy: the URL is the topic URL; the token goes in an `Authorization` header. Gotify: the URL is the server address, the message is posted to `/message` with the token in `X-Gotify-Key`. Discord and Slack: the URL is the webhook URL itself.
 - A non-generic hook receives `message.created`, `user.connected` and `user.disconnected` only when it lists them by name (`*` does not include them); `user.connected` and `user.disconnected` are never sent for a member whose status preference is appear-offline. `message.created` goes only for a channel an ordinary member can read (never a private channel, never the chat of a stream that is not public; anonymous posts are shown as "Anonymous"), and `stream.live` / `stream.offline` only for public streams. The `generic` format receives full event payloads, including the text of messages in private channels: point it only at a receiver you control. Two rules hold for every format, generic included: `user.connected` and `user.disconnected` are sent to no hook for a member whose status preference is appear-offline, and for an anonymous post `message.created` carries `user_id: null` (and `message.deleted` carries `deleted_by: null` when the author deleted it), never the real account.
 
-**The `stream.live` payload (1.16.0).** `data` carries `stream_id`, `stream_name`, `owner_username`, `streamer` (nickname, else username), `title` (the stream name), `url` (the logged-in watch page, `<base>/watch/<id>`, no share key) and `message` (the owner's go-live message, filled in; at most 400 characters). `public_key` is no longer part of it, and no payload carries a stream key, a `pub_` key, an RTMP address or a path. The event is sent once per 10 minutes per stream. For a stream that is not public (`stream.live` and `stream.offline`) it goes only to system hooks in the generic format, never to a member's own hook and never to a non-generic hook. In the non-generic formats the streamer, title, message and watch URL appear only with `include_details` on.
+**The `stream.live` payload (1.16.0).** `data` carries `stream_id`, `stream_name`, `owner_username`, `streamer` (nickname, else username), `title` (the stream name), `game` (1.17.0; an empty string when the stream has none), `url` (the logged-in watch page, `<base>/watch/<id>`, no share key) and `message` (the owner's go-live message, filled in; at most 400 characters). `public_key` is no longer part of it, and no payload carries a stream key, a `pub_` key, an RTMP address or a path. The event is sent once per 10 minutes per stream. For a stream that is not public (`stream.live` and `stream.offline`) it goes only to system hooks in the generic format, never to a member's own hook and never to a non-generic hook. In the non-generic formats the streamer, title, message and watch URL appear only with `include_details` on.
 
 The destination URL of a non-generic hook, and every credential, is never returned by any route. Responses show `url: null`, `url_set`, `url_host` (scheme and host only) and `has_format_secret`. A rename or other edit that does not send `format_config` keeps the stored credentials, as does a change of the URL path on the same scheme, host and port. A new scheme, host or port (or switching `allow_private` off in the same request as a URL change) does not keep them: the stored credentials are dropped, and for a format that needs one (gotify) the request is refused with `400` until `format_config` is sent again; a `format_config` sent with the new destination replaces the stored one as a whole (nothing is merged from the old one). This applies to user and system hooks alike. sending a new value replaces it, an empty string removes that key. Changing the `format` of a hook from `ntfy`, `gotify`, `discord` or `slack` to `generic` needs a new `url` in the same request (otherwise `400`), because the URL of a generic hook is returned. A non-generic hook has no signing secret (`has_secret` is `false`); changing it to `generic` creates one that no response shows, so read it with `regenerate-secret`, and changing a hook away from `generic` removes it.
 

@@ -130,6 +130,7 @@ function renderStreamCard(stream, isOwner = false) {
                         </div>
                         ${publicBadge}
                     </div>
+                    ${stream.game ? `<p class="stream-description stream-game">${escapeHtml(stream.game)}</p>` : ''}
                     ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                     <div class="connection-actions">
                         <button class="btn btn-sm btn-primary" onclick="viewStreamNewWindow('${escapeHtml(stream.public_key || '')}', event)">
@@ -168,6 +169,7 @@ function renderStreamCard(stream, isOwner = false) {
                             </span>
                         </div>
                     </div>
+                    ${stream.game ? `<p class="stream-description stream-game">${escapeHtml(stream.game)}</p>` : ''}
                     ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                     <div class="stream-meta">
                         <span class="total-views">${stream.total_views || 0} views</span>
@@ -319,12 +321,21 @@ async function showStreamDetails(streamId) {
                         </div>
                     </div>
                     <div class="form-group">
+                        <label>Game</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="stream-game-input" maxlength="60" list="stream-game-list" placeholder="Optional, shown next to the title" autocomplete="off">
+                            <datalist id="stream-game-list"></datalist>
+                            <button id="save-game-btn" class="btn btn-sm btn-primary" onclick="updateStreamGame(${stream.id})">Save</button>
+                        </div>
+                        <small>Up to 60 characters. Viewers see the title and game change at once while you are live.</small>
+                    </div>
+                    <div class="form-group">
                         <label>Go-live message</label>
                         <div class="input-with-copy">
                             <input type="text" id="stream-golive-input" maxlength="200" placeholder="{title} just went live">
                             <button id="save-golive-btn" class="btn btn-sm btn-primary" onclick="updateStreamGoLiveMessage(${stream.id})">Save</button>
                         </div>
-                        <small>Plain text, up to 200 characters. You can use {streamer}, {title} and {url}; anything else is shown as typed. Sent once per 10 minutes when you go live. Leave empty for the default.</small>
+                        <small>Plain text, up to 200 characters. You can use {streamer}, {title}, {game} and {url}; anything else is shown as typed. Sent once per 10 minutes when you go live. Leave empty for the default.</small>
                     </div>
                     <div class="form-group">
                         <label>Who is told when you go live</label>
@@ -410,6 +421,8 @@ async function showStreamDetails(streamId) {
         // Set as a property, not rendered into the markup: escapeHtml leaves double quotes alone,
         // so a message containing one would cut the attribute short
         document.getElementById('stream-golive-input').value = stream.golive_message || '';
+        document.getElementById('stream-game-input').value = stream.game || '';
+        loadGameSuggestions();
         const audienceSelect = document.getElementById('stream-golive-audience');
         audienceSelect.value = stream.golive_audience === 'everyone' ? 'everyone' : 'followers';
         audienceSelect.dataset.current = audienceSelect.value;      // restored if a save fails
@@ -480,6 +493,58 @@ async function updateStreamName(streamId) {
         }
     } catch (error) {
         Portal.toast('Failed to update stream name', 'error');
+    } finally {
+        Portal.setButtonLoading(btn, false);
+    }
+}
+
+/**
+ * Fill the game field's suggestions: the games used before and those of public streams.
+ * Option values are set as properties, never as markup.
+ */
+async function loadGameSuggestions() {
+    const list = document.getElementById('stream-game-list');
+    if (!list) return;
+    try {
+        const response = await Portal.fetch('/api/streams/games');
+        if (!response.ok) return;
+        const data = await response.json();
+        list.replaceChildren();
+        for (const game of (data.games || [])) {
+            const option = document.createElement('option');
+            option.value = game;
+            list.appendChild(option);
+        }
+    } catch (error) {
+        // suggestions are optional
+    }
+}
+
+/**
+ * Update the stream's game (empty clears it)
+ */
+async function updateStreamGame(streamId) {
+    const input = document.getElementById('stream-game-input');
+    const btn = document.getElementById('save-game-btn');
+    const game = input.value.trim();
+    Portal.setButtonLoading(btn, true);
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ game })
+        });
+        if (response.ok) {
+            Portal.flashButtonSuccess(btn);
+            Portal.toast('Game updated', 'success');
+            loadUserStreams();
+            loadGameSuggestions();
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to update game', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update game', 'error');
     } finally {
         Portal.setButtonLoading(btn, false);
     }

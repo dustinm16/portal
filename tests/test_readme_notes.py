@@ -169,6 +169,10 @@ says17("peak and unique", "last_peak_viewers", "last_unique_viewers", "nullable"
 says17("rollback", "rollback", "1.16.0")
 says17("what was not tested", "not tested", "hls.js", "safari", "mediamtx")
 
+says17("game field", "live title and game", "60 characters", "`game`", "`stream_info`", "`{game}`", "/api/streams/games")
+says17("game privacy", "judged per socket", "owner and administrators", "never contributes its game")
+says17("game not tested", "not tested (game)", "datalist")
+
 # --- README: the live streaming section and the pictures of it ----------------------
 ls = re.search(r"### Live Streaming\n(.*?)\n### ", text, re.S)
 lstext = (ls.group(1) if ls else "").lower()

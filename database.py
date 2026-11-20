@@ -687,6 +687,18 @@ MIGRATIONS = [
         FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_stream_cards_stream ON stream_cards(stream_id)",
+    # The game a stream shows next to its title (at most 60 characters), what a go-live card
+    # shows of it (encrypted like the card's title), and the games an owner used before, kept
+    # for the settings form's suggestions.
+    "ALTER TABLE user_streams ADD COLUMN game TEXT",
+    "ALTER TABLE stream_cards ADD COLUMN game TEXT",
+    """CREATE TABLE IF NOT EXISTS stream_game_history (
+        user_id INTEGER NOT NULL,
+        game TEXT NOT NULL COLLATE NOCASE,
+        used_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, game),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
     # RTMP temporary publish tokens
     """CREATE TABLE IF NOT EXISTS rtmp_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4009,7 +4021,8 @@ class Database:
         description: str = None,
         is_public: bool = False,
         golive_audience: str = "followers",
-        golive_message: str = None
+        golive_message: str = None,
+        game: str = None
     ) -> int:
         """Create a new user stream.
 
@@ -4022,6 +4035,7 @@ class Database:
             is_public: Whether stream is publicly visible
             golive_audience: 'followers' (the default for a new stream) or 'everyone'
             golive_message: the owner's go-live message template (already validated), or None
+            game: the game shown next to the title (already validated), or None
         """
         if golive_audience not in ("followers", "everyone"):
             golive_audience = "followers"
@@ -4033,13 +4047,16 @@ class Database:
         cursor = await self.conn.execute(
             """INSERT INTO user_streams (user_id, name, stream_key, stream_key_hash,
                public_key, public_key_hash, description, is_public, created_at, golive_audience,
-               golive_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               golive_message, game)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, name, sk_encrypted, sk_hash, pk_encrypted, pk_hash,
              description, 1 if is_public else 0,
-             datetime.now(timezone.utc).isoformat(), golive_audience, golive_message or None)
+             datetime.now(timezone.utc).isoformat(), golive_audience, golive_message or None,
+             game or None)
         )
         await self.conn.commit()
+        if game:
+            await self.remember_stream_game(user_id, game)
         return cursor.lastrowid
 
     async def get_user_streams(self, user_id: int) -> list[dict]:
@@ -4124,7 +4141,7 @@ class Database:
     # audience, key hashes, rtmp state) is private until it is added here.
     PUBLIC_STREAM_COLUMNS = ("id", "user_id", "name", "description", "is_public", "is_live",
                              "viewer_count", "chat_channel_id", "thumbnail_url", "started_at",
-                             "total_views", "created_at", "public_key", "allow_unauthenticated")
+                             "total_views", "created_at", "public_key", "allow_unauthenticated", "game")
 
     @classmethod
     def _public_stream_select(cls) -> str:
@@ -4167,7 +4184,7 @@ class Database:
         allowed_fields = {"name", "description", "is_public", "is_live", "viewer_count",
                          "chat_channel_id", "thumbnail_url", "started_at", "ended_at",
                          "allow_unauthenticated", "rtmp_enabled", "golive_message",
-                         "golive_audience"}
+                         "golive_audience", "game"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:
@@ -4185,7 +4202,64 @@ class Database:
 
         cursor = await self.conn.execute(query, values)
         await self.conn.commit()
-        return cursor.rowcount > 0
+        changed = cursor.rowcount > 0
+        if changed and kwargs.get("game"):
+            owner = user_id
+            if owner is None:
+                row = await (await self.conn.execute(
+                    "SELECT user_id FROM user_streams WHERE id = ?", (stream_id,))).fetchone()
+                owner = row["user_id"] if row else None
+            if owner is not None:
+                await self.remember_stream_game(owner, kwargs["game"])
+        return changed
+
+    # Games an owner used before, for the settings form's suggestions. Per owner, at most
+    # GAME_HISTORY_PER_USER (the least recently used go first).
+    GAME_HISTORY_PER_USER = 100
+    GAME_SUGGESTIONS_MAX = 50
+
+    async def remember_stream_game(self, user_id: int, game: str) -> None:
+        """Note that this owner used this game now (case-insensitive: the newest spelling wins)."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self.conn.execute("DELETE FROM stream_game_history WHERE user_id = ? AND game = ?",
+                                (user_id, game))
+        await self.conn.execute(
+            "INSERT INTO stream_game_history (user_id, game, used_at) VALUES (?, ?, ?)",
+            (user_id, game, now))
+        await self.conn.execute(
+            """DELETE FROM stream_game_history WHERE user_id = ? AND game NOT IN (
+                   SELECT game FROM stream_game_history WHERE user_id = ?
+                   ORDER BY used_at DESC, rowid DESC LIMIT ?)""",
+            (user_id, user_id, self.GAME_HISTORY_PER_USER))
+        await self.conn.commit()
+
+    async def get_game_suggestions(self, user_id: int) -> list[str]:
+        """Distinct games for the settings form: first the ones this member used before (their
+        history and their own streams' current games, most recent first), then the current game
+        of streams that are public now. Never the game of another member's stream that is not
+        public, and never another member's history: a stream that was public once and is
+        private now shows nothing. At most GAME_SUGGESTIONS_MAX."""
+        cursor = await self.conn.execute(
+            """SELECT game, 0 AS prio, used_at AS at FROM stream_game_history WHERE user_id = ?
+               UNION ALL
+               SELECT game, 0, COALESCE(updated_at, created_at) FROM user_streams
+                WHERE user_id = ? AND game IS NOT NULL AND game != ''
+               UNION ALL
+               SELECT game, 1, COALESCE(updated_at, created_at) FROM user_streams
+                WHERE is_public = 1 AND game IS NOT NULL AND game != ''""",
+            (user_id, user_id))
+        rows = [(r["prio"], r["at"] or "", r["game"]) for r in await cursor.fetchall()]
+        rows.sort(key=lambda r: r[1], reverse=True)      # newest first ...
+        rows.sort(key=lambda r: r[0])                    # ... own before public (stable)
+        out, seen = [], set()
+        for _prio, _at, game in rows:
+            if game.casefold() in seen:
+                continue
+            seen.add(game.casefold())
+            out.append(game)
+            if len(out) >= self.GAME_SUGGESTIONS_MAX:
+                break
+        return out
 
     async def claim_golive(self, stream_id: int, now: int, cooldown: int) -> bool:
         """Take the right to announce a go-live: True for exactly one caller per cooldown.
@@ -4284,7 +4358,7 @@ class Database:
     async def get_live_streams(self) -> list[dict]:
         """Streams that are live now, with the streamer's names and no key at all."""
         cursor = await self.conn.execute(
-            """SELECT us.id, us.user_id, us.name, us.is_public, us.is_live, us.viewer_count,
+            """SELECT us.id, us.user_id, us.name, us.game, us.is_public, us.is_live, us.viewer_count,
                       us.started_at, u.username AS owner_username, u.nickname AS owner_nickname
                FROM user_streams us LEFT JOIN users u ON us.user_id = u.id
                WHERE us.is_live = 1 ORDER BY us.started_at DESC, us.id DESC""")
@@ -4295,12 +4369,13 @@ class Database:
     # ------------------------------------------------------------------
 
     async def add_stream_card(self, message_id: int, stream_id: int, channel_id: int,
-                              streamer: str, title: str) -> None:
+                              streamer: str, title: str, game: str = None) -> None:
         """Store what a card shows. The streamer and the title are encrypted at rest like
         the message text: a renamed stream's old title must not stay readable here."""
         await self.conn.execute(
-            "INSERT INTO stream_cards (message_id, stream_id, channel_id, streamer, title) VALUES (?, ?, ?, ?, ?)",
-            (message_id, stream_id, channel_id, encrypt_message(streamer), encrypt_message(title)))
+            "INSERT INTO stream_cards (message_id, stream_id, channel_id, streamer, title, game) VALUES (?, ?, ?, ?, ?, ?)",
+            (message_id, stream_id, channel_id, encrypt_message(streamer), encrypt_message(title),
+             encrypt_message(game) if game else None))
         await self.conn.commit()
 
     async def scrub_reply_previews(self, message_id: int) -> int:
@@ -4318,13 +4393,14 @@ class Database:
             return {}
         marks = ",".join("?" * len(ids))
         cursor = await self.conn.execute(
-            f"SELECT message_id, stream_id, channel_id, streamer, title FROM stream_cards WHERE message_id IN ({marks})",
+            f"SELECT message_id, stream_id, channel_id, streamer, title, game FROM stream_cards WHERE message_id IN ({marks})",
             ids)
         out = {}
         for r in await cursor.fetchall():
             row = dict(r)
             row["streamer"] = decrypt_message(row["streamer"])
             row["title"] = decrypt_message(row["title"])
+            row["game"] = decrypt_message(row["game"]) if row.get("game") else None
             out[row["message_id"]] = row
         return out
 

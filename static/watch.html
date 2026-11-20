@@ -56,6 +56,18 @@
             color: var(--text-primary);
         }
 
+        .viewer-game {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            padding: 0.1rem 0.5rem;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 999px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 20rem;
+        }
+
         .stream-broadcaster {
             display: flex;
             align-items: center;
@@ -731,6 +743,7 @@
             <div class="viewer-header">
                 <div class="viewer-header-info">
                     <h2 id="viewer-title">Loading...</h2>
+                    <div class="viewer-game" id="viewer-game" style="display: none;"></div>
                     <div class="stream-broadcaster">
                         <div class="stream-broadcaster-avatar" id="viewer-avatar">?</div>
                         <span id="viewer-broadcaster">Loading...</span>
@@ -1015,10 +1028,7 @@
                     return;
                 }
 
-                document.title = chatOnly
-                    ? `${streamData.name} chat - Open Relay Portal`
-                    : `${streamData.name} - Open Relay Portal`;
-                document.getElementById('viewer-title').textContent = streamData.name;
+                showStreamInfo(streamData.name, streamData.game);
                 const broadcasterName = streamData.owner_nickname || streamData.owner_username || 'Unknown';
                 document.getElementById('viewer-broadcaster').textContent = broadcasterName;
                 document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
@@ -1026,7 +1036,6 @@
 
                 if (chatOnly) {
                     // No player in the pop-out: it would only add a second viewer.
-                    document.getElementById('chat-header-title').textContent = streamData.name;
                 } else if (streamData.is_live === 1) {
                     document.getElementById('live-indicator').style.display = 'flex';
                     document.getElementById('viewer-count').style.display = 'flex';
@@ -1056,6 +1065,21 @@
                 console.error('Failed to load stream:', error);
                 showLoadError('Error loading stream');
             }
+        }
+
+        // The title and the game in the header, the tab title and the pop-out's chat header.
+        // Text only: a name or game is never markup.
+        function showStreamInfo(name, game) {
+            const title = name || '';
+            document.title = chatOnly
+                ? `${title} chat - Open Relay Portal`
+                : `${title} - Open Relay Portal`;
+            document.getElementById('viewer-title').textContent = title;
+            const gameEl = document.getElementById('viewer-game');
+            gameEl.textContent = game || '';
+            gameEl.style.display = game ? '' : 'none';
+            const chatTitle = document.getElementById('chat-header-title');
+            if (chatTitle && chatOnly) chatTitle.textContent = title;
         }
 
         function showLoadError(text) {
@@ -1386,6 +1410,7 @@
 
                 const data = await response.json();
                 streamData = data.stream;
+                showStreamInfo(streamData.name, streamData.game);
 
                 if (streamData.is_live === 1) {
                     document.getElementById('live-indicator').style.display = 'flex';
@@ -1457,6 +1482,14 @@
         function handleChatMessage(data) {
             const container = document.getElementById('chat-messages');
             switch (data.type) {
+                case 'stream_info':
+                    // The owner changed the title or game while live: update without a reload
+                    if (streamData && Number(data.stream_id) === Number(streamData.id)) {
+                        streamData.name = data.name;
+                        streamData.game = data.game;
+                        showStreamInfo(data.name, data.game);
+                    }
+                    break;
                 case 'message':
                     appendChatMessage(data);
                     break;

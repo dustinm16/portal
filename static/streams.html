@@ -284,6 +284,16 @@
             text-overflow: ellipsis;
         }
 
+        .stream-game {
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .viewer-game {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
         .stream-description {
             font-size: 0.8rem;
             color: var(--text-secondary);
@@ -862,6 +872,7 @@
                 <div class="viewer-header">
                     <div class="viewer-header-info">
                         <h2 id="viewer-title">Stream Title</h2>
+                        <div class="viewer-game" id="viewer-game" style="display: none;"></div>
                         <div class="stream-broadcaster">
                             <div class="stream-broadcaster-avatar" id="viewer-avatar">?</div>
                             <span id="viewer-broadcaster">Broadcaster</span>
@@ -1379,6 +1390,7 @@
                     </div>
                     <div class="stream-info">
                         <h3 class="stream-title">${escapeHtml(stream.name)}</h3>
+                        ${stream.game ? `<p class="stream-description stream-game">${escapeHtml(stream.game)}</p>` : ''}
                         ${stream.description ? `<p class="stream-description">${escapeHtml(stream.description)}</p>` : ''}
                         <div class="stream-broadcaster">
                             <div class="stream-broadcaster-avatar">${initial}</div>
@@ -1449,7 +1461,7 @@
                 }
 
                 // Update viewer UI
-                document.getElementById('viewer-title').textContent = currentStream.name;
+                showViewerInfo(currentStream.name, currentStream.game);
                 const broadcasterName = currentStream.owner_nickname || currentStream.owner_username || 'Unknown';
                 document.getElementById('viewer-broadcaster').textContent = broadcasterName;
                 document.getElementById('viewer-avatar').textContent = broadcasterName[0].toUpperCase();
@@ -1609,9 +1621,24 @@
             };
         }
 
+        function showViewerInfo(name, game) {
+            document.getElementById('viewer-title').textContent = name || '';
+            const gameEl = document.getElementById('viewer-game');
+            gameEl.textContent = game || '';
+            gameEl.style.display = game ? '' : 'none';
+        }
+
         function handleChatMessage(data) {
             const container = document.getElementById('chat-messages');
             switch (data.type) {
+                case 'stream_info':
+                    if (currentStream && Number(data.stream_id) === Number(currentStream.id)) {
+                        currentStream.name = data.name;
+                        currentStream.game = data.game;
+                        showViewerInfo(data.name, data.game);
+                        loadStreams();
+                    }
+                    break;
                 case 'message':
                     appendChatMessage(data);
                     break;

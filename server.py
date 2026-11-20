@@ -5055,6 +5055,8 @@ async def http_list_user_streams(request: web.Request) -> web.Response:
 
 _STREAM_NAME_MAX = 100
 _STREAM_DESCRIPTION_MAX = 2000
+_STREAM_GAME_MAX = 60
+_STREAM_GAME_PRESTRIP_MAX = 300    # looked at before the per-character strip, as for the go-live message
 _STREAM_FLAG_FIELDS = ("is_public", "allow_unauthenticated", "rtmp_enabled")
 _GOLIVE_MESSAGE_MAX = 200
 _GOLIVE_AUDIENCES = ("followers", "everyone")
@@ -5104,7 +5106,7 @@ def _validate_stream_fields(data: dict):
                 clean[key] = int(v)
             else:
                 return None, f"{key} must be true, false, 0 or 1"
-    for key in ("name", "description", "golive_message"):
+    for key in ("name", "description", "golive_message", "game"):
         v = data.get(key)
         if isinstance(v, str) and _has_surrogate(v):
             return None, f"{key} contains characters that cannot be stored"
@@ -5122,6 +5124,16 @@ def _validate_stream_fields(data: dict):
         if v is not None and len(v) > _STREAM_DESCRIPTION_MAX:
             return None, f"description must be at most {_STREAM_DESCRIPTION_MAX} characters"
         clean["description"] = v.strip() if v is not None else None
+    if "game" in data:
+        v = data["game"]
+        if v is not None and not isinstance(v, str):
+            return None, "game must be a string or null"
+        if v is not None and len(v) > _STREAM_GAME_PRESTRIP_MAX:
+            return None, f"game must be at most {_STREAM_GAME_MAX} characters"
+        v = " ".join(_strip_control_chars(v).split()) if v is not None else ""
+        if len(v) > _STREAM_GAME_MAX:
+            return None, f"game must be at most {_STREAM_GAME_MAX} characters"
+        clean["game"] = v or None                # empty: no game
     if "golive_message" in data:
         v = data["golive_message"]
         if v is not None and not isinstance(v, str):
@@ -5150,18 +5162,19 @@ _GOLIVE_COOLDOWN_SECONDS = 600
 _golive_now = time               # module level so tests can move the clock
 _GOLIVE_DEFAULT_MESSAGE = "{title} just went live"
 _GOLIVE_RENDER_MAX = 400
-_GOLIVE_PLACEHOLDER = re.compile(r"\{(streamer|title|url)\}")
+_GOLIVE_PLACEHOLDER = re.compile(r"\{(streamer|title|game|url)\}")
 _PUBLIC_HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 
 
-def _render_golive_message(template, streamer: str, title: str, url: str) -> str:
-    """The go-live message: the template with {streamer}, {title} and {url} replaced
+def _render_golive_message(template, streamer: str, title: str, url: str, game: str = "") -> str:
+    """The go-live message: the template with {streamer}, {title}, {game} and {url} replaced
     by literal text in a single pass. Nothing else is interpreted: any other brace
     text (including '{0.__class__}') stays as written, and a value that itself
     contains '{url}' is not replaced again. No str.format, no template engine."""
     tpl = template if isinstance(template, str) and template.strip() else _GOLIVE_DEFAULT_MESSAGE
     values = {"streamer": _strip_control_chars(str(streamer or "")),
               "title": _strip_control_chars(str(title or "")),
+              "game": _strip_control_chars(str(game or "")),
               "url": _strip_control_chars(str(url or ""))}
     out = _GOLIVE_PLACEHOLDER.sub(lambda m: values[m.group(1)], _strip_control_chars(tpl))
     return " ".join(out.split())[:_GOLIVE_RENDER_MAX]
@@ -5199,12 +5212,13 @@ def _golive_payload(stream: dict) -> dict:
     RTMP address or a path."""
     streamer = stream.get("owner_nickname") or stream.get("owner_username") or "Someone"
     title = stream.get("name") or ""
+    game = stream.get("game") or ""
     url = _watch_url(stream["id"])
     return {
         "stream_id": stream["id"], "stream_name": title,
         "owner_username": stream.get("owner_username"),
-        "streamer": streamer, "title": title, "url": url,
-        "message": _render_golive_message(stream.get("golive_message"), streamer, title, url),
+        "streamer": streamer, "title": title, "game": game, "url": url,
+        "message": _render_golive_message(stream.get("golive_message"), streamer, title, url, game),
     }
 
 
@@ -5274,7 +5288,8 @@ async def _post_go_live_card(stream: dict, payload: dict, channel: dict) -> Opti
     msg_id = await db.create_chat_message(
         channel["id"], stream["user_id"], account, _go_live_card_text(payload), message_type="stream_card")
     try:
-        await db.add_stream_card(msg_id, stream["id"], channel["id"], streamer, payload["title"])
+        await db.add_stream_card(msg_id, stream["id"], channel["id"], streamer, payload["title"],
+                                 payload.get("game") or None)
     except Exception:
         # The stream is gone (foreign key) or the insert failed: nothing else can find
         # this message, so it goes now, with its search entry, and the caller logs it.
@@ -5283,10 +5298,13 @@ async def _post_go_live_card(stream: dict, payload: dict, channel: dict) -> Opti
         except Exception as e:
             logger.warning(f"Removing the unlinked go-live card {msg_id} failed: {type(e).__name__}: {e}")
         raise
+    card = {"stream_id": stream["id"], "streamer": streamer, "title": payload["title"]}
+    if payload.get("game"):
+        card["game"] = payload["game"]
     await broadcast_to_channel(channel["name"], {
         "type": "message", "id": msg_id, "user_id": stream["user_id"], "username": streamer,
         "message": _go_live_card_text(payload), "message_type": "stream_card",
-        "card": {"stream_id": stream["id"], "streamer": streamer, "title": payload["title"]},
+        "card": card,
         "role": "user", "anonymous": False, "avatar": {}, "reactions": [],
         "created_at": datetime.now(timezone.utc).isoformat()})
     return msg_id
@@ -5377,6 +5395,8 @@ async def _notify_go_live(stream: dict, payload: dict, broad: bool = True) -> in
     else:
         candidates = await db.get_all_users()
     data = {"stream_id": stream_id, "streamer": payload["streamer"], "title": payload["title"]}
+    if payload.get("game"):
+        data["game"] = payload["game"]
     if payload["url"]:
         data["url"] = payload["url"]
     title = f"{payload['streamer']} is live!"
@@ -5533,7 +5553,8 @@ async def http_create_user_stream(request: web.Request) -> web.Response:
             description=description,
             is_public=is_public,
             golive_audience=audience,
-            golive_message=clean.get("golive_message")
+            golive_message=clean.get("golive_message"),
+            game=clean.get("game")
         )
 
         # Create a chat channel for every stream
@@ -5635,7 +5656,7 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
 # The stream fields a client may change (what the stream settings screen sends)
 _STREAM_CLIENT_FIELDS = frozenset({"name", "description", "is_public",
                                    "allow_unauthenticated", "rtmp_enabled", "golive_message",
-                                   "golive_audience"})
+                                   "golive_audience", "game"})
 
 
 async def http_update_user_stream(request: web.Request) -> web.Response:
@@ -5737,6 +5758,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
             if revoked:
                 logger.info(f"Revoked {revoked} RTMP token(s) for stream {stream_id}")
         updated_stream = await db.get_user_stream(stream_id)
+        # A live stream's new name or game reaches the room's sockets that may see them
+        if (updated_stream and updated_stream.get("is_live") == 1
+                and (updated_stream.get("name") != stream.get("name")
+                     or (updated_stream.get("game") or None) != (stream.get("game") or None))):
+            await _broadcast_stream_info(updated_stream)
         # Strip internal hash fields from response
         if updated_stream:
             updated_stream.pop("stream_key_hash", None)
@@ -6290,10 +6316,21 @@ async def http_live_now(request: web.Request) -> web.Response:
         if not _stream_read_allowed(st, user_id, role, False):
             continue
         out.append({"id": st["id"], "name": st["name"],
+                    "game": st.get("game"),
                     "streamer": st.get("owner_nickname") or st.get("owner_username") or "Someone",
                     "viewer_count": st.get("viewer_count") or 0, "started_at": st.get("started_at"),
                     "following": st["id"] in followed})
     return web.json_response({"streams": out})
+
+
+async def http_stream_games(request: web.Request) -> web.Response:
+    """GET /api/streams/games: games for the settings form's suggestions (a datalist): the
+    ones this member used before, then the game of each stream that is public now, at most
+    50. A stream that is not public never contributes, whoever owns it."""
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
+    return web.json_response({"games": await db.get_game_suggestions(token.user_id)})
 
 
 async def http_get_open_streams(request: web.Request) -> web.Response:
@@ -18349,6 +18386,42 @@ async def _evict_unreadable_by_id(channel_id) -> int:
         return 0
 
 
+async def _broadcast_stream_info(stream: dict) -> int:
+    """Tell the sockets in a live stream's chat room its new name and game (a `stream_info`
+    frame: stream id, name, game). Sent only to a socket whose member may read the room
+    (_can_read_channel) AND may watch the stream (_stream_read_allowed): a private stream
+    bound to a channel that is never hidden (the default channel) still reaches nobody but
+    its owner and administrators. The decision is made per member from the stream as it is
+    now (`stream` is the row read after the update), never from the room membership alone.
+    Returns the number of sockets told; never raises."""
+    sent = 0
+    try:
+        channel_id = stream.get("chat_channel_id")
+        channel = await db.get_chat_channel(channel_id) if channel_id else None
+        if not channel:
+            return 0
+        frame = {"type": "stream_info", "stream_id": stream["id"],
+                 "name": stream.get("name"), "game": stream.get("game")}
+        binding = await db.get_stream_by_chat_channel(channel["id"])
+        verdicts: dict = {}
+        for entry in list(chat_rooms.get(channel["name"], ())):
+            key = (entry[1], entry[3] if len(entry) > 3 else None)
+            if key not in verdicts:
+                verdicts[key] = bool(
+                    _stream_read_allowed(stream, key[0], key[1] or "user", False)
+                    and await _can_read_channel(channel, key[0], key[1] or "user", binding))
+            if not verdicts[key] or entry[0].closed:
+                continue
+            try:
+                await asyncio.wait_for(entry[0].send_json(frame), 2)
+                sent += 1
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[Chat] Could not send the stream info of stream {stream.get('id')}: {e}")
+    return sent
+
+
 async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, channel_id) -> list:
     """Add display data to channel messages (in place) for one viewer.
 
@@ -18419,6 +18492,8 @@ async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, chann
             c = cards.get(m["id"])
             if c:
                 m["card"] = {"stream_id": c["stream_id"], "streamer": c["streamer"], "title": c["title"]}
+                if c.get("game"):
+                    m["card"]["game"] = c["game"]
     all_reactions = await db.get_bulk_reactions(msg_ids)
     await _mask_reactor_ids(all_reactions, viewer_id, viewer_role)
     all_polls = await db.get_polls_by_message_ids(msg_ids)
@@ -23698,6 +23773,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/streams", http_create_user_stream)
     app.router.add_get("/api/streams/public", http_get_public_streams)
     app.router.add_get("/api/streams/live", http_live_now)
+    app.router.add_get("/api/streams/games", http_stream_games)
     app.router.add_get("/api/me/follows", http_my_follows)
     app.router.add_put("/api/streams/{id}/follow", http_follow_stream)
     app.router.add_delete("/api/streams/{id}/follow", http_unfollow_stream)
