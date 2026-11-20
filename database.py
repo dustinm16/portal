@@ -6464,9 +6464,18 @@ class Database:
         """
         if user_id:
             placeholders = ",".join("?" for _ in self.PUBLIC_ACTIVITY_TYPES)
+            # Another member's stream_live / stream_offline row is left out while that owner has
+            # a non-public stream of that name (the row carries no stream id, only the name in
+            # its text). Decided at read time, so rows stored before the fix and streams made
+            # private later are covered too; a public stream sharing the name goes with it.
             cursor = await self.conn.execute(
                 f"""SELECT * FROM activity_log
-                    WHERE user_id = ? OR action IN ({placeholders})
+                    WHERE (user_id = ? OR (action IN ({placeholders})
+                       AND NOT (action IN ('stream_live', 'stream_offline') AND EXISTS (
+                            SELECT 1 FROM user_streams us
+                            WHERE us.user_id = activity_log.user_id
+                              AND COALESCE(us.is_public, 0) = 0
+                              AND instr(activity_log.detail, 'Stream ''' || us.name || ''' went ') = 1))))
                     ORDER BY created_at DESC LIMIT ? OFFSET ?""",
                 (user_id, *self.PUBLIC_ACTIVITY_TYPES, limit, offset)
             )

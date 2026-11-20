@@ -6905,7 +6905,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             # No VOD recording — go straight to offline
             await db.set_stream_live(stream_id, False)
             logger.info(f"Stream {stream_name} ended (after grace period)")
-            await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream_name}' went offline")
+            await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_offline", stream), f"Stream '{stream_name}' went offline")
             asyncio.create_task(fire_webhook_event("stream.offline", {
                 "stream_id": stream_id, "stream_name": stream_name,
                 "owner_username": stream.get("owner_username")
@@ -6936,6 +6936,12 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             _disconnect_grace_tasks.pop(stream_id, None)
 
 
+def _stream_activity_type(action: str, stream: dict) -> str:
+    """The activity type to log a stream event under. stream_live and stream_offline are shown
+    to every member; a stream that is not public is logged under a type that is not."""
+    return action if stream.get("is_public") else action + "_private"
+
+
 async def _finalize_stream_offline(stream: dict) -> None:
     """Background task: wait for VOD finalization, then transition stream to offline."""
     stream_id = stream["id"]
@@ -6947,7 +6953,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
         # Now transition to fully offline
         await db.set_stream_live(stream_id, False)
         logger.info(f"Stream {stream_name} VOD finalized, now offline")
-        await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_offline", f"Stream '{stream_name}' went offline")
+        await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_offline", stream), f"Stream '{stream_name}' went offline")
         asyncio.create_task(fire_webhook_event("stream.offline", {
             "stream_id": stream_id, "stream_name": stream_name,
             "owner_username": stream.get("owner_username")
@@ -8674,7 +8680,7 @@ async def http_stream_auth(request: web.Request) -> web.Response:
         await db.set_stream_live(stream_id, True)
         if not was_live:
             logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
-            await db.log_activity(stream.get("user_id"), get_display_name(stream), "stream_live", f"Stream '{stream['name']}' went live", ip)
+            await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_live", stream), f"Stream '{stream['name']}' went live", ip)
             # Notify chat channel that stream went live
             if stream.get("chat_channel_id"):
                 channel = await db.get_chat_channel(stream["chat_channel_id"])
