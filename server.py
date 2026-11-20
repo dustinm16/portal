@@ -39,6 +39,7 @@ from time import monotonic, time
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 import re
+import unicodedata
 
 import aiohttp
 import asyncssh
@@ -5067,6 +5068,26 @@ async def http_list_user_streams(request: web.Request) -> web.Response:
 _STREAM_NAME_MAX = 100
 _STREAM_DESCRIPTION_MAX = 2000
 _STREAM_FLAG_FIELDS = ("is_public", "allow_unauthenticated", "rtmp_enabled")
+_GOLIVE_MESSAGE_MAX = 200
+# Looked at before the per-character control-character strip, so a huge body cannot keep the
+# event loop busy; generous enough that a message of mostly control characters still passes.
+_GOLIVE_MESSAGE_PRESTRIP_MAX = 1000
+
+
+def _strip_control_chars(text: str) -> str:
+    """Text without control characters: tab, newline and carriage return become a
+    space, every other control, line/paragraph separator and bidirectional override
+    is dropped. Runs of spaces are kept as typed."""
+    out = []
+    for ch in text:
+        if ch in "\t\n\r":
+            out.append(" ")
+        elif (unicodedata.category(ch) == "Cc" or ch in "\u2028\u2029"
+              or "\u202a" <= ch <= "\u202e" or "\u2066" <= ch <= "\u2069"):
+            continue
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _validate_stream_fields(data: dict):
@@ -5098,7 +5119,109 @@ def _validate_stream_fields(data: dict):
         if v is not None and len(v) > _STREAM_DESCRIPTION_MAX:
             return None, f"description must be at most {_STREAM_DESCRIPTION_MAX} characters"
         clean["description"] = v.strip() if v is not None else None
+    if "golive_message" in data:
+        v = data["golive_message"]
+        if v is not None and not isinstance(v, str):
+            return None, "golive_message must be a string or null"
+        if v is not None and len(v) > _GOLIVE_MESSAGE_PRESTRIP_MAX:
+            return None, f"golive_message must be at most {_GOLIVE_MESSAGE_MAX} characters"
+        v = _strip_control_chars(v).strip() if v is not None else ""
+        if len(v) > _GOLIVE_MESSAGE_MAX:
+            return None, f"golive_message must be at most {_GOLIVE_MESSAGE_MAX} characters"
+        clean["golive_message"] = v or None      # empty: the default message is used
     return clean, None
+
+
+# ---------------------------------------------------------------------------
+# Go-live announcement: cooldown, message template, payload
+# ---------------------------------------------------------------------------
+
+# A stream is announced at most once per cooldown, however often it starts again
+# (a retried media hook, an encoder restarted a few times). Kept in the database.
+_GOLIVE_COOLDOWN_SECONDS = 600
+_golive_now = time               # module level so tests can move the clock
+_GOLIVE_DEFAULT_MESSAGE = "{title} just went live"
+_GOLIVE_RENDER_MAX = 400
+_GOLIVE_PLACEHOLDER = re.compile(r"\{(streamer|title|url)\}")
+_PUBLIC_HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+
+
+def _render_golive_message(template, streamer: str, title: str, url: str) -> str:
+    """The go-live message: the template with {streamer}, {title} and {url} replaced
+    by literal text in a single pass. Nothing else is interpreted: any other brace
+    text (including '{0.__class__}') stays as written, and a value that itself
+    contains '{url}' is not replaced again. No str.format, no template engine."""
+    tpl = template if isinstance(template, str) and template.strip() else _GOLIVE_DEFAULT_MESSAGE
+    values = {"streamer": _strip_control_chars(str(streamer or "")),
+              "title": _strip_control_chars(str(title or "")),
+              "url": _strip_control_chars(str(url or ""))}
+    out = _GOLIVE_PLACEHOLDER.sub(lambda m: values[m.group(1)], _strip_control_chars(tpl))
+    return " ".join(out.split())[:_GOLIVE_RENDER_MAX]
+
+
+def _public_base_url() -> str:
+    """The portal's public base URL ("https://host[:port]", no path), from the
+    PUBLIC_BASE_URL setting or else https:// plus the configured HOSTNAME. Never
+    from a request's Host header. Empty when nothing usable is configured."""
+    configured = (Config.PUBLIC_BASE_URL or "").strip()
+    if configured:
+        try:
+            parts = urlsplit(configured)
+            port = parts.port
+        except ValueError:
+            return ""
+        if (parts.scheme in ("http", "https") and parts.hostname and _PUBLIC_HOST_RE.match(parts.hostname)
+                and not parts.username and not parts.password
+                and parts.path in ("", "/") and not parts.query and not parts.fragment):
+            return f"{parts.scheme}://{parts.hostname}" + (f":{port}" if port else "")
+        return ""
+    host = (Config.HOSTNAME or "").strip()
+    return f"https://{host}" if _PUBLIC_HOST_RE.match(host) else ""
+
+
+def _watch_url(stream_id: int) -> str:
+    """The logged-in watch page of a stream (no share key in it)."""
+    base = _public_base_url()
+    return f"{base}/watch/{int(stream_id)}" if base else ""
+
+
+def _golive_payload(stream: dict) -> dict:
+    """What a go-live announcement carries: the streamer's display name, the title,
+    the watch URL and the rendered message. Never a stream key, a pub_ key, an
+    RTMP address or a path."""
+    streamer = stream.get("owner_nickname") or stream.get("owner_username") or "Someone"
+    title = stream.get("name") or ""
+    url = _watch_url(stream["id"])
+    return {
+        "stream_id": stream["id"], "stream_name": title,
+        "owner_username": stream.get("owner_username"),
+        "streamer": streamer, "title": title, "url": url,
+        "message": _render_golive_message(stream.get("golive_message"), streamer, title, url),
+    }
+
+
+async def _announce_go_live(stream_id: int) -> None:
+    """Tell people a stream went live: the in-portal notification (only to those
+    who may watch it) and the stream.live webhook. The caller has already won the
+    cooldown (db.claim_golive); this never raises."""
+    try:
+        stream = await db.get_user_stream(stream_id)
+        if not stream:
+            return
+        payload = _golive_payload(stream)
+        data = {"stream_id": stream_id, "streamer": payload["streamer"], "title": payload["title"]}
+        if payload["url"]:
+            data["url"] = payload["url"]
+        for user in await db.get_all_users():
+            if user["id"] == stream.get("user_id"):
+                continue
+            if _stream_read_allowed(stream, user["id"], user.get("role") or "user", False):
+                await send_notification(user["id"], "stream_live", f"{payload['streamer']} is live!",
+                                        payload["message"], data)
+        asyncio.create_task(fire_webhook_event(
+            "stream.live", payload, meta={"stream_public": bool(stream.get("is_public"))}))
+    except Exception as e:
+        logger.warning(f"Go-live announcement for stream {stream_id} failed: {type(e).__name__}: {e}")
 
 
 async def http_create_user_stream(request: web.Request) -> web.Response:
@@ -5224,7 +5347,7 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
 
 # The stream fields a client may change (what the stream settings screen sends)
 _STREAM_CLIENT_FIELDS = frozenset({"name", "description", "is_public",
-                                   "allow_unauthenticated", "rtmp_enabled"})
+                                   "allow_unauthenticated", "rtmp_enabled", "golive_message"})
 
 
 async def http_update_user_stream(request: web.Request) -> web.Response:
@@ -6906,6 +7029,16 @@ _WEBHOOK_INCOMING_RATE = 10     # max incoming messages per token per window
 _WEBHOOK_INCOMING_WINDOW = 60.0
 
 
+def _stream_event_hook_allowed(webhook: dict, event: str, meta: dict | None) -> bool:
+    """A stream event about a stream that is not public goes to system hooks only
+    (set up by an administrator), never to a member's own hook: that hook belongs
+    to somebody who may not be allowed to know the stream exists. Other events and
+    public streams are not affected here."""
+    if event in webhook_formats.STREAM_EVENTS and not (meta or {}).get("stream_public"):
+        return (webhook.get("kind") or "user") == "system"
+    return True
+
+
 async def _third_party_may_see(event: str, meta: dict | None) -> bool:
     """Whether an event may go to a non-generic (third-party) channel at all.
 
@@ -6986,6 +7119,8 @@ async def fire_webhook_event(event: str, payload: dict, *, meta: dict | None = N
     for webhook in webhooks:
         if webhook.get("format") != "generic" and not visible:
             continue
+        if not _stream_event_hook_allowed(webhook, event, meta):
+            continue
         asyncio.create_task(_deliver_webhook(webhook, event, payload, meta=meta, drops=drops))
         started += 1
     return started
@@ -7052,7 +7187,8 @@ async def _webhook_current_for_event(webhook_id: int, event: str, meta: dict | N
     if (w and w.get("enabled") and w["type"] == "outgoing"
             and webhook_formats.event_subscribed(
                 w["events"], event, kind=w["kind"], fmt=w["format"])
-            and (w["format"] == "generic" or await _third_party_may_see(event, meta))):
+            and (w["format"] == "generic" or await _third_party_may_see(event, meta))
+            and _stream_event_hook_allowed(w, event, meta)):
         return w
     return None
 
@@ -8248,25 +8384,22 @@ async def http_stream_auth(request: web.Request) -> web.Response:
                         "stream_id": stream_id,
                         "is_live": 1
                     })
-            # Send notification. The data carries the stream id only (the watch
-            # page resolves access itself); the playback key never travels in it.
-            streamer_name = stream.get("owner_nickname") or stream.get("owner_username", "Someone")
-            if stream.get("is_public"):
-                await broadcast_notification(
-                    "stream_live", f"{streamer_name} is live!",
-                    f"{stream['name']} just went live",
-                    data={"stream_id": stream_id},
-                    exclude_user_id=stream.get("user_id")
-                )
-            # Private streams send no go-live notification.
-            webhook_payload = {
-                "stream_id": stream_id, "stream_name": stream["name"],
-                "owner_username": stream.get("owner_username"),
-            }
-            if stream.get("is_public"):
-                webhook_payload["public_key"] = stream.get("public_key", "")
-            asyncio.create_task(fire_webhook_event(
-                "stream.live", webhook_payload, meta={"stream_public": bool(stream.get("is_public"))}))
+            # Announce it (notification and webhook), once per cooldown. The check and
+            # the set are one conditional UPDATE, taken under the stream state lock, so
+            # a retried hook or an encoder that restarts quickly announces only once.
+            # The announcement carries no key; the watch page resolves access itself.
+            try:
+                async with _stream_state_lock:
+                    announce = await db.claim_golive(
+                        stream_id, int(_golive_now()), _GOLIVE_COOLDOWN_SECONDS)
+            except Exception as e:
+                # A database fault must not stop a stream; nothing is announced
+                logger.warning(f"Go-live claim for stream {stream_id} failed: {type(e).__name__}: {e}")
+                announce = False
+            if announce:
+                await _announce_go_live(stream_id)
+            else:
+                logger.info(f"Stream {stream['name']}: go-live not announced again (cooldown)")
 
         # Start VOD recording on every publish (guards against duplicates internally)
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)

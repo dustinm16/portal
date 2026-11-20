@@ -118,7 +118,17 @@ says16("cache time and invalidation", "5 seconds", "signed out", "rotated")
 says16("internal consumers", "relays", "recorder", "thumbnail capture", "loopback", "authhttpexclude")
 says16("webrtc media is outside the rule", "webrtc media", "keeps flowing")
 says16("the query token is not passed on", "?token=", "no longer passed on")
-says16("no database change and no static version moved", "no database change", "no `?v=` number moved")
+says16("the database columns and the one static version that moved", "two columns", "golive_message", "`?v=42`")
+says16("the go-live cooldown", "one announcement per 10 minutes", "stored in the database", "stream state lock", "`stream.offline`")
+says16("the go-live message", "200 characters", "`{streamer}`, `{title}` and `{url}`", "`{0.__class__}`", "literal text")
+says16("the payload change, no keys, where the URL comes from", "`public_key` is removed", "`public_key`", "`url`", "public_base_url", "host header")
+says16("who is told, and private streams reach system hooks only", "who is told", "administrators", "only to system hooks", "members who may watch")
+# the note must match the renderer: braces around a placeholder stay, the placeholder inside is filled
+check("1.16.0 does not say {{title}} is shown exactly as typed",
+      not re.search(r"\{\{title\}\}`?,? is shown exactly as typed", sec16) and "`{0}` and `{{title}}`" not in sec16)
+says16("braces around a placeholder stay and the placeholder inside is filled", "braces around a placeholder stay",
+       "`{{title}}`", "filled in")
+
 says16("rollback", "rollback", "1.15.0")
 says16("what was not tested", "not tested", "vlc", "cloudflare")
 

@@ -318,6 +318,14 @@ async function showStreamDetails(streamId) {
                         </div>
                     </div>
                     <div class="form-group">
+                        <label>Go-live message</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="stream-golive-input" maxlength="200" placeholder="{title} just went live">
+                            <button id="save-golive-btn" class="btn btn-sm btn-primary" onclick="updateStreamGoLiveMessage(${stream.id})">Save</button>
+                        </div>
+                        <small>Plain text, up to 200 characters. You can use {streamer}, {title} and {url}; anything else is shown as typed. Sent once per 10 minutes when you go live. Leave empty for the default.</small>
+                    </div>
+                    <div class="form-group">
                         <label class="checkbox-label">
                             <input type="checkbox" ${stream.is_public ? 'checked' : ''} onchange="toggleStreamPublic(${stream.id}, this.checked)">
                             <span>Public stream (visible to all users)</span>
@@ -389,6 +397,10 @@ async function showStreamDetails(streamId) {
                 </div>
             </div>
         `;
+
+        // Set as a property, not rendered into the markup: escapeHtml leaves double quotes alone,
+        // so a message containing one would cut the attribute short
+        document.getElementById('stream-golive-input').value = stream.golive_message || '';
 
         showModal('stream-details-modal');
 
@@ -485,6 +497,35 @@ async function updateStreamDescription(streamId) {
         }
     } catch (error) {
         Portal.toast('Failed to update description', 'error');
+    } finally {
+        Portal.setButtonLoading(btn, false);
+    }
+}
+
+/**
+ * Update the go-live message (empty: the default message)
+ */
+async function updateStreamGoLiveMessage(streamId) {
+    const input = document.getElementById('stream-golive-input');
+    const btn = document.getElementById('save-golive-btn');
+    const golive_message = input.value.trim();
+    Portal.setButtonLoading(btn, true);
+    try {
+        const response = await Portal.fetch(`/api/streams/${streamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ golive_message })
+        });
+        if (response.ok) {
+            Portal.flashButtonSuccess(btn);
+            Portal.toast('Go-live message updated', 'success');
+            loadUserStreams();
+        } else {
+            const data = await response.json();
+            Portal.toast(data.error || 'Failed to update the go-live message', 'error');
+        }
+    } catch (error) {
+        Portal.toast('Failed to update the go-live message', 'error');
     } finally {
         Portal.setButtonLoading(btn, false);
     }

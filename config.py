@@ -111,6 +111,10 @@ class Config:
     CVE_CACHE_TTL: int = int(os.getenv("CVE_CACHE_TTL", "3600"))  # 1 hour default
     VULN_SCAN_TIMEOUT: int = int(os.getenv("VULN_SCAN_TIMEOUT", "300"))  # 5 minutes
 
+    # Public base URL used in announcements (watch links): "https://host[:port]", no path.
+    # Empty: https:// plus HOSTNAME. Never taken from a request's Host header.
+    PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
+
     # Stream hostname (for direct RTMP/RTMPS, bypasses CDN)
     STREAM_HOSTNAME: str = os.getenv("STREAM_HOSTNAME", os.getenv("HOSTNAME", "localhost"))
 

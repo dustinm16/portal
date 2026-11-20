@@ -228,8 +228,10 @@ def build_message(event: str, data: dict, meta: dict, *, include_details: bool,
         m = Message("Stream went live", "A public stream went live", priority=3,
                     tag="red_circle", color=0xE74C3C)
         if d:
-            _add(m, "Stream", data.get("stream_name"))
-            _add(m, "Streamer", data.get("owner_username"))
+            _add(m, "Stream", data.get("title") or data.get("stream_name"))
+            _add(m, "Streamer", data.get("streamer") or data.get("owner_username"))
+            _add(m, "Message", data.get("message"), 400)
+            _add(m, "Watch", data.get("url"), 300)
         return m
     if event == "stream.offline":
         m = Message("Stream ended", "A public stream went offline", priority=2,
@@ -304,8 +306,8 @@ def alert_body(data: dict, include_details: bool) -> dict:
     return out
 
 
-def _add(m: Message, label: str, value) -> None:
-    v = _one_line(value, 120)
+def _add(m: Message, label: str, value, limit: int = 120) -> None:
+    v = _one_line(value, limit)
     if v:
         m.details.append((label, v))
 

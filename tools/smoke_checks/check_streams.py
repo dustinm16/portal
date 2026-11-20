@@ -65,7 +65,11 @@ async def main():
     server.fire_webhook_event = rec
     out = {}
     for label, key in (("priv", %r), ("pub", %r)):
-        await db.set_stream_live(%d if label == "priv" else %d, False)
+        sid = %d if label == "priv" else %d
+        await db.set_stream_live(sid, False)
+        # the HTTP publish above already took the go-live cooldown of these streams
+        await db.conn.execute("UPDATE user_streams SET golive_announced_at = NULL WHERE id = ?", (sid,))
+        await db.conn.commit()
         await server.http_stream_auth(Req({"action": "publish", "path": "live/" + key, "password": key, "ip": "127.0.0.1"}))
     await asyncio.sleep(0.2)
     await db.close()
@@ -171,7 +175,7 @@ async def run(ctx):
                len(about_pub) == 1 and "public_key" not in about_pub[0]["data"] and "pub_" not in about_pub[0]["data"],
                f"{len(about_pub)} row(s)")
 
-        # --- a private stream sends no go-live notification at all (not even to the owner)
+        # --- a private stream sends no go-live notification to its owner
         status, body, text = await _get_json(owner, ctx, "/api/notifications")
         own = [n for n in body.get("notifications", []) if f'"stream_id": {priv["id"]}' in (n.get("data") or "")]
         ctx.ok("streams: owner gets no go-live notification for the private stream, none carries a key",
@@ -326,8 +330,11 @@ async def run(ctx):
     ctx.ok("streams: stream.live payload for a private stream has no playback key",
            priv["id"] in live and "public_key" not in live[priv["id"]] and "pub_" not in json.dumps(live[priv["id"]]),
            f"{len(calls)} event(s)" if live else out[-300:])
-    ctx.ok("streams: stream.live payload for a public stream is unchanged",
-           live.get(pub["id"], {}).get("public_key") == pub["public_key"])
+    pl = live.get(pub["id"], {})
+    ctx.ok("streams: stream.live payload for a public stream has the streamer, title and watch URL and no key",
+           pl.get("title") == pl.get("stream_name") and str(pl.get("title", "")).startswith("smoke pub") and bool(pl.get("streamer"))
+           and pl.get("url", "").endswith(f"/watch/{pub['id']}") and "public_key" not in pl
+           and "pub_" not in json.dumps(pl) and "live_" not in json.dumps(pl), json.dumps(pl)[:200])
 
     # --- one-time migration: flag-guarded, rotates private keys, scrubs notification rows
     rc, out = await ctx.run_py(READ_STATE % (priv["id"], pub["id"]))

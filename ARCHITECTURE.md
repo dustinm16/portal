@@ -587,6 +587,10 @@ The MediaMTX managed service configuration is generated dynamically by Portal. K
 - **RTMP path mapping** - When publishing via `rtmp_` token, MediaMTX creates the path using the token instead of the `live_` key (i.e., `live/rtmp_xxx` not `live/live_xxx`). Portal maintains an internal mapping (`_rtmp_stream_paths`) so HLS proxy, thumbnails, and VOD recording resolve to the correct MediaMTX path.
 - **Multi-platform relay** - Streams can be simultaneously relayed to external platforms (Twitch, YouTube, Kick, other Portal instances, or custom RTMP destinations). Relay processes use `ffmpeg -c copy -f flv` per destination. Relays start automatically on publish and stop on disconnect/shutdown. Max 10 relay destinations per stream. Relay credentials (RTMP URL + stream key) are encrypted at rest.
 
+#### Go-live announcement
+
+When the publish hook sees a stream that was not live, the state frame to the stream's chat and the activity entry always go out; the announcement (in-portal notification and the `stream.live` webhook) goes out only if `db.claim_golive` wins. That is one conditional `UPDATE` on `user_streams.golive_announced_at` (epoch seconds, kept across restarts), called under `_stream_state_lock`, with a fixed cooldown of 10 minutes (`_GOLIVE_COOLDOWN_SECONDS`). `_announce_go_live` then reads the stream afresh (the `rtmp_` token branch builds a thin stream dict), builds the payload in `_golive_payload` (streamer, title, watch URL from `_public_base_url`, the message from `_render_golive_message`), notifies the members for whom `_stream_read_allowed` is true (never the owner) and fires `stream.live`. `_stream_event_hook_allowed` keeps the events of a stream that is not public from every hook that is not a system hook; `_third_party_may_see` still keeps them from non-generic hooks. The announcement never carries a stream key, a `pub_` key or an RTMP address. The later follow and announce-card work must go through the same claim.
+
 ### Stream Relay
 
 ```

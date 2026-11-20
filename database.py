@@ -642,6 +642,10 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at DESC)",
     # RTMP plain ingress - per-stream toggle
     "ALTER TABLE user_streams ADD COLUMN rtmp_enabled INTEGER DEFAULT 0",
+    # Go-live announcement: the owner's message template, and when the stream was last
+    # announced (epoch seconds; kept across restarts, it is the go-live cooldown)
+    "ALTER TABLE user_streams ADD COLUMN golive_message TEXT",
+    "ALTER TABLE user_streams ADD COLUMN golive_announced_at INTEGER",
     # RTMP temporary publish tokens
     """CREATE TABLE IF NOT EXISTS rtmp_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4063,7 +4067,7 @@ class Database:
         """Update a user stream. If user_id is provided, verify ownership."""
         allowed_fields = {"name", "description", "is_public", "is_live", "viewer_count",
                          "chat_channel_id", "thumbnail_url", "started_at", "ended_at",
-                         "allow_unauthenticated", "rtmp_enabled"}
+                         "allow_unauthenticated", "rtmp_enabled", "golive_message"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:
@@ -4082,6 +4086,21 @@ class Database:
         cursor = await self.conn.execute(query, values)
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def claim_golive(self, stream_id: int, now: int, cooldown: int) -> bool:
+        """Take the right to announce a go-live: True for exactly one caller per cooldown.
+
+        One conditional UPDATE, so the check and the set are a single step that two
+        concurrent publishes (a retried media hook, a quick encoder restart) cannot
+        both win. The time is stored, so a restart of the portal does not reset it.
+        """
+        cursor = await self.conn.execute(
+            """UPDATE user_streams SET golive_announced_at = ?
+               WHERE id = ? AND (golive_announced_at IS NULL OR golive_announced_at <= ?)""",
+            (int(now), stream_id, int(now) - int(cooldown))
+        )
+        await self.conn.commit()
+        return cursor.rowcount == 1
 
     async def reset_all_streams_offline(self) -> int:
         """Reset all streams to offline. Called on server startup."""
