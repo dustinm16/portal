@@ -257,7 +257,7 @@ async def test_an_unknown_and_an_unviewable_stream_are_one_identical_404(w):
 async def test_a_stream_key_is_not_a_login_for_following(w):
     sid, _ = await w.stream("k", public=True)
     status, _ = await w.call("PUT", "owner", f"/api/streams/{sid}/follow", headers={"X-Test-Streamkey": "1"})
-    assert status == 401, status
+    assert status == 403, status        # a stream key authorises publishing only
     assert await w.db.count_followers(sid) == 0
 
 
@@ -268,20 +268,16 @@ async def test_a_stream_key_reads_no_follow_state_from_the_older_routes(w):
     assert await w.follow("owner", other) == 200
     key = {"X-Test-Streamkey": "1"}
     status, _ = await w.call("GET", "owner", "/api/me/follows", headers=key)
-    assert status == 401
+    assert status == 403
     # the owner's own session still sees its follows on both routes
     status, body = await w.call("GET", "owner", "/api/streams/public")
     assert status == 200 and {s["id"]: s["following"] for s in body["streams"]}[other] is True
     status, body = await w.call("GET", "owner", f"/api/streams/{other}")
     assert status == 200 and body["stream"]["following"] is True
-    # the owner's stream key sees no follow flag at all
-    status, body = await w.call("GET", "owner", "/api/streams/public", headers=key)
-    assert status == 200 and body["streams"], body
-    assert all("following" not in s for s in body["streams"]), body
-    status, body = await w.call("GET", "owner", f"/api/streams/{other}", headers=key)
-    assert status == 200 and "following" not in body["stream"], body
-    status, body = await w.call("GET", "owner", f"/api/streams/{sid}", headers=key)
-    assert status == 200 and "following" not in body["stream"], body
+    # the owner's stream key reads nothing from the stream routes (403, not even a list)
+    for path in ("/api/streams/public", f"/api/streams/{other}", f"/api/streams/{sid}", "/api/streams/live"):
+        status, body = await w.call("GET", "owner", path, headers=key)
+        assert status == 403 and "streams" not in body and "stream" not in body, (path, status, body)
 
 
 @case

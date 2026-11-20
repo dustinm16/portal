@@ -40,6 +40,7 @@ class Tok:
     def __init__(self, user_id):
         self.user_id = user_id
         self.token_id = "t%d" % user_id
+        self.scopes = ["*"]
 
     def has_scope(self, scope):
         return False

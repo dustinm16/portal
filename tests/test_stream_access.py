@@ -610,6 +610,123 @@ def test_every_playback_route_uses_the_decision():
         assert '"Access-Control-Allow-Origin": "*"' not in chunk, name
 
 
+# ---------------------------------------------------------------------------
+# A stream key authorises publishing only; stream management and viewing routes
+# need a session or a full-scope token / API key.
+
+# (handler, method, path template, match_info keys)
+_MANAGEMENT_CALLS = [
+    ("http_list_user_streams", "GET", "/api/streams"),
+    ("http_create_user_stream", "POST", "/api/streams"),
+    ("http_get_public_streams", "GET", "/api/streams/public"),
+    ("http_live_now", "GET", "/api/streams/live"),
+    ("http_my_follows", "GET", "/api/me/follows"),
+    ("http_follow_stream", "PUT", "/api/streams/{id}/follow"),
+    ("http_unfollow_stream", "DELETE", "/api/streams/{id}/follow"),
+    ("http_get_user_stream", "GET", "/api/streams/{id}"),
+    ("http_update_user_stream", "PUT", "/api/streams/{id}"),
+    ("http_delete_user_stream", "DELETE", "/api/streams/{id}"),
+    ("http_regenerate_stream_key", "POST", "/api/streams/{id}/regenerate-key"),
+    ("http_regenerate_public_key", "POST", "/api/streams/{id}/regenerate-public-key"),
+    ("http_create_rtmp_token", "POST", "/api/streams/{id}/rtmp-token"),
+    ("http_upload_stream_thumbnail", "POST", "/api/streams/{id}/thumbnail"),
+    ("http_delete_stream_thumbnail", "DELETE", "/api/streams/{id}/thumbnail"),
+    ("http_get_stream_bans", "GET", "/api/streams/{id}/bans"),
+    ("http_create_stream_ban", "POST", "/api/streams/{id}/bans"),
+    ("http_remove_stream_ban", "DELETE", "/api/streams/{id}/bans/{user_id}"),
+    ("http_remove_stream_ban_by_id", "DELETE", "/api/streams/{id}/bans/id/{ban_id}"),
+    ("http_list_relay_destinations", "GET", "/api/streams/{id}/relays"),
+    ("http_create_relay_destination", "POST", "/api/streams/{id}/relays"),
+    ("http_update_relay_destination", "PUT", "/api/streams/{id}/relays/{relay_id}"),
+    ("http_delete_relay_destination", "DELETE", "/api/streams/{id}/relays/{relay_id}"),
+    ("http_get_relay_logs", "GET", "/api/streams/{id}/relays/{relay_id}/logs"),
+]
+
+
+def test_a_stream_key_or_a_scoped_key_manages_no_stream():
+    async def body(w):
+        sid = w.streams["private"]["id"]
+        before = await w.db.get_user_stream(sid)
+        full_key, full_hash, full_prefix = auth.generate_api_key()
+        await w.db.create_api_key(w.users["owner"], "full", full_hash, full_prefix, scopes="*")
+        scoped_key, scoped_hash, scoped_prefix = auth.generate_api_key()
+        await w.db.create_api_key(w.users["owner"], "scoped", scoped_hash, scoped_prefix, scopes="services:read")
+        refused = {
+            "stream key (X-Stream-Key)": {"X-Stream-Key": w.streams["private"]["live"]},
+            "stream key (Authorization)": {"Authorization": "Stream-Key " + w.streams["private"]["live"]},
+            "scoped API key": {"X-API-Key": scoped_key},
+        }
+        for label, headers in refused.items():
+            for name, method, tmpl in _MANAGEMENT_CALLS:
+                path = tmpl.format(id=sid, relay_id=1, user_id=w.users["member"], ban_id=1)
+                req = make_mocked_request(method, path, headers=dict(headers),
+                                          match_info={"id": str(sid), "relay_id": "1",
+                                                      "user_id": str(w.users["member"]), "ban_id": "1"},
+                                          transport=Transport())
+                resp = await getattr(server, name)(req)
+                assert resp.status == 403, (label, name, resp.status, resp.body)
+                assert b"live_" not in resp.body and b"pub_" not in resp.body, (label, name)
+        after = await w.db.get_user_stream(sid)
+        assert after is not None and after["stream_key"] == before["stream_key"] \
+            and after["public_key"] == before["public_key"] and after["name"] == before["name"]
+        # the full-scope API key and the owner's session still manage it
+        for headers in ({"X-API-Key": full_key}, {"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['owner']}"}):
+            req = make_mocked_request("GET", "/api/streams", headers=headers, transport=Transport())
+            resp = await server.http_list_user_streams(req)
+            assert resp.status == 200 and sid in {x["id"] for x in json.loads(resp.body)["streams"]}
+        # no credential at all stays 401
+        resp = await server.http_list_user_streams(make_mocked_request("GET", "/api/streams", transport=Transport()))
+        assert resp.status == 401
+    run(body)
+
+
+def test_stream_detail_is_decided_by_the_role_based_read_rule():
+    async def body(w):
+        sid = w.streams["private"]["id"]
+        def get(user):
+            return make_mocked_request("GET", f"/api/streams/{sid}", match_info={"id": str(sid)},
+                                       headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie[user]}"},
+                                       transport=Transport())
+        # a token that carries only the "admin" scope is no administrator by role
+        assert (await server.http_get_user_stream(get("member"))).status == 404
+        assert (await server.http_get_user_stream(get("owner"))).status == 200
+        assert (await server.http_get_user_stream(get("admin"))).status == 200
+        # the decision goes through _stream_read_allowed, not an inline scope test
+        src = (ROOT / "server.py").read_text()
+        start = src.index("async def http_get_user_stream(")
+        chunk = src[start:src.index("\nasync def ", start + 10)]
+        assert "_stream_read_allowed(" in chunk and 'has_scope("admin")' not in chunk
+    run(body)
+
+
+# stream handlers that only publish (the MediaMTX hooks and WHIP): the key in the body or URL
+# is the publish credential. Anything else under these prefixes must refuse stream keys.
+_PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",
+                 "http_get_open_streams"}     # the last one needs no credential at all (open links only)
+_REFUSES_STREAM_KEYS = ("_stream_user_auth(", "_follow_context(", "allow_stream_key=False",
+                        "_validate_stream_access(", "_authorize_webrtc_session(")
+
+
+def test_every_stream_handler_refuses_stream_keys_or_is_publish_side():
+    import re
+    src = (ROOT / "server.py").read_text()
+    routes = re.findall(r'app\.router\.add_\w+\("(/api/(?:streams|stream|me/follows)[^"]*)", (\w+)', src)
+    assert len(routes) >= 30, len(routes)
+    handlers = {h for _p, h in routes}
+    assert _PUBLISH_SIDE <= handlers
+    for h in sorted(handlers - _PUBLISH_SIDE):
+        start = src.index(f"async def {h}(")
+        m = re.search(r"\n(?:async def|def) ", src[start + 10:])
+        chunk = src[start:start + 10 + m.start()]
+        assert any(mark in chunk for mark in _REFUSES_STREAM_KEYS), f"{h} accepts a stream key"
+        # the plain call (stream keys allowed) is never the whole check
+        assert "await authenticate_request(request)" not in chunk, h
+    for h in _PUBLISH_SIDE:        # the allow-listed handlers never authenticates by stream key header either
+        start = src.index(f"async def {h}(")
+        m = re.search(r"\n(?:async def|def) ", src[start + 10:])
+        assert "authenticate_request(" not in src[start:start + 10 + m.start()], h
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

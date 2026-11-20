@@ -16,27 +16,24 @@ All API endpoints require authentication via one of:
 1. **Session Cookie** - Obtained via `/login` form submission
 2. **Bearer Token** - `Authorization: Bearer <jwt_token>`
 3. **API Key** - `Authorization: Api-Key portal_xxx` or `X-API-Key: portal_xxx`
-4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx`
+4. **Stream Key** - `Authorization: Stream-Key live_xxx` or `X-Stream-Key: live_xxx` (publishing only since 1.16.0, refused on the stream management and viewing routes; see below)
 
 An API key must be sent with the `Api-Key` scheme or the `X-API-Key` header. `Authorization: Bearer` accepts JWTs only, so a `portal_...` key sent as a Bearer token is rejected with `401`. Checking a key that has not been used since the server started is deliberately rate limited: when too many such checks are pending for one key, the request is answered with `503` and a `Retry-After` header instead of `401`. Retry after the given delay; the key itself is not affected.
 
-### Stream Keys as API Keys
+### Stream Keys (publishing only)
 
-**Stream keys and API keys are interchangeable for stream-related operations.** This allows streaming software (OBS, etc.) to use a single key for both:
+**A stream key authorises publishing only (changed in 1.16.0).** Use it for:
 - Publishing the stream (RTMP authentication; WHIP only where the WebRTC media port is reachable, see Streaming Configuration)
-- Making API calls (checking stream status, updating settings)
+- The stream event and status calls MediaMTX or an encoder makes
 
-When authenticated with a stream key:
-- You are authenticated as the stream owner
-- Access is limited to stream-related operations
-- Full API access requires a regular API key
+It is **not** a way to sign in as the stream's owner. Every route under `/api/streams`, `/api/stream` (except the publish-side ones) and `/api/me/follows` answers a stream key with `403`: listing, reading, changing and deleting streams, rotating keys, RTMP tokens, thumbnails, relays, bans, follows and the live list. These routes need a browser session, or a token or API key with the all-scope `*`; a narrowly scoped API key (for example `services:read`) gets `403` as well. There is no streams-specific API key scope.
 
-**Example - Using stream key for API access:**
+**Example - what no longer works:**
 ```bash
-# Check stream status using stream key
+# 403: a stream key does not list or manage streams
 curl -H "X-Stream-Key: live_abc123..." https://portal.example.com/api/streams
 
-# Same result with Api-Key header
+# works: a full-access API key
 curl -H "X-API-Key: portal_xxx..." https://portal.example.com/api/streams
 ```
 
@@ -1044,10 +1041,10 @@ Portal uses two types of keys for stream access control:
 
 | Key Type | Format | Purpose | Visibility |
 |----------|--------|---------|------------|
-| **Private Key** | `live_xxx...` | Publishing (OBS/RTMP) and full management | Owner only |
+| **Private Key** | `live_xxx...` | Publishing only (OBS/RTMP, WHIP); not accepted on the management API | Owner only |
 | **Public Key** | `pub_xxx...` | Read-only viewing access (HLS playback; WebRTC only on a reachable network) | Viewers of public streams |
 
-- **Private key (`stream_key`)**: Used for OBS publishing and stream management. Never share this key.
+- **Private key (`stream_key`)**: Used for OBS publishing only (1.16.0); never share this key.
 - **Public key (`public_key`)**: Safe to share with viewers for read-only playback access.
 
 **Stream Status (`is_live`):**
@@ -1436,10 +1433,10 @@ Open Relay Portal provides a complete streaming solution with MediaMTX. Publishi
 **Key Types:**
 | Key | Format | Use Case |
 |-----|--------|----------|
-| Private Key | `live_xxx...` | Publishing (OBS), API access, stream management |
+| Private Key | `live_xxx...` | Publishing (OBS) only |
 | Public Key | `pub_xxx...` | Read-only playback URLs (safe to share with viewers) |
 
-**Stream Key = API Key**: Your private stream key (`live_xxx...`) can be used for both streaming AND API access.
+**Stream Key is not an API Key**: Your private stream key (`live_xxx...`) authorises publishing only; stream management needs a session or a full-access API key (see Authentication).
 
 **Publishing Options (requires private key `live_xxx`):**
 
@@ -1465,10 +1462,9 @@ Open Relay Portal provides a complete streaming solution with MediaMTX. Publishi
 
 For public streams, share the `public_key` (`pub_xxx`) for playback URLs instead of the private key.
 
-**Using Stream Key for API Access:**
+**Stream management:** the stream key is not accepted by `/api/streams` (403 since 1.16.0); use a session or an all-scope API key:
 ```bash
-# Your private stream key works as an API key for stream operations
-curl -H "X-Stream-Key: live_abc123..." https://portal.example.com/api/streams
+curl -H "X-API-Key: portal_xxx..." https://portal.example.com/api/streams
 ```
 
 **Network Architecture:**

@@ -1471,6 +1471,10 @@
 
                 <h3>REST API</h3>
 
+                <div class="alert alert-info">
+                    <strong>Credentials (1.16.0):</strong> a stream key (<code>live_</code>, also sent as <code>Authorization: Stream-Key</code> or <code>X-Stream-Key</code>) authorises <strong>publishing only</strong>: the encoder's connection to MediaMTX, WHIP publishing and the stream event and status calls MediaMTX makes. Every route below under <code>/api/streams</code>, and <code>/api/me/follows</code>, answers a stream key with <code>403</code>; listing, reading, changing, deleting, rotating keys, relays, bans, thumbnails and follows need a browser session or a token or API key with the all-scope <code>*</code> (a narrowly scoped API key gets <code>403</code> too; there is no streams-specific scope). Before 1.16.0 a stream key worked on these routes as its owner.
+                </div>
+
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-get">GET</span>
@@ -1564,7 +1568,7 @@
                         <span class="endpoint-desc">Follow a stream (DELETE stops following)</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Follow a stream to be told when it goes live (1.16.0). Needs a signed-in member with a full credential; a stream key is refused (<code>401</code>). Answers <code>{"following": true, "stream_id": 5}</code>. A member may follow only a stream they may watch; an unknown stream, a non-numeric id and a stream they may not watch all answer the same <code>404 {"error": "Stream not found"}</code>. At most 200 follows per member (<code>400</code>). <code>DELETE</code> removes the member's own follow and answers <code>{"following": false, ...}</code> whatever the stream is. Who follows whom is private: <code>GET /api/me/follows</code> returns only the caller's own <code>{"stream_ids": [...]}</code>, the owner of a stream sees a <code>follower_count</code> number only, and no route lists followers. <code>following</code> in <code>GET /api/streams/public</code> and <code>GET /api/streams/{id}</code> is the viewer's own state, and is left out of the answer to a stream key. Making a stream private removes all its follows.</p>
+                        <p>Follow a stream to be told when it goes live (1.16.0). Needs a signed-in member with a full credential; a stream key or a scoped key is refused (<code>403</code>). Answers <code>{"following": true, "stream_id": 5}</code>. A member may follow only a stream they may watch; an unknown stream, a non-numeric id and a stream they may not watch all answer the same <code>404 {"error": "Stream not found"}</code>. At most 200 follows per member (<code>400</code>). <code>DELETE</code> removes the member's own follow and answers <code>{"following": false, ...}</code> whatever the stream is. Who follows whom is private: <code>GET /api/me/follows</code> returns only the caller's own <code>{"stream_ids": [...]}</code>, the owner of a stream sees a <code>follower_count</code> number only, and no route lists followers. <code>following</code> in <code>GET /api/streams/public</code> and <code>GET /api/streams/{id}</code> is the viewer's own state, and is left out of the answer to a stream key. Making a stream private removes all its follows.</p>
                     </div>
                 </div>
 

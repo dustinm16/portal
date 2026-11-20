@@ -255,7 +255,7 @@ async def run(ctx):
             blob = json.dumps(b)
             ok("live-now carries no key", not any(x in blob for x in (pub["stream_key"], pub["public_key"], "live_", "pub_", "stream_key", "public_key")), blob[:200])
 
-            # ---- a stream key is not a login as its owner: it reads no follow state
+            # ---- a stream key authorises publishing only: every stream route refuses it
             st, b = await call(owner, "PUT", f"/api/streams/{pub['id']}/follow")
             ok("the owner follows their own public stream", st == 200, f"{st} {b}")
             st, b = await call(owner, "GET", "/api/streams/public")
@@ -264,13 +264,12 @@ async def run(ctx):
             async with ctx.http() as keyed:
                 hdr = {"X-Stream-Key": pub["stream_key"]}
                 st, _ = await call(keyed, "GET", "/api/me/follows", headers=hdr)
-                ok("the stream key cannot read the follow list (401)", st == 401, str(st))
-                st, b = await call(keyed, "GET", "/api/streams/public", headers=hdr)
-                listed = (b or {}).get("streams", [])
-                ok("the stream key reads the public list without any follow flag",
-                   st == 200 and any(s["id"] == pub["id"] for s in listed) and not any("following" in s for s in listed), f"{st}")
-                st, b = await call(keyed, "GET", f"/api/streams/{pub['id']}", headers=hdr)
-                ok("and the stream detail without it", st == 200 and "following" not in (b or {}).get("stream", {"following": 1}), f"{st} {b}")
+                ok("the stream key cannot read the follow list (403)", st == 403, str(st))
+                for what, path in (("the public list", "/api/streams/public"), ("the stream detail", f"/api/streams/{pub['id']}"),
+                                   ("the stream list", "/api/streams"), ("the live list", "/api/streams/live")):
+                    st, b = await call(keyed, "GET", path, headers=hdr)
+                    ok(f"the stream key reads {what}: refused (403), no stream in the answer",
+                       st == 403 and "stream" not in (b or {}) and "streams" not in (b or {}), f"{st} {b}")
             st, b = await call(owner, "DELETE", f"/api/streams/{pub['id']}/follow")
             ok("the owner unfollows again", st == 200, f"{st}")
 

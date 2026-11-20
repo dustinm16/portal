@@ -2137,6 +2137,23 @@ def full_scope_required_response() -> web.Response:
                   "stream keys and scoped API keys cannot do this"}, status=403)
 
 
+async def _stream_user_auth(request: web.Request):
+    """(token, None) for a request that may manage or watch streams as its user, or
+    (None, response). A stream key (live_) authorises publishing only, so it is
+    refused here with 403; an API key or token must carry the user's full scope.
+    No credential at all is the usual 401.
+
+    Every handler under /api/streams, /api/stream and /api/me/follows goes through
+    this, through _stream_read_access or _follow_context, or is a publish-side
+    handler (tests/test_stream_access.py keeps that list)."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    if not has_full_user_scope(token):
+        return None, full_scope_required_response()
+    return token, None
+
+
 # Argon2 is deliberately expensive (CPU and 64 MiB each). API key checks run it
 # in a worker thread so they cannot stall the event loop, and the semaphore
 # bounds how many run at once. Two further limits keep a flood of forged keys
@@ -5054,9 +5071,9 @@ def generate_public_key() -> str:
 
 async def http_list_user_streams(request: web.Request) -> web.Response:
     """List all streams for the authenticated user."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     streams = await db.get_user_streams(token.user_id)
     # How many members follow each of the owner's streams: a number, never names
@@ -5486,9 +5503,9 @@ async def _mark_stream_live(stream: dict, ip: str) -> None:
 
 async def http_create_user_stream(request: web.Request) -> web.Response:
     """Create a new stream for the authenticated user."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     # Check if non-admin users are allowed to create streams
     if not token.has_scope("admin") and not token.has_scope("*"):
@@ -5580,9 +5597,9 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     - Non-owner viewing public stream: sees public_key only (for playback)
     - Non-owner viewing private stream: no keys visible
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
 
@@ -5599,12 +5616,14 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     if not stream:
         return web.json_response({"error": "Stream not found"}, status=404)
 
+    # One decision, role based: the owner, an admin, or any member for a public stream.
+    role = await get_user_role_from_token(token)
     is_owner = stream["user_id"] == token.user_id
-    is_public = stream.get("is_public", False)
-    is_admin = token.has_scope("admin") or token.has_scope("*")
+    is_public = bool(stream.get("is_public", False))
+    is_admin = role in ("admin", "superadmin")
 
-    # Non-owners cannot access private streams (return 404 to prevent enumeration)
-    if not is_owner and not is_public and not is_admin:
+    # Everybody else gets 404 for a private stream (no enumeration)
+    if not _stream_read_allowed(stream, token.user_id, role, False):
         return web.json_response({"error": "Stream not found"}, status=404)
 
     # Always strip internal hash fields — these are implementation details
@@ -5616,13 +5635,11 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
         stream.pop("stream_key", None)
         # Also hide public_key for private streams, except from an admin by role (not by
         # token scope): the read gate lets them watch it, and playback needs the key.
-        if not is_public and not (has_full_user_scope(token)
-                                  and await get_user_role_from_token(token) in ("admin", "superadmin")):
+        if not is_public and not is_admin:
             stream.pop("public_key", None)
     if is_owner:
         stream["follower_count"] = await db.count_followers(stream["id"])    # a number, never names
-    if has_full_user_scope(token):      # a stream key is not a login as its owner: no follow state
-        stream["following"] = stream["id"] in set(await db.get_followed_stream_ids(token.user_id))
+    stream["following"] = stream["id"] in set(await db.get_followed_stream_ids(token.user_id))
 
     return web.json_response({"stream": stream})
 
@@ -5635,9 +5652,9 @@ _STREAM_CLIENT_FIELDS = frozenset({"name", "description", "is_public",
 
 async def http_update_user_stream(request: web.Request) -> web.Response:
     """Update a stream (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
     try:
@@ -5737,9 +5754,9 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
 
 async def http_delete_user_stream(request: web.Request) -> web.Response:
     """Delete a stream (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
     try:
@@ -5772,9 +5789,9 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
 
 async def http_regenerate_stream_key(request: web.Request) -> web.Response:
     """Regenerate stream key (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
     try:
@@ -5796,9 +5813,9 @@ async def http_regenerate_public_key(request: web.Request) -> web.Response:
 
     The previous pub_ key stops resolving immediately; the new key is returned.
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
     try:
@@ -5821,9 +5838,9 @@ async def http_create_rtmp_token(request: web.Request) -> web.Response:
     Returns a single-use token for plain RTMP (non-TLS) publishing.
     Token expires after RTMP_TOKEN_EXPIRY_MINUTES (default 15 min).
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     # Global kill switch
     if not Config.RTMP_PLAIN_ENABLED:
@@ -5864,9 +5881,9 @@ async def http_create_rtmp_token(request: web.Request) -> web.Response:
 
 async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
     """Upload a thumbnail for a stream (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
     try:
@@ -5952,9 +5969,9 @@ async def http_upload_stream_thumbnail(request: web.Request) -> web.Response:
 
 async def http_delete_stream_thumbnail(request: web.Request) -> web.Response:
     """Delete a stream's thumbnail (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     stream_id = request.match_info.get("id")
     try:
@@ -5995,9 +6012,9 @@ async def _chat_role_of_user(user_id) -> str:
 
 async def http_get_stream_bans(request: web.Request) -> web.Response:
     """Get all bans for a stream (stream owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     try:
         stream_id = _row_id(request.match_info.get("id"))
@@ -6023,9 +6040,9 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     - user_id: int - User ID to ban
     - reason: str (optional) - Reason for ban
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     try:
         stream_id = _row_id(request.match_info.get("id"))
@@ -6101,9 +6118,9 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
 
 async def http_remove_stream_ban(request: web.Request) -> web.Response:
     """Remove a ban from stream chat (stream owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     try:
         stream_id = _row_id(request.match_info.get("id"))
@@ -6139,9 +6156,9 @@ async def http_remove_stream_ban_by_id(request: web.Request) -> web.Response:
     This is the way to lift a ban made from an anonymous post: the ban list
     shows such a ban without the account, and only its ban id.
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     try:
         stream_id = _row_id(request.match_info.get("id"))
@@ -6172,23 +6189,21 @@ async def http_get_public_streams(request: web.Request) -> web.Response:
     - Private stream_key is never included (security)
     - Public key (pub_xxx) is included for playback URLs
     """
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
 
     live_only = request.query.get("live", "false").lower() == "true"
     streams = await db.get_public_streams(live_only=live_only)
 
     # Remove private stream keys and internal hashes from public listing (security)
     # Keep public_key for playback URLs
-    full = has_full_user_scope(token)       # a stream key is not a login as its owner: no follow state
-    followed = set(await db.get_followed_stream_ids(token.user_id)) if full else set()
+    followed = set(await db.get_followed_stream_ids(token.user_id))
     for stream in streams:
         stream.pop("stream_key", None)
         stream.pop("stream_key_hash", None)
         stream.pop("public_key_hash", None)
-        if full:
-            stream["following"] = stream["id"] in followed  # the viewer's own follow only
+        stream["following"] = stream["id"] in followed  # the viewer's own follow only
 
     return web.json_response({"streams": streams})
 
@@ -6203,11 +6218,9 @@ _STREAM_FOLLOW_NOT_FOUND = {"error": "Stream not found"}
 async def _follow_context(request: web.Request):
     """(token, user_id, role) of a member using a full-authority credential, or a
     response to return. A stream key is not a way to sign in as its owner."""
-    token = await authenticate_request(request, allow_stream_key=False)
-    if not token:
-        return None, unauthorized_response(request)
-    if not has_full_user_scope(token):
-        return None, forbidden_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return None, refusal
     return (token, token.user_id, await get_user_role_from_token(token)), None
 
 
@@ -6270,18 +6283,15 @@ async def http_my_follows(request: web.Request) -> web.Response:
 async def http_live_now(request: web.Request) -> web.Response:
     """GET /api/streams/live: the streams live now that this member may watch, from
     the same state the chat's stream_status frames carry. No key of any kind."""
-    token = await authenticate_request(request, allow_stream_key=False)
-    if not token:
-        return unauthorized_response(request)
-    user_id, role = token.user_id, "user"
-    if has_full_user_scope(token):
-        role = await get_user_role_from_token(token)
-    else:
-        user_id = None          # a narrow credential is not a viewer: nothing is listed
-    followed = set(await db.get_followed_stream_ids(token.user_id)) if user_id else set()
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
+    user_id = token.user_id
+    role = await get_user_role_from_token(token)
+    followed = set(await db.get_followed_stream_ids(user_id))
     out = []
     for st in await db.get_live_streams():
-        if user_id is None or not _stream_read_allowed(st, user_id, role, False):
+        if not _stream_read_allowed(st, user_id, role, False):
             continue
         out.append({"id": st["id"], "name": st["name"],
                     "streamer": st.get("owner_nickname") or st.get("owner_username") or "Someone",
@@ -17542,9 +17552,9 @@ async def http_serve_emote(request: web.Request) -> web.Response:
 
 async def http_list_relay_destinations(request: web.Request) -> web.Response:
     """List relay destinations for a stream (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
     try:
         stream_id = _row_id(request.match_info["id"])
     except (ValueError, TypeError):
@@ -17558,9 +17568,9 @@ async def http_list_relay_destinations(request: web.Request) -> web.Response:
 
 async def http_create_relay_destination(request: web.Request) -> web.Response:
     """Add a relay destination to a stream (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
     try:
         stream_id = _row_id(request.match_info["id"])
     except (ValueError, TypeError):
@@ -17615,9 +17625,9 @@ async def http_create_relay_destination(request: web.Request) -> web.Response:
 
 async def http_update_relay_destination(request: web.Request) -> web.Response:
     """Update a relay destination (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
     try:
         stream_id = _row_id(request.match_info["id"])
         relay_id = _row_id(request.match_info["relay_id"])
@@ -17688,9 +17698,9 @@ async def http_update_relay_destination(request: web.Request) -> web.Response:
 
 async def http_delete_relay_destination(request: web.Request) -> web.Response:
     """Delete a relay destination (owner only)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
     try:
         stream_id = _row_id(request.match_info["id"])
         relay_id = _row_id(request.match_info["relay_id"])
@@ -17715,9 +17725,9 @@ async def http_delete_relay_destination(request: web.Request) -> web.Response:
 
 async def http_get_relay_logs(request: web.Request) -> web.Response:
     """Get last error log for a relay destination (stream owner or admin)."""
-    token = await authenticate_request(request)
-    if not token:
-        return unauthorized_response(request)
+    token, refusal = await _stream_user_auth(request)
+    if refusal is not None:
+        return refusal
     try:
         stream_id = _row_id(request.match_info["id"])
         relay_id = _row_id(request.match_info["relay_id"])
