@@ -1312,6 +1312,9 @@
                     </tr>
                 </table>
 
+                <h3>Who May Watch</h3>
+                <p>The HLS, WebRTC playback (WHEP) and info addresses above, and the thumbnail, follow one rule since 1.16.0. The stream's owner and administrators always may watch; any other signed-in member only a <strong>public</strong> stream; somebody <strong>not signed in</strong> only a stream that is public <strong>and</strong> has the open share link on (<code>allow_unauthenticated</code>), using its current <code>pub_</code> key. The credential is the session cookie, or a token or API key with the all-scope <code>*</code>; a stream key (<code>live_</code>) and scoped API keys never authorise watching. Everything else answers <code>404</code> with <code>{"error": "Stream not found"}</code>, never <code>401</code> or <code>403</code>, so a private stream's existence is not revealed. <code>Access-Control-Allow-Origin: *</code> is sent only for a public stream with the open link on. A change of visibility, open link or key reaches viewers within 5 seconds (normally at once). Relays, the recorder and the thumbnail capture read MediaMTX directly on loopback and are not affected.</p>
+
                 <h3>OBS Studio Setup (Recommended)</h3>
                 <p>To broadcast with OBS Studio using RTMPS (encrypted, recommended):</p>
                 <ol style="color: var(--text-secondary); line-height: 1.8;">
@@ -1723,7 +1726,8 @@
                         <span class="endpoint-desc">Get stream thumbnail</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns static thumbnail (or 404) if stream is offline or encoding. Accepts <code>live_xxx</code> or <code>pub_xxx</code> key.</p>
+                        <p>Returns a dynamic JPEG thumbnail captured from a live stream via ffmpeg. Cached for 15 seconds. Returns static thumbnail (or 404) if stream is offline or encoding. The key is normally <code>pub_xxx</code>; a <code>live_xxx</code> key only names the stream and gives no right to watch.</p>
+                        <p><strong>Access (1.16.0):</strong> one rule decides who may watch, for HLS, the thumbnail, WHEP (and its session calls) and the info route. The stream's owner and administrators always may; any other signed-in member only when the stream is public; somebody not signed in only when the stream is public with <code>allow_unauthenticated</code> on and the address carries the stream's current <code>pub_</code> key. Credentials: the session cookie, or a token or API key with the all-scope <code>*</code>; a stream key (<code>live_</code>, also sent as <code>Authorization: Stream-Key</code> or <code>X-Stream-Key</code>) and scoped API keys never authorise watching. Everything else is <code>404</code> with <code>{"error": "Stream not found"}</code> (never <code>401</code> or <code>403</code>), the same for a private stream, a rotated or wrong key and an unknown stream. Decisions are cached for at most 5 seconds per credential and stream and dropped at once when the stream's visibility, open link or keys change or the viewer is signed out. <code>Access-Control-Allow-Origin: *</code> is sent only for a public stream with the open link on; other answers are <code>Cache-Control: private</code>.</p>
                         <p>One capture runs per stream at a time and at most two run at once. When a new frame cannot be made (failure, timeout or all capture slots busy) the last good frame is returned; without one the answer is <code>503</code> with a <code>Retry-After</code> header: all slots busy, failed capture, timeout, or MediaMTX not configured. Never <code>500</code> or <code>504</code>.</p>
                     </div>
                 </div>

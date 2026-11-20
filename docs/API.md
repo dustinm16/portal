@@ -1301,14 +1301,16 @@ Remove custom thumbnail for a stream (owner only).
 #### GET /api/stream/{key}/thumbnail
 Get a dynamic thumbnail for a live stream. Returns a JPEG image captured from the stream via ffmpeg. Thumbnails are cached for 15 seconds. Only one capture runs per stream at a time (requests for the same stream wait for it) and at most two captures run at once on the server. A capture that takes longer than 10 seconds is stopped. When all capture slots are busy the last good frame is returned if it is at most 5 minutes old, otherwise 503 with `Retry-After: 3`.
 
-**Key Types:** Accepts either `live_xxx` or `pub_xxx` key.
+**Key Types:** `pub_xxx` (or `live_xxx`, which only names the stream: it does not give the right to watch).
 
-**Response:** `image/jpeg` binary data, or 404 if stream is not live. When a new frame cannot be made (capture failed or timed out, or all capture slots are busy) the last good frame is returned with `Cache-Control: public, max-age=5` if there is one. Without a last frame the answer is `503` with a `Retry-After` header when all capture slots are busy, when the capture failed, when it timed out, and when MediaMTX is not configured; never `500` or `504`.
+**Access (1.16.0):** one rule decides who may watch, for this route, the thumbnail, WHEP and its session calls, the info route and the HLS route. The stream's owner and administrators always may; any other signed-in member only when the stream is public; somebody not signed in only when the stream is public with `allow_unauthenticated` on and the address carries the stream's current `pub_` key. Credentials: the session cookie, or a token or API key with the all-scope `*`; a stream key (`live_`, also as `Authorization: Stream-Key` or `X-Stream-Key`) and scoped API keys never authorise watching. Everything else is `404` with `{"error": "Stream not found"}` (never `401` or `403`), the same for a private stream, a rotated or wrong key and an unknown stream. Decisions are cached for at most 5 seconds per credential and stream and dropped at once when the stream's visibility, open link or keys change or the viewer is signed out. `Access-Control-Allow-Origin: *` is sent only for a public stream with the open link on; other answers are `Cache-Control: private`.
+
+**Response:** `image/jpeg` binary data, or 404 if stream is not live. When a new frame cannot be made (capture failed or timed out, or all capture slots are busy) the last good frame is returned with `Cache-Control: max-age=5` (`public` for an open link, `private` otherwise) if there is one. Without a last frame the answer is `503` with a `Retry-After` header when all capture slots are busy, when the capture failed, when it timed out, and when MediaMTX is not configured; never `500` or `504`.
 
 ---
 
 #### POST /api/stream/auth
-MediaMTX authentication hook (internal use).
+MediaMTX authentication hook (internal use, loopback or private callers only). Its `read` and `playback` actions follow the same viewing rule: a reader on loopback (the portal's own HLS proxy, thumbnail capture, recorder and relays) is allowed; any other reader must send a full-scope API key as `password` and have the right to watch. MediaMTX is configured to skip the hook for reads (`authHTTPExclude`), so this only matters if that exclusion is removed.
 
 **Request (from MediaMTX):**
 ```json
@@ -1339,7 +1341,9 @@ Handles stream start/stop events to update live status. Stream lifecycle: **Live
 #### GET /api/stream/{key}/info
 Get stream information and playback URLs.
 
-**Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key.
+**Key Types:** `pub_xxx` (or `live_xxx`, which only names the stream).
+
+**Access (1.16.0):** one rule decides who may watch, for this route, the thumbnail, WHEP and its session calls, the info route and the HLS route. The stream's owner and administrators always may; any other signed-in member only when the stream is public; somebody not signed in only when the stream is public with `allow_unauthenticated` on and the address carries the stream's current `pub_` key. Credentials: the session cookie, or a token or API key with the all-scope `*`; a stream key (`live_`, also as `Authorization: Stream-Key` or `X-Stream-Key`) and scoped API keys never authorise watching. Everything else is `404` with `{"error": "Stream not found"}` (never `401` or `403`), the same for a private stream, a rotated or wrong key and an unknown stream. Decisions are cached for at most 5 seconds per credential and stream and dropped at once when the stream's visibility, open link or keys change or the viewer is signed out. `Access-Control-Allow-Origin: *` is sent only for a public stream with the open link on; other answers are `Cache-Control: private`.
 
 **Response:**
 ```json
@@ -1366,16 +1370,22 @@ The `webrtc_whep` and `webrtc_whip` URLs work only on a network that can reach M
 #### GET /api/stream/{key}/hls/{path}
 Proxy HLS playback through Portal (port 443).
 
-**Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key for playback.
+**Key Types:** `pub_xxx` (or `live_xxx`, which only names the stream).
 
-Returns HLS playlist and segments for the specified stream.
+**Access (1.16.0):** one rule decides who may watch, for this route, the thumbnail, WHEP and its session calls, the info route and the HLS route. The stream's owner and administrators always may; any other signed-in member only when the stream is public; somebody not signed in only when the stream is public with `allow_unauthenticated` on and the address carries the stream's current `pub_` key. Credentials: the session cookie, or a token or API key with the all-scope `*`; a stream key (`live_`, also as `Authorization: Stream-Key` or `X-Stream-Key`) and scoped API keys never authorise watching. Everything else is `404` with `{"error": "Stream not found"}` (never `401` or `403`), the same for a private stream, a rotated or wrong key and an unknown stream. Decisions are cached for at most 5 seconds per credential and stream and dropped at once when the stream's visibility, open link or keys change or the viewer is signed out. `Access-Control-Allow-Origin: *` is sent only for a public stream with the open link on; other answers are `Cache-Control: private`.
+
+Returns HLS playlist and segments for the specified stream. A `?token=` query parameter is accepted as the viewer's credential but is not passed on to MediaMTX. Relays, the recorder and the thumbnail capture read MediaMTX directly on loopback and do not use this route.
 
 ---
 
 #### POST /api/stream/{key}/webrtc/whep
 WebRTC WHEP endpoint for playback. **Same-network only:** only the signaling goes through Portal; the media needs a direct path to MediaMTX's WebRTC port (see Streaming Configuration). Use HLS from the internet.
 
-**Key Types:** Accepts either `live_xxx` (private) or `pub_xxx` (public) key for playback.
+**Key Types:** `pub_xxx` (or `live_xxx`, which only names the stream).
+
+**Access (1.16.0):** one rule decides who may watch, for this route, the thumbnail, WHEP and its session calls, the info route and the HLS route. The stream's owner and administrators always may; any other signed-in member only when the stream is public; somebody not signed in only when the stream is public with `allow_unauthenticated` on and the address carries the stream's current `pub_` key. Credentials: the session cookie, or a token or API key with the all-scope `*`; a stream key (`live_`, also as `Authorization: Stream-Key` or `X-Stream-Key`) and scoped API keys never authorise watching. Everything else is `404` with `{"error": "Stream not found"}` (never `401` or `403`), the same for a private stream, a rotated or wrong key and an unknown stream. Decisions are cached for at most 5 seconds per credential and stream and dropped at once when the stream's visibility, open link or keys change or the viewer is signed out. `Access-Control-Allow-Origin: *` is sent only for a public stream with the open link on; other answers are `Cache-Control: private`.
+
+The session calls (`PATCH` and `DELETE /api/stream/{key}/webrtc/session/{id}`) need the same permission, and a publishing (WHIP) session needs the `live_xxx` key. Media that is already flowing goes straight to MediaMTX and is not stopped by a change of access.
 
 **Request:**
 - Body: SDP offer (application/sdp)

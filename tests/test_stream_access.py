@@ -1,0 +1,628 @@
+"""Who may watch a stream: one decision for HLS, thumbnails, WHEP (and its sessions), the
+info route and the MediaMTX hook's read action.
+
+The real handlers run in-process against a temporary database with real sessions and
+API keys; only the MediaMTX side is replaced by a fake HTTP client (nothing is dialled,
+tests/outbound_guard.py refuses anything that is not loopback). Not proven here: a real
+MediaMTX, OBS, VLC or a browser playing the stream (the stage smoke check and a real
+run on the production host are for that).
+
+* decision table: owner and admin always, a member only for a public stream, nobody
+  logged in only for a public stream with the open link on and the stream's current
+  pub_ key; a moderator is not an admin; stream keys (live_) never let anyone watch
+* every refusal (private, wrong, rotated or unknown key) is the same 404 body
+* credentials: session cookie, full-scope API key; a scoped key, a stream key header
+  and an expired or revoked session do not count
+* cache: per-segment requests read nothing from the database, entries expire after
+  5 seconds, and are dropped on visibility, open-link, share-key and live-key changes,
+  stream delete, and when the credential's owner is signed out; the cache is bounded
+* headers: Access-Control-Allow-Origin only on an open share link, private caching
+  otherwise; a ?token= is not passed to MediaMTX
+* WHEP sessions need the same permission; the hook's read action follows the decision
+
+Run: venv/bin/python tests/test_stream_access.py
+"""
+
+import asyncio
+import json
+import os
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+
+os.environ.setdefault("JWT_SECRET", "x" * 64)
+
+import outbound_guard  # noqa: E402
+
+outbound_guard.install()
+
+from aiohttp.test_utils import make_mocked_request  # noqa: E402
+
+import auth  # noqa: E402
+import server  # noqa: E402
+from config import Config  # noqa: E402
+from database import Database  # noqa: E402
+
+NOT_FOUND_BODY = b'{"error": "Stream not found"}'
+
+
+class Transport:
+    def __init__(self, ip="203.0.113.9"):
+        self.ip = ip
+
+    def get_extra_info(self, name, default=None):
+        return (self.ip, 5555) if name == "peername" else default
+
+
+class FakeResp:
+    def __init__(self, status=200, body=b"", content_type="application/vnd.apple.mpegurl", headers=None):
+        self.status = status
+        self._body = body
+        self.content_type = content_type
+        self.headers = headers or {}
+
+    async def read(self):
+        return self._body
+
+    async def text(self):
+        return self._body.decode()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class FakeSession:
+    """Stands in for aiohttp.ClientSession towards MediaMTX; remembers every call."""
+    calls = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def get(self, url, **kw):
+        FakeSession.calls.append(("GET", url))
+        path = url.split("?")[0]
+        if path.endswith(".m3u8"):
+            body = ("#EXTM3U\n#EXTINF:1.0,\n/live/%s/seg0.mp4?session=abc\n" % path.split("/live/")[1].split("/")[0]).encode()
+            return FakeResp(200, body)
+        return FakeResp(200, b"SEGMENT", "video/mp4")
+
+    def post(self, url, **kw):
+        FakeSession.calls.append(("POST", url))
+        return FakeResp(201, b"v=0 answer", "application/sdp", {"Location": "/x/whep/sess-" + url.rsplit("/", 2)[-2][-6:]})
+
+    def request(self, method, url, **kw):
+        FakeSession.calls.append((method, url))
+        return FakeResp(204, b"", "application/json")
+
+
+class World:
+    """A temporary database with an owner, an admin, a moderator, two members and four streams."""
+
+    async def build(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="streamaccess_")
+        self.db = Database(str(Path(self.tmp.name) / "t.db"))
+        await self.db.connect()
+        self.old = (server.db, auth.db)
+        server.db = self.db
+        auth.db = self.db
+        self.users = {}
+        for name, role in (("owner", "user"), ("admin", "admin"), ("mod", "moderator"),
+                           ("member", "user"), ("other", "user")):
+            uid = await self.db.create_user(name, "x")
+            if role != "user":
+                await self.db.set_user_role(uid, role)
+            self.users[name] = uid
+        self.streams = {}
+        for label, public, open_link in (("private", 0, 0), ("public", 1, 0), ("open", 1, 1), ("second", 0, 0)):
+            sk, pk = "live_" + label * 3 + "K" * 12, "pub_" + label * 3 + "P" * 12
+            sid = await self.db.create_user_stream(self.users["owner"] if label != "second" else self.users["other"],
+                                                   label, sk, public_key=pk, is_public=bool(public))
+            await self.db.update_user_stream(sid, allow_unauthenticated=open_link)
+            await self.db.set_stream_live(sid, True)
+            self.streams[label] = {"id": sid, "live": sk, "pub": pk}
+        self.cookie = {}
+        for name, uid in self.users.items():
+            scopes = ["*"] if name == "admin" else ["services:read", "access:*"]
+            self.cookie[name], _ = await auth.create_access_token(uid, scopes)
+        server._playback_cache_forget(everything=True)
+        server._webrtc_sessions.clear()
+        server._thumbnail_cache.clear()
+        FakeSession.calls = []
+
+        async def mtx():
+            return {"hls_port": 8888, "webrtc_port": 8889}
+
+        self.saved = (server._get_mediamtx_config, server.aiohttp.ClientSession)
+        server._get_mediamtx_config = mtx
+        server.aiohttp.ClientSession = FakeSession
+        self.reads = 0
+        real_execute = self.db.conn.execute
+        world = self
+
+        async def counting_execute(*a, **kw):
+            world.reads += 1
+            return await real_execute(*a, **kw)
+
+        self.db.conn.execute = counting_execute
+        return self
+
+    async def close(self):
+        server._get_mediamtx_config, server.aiohttp.ClientSession = self.saved
+        server.db, auth.db = self.old
+        await self.db.close()
+        self.tmp.cleanup()
+
+    def req(self, key, user=None, method="GET", path="index.m3u8", headers=None, query="", peer="203.0.113.9",
+            session=None, cookie=None):
+        h = dict(headers or {})
+        c = cookie if cookie is not None else (self.cookie[user] if user else None)
+        if c:
+            h["Cookie"] = f"{Config.SESSION_COOKIE_NAME}={c}"
+        url = f"/api/stream/{key}/hls/{path}" + (f"?{query}" if query else "")
+        mi = {"stream_key": key, "path": path}
+        if session:
+            mi["session_id"] = session
+        return make_mocked_request(method, url, headers=h, match_info=mi, transport=Transport(peer))
+
+
+def run(coro_fn):
+    async def go():
+        w = await World().build()
+        try:
+            await coro_fn(w)
+        finally:
+            await w.close()
+    asyncio.run(go())
+
+
+def hdr(resp, name):
+    return resp.headers.get(name)
+
+
+# ---------------------------------------------------------------------------
+
+def test_decision_table():
+    allowed = server._stream_read_allowed
+    priv = {"user_id": 1, "is_public": 0, "allow_unauthenticated": 0}
+    pub = {"user_id": 1, "is_public": 1, "allow_unauthenticated": 0}
+    opn = {"user_id": 1, "is_public": 1, "allow_unauthenticated": 1}
+    odd = {"user_id": 1, "is_public": 0, "allow_unauthenticated": 1}   # open flag without public
+    rows = [
+        # stream, user_id, role, via_pub_key, expected
+        (priv, 1, "user", True, True), (priv, 1, "user", False, True),
+        (priv, 9, "admin", False, True), (priv, 9, "superadmin", False, True),
+        (priv, 9, "moderator", True, False), (priv, 9, "user", True, False),
+        (pub, 9, "user", True, True), (pub, 9, "user", False, True),
+        (priv, None, "user", True, False), (pub, None, "user", True, False),
+        (opn, None, "user", True, True), (opn, None, "user", False, False),
+        (odd, None, "user", True, False), (odd, 9, "user", True, False),
+    ]
+    for stream, uid, role, via, expected in rows:
+        assert allowed(stream, uid, role, via) is expected, (stream, uid, role, via, expected)
+
+
+def test_who_gets_in():
+    async def body(w):
+        async def ask(label, user=None, key="pub", **kw):
+            k = w.streams[label][key]
+            stream, err = await server._validate_stream_access(k, request=w.req(k, user, **kw))
+            return bool(stream), err
+
+        # no login
+        assert (await ask("private"))[0] is False
+        assert (await ask("public"))[0] is False                     # public but not open: needs a login
+        assert (await ask("open"))[0] is True                        # the open share link
+        assert (await ask("open", key="live"))[0] is False           # a live_ key is not a way to watch
+        assert (await ask("private", key="live"))[0] is False
+        # logged in
+        assert (await ask("private", "owner"))[0] is True
+        assert (await ask("private", "owner", key="live"))[0] is True   # the owner's own page may name it by live_ key
+        assert (await ask("private", "admin"))[0] is True
+        assert (await ask("private", "mod"))[0] is False                # a moderator is not an admin
+        assert (await ask("private", "member"))[0] is False
+        assert (await ask("public", "member"))[0] is True
+        assert (await ask("public", "member", key="live"))[0] is True
+        assert (await ask("open", "member"))[0] is True
+        assert (await ask("second", "owner"))[0] is False               # another user's private stream
+        err = (await ask("private"))[1]
+        assert err == "Stream not found"
+        # read without a request judges nothing
+        assert (await server._validate_stream_access(w.streams["open"]["pub"]))[0] is None
+    run(body)
+
+
+def test_refusals_are_one_identical_404():
+    async def body(w):
+        bodies = set()
+        statuses = set()
+        # unknown key, private stream, rotated key, public stream not open: all logged out
+        keys = ["pub_doesnotexist", "live_doesnotexist", w.streams["private"]["pub"], w.streams["private"]["live"],
+                w.streams["public"]["pub"]]
+        old = w.streams["open"]["pub"]
+        assert await w.db.regenerate_public_key(w.streams["open"]["id"], "pub_rotatedrotatedrotated1")
+        keys.append(old)
+        for key in keys:
+            for handler in (server.http_stream_hls_proxy, server.http_stream_thumbnail, server.http_stream_info,
+                            server.http_stream_webrtc_whep):
+                resp = await handler(w.req(key, method="POST" if handler is server.http_stream_webrtc_whep else "GET"))
+                statuses.add(resp.status)
+                bodies.add(resp.body)
+        assert statuses == {404}, statuses
+        assert bodies == {NOT_FOUND_BODY}, bodies
+        assert not FakeSession.calls, "nothing reached MediaMTX"
+        # a logged-in member asking for the private stream gets the same bytes
+        resp = await server.http_stream_info(w.req(w.streams["private"]["pub"], "member"))
+        assert resp.status == 404 and resp.body == NOT_FOUND_BODY
+        # the rotated key: its owner (logged in) is still let in with the new one only
+        resp = await server.http_stream_info(w.req(old, "owner"))
+        assert resp.status == 404
+        resp = await server.http_stream_info(w.req("pub_rotatedrotatedrotated1", "owner"))
+        assert resp.status == 200
+        # and logged out the new key of an open stream plays
+        resp = await server.http_stream_hls_proxy(w.req("pub_rotatedrotatedrotated1"))
+        assert resp.status == 200
+    run(body)
+
+
+def test_credentials():
+    async def body(w):
+        priv = w.streams["private"]["pub"]
+        pubstream = w.streams["public"]["pub"]
+        # a stream key sent as a credential does not make anyone a viewer, even of the
+        # stream of an admin who owns it: the admin's own stream key authenticates as the admin
+        await w.db.set_user_role(w.users["owner"], "admin")
+        hdrs = {"X-Stream-Key": w.streams["private"]["live"]}
+        resp = await server.http_stream_info(w.req(w.streams["second"]["pub"], headers=hdrs))
+        assert resp.status == 404, "a stream key is not a way to watch someone else's stream"
+        hdrs = {"Authorization": "Stream-Key " + w.streams["private"]["live"]}
+        resp = await server.http_stream_info(w.req(w.streams["second"]["pub"], headers=hdrs))
+        assert resp.status == 404
+        # a valid session next to a stream key header still counts as the session
+        server._playback_cache_forget(everything=True)
+        resp = await server.http_stream_info(w.req(pubstream, "member", headers=hdrs))
+        assert resp.status == 200
+        await w.db.set_user_role(w.users["owner"], "user")
+        server._playback_cache_forget(everything=True)
+
+        # full-scope API key of the owner works; a scoped one does not
+        full_key, full_hash, full_prefix = auth.generate_api_key()
+        await w.db.create_api_key(w.users["owner"], "full", full_hash, full_prefix, scopes="*")
+        scoped_key, scoped_hash, scoped_prefix = auth.generate_api_key()
+        await w.db.create_api_key(w.users["owner"], "scoped", scoped_hash, scoped_prefix, scopes="services:read")
+        resp = await server.http_stream_info(w.req(priv, headers={"X-API-Key": full_key}))
+        assert resp.status == 200
+        resp = await server.http_stream_info(w.req(priv, headers={"Authorization": "Api-Key " + full_key}))
+        assert resp.status == 200
+        resp = await server.http_stream_info(w.req(priv, headers={"X-API-Key": scoped_key}))
+        assert resp.status == 404, "a scoped API key does not carry the viewing right"
+        # a scoped key is judged as nobody logged in: an open link still plays
+        resp = await server.http_stream_info(w.req(w.streams["open"]["pub"], headers={"X-API-Key": scoped_key}))
+        assert resp.status == 200
+        # a bearer token and a ?token= of the owner
+        jwt, _ = await auth.create_access_token(w.users["owner"], ["*"])
+        resp = await server.http_stream_info(w.req(priv, headers={"Authorization": "Bearer " + jwt}))
+        assert resp.status == 200
+        resp = await server.http_stream_info(w.req(priv, query="token=" + jwt))
+        assert resp.status == 200
+        # a revoked session no longer counts (after the cache time)
+        jwt2, tid2 = await auth.create_access_token(w.users["owner"], ["*"])
+        resp = await server.http_stream_info(w.req(priv, cookie=jwt2))
+        assert resp.status == 200
+        assert await w.db.revoke_token(tid2, w.users["owner"])
+        server._playback_cache_forget(everything=True)
+        resp = await server.http_stream_info(w.req(priv, cookie=jwt2))
+        assert resp.status == 404
+        # garbage cookie: nobody logged in
+        resp = await server.http_stream_info(w.req(priv, cookie="garbage"))
+        assert resp.status == 404
+        resp = await server.http_stream_info(w.req(w.streams["open"]["pub"], cookie="garbage"))
+        assert resp.status == 200
+    run(body)
+
+
+def test_segments_cost_no_database_reads_and_cache_expires():
+    async def body(w):
+        key = w.streams["public"]["pub"]
+        clock = [1000.0]
+        real_now = server._playback_now
+        server._playback_now = lambda: clock[0]
+        try:
+            first = await server.http_stream_hls_proxy(w.req(key, "member"))
+            assert first.status == 200
+            reads_after_first = w.reads
+            assert reads_after_first > 0
+            for i in range(60):
+                clock[0] += 0.05
+                r = await server.http_stream_hls_proxy(w.req(key, "member", path=f"seg{i}.mp4", query="session=abc"))
+                assert r.status == 200 and r.body == b"SEGMENT"
+            assert w.reads == reads_after_first, f"{w.reads - reads_after_first} database reads for 60 segments"
+            # logged-out viewers of an open link cost nothing either
+            okey = w.streams["open"]["pub"]
+            await server.http_stream_hls_proxy(w.req(okey))
+            base = w.reads
+            for i in range(60):
+                await server.http_stream_hls_proxy(w.req(okey, path=f"seg{i}.mp4"))
+            assert w.reads == base
+            # after 5 seconds the decision is made again
+            clock[0] += server._PLAYBACK_AUTH_TTL + 0.1
+            base = w.reads
+            r = await server.http_stream_hls_proxy(w.req(key, "member", path="seg99.mp4"))
+            assert r.status == 200 and w.reads > base
+            # the stream made private (straight in the database, as another process could): the
+            # viewer is out within the cache time without anybody calling invalidate
+            await w.db.update_user_stream(w.streams["public"]["id"], is_public=False)
+            r = await server.http_stream_hls_proxy(w.req(key, "member", path="seg100.mp4"))
+            assert r.status == 200, "still inside the cache time"
+            clock[0] += server._PLAYBACK_AUTH_TTL + 0.1
+            r = await server.http_stream_hls_proxy(w.req(key, "member", path="seg101.mp4"))
+            assert r.status == 404
+        finally:
+            server._playback_now = real_now
+    run(body)
+
+
+def test_cache_is_bounded():
+    async def body(w):
+        key = w.streams["open"]["pub"]
+        small = server._PLAYBACK_AUTH_MAX
+        server._PLAYBACK_AUTH_MAX = 20
+        try:
+            for i in range(200):
+                r = await server.http_stream_info(w.req(key, cookie="junk%d" % i))
+                assert r.status == 200
+                assert len(server._playback_auth_cache) <= 20
+        finally:
+            server._PLAYBACK_AUTH_MAX = small
+    run(body)
+
+
+def test_changes_drop_cached_decisions():
+    async def body(w):
+        # the real owner route is used, so the invalidation call sites are the ones that run
+        owner_id = w.users["owner"]
+        sid = w.streams["public"]["id"]
+        key = w.streams["public"]["pub"]
+        server.db = w.db
+
+        async def watch(user="member"):
+            return (await server.http_stream_hls_proxy(w.req(key, user, path="seg.mp4"))).status
+
+        async def update(**data):
+            req = make_mocked_request("PUT", f"/api/streams/{sid}", match_info={"id": str(sid)},
+                                      headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['owner']}"},
+                                      transport=Transport())
+            req.json = lambda: _coro(data)
+            return await server.http_update_user_stream(req)
+
+        assert await watch() == 200
+        # made private: the member is out at once, the owner is not, the old key is gone
+        resp = await update(is_public=False)
+        assert resp.status == 200
+        new_key = json.loads(resp.body)["public_key"]
+        assert await watch() == 404
+        assert await watch("owner") == 404, "the old pub_ key was rotated away"
+        key = new_key
+        assert await watch("owner") == 200
+        assert await watch() == 404
+        # public again: the member is back
+        resp = await update(is_public=True)
+        assert resp.status == 200 and await watch() == 200
+        # open link switched on: logged out plays; switched off: stops at once
+        assert await watch(None) == 404
+        assert (await update(allow_unauthenticated=True)).status == 200
+        assert await watch(None) == 200
+        assert (await update(allow_unauthenticated=False)).status == 200
+        assert await watch(None) == 404
+        # share link rotation
+        assert (await update(allow_unauthenticated=True)).status == 200
+        assert await watch(None) == 200
+        req = make_mocked_request("POST", f"/api/streams/{sid}/regenerate-public-key", match_info={"id": str(sid)},
+                                  headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['owner']}"},
+                                  transport=Transport())
+        resp = await server.http_regenerate_public_key(req)
+        assert resp.status == 200
+        assert await watch(None) == 404 and await watch("member") == 404
+        key = json.loads(resp.body)["public_key"]
+        assert await watch(None) == 200
+        # a rotated live key: the stream path changes, so the cached record is dropped
+        req = make_mocked_request("POST", f"/api/streams/{sid}/regenerate-key", match_info={"id": str(sid)},
+                                  headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['owner']}"},
+                                  transport=Transport())
+        before = len(server._playback_auth_cache)
+        assert before > 0
+        resp = await server.http_regenerate_stream_key(req)
+        assert resp.status == 200
+        assert not [v for v in server._playback_auth_cache.values() if v[2] == sid]
+        # the stream deleted
+        assert await watch(None) == 200
+        req = make_mocked_request("DELETE", f"/api/streams/{sid}", match_info={"id": str(sid)},
+                                  headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['owner']}"},
+                                  transport=Transport())
+        assert (await server.http_delete_user_stream(req)).status == 200
+        assert await watch(None) == 404
+    run(body)
+
+
+async def _coro(value):
+    return value
+
+
+def test_sign_out_drops_the_credentials_decisions():
+    async def body(w):
+        key = w.streams["public"]["pub"]
+        assert (await server.http_stream_info(w.req(key, "member"))).status == 200
+        assert (await server.http_stream_info(w.req(key, "other"))).status == 200
+        assert any(v[1] == w.users["member"] for v in server._playback_auth_cache.values())
+        # the revocation path: tokens revoked, then sockets closed (which clears the cache)
+        await w.db.revoke_all_user_tokens(w.users["member"]) if hasattr(w.db, "revoke_all_user_tokens") else None
+        await server.close_user_websockets(w.users["member"])
+        assert not any(v[1] == w.users["member"] for v in server._playback_auth_cache.values())
+        assert any(v[1] == w.users["other"] for v in server._playback_auth_cache.values()), "others stay"
+    run(body)
+
+
+def test_headers():
+    async def body(w):
+        for label, cors in (("open", True), ("public", False), ("private", False)):
+            key = w.streams[label]["pub"]
+            user = None if label == "open" else "owner"
+            hls = await server.http_stream_hls_proxy(w.req(key, user))
+            assert hls.status == 200
+            assert (hdr(hls, "Access-Control-Allow-Origin") == "*") is cors, label
+            assert hdr(hls, "Cache-Control") == ("no-cache" if cors else "private, no-cache"), (label, hls.headers)
+            info = await server.http_stream_info(w.req(key, user))
+            assert (hdr(info, "Access-Control-Allow-Origin") == "*") is cors
+            server._thumbnail_cache[w.streams[label]["live"]] = (server.time(), b"JPEG")
+            th = await server.http_stream_thumbnail(w.req(key, user))
+            assert th.status == 200 and th.body == b"JPEG"
+            assert (hdr(th, "Access-Control-Allow-Origin") == "*") is cors
+            assert hdr(th, "Cache-Control") == ("public, max-age=15" if cors else "private, max-age=15"), hls.headers
+            whep = await server.http_stream_webrtc_whep(_whep_request(w, key, user))
+            assert whep.status == 201, (label, whep.status)
+            assert (hdr(whep, "Access-Control-Allow-Origin") == "*") is cors
+            assert (hdr(whep, "Access-Control-Expose-Headers") == "Location") is cors
+            assert hdr(whep, "Location")
+        # the refusal is not cached by anyone
+        r = await server.http_stream_info(w.req(w.streams["private"]["pub"]))
+        assert r.status == 404 and hdr(r, "Cache-Control") == "no-store" and not hdr(r, "Access-Control-Allow-Origin")
+    run(body)
+
+
+def _whep_request(w, key, user):
+    req = w.req(key, user, method="POST")
+    req.text = lambda: _coro("v=0 offer")
+    return req
+
+
+def test_token_in_the_query_is_not_passed_on():
+    async def body(w):
+        key = w.streams["private"]["pub"]
+        jwt, _ = await auth.create_access_token(w.users["owner"], ["*"])
+        r = await server.http_stream_hls_proxy(w.req(key, path="index.m3u8", query=f"session=abc&token={jwt}&x=1"))
+        assert r.status == 200
+        url = FakeSession.calls[-1][1]
+        assert "token" not in url and jwt not in url and "session=abc" in url and "x=1" in url, url
+        # a playlist is rewritten to the same key
+        assert f"/api/stream/{key}/hls/seg0.mp4" in r.body.decode()
+        # query without a token is passed through untouched
+        await server.http_stream_hls_proxy(w.req(key, "owner", path="index.m3u8", query="session=a%2Bb&_HLS_msn=3"))
+        assert FakeSession.calls[-1][1].endswith("?session=a%2Bb&_HLS_msn=3"), FakeSession.calls[-1][1]
+    run(body)
+
+
+def test_whep_sessions_follow_the_decision():
+    async def body(w):
+        sid = w.streams["public"]["id"]
+        key = w.streams["public"]["pub"]
+        r = await server.http_stream_webrtc_whep(_whep_request(w, key, "member"))
+        assert r.status == 201
+        session = r.headers["Location"].rsplit("/", 1)[1]
+        assert session in server._webrtc_sessions
+        # the member may end it; nobody logged out may touch it
+        rec, err, status, _ = await server._authorize_webrtc_session(w.req(key, "member"), key, session)
+        assert status == 200 and rec[0] == "whep"
+        rec, err, status, _ = await server._authorize_webrtc_session(w.req(key), key, session)
+        assert status == 404 and err == "Stream not found"
+        # a publishing session still needs the publish key, and a viewer's decision does not help
+        server._webrtc_session_remember("whip-1", "whip", sid, w.streams["public"]["live"])
+        for who in ("member", "owner", None):
+            rec, err, status, _ = await server._authorize_webrtc_session(w.req(key, who), key, "whip-1")
+            assert status == 404
+        rec, err, status, _ = await server._authorize_webrtc_session(w.req(w.streams["public"]["live"]),
+                                                                    w.streams["public"]["live"], "whip-1")
+        assert status == 200 and rec[0] == "whip"
+        # the session handler answers 404 for a refused viewer, and the open header only for open streams
+        resp = await server.http_stream_webrtc_session(w.req(key, None, method="PATCH", session=session))
+        assert resp.status == 404 and resp.body == NOT_FOUND_BODY
+        resp = await server.http_stream_webrtc_session(w.req(key, "member", method="PATCH", session=session))
+        assert resp.status == 204 and not hdr(resp, "Access-Control-Allow-Origin")
+        # made private: the viewers' sessions are forgotten, the member cannot touch the old one
+        r2 = await server.http_stream_webrtc_whep(_whep_request(w, key, "member"))
+        s2 = r2.headers["Location"].rsplit("/", 1)[1]
+        server._stream_access_changed(sid, drop_sessions=False)     # a rename: sessions stay
+        assert s2 in server._webrtc_sessions
+        server._stream_access_changed(sid)
+        assert s2 not in server._webrtc_sessions and "whip-1" in server._webrtc_sessions
+    run(body)
+
+
+class HookRequest:
+    def __init__(self, data, peer="127.0.0.1"):
+        self.transport = Transport(peer)
+        self._data = data
+        self.headers = {}
+
+    async def json(self):
+        return self._data
+
+
+def test_hook_read_action():
+    async def body(w):
+        async def hook(path, ip, password="", action="read", peer="127.0.0.1"):
+            resp = await server.http_stream_auth(HookRequest(
+                {"action": action, "path": path, "ip": ip, "user": "", "password": password}, peer))
+            return resp.status
+        priv, pub = w.streams["private"]["live"], w.streams["public"]["live"]
+        # the portal's own readers (loopback) are let through, for a live_ path and an rtmp_ one
+        assert await hook("live/" + priv, "127.0.0.1") == 200
+        assert await hook("live/rtmp_sometoken", "::1") == 200
+        assert await hook("live/" + priv, "::ffff:127.0.0.1", action="playback") == 200
+        # an outside reader is judged as a viewer, and a live_ path is not a credential
+        assert await hook("live/" + pub, "198.51.100.4") == 403
+        assert await hook("live/" + priv, "198.51.100.4") == 403
+        key, key_hash, prefix = auth.generate_api_key()
+        await w.db.create_api_key(w.users["member"], "m", key_hash, prefix, scopes="*")
+        assert await hook("live/" + pub, "198.51.100.4", key) == 200
+        assert await hook("live/" + priv, "198.51.100.4", key) == 403
+        okey, ohash, oprefix = auth.generate_api_key()
+        await w.db.create_api_key(w.users["owner"], "o", ohash, oprefix, scopes="*")
+        assert await hook("live/" + priv, "198.51.100.4", okey) == 200
+        # not from MediaMTX's own machine at all: forbidden
+        assert await hook("live/" + priv, "127.0.0.1", peer="8.8.8.8") == 403
+    run(body)
+
+
+def test_every_playback_route_uses_the_decision():
+    """A route that answered from a key alone would be a hole: the five playback handlers must
+    not call the key lookups directly."""
+    src = (ROOT / "server.py").read_text()
+    for name in ("http_stream_hls_proxy", "http_stream_thumbnail", "http_stream_info",
+                 "http_stream_webrtc_whep"):
+        start = src.index(f"async def {name}(")
+        end = src.index("\nasync def ", start + 10)
+        chunk = src[start:end]
+        assert "_validate_stream_access(" in chunk and "request=request" in chunk, name
+        assert "get_stream_by_public_key" not in chunk and "get_stream_by_key" not in chunk, name
+        assert '"Access-Control-Allow-Origin": "*"' not in chunk, name
+
+
+if __name__ == "__main__":
+    failed = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print("ok  ", name)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print("FAIL", name, type(e).__name__, e)
+                failed += 1
+    if outbound_guard.refused:
+        print("FAIL: the guard refused a dial", outbound_guard.refused)
+        failed += 1
+    sys.exit(1 if failed else 0)

@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, time
 from typing import Optional
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 import re
 
 import aiohttp
@@ -449,6 +449,11 @@ async def close_user_websockets(user_id: int, except_token_id: str = None,
             return True
         return _keeps_credential(tid, except_token_id, keep_prefixes)
 
+    # Cached playback decisions made for this user are dropped whatever was
+    # revoked (the next playback request asks again; the cost of dropping the
+    # sessions that were kept is one lookup).
+    _playback_cache_forget(user_id=user_id)
+
     # Proxied HTTP responses (long downloads, event streams) have no total
     # time limit, so they are cut here too.
     for call, tid in list(_user_proxy_calls.get(user_id, {}).items()):
@@ -840,6 +845,17 @@ def _is_internal_request(request: web.Request) -> bool:
         return peer_ip in _get_server_own_ips()
     except ValueError:
         return False
+
+
+def _is_loopback_ip(ip: str) -> bool:
+    """True for a loopback address given as text (an IPv4-mapped one included)."""
+    try:
+        addr = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback
 
 
 # Static files cache
@@ -2026,8 +2042,11 @@ def create_ssl_context() -> ssl.SSLContext:
 _AUTH_VIA_QUERY_TOKEN = "auth_via_query_token"
 
 
-async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
-    """Authenticate a request via header, query param, session cookie, or API key."""
+async def authenticate_request(request: web.Request, allow_stream_key: bool = True) -> Optional[TokenPayload]:
+    """Authenticate a request via header, query param, session cookie, or API key.
+
+    allow_stream_key=False ignores Stream-Key / X-Stream-Key (a stream key is not
+    a way to sign in as its owner, for example to watch other streams)."""
     # Check Authorization header for Bearer token
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -2057,7 +2076,7 @@ async def authenticate_request(request: web.Request) -> Optional[TokenPayload]:
         if token_payload:
             return token_payload
 
-    if stream_key:
+    if stream_key and allow_stream_key:
         token_payload = await authenticate_stream_key(stream_key)
         if token_payload:
             return token_payload
@@ -5265,12 +5284,17 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
 
     success = await db.update_user_stream(stream_id, user_id=token.user_id, **data)
     if success:
+        # Viewers are asked again at once; a viewer who lost access gets no new
+        # playlist or segment from here on.
+        _stream_access_changed(stream_id, drop_sessions=any(
+            k in data and bool(data[k]) != bool(stream.get(k)) for k in ("is_public", "allow_unauthenticated")))
         rotated_key = None
         if became_private:
             rotated_key = generate_public_key()
             if not await db.regenerate_public_key(stream_id, rotated_key, user_id=token.user_id):
                 rotated_key = None
                 logger.error(f"Failed to rotate playback key for stream {stream_id} after it became private")
+            _stream_access_changed(stream_id)
         if not (data["is_public"] if "is_public" in data else stream.get("is_public")):
             # Sockets already in the chat room (and its voice call) belong to members
             # who can no longer read it: put them out now, not at their next request.
@@ -5318,6 +5342,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     success = await db.delete_user_stream(stream_id, user_id=token.user_id)
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
+    _stream_access_changed(stream_id)
 
     # Delete the chat channel with its stream, unless it is a default channel or
     # another stream still uses it (delete_chat_channel refuses default channels)
@@ -5343,6 +5368,7 @@ async def http_regenerate_stream_key(request: web.Request) -> web.Response:
 
     success = await db.regenerate_stream_key(stream_id, new_key, user_id=token.user_id)
     if success:
+        _stream_access_changed(stream_id)
         return web.json_response({"stream_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
@@ -5366,6 +5392,7 @@ async def http_regenerate_public_key(request: web.Request) -> web.Response:
 
     success = await db.regenerate_public_key(stream_id, new_key, user_id=token.user_id)
     if success:
+        _stream_access_changed(stream_id)
         return web.json_response({"public_key": new_key})
     return web.json_response({"error": "Not authorized or stream not found"}, status=403)
 
@@ -8252,33 +8279,33 @@ async def http_stream_auth(request: web.Request) -> web.Response:
         return web.json_response({"allowed": True})
 
     elif action in ("read", "playback"):
-        # For reading/playback, extract stream key from path
+        # The one read decision (_stream_read_allowed) also holds here. MediaMTX is
+        # configured to skip this hook for reads (authHTTPExclude), and every reader
+        # of its HLS/RTSP/WebRTC ports is on this machine: the portal's own HLS
+        # proxy, the thumbnail ffmpeg, the recorder and the relays. A loopback
+        # reader is therefore the portal's own and is let through; viewers are
+        # judged in the portal's playback routes.
         if not path:
             return web.json_response({"error": "Path required"}, status=400)
+        if _is_loopback_ip(ip):
+            return web.json_response({"allowed": True})
 
-        # Try to find stream by the path (which should be the stream key)
+        # Anybody else (a reader of the externally reachable RTMPS port) is judged
+        # as a viewer: the stream is named by its live_ path, and the credential is
+        # a full-access API key sent as the password. A key in the path is never
+        # a way to watch.
         stream_key_from_path = path.split("/")[-1] if "/" in path else path
-        stream = await db.get_stream_by_key(f"live_{stream_key_from_path}") if not stream_key_from_path.startswith("live_") else await db.get_stream_by_key(stream_key_from_path)
-
-        if not stream:
-            # Try direct stream key lookup
-            stream = await db.get_stream_by_key(path)
-
-        if stream:
-            # Allow if public or owner is viewing
-            if stream.get("is_public"):
-                return web.json_response({"allowed": True})
-
-            # Check if viewer has auth (via query param or password)
-            if password:
-                # Validate via API key
-                from auth import parse_api_key, verify_api_key
-                key_prefix = parse_api_key(password)
-                if key_prefix:
-                    key_record = await db.get_api_key_by_prefix(key_prefix)
-                    if key_record and not key_record.get("revoked") and verify_api_key(password, key_record["key_hash"]):
-                        if key_record["user_id"] == stream["user_id"]:
-                            return web.json_response({"allowed": True})
+        stream = None
+        if stream_key_from_path.startswith("live_"):
+            stream = await db.get_stream_by_key(stream_key_from_path)
+        user_id, role = None, "user"
+        if stream and password:
+            token = await authenticate_api_key(password)
+            if token is not None and has_full_user_scope(token):
+                user_id = token.user_id
+                role = await get_user_role_from_token(token)
+        if stream and user_id is not None and _stream_read_allowed(stream, user_id, role, False):
+            return web.json_response({"allowed": True})
 
         # Default deny for unrecognized streams or unauthorized access
         return web.json_response({"error": "Access denied"}, status=403)
@@ -8361,16 +8388,169 @@ async def _get_mediamtx_config() -> dict:
     return {}
 
 
-async def _validate_stream_access(key: str, require_publish: bool = False) -> tuple[dict | None, str]:
-    """Validate stream access key and return (stream_info, error_message).
+_STREAM_NOT_FOUND = "Stream not found"
 
-    Supports two key types:
-    - Private key (live_xxx): Used for publishing and full access
-    - Public key (pub_xxx): Used for read-only viewing access
+# Playback authorisation cache. One entry per (credential, key in the URL):
+# (fingerprint of the credentials the request carried or "anon", sha256 of the
+# key) -> (expires, user_id or None, stream_id, stream record, allowed).
+# It sits in front of everything a playback request would read from the
+# database (the key lookup, the credential check, the user), so the many
+# segment requests of one viewer cost no database reads. An entry lives at most
+# _PLAYBACK_AUTH_TTL seconds; it is dropped at once when the stream's
+# visibility, open-link flag or keys change, when the stream is deleted and
+# when the credential's owner is signed out (close_user_websockets).
+_PLAYBACK_AUTH_TTL = 5.0
+_PLAYBACK_AUTH_MAX = 2048
+_playback_auth_cache: dict[tuple[str, str], tuple] = {}
+_playback_auth_generation = 0
+
+
+def _playback_now() -> float:
+    return monotonic()
+
+
+def _stream_is_open(stream: dict) -> bool:
+    """A public stream whose share link is open to people who are not logged in."""
+    return bool(stream.get("is_public")) and bool(stream.get("allow_unauthenticated"))
+
+
+def _stream_read_allowed(stream: dict, user_id: Optional[int], role: str, via_pub_key: bool) -> bool:
+    """The one decision on whether somebody may watch a stream (HLS, thumbnail,
+    WHEP, the info route and the MediaMTX hook's read action).
+
+    The owner and admins always. Any other logged-in member only when the stream
+    is public. Nobody logged in only when the stream is public with the open
+    link on and the request carries that stream's current pub_ key.
+    """
+    if user_id is not None:
+        if stream.get("user_id") == user_id or role in ("admin", "superadmin"):
+            return True
+        return bool(stream.get("is_public"))
+    return via_pub_key and _stream_is_open(stream)
+
+
+def _playback_cache_forget(stream_id: Optional[int] = None, user_id: Optional[int] = None,
+                           everything: bool = False) -> int:
+    """Drop cached playback decisions: those about one stream, those made for one
+    user, or all. Returns the number dropped."""
+    global _playback_auth_generation
+    _playback_auth_generation += 1
+    if everything:
+        n = len(_playback_auth_cache)
+        _playback_auth_cache.clear()
+        return n
+    doomed = [k for k, v in _playback_auth_cache.items()
+              if (stream_id is not None and v[2] == stream_id)
+              or (user_id is not None and v[1] == user_id)]
+    for k in doomed:
+        del _playback_auth_cache[k]
+    return len(doomed)
+
+
+def _webrtc_forget_playback(stream_id: int) -> int:
+    """Forget the WHEP sessions opened for a stream: their PATCH and DELETE calls
+    through the portal stop working. (Media already flowing goes straight to
+    MediaMTX and is not touched by this.)"""
+    doomed = [k for k, v in _webrtc_sessions.items() if v[0] == "whep" and v[1] == stream_id]
+    for k in doomed:
+        del _webrtc_sessions[k]
+    return len(doomed)
+
+
+def _stream_access_changed(stream_id: int, drop_sessions: bool = True) -> None:
+    """Call when a stream's visibility, open-link flag, share key or publish key
+    changed, or the stream was deleted: viewers are asked again at once. A change
+    that cannot take anybody's right away (a rename) passes drop_sessions=False
+    and keeps the viewers' WHEP session records."""
+    _playback_cache_forget(stream_id=stream_id)
+    if drop_sessions:
+        _webrtc_forget_playback(stream_id)
+
+
+def _playback_fingerprint(request: web.Request) -> str:
+    """A fingerprint of the credentials a request carries ("anon" for none).
+    Stream keys do not count: they are not a way to watch. It is taken without any
+    database read so a cached decision can be found before authenticating."""
+    parts = []
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith(("Bearer ", "Api-Key ")):
+        parts.append("a:" + auth_header)
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        parts.append("x:" + api_key)
+    qtoken = request.query.get("token")
+    if qtoken:
+        parts.append("q:" + qtoken)
+    cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
+    if cookie:
+        parts.append("c:" + cookie)
+    if not parts:
+        return "anon"
+    return hashlib.sha256("\0".join(parts).encode("utf-8", "surrogatepass")).hexdigest()[:32]
+
+
+async def _resolve_stream_by_any_key(key: str) -> tuple[Optional[dict], bool]:
+    """(stream, via_pub_key). A live_ (or bare) key only names the stream here: it
+    gives no right to watch it."""
+    if key.startswith("pub_"):
+        return await db.get_stream_by_public_key(key), True
+    if not key.startswith("live_"):
+        key = f"live_{key}"
+    return await db.get_stream_by_key(key), False
+
+
+async def _stream_read_access(request: web.Request, key: str) -> tuple[Optional[dict], str]:
+    """Authorise a request to watch the stream named by `key` in its URL.
+
+    Returns (stream, "") or (None, "Stream not found"). A key that matches nothing,
+    a rotated key and a stream the requester may not see all give the same
+    answer, so a private stream's existence and live state are not revealed.
+    The credential is the session cookie or a full-access token or API key; a
+    stream key (live_) is never one.
+    """
+    if not key or request is None:
+        return None, _STREAM_NOT_FOUND
+    ckey = (_playback_fingerprint(request), hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest())
+    now = _playback_now()
+    hit = _playback_auth_cache.get(ckey)
+    if hit is not None and hit[0] > now:
+        return (hit[3], "") if hit[4] else (None, _STREAM_NOT_FOUND)
+    generation = _playback_auth_generation
+
+    stream, via_pub_key = await _resolve_stream_by_any_key(key)
+    if not stream:
+        return None, _STREAM_NOT_FOUND
+    user_id, role = None, "user"
+    token = await authenticate_request(request, allow_stream_key=False)
+    if token is not None and has_full_user_scope(token):
+        user_id = token.user_id
+        role = await get_user_role_from_token(token)
+    allowed = _stream_read_allowed(stream, user_id, role, via_pub_key)
+
+    if generation == _playback_auth_generation:
+        if len(_playback_auth_cache) >= _PLAYBACK_AUTH_MAX:
+            for k in [k for k, v in _playback_auth_cache.items() if v[0] <= now]:
+                del _playback_auth_cache[k]
+            if len(_playback_auth_cache) >= _PLAYBACK_AUTH_MAX:
+                _playback_auth_cache.clear()
+        _playback_auth_cache[ckey] = (now + _PLAYBACK_AUTH_TTL, user_id, stream["id"], stream, allowed)
+    return (stream, "") if allowed else (None, _STREAM_NOT_FOUND)
+
+
+async def _validate_stream_access(key: str, require_publish: bool = False,
+                                  request: Optional[web.Request] = None) -> tuple[dict | None, str]:
+    """Validate a stream access key and return (stream_info, error_message).
+
+    Publishing (require_publish=True): only the private key (live_xxx) counts.
+
+    Reading: the request must be passed; the decision is _stream_read_access
+    (owner, admin, member for a public stream, or the open share link). Without a
+    request there is nothing to judge and the answer is "not found".
 
     Args:
-        key: The stream key (private or public) to validate
+        key: The stream key (private or public) from the URL
         require_publish: If True, requires private stream key for publishing
+        request: The request, for the read decision
 
     Returns:
         Tuple of (stream_dict or None, error_message or empty string)
@@ -8378,18 +8558,12 @@ async def _validate_stream_access(key: str, require_publish: bool = False) -> tu
     if not key:
         return None, "Stream key required"
 
-    stream = None
+    if not require_publish:
+        return await _stream_read_access(request, key)
 
-    # Check if it's a public key (read-only access)
+    # Publishing needs the private key (live_xxx)
     if key.startswith("pub_"):
-        if require_publish:
-            return None, "Public key cannot be used for publishing"
-        stream = await db.get_stream_by_public_key(key)
-        if not stream:
-            return None, "Invalid public key"
-        return stream, ""
-
-    # It's a private key (live_xxx) - full access
+        return None, "Public key cannot be used for publishing"
     if not key.startswith("live_"):
         key = f"live_{key}"
 
@@ -8398,6 +8572,26 @@ async def _validate_stream_access(key: str, require_publish: bool = False) -> tu
         return None, "Invalid stream key"
 
     return stream, ""
+
+
+def _stream_not_found() -> web.Response:
+    """The one answer for every playback request that is refused or names nothing."""
+    return web.json_response({"error": _STREAM_NOT_FOUND}, status=404,
+                             headers={"Cache-Control": "no-store"})
+
+
+def _playback_headers(stream: dict, cache_control: str = "no-cache", extra: Optional[dict] = None) -> dict:
+    """Headers of a playback answer. Only an open share link (public stream with
+    allow_unauthenticated) may be read from other sites, so only it carries
+    Access-Control-Allow-Origin and may be kept by a shared cache; anything else
+    is same-origin and private to the viewer."""
+    headers = dict(extra or {})
+    if _stream_is_open(stream):
+        headers["Access-Control-Allow-Origin"] = "*"
+        headers["Cache-Control"] = cache_control if cache_control == "no-cache" else "public, " + cache_control
+    else:
+        headers["Cache-Control"] = "private, " + cache_control
+    return headers
 
 
 async def http_stream_hls_proxy(request: web.Request) -> web.Response:
@@ -8415,10 +8609,11 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     key = request.match_info.get("stream_key", "")
     hls_path = request.match_info.get("path", "index.m3u8")
 
-    # Validate stream access (supports both public and private keys)
-    stream, error = await _validate_stream_access(key)
+    # Authorise first: nothing about the stream (not even that MediaMTX is
+    # missing) is revealed to somebody who may not watch it.
+    stream, error = await _validate_stream_access(key, request=request)
     if error:
-        return web.json_response({"error": error}, status=403)
+        return _stream_not_found()
 
     # Get MediaMTX configuration
     mtx_config = await _get_mediamtx_config()
@@ -8436,8 +8631,13 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
     url = f"https://127.0.0.1:{hls_port}/{mtx_path}/{hls_path}"
     # Forward the query string: MediaMTX (v1.1x+) tags every variant playlist and
     # segment URL with ?session=<secret> and answers 401 without it.
-    if request.query_string:
-        url += f"?{request.query_string}"
+    # A ?token= is the viewer's own credential, not MediaMTX's: it is not passed on.
+    upstream_query = request.query_string
+    if "token" in request.query:
+        upstream_query = urlencode([(k, v) for k, v in parse_qsl(upstream_query, keep_blank_values=True)
+                                    if k != "token"])
+    if upstream_query:
+        url += f"?{upstream_query}"
 
     try:
         # Create SSL context that allows self-signed certs (internal communication)
@@ -8464,10 +8664,7 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
                     body=content,
                     status=resp.status,
                     content_type=content_type,
-                    headers={
-                        "Access-Control-Allow-Origin": "*",
-                        "Cache-Control": "no-cache",
-                    }
+                    headers=_playback_headers(stream)
                 )
     except asyncio.TimeoutError:
         return web.json_response({"error": "Stream timeout"}, status=504)
@@ -8489,18 +8686,15 @@ _thumbnail_sem = asyncio.Semaphore(_THUMBNAIL_MAX_CAPTURES)
 _thumbnail_inflight: dict[str, "asyncio.Task"] = {}
 
 
-def _thumbnail_response(body: bytes, max_age: int) -> web.Response:
+def _thumbnail_response(body: bytes, max_age: int, stream: dict) -> web.Response:
     return web.Response(
         body=body,
         content_type="image/jpeg",
-        headers={
-            "Cache-Control": f"public, max-age={max_age}",
-            "Access-Control-Allow-Origin": "*",
-        }
+        headers=_playback_headers(stream, f"max-age={max_age}")
     )
 
 
-def _stale_thumbnail_response(cache_key: str) -> Optional[web.Response]:
+def _stale_thumbnail_response(cache_key: str, stream: dict) -> Optional[web.Response]:
     """The last good frame for a stream if it is at most _THUMBNAIL_STALE_MAX seconds old
     (served when a fresh one cannot be made). An older frame is dropped, not served."""
     cached = _thumbnail_cache.get(cache_key)
@@ -8509,7 +8703,7 @@ def _stale_thumbnail_response(cache_key: str) -> Optional[web.Response]:
     if time() - cached[0] > _THUMBNAIL_STALE_MAX:
         _thumbnail_cache.pop(cache_key, None)
         return None
-    return _thumbnail_response(cached[1], 5)
+    return _thumbnail_response(cached[1], 5, stream)
 
 
 async def _run_thumbnail_ffmpeg(hls_url: str) -> tuple[Optional[int], bytes, bytes]:
@@ -8599,10 +8793,11 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     """
     key = request.match_info.get("stream_key", "")
 
-    # Validate stream access
-    stream, error = await _validate_stream_access(key, require_publish=False)
+    # Authorise before anything else, so an offline answer cannot reveal a
+    # private stream either
+    stream, error = await _validate_stream_access(key, request=request)
     if error:
-        return web.json_response({"error": error}, status=403)
+        return _stream_not_found()
 
     # Check if stream is live (only generate dynamic thumbnail for active broadcast)
     if stream.get("is_live") != 1:
@@ -8615,14 +8810,14 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     cache_key = stream["stream_key"]
     cached = _thumbnail_cache.get(cache_key)
     if cached and time() - cached[0] < _THUMBNAIL_CACHE_TTL:
-        return _thumbnail_response(cached[1], _THUMBNAIL_CACHE_TTL)
+        return _thumbnail_response(cached[1], _THUMBNAIL_CACHE_TTL, stream)
 
     # Single-flight. Nothing below may await between the in-flight lookup and the
     # registration of the new task, or concurrent requests would each start one.
     task = _thumbnail_inflight.get(cache_key)
     if task is None:
         if _thumbnail_sem.locked():
-            stale = _stale_thumbnail_response(cache_key)
+            stale = _stale_thumbnail_response(cache_key, stream)
             if stale is not None:
                 return stale
             return web.json_response(
@@ -8636,12 +8831,12 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
     # shield: a client that goes away must not cancel the capture others wait for
     outcome, data = await asyncio.shield(task)
     if outcome == "ok":
-        return _thumbnail_response(data, _THUMBNAIL_CACHE_TTL)
+        return _thumbnail_response(data, _THUMBNAIL_CACHE_TTL, stream)
     if outcome == "noconfig":
         return web.json_response({"error": "MediaMTX not configured"}, status=503,
                                  headers={"Retry-After": str(_THUMBNAIL_RETRY_AFTER)})
     # Serve last known good frame rather than an error during transient HLS hiccups
-    stale = _stale_thumbnail_response(cache_key)
+    stale = _stale_thumbnail_response(cache_key, stream)
     if stale is not None:
         return stale
     # No frame can be made now (failed or timed out): a temporary condition, so
@@ -8687,26 +8882,35 @@ def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_pat
     _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now)
 
 
-async def _authorize_webrtc_session(key: str, session_id: str) -> tuple[tuple | None, str, int]:
+async def _authorize_webrtc_session(request: web.Request, key: str, session_id: str
+                                    ) -> tuple[tuple | None, str, int, Optional[dict]]:
     """Authorise a PATCH/DELETE on a WebRTC session.
 
-    Returns (record, error, http_status). A playback (WHEP) session needs any
-    valid stream key for its stream; a publishing (WHIP) session needs the
-    publish key, so a playback key cannot alter or end a publisher's session.
+    Returns (record, error, http_status, stream). A playback (WHEP) session needs
+    the same permission as starting one (_stream_read_access); a publishing
+    (WHIP) session needs the publish key, so a playback key cannot alter or end a
+    publisher's session. Every refusal is the same 404.
     """
-    stream, error = await _validate_stream_access(key)
-    if error:
-        return None, error, 403
     rec = _webrtc_sessions.get(session_id)
-    if not rec or rec[1] != stream["id"]:
-        return None, "Unknown session", 404
-    if rec[0] == "whip":
-        _, perr = await _validate_stream_access(key, require_publish=True)
-        if perr:
-            # Same answer as for an unknown session: a playback key must not be
-            # able to tell which session id is the publisher's.
-            return None, "Unknown session", 404
-    return rec, "", 200
+    if rec and rec[0] == "whip":
+        # Same answer as for an unknown session: a playback key must not be
+        # able to tell which session id is the publisher's.
+        stream, perr = await _validate_stream_access(key, require_publish=True)
+        if perr or stream["id"] != rec[1]:
+            return None, _STREAM_NOT_FOUND, 404, None
+        return rec, "", 200, stream
+    stream, error = await _validate_stream_access(key, request=request)
+    if error or not rec or rec[1] != stream["id"]:
+        return None, _STREAM_NOT_FOUND, 404, None
+    return rec, "", 200, stream
+
+
+def _whep_headers(stream: dict, location: str) -> dict:
+    headers = _playback_headers(stream)
+    headers["Location"] = location
+    if "Access-Control-Allow-Origin" in headers:
+        headers["Access-Control-Expose-Headers"] = "Location"
+    return headers
 
 
 async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
@@ -8714,15 +8918,15 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
 
     Route: POST /api/stream/{key}/webrtc/whep
 
-    Accepts either public key (pub_xxx) or private key (live_xxx) for viewing.
-    Proxies WebRTC offers to MediaMTX and returns the answer.
+    The key in the URL names the stream (pub_xxx, or live_xxx for its owner's
+    own pages); who may watch is decided by _stream_read_access. Proxies WebRTC offers to MediaMTX and returns the answer.
     """
     key = request.match_info.get("stream_key", "")
 
-    # Validate stream access (read-only, no publish required)
-    stream, error = await _validate_stream_access(key, require_publish=False)
+    # Authorise first (see _stream_read_access)
+    stream, error = await _validate_stream_access(key, request=request)
     if error:
-        return web.json_response({"error": error}, status=403)
+        return _stream_not_found()
 
     # Get MediaMTX configuration
     mtx_config = await _get_mediamtx_config()
@@ -8765,11 +8969,7 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                         text=sdp_answer,
                         status=201,
                         content_type="application/sdp",
-                        headers={
-                            "Location": location,
-                            "Access-Control-Allow-Origin": "*",
-                            "Access-Control-Expose-Headers": "Location",
-                        }
+                        headers=_whep_headers(stream, location)
                     )
                 else:
                     return web.Response(
@@ -8872,9 +9072,9 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
     session_id = request.match_info.get("session_id", "")
 
     # Authorise against the session's recorded type before anything else
-    rec, error, status = await _authorize_webrtc_session(stream_key, session_id)
+    rec, error, status, stream = await _authorize_webrtc_session(request, stream_key, session_id)
     if error:
-        return web.json_response({"error": error}, status=status)
+        return _stream_not_found() if status == 404 else web.json_response({"error": error}, status=status)
     kind, _stream_id, mtx_path, _created = rec
 
     # Get MediaMTX configuration
@@ -8907,7 +9107,10 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
                     body=content,
                     status=resp.status,
                     content_type=resp.content_type,
-                    headers={"Access-Control-Allow-Origin": "*"}
+                    # A publishing session keeps its open header (its credential is the
+                    # publish key); a playback one only on an open share link.
+                    headers={"Access-Control-Allow-Origin": "*"} if kind == "whip"
+                    else _playback_headers(stream)
                 )
     except Exception as e:
         logger.error(f"WebRTC session proxy error: {e}")
@@ -8921,13 +9124,10 @@ async def http_stream_info(request: web.Request) -> web.Response:
     """
     stream_key = request.match_info.get("stream_key", "")
 
-    # Validate stream access
-    stream, error = await _validate_stream_access(stream_key)
+    # Authorise first (see _stream_read_access)
+    stream, error = await _validate_stream_access(stream_key, request=request)
     if error:
-        return web.json_response({"error": error}, status=403)
-
-    # Get the full stream key
-    full_stream_key = stream_key if stream_key.startswith("live_") else f"live_{stream_key}"
+        return _stream_not_found()
 
     # Base URL for the portal
     host = request.headers.get("Host", Config.HOSTNAME)
@@ -8950,7 +9150,7 @@ async def http_stream_info(request: web.Request) -> web.Response:
             "hls": f"{base_url}/api/stream/{public_key}/hls/index.m3u8",
             "webrtc_whep": f"{base_url}/api/stream/{public_key}/webrtc/whep"
         }
-    })
+    }, headers=_playback_headers(stream))
 
 
 # =============================================================================
@@ -21888,6 +22088,8 @@ async def http_delete_user(request: web.Request) -> web.Response:
 
     # Delete user and all associated data via ORM
     await db.delete_user(user_id)
+    # The user's streams went with the account
+    _playback_cache_forget(everything=True)
     # A deleted account must not keep working through sockets it already had open.
     try:
         await close_user_websockets(user_id)

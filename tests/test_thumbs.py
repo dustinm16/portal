@@ -73,7 +73,7 @@ class Env:
         for i, name in enumerate(("live_aaa", "live_bbb", "live_ccc"), start=1):
             self.streams[name] = {"id": i, "stream_key": name, "is_live": 1}
 
-        async def validate(key, require_publish=False):
+        async def validate(key, require_publish=False, request=None):
             s = self.streams.get(key)
             return (s, "") if s else (None, "Invalid stream key")
 
@@ -200,7 +200,7 @@ def test_timeout_serves_the_stale_frame():
         with mock.patch.object(server, "_THUMBNAIL_TIMEOUT", 0.3):
             r = await env.get("live_aaa")
         assert r.status == 200 and r.body == b"OLD"
-        assert r.headers["Cache-Control"] == "public, max-age=5"
+        assert r.headers["Cache-Control"] == "private, max-age=5"  # a stream that is not an open share link
         assert gone(env.log()[0]["pid"])
     run(body)
 
@@ -286,7 +286,7 @@ def test_missing_mediamtx_config_is_503_and_starts_nothing():
 
 def test_invalid_key_and_offline_stream_do_not_start_ffmpeg():
     async def body(env):
-        assert (await env.get("live_zzz")).status == 403
+        assert (await env.get("live_zzz")).status == 404
         env.streams["live_aaa"]["is_live"] = 0
         assert (await env.get("live_aaa")).status == 404
         assert not env.log()

@@ -87,6 +87,24 @@ async def body():
     server._webrtc_session_remember("sess-whip", "whip", sid, live)
     server._webrtc_session_remember("sess-whep", "whep", sid, live)
     res = {}
+    import auth
+    from aiohttp.test_utils import make_mocked_request
+    from config import Config
+
+    class Transport:
+        def get_extra_info(self, name, default=None):
+            return ("203.0.113.9", 5555) if name == "peername" else default
+
+    # a playback session is authorised like playback itself: leakalice owns the stream
+    alice_jwt, _ = await auth.create_access_token(u["id"], ["services:read", "access:*"])
+
+    def rq(path, key, session=None, method="GET"):
+        mi = {"stream_key": key}
+        if session:
+            mi["session_id"] = session
+        return make_mocked_request(method, path, match_info=mi, transport=Transport(),
+                                   headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={alice_jwt}"})
+
     for label, key, session in (
         ("whip_with_pub", pub, "sess-whip"),
         ("whip_with_live", live, "sess-whip"),
@@ -97,7 +115,7 @@ async def body():
         ("whip_other_stream_live", live2, "sess-whip"),
         ("bad_key", "pub_notakey", "sess-whep"),
     ):
-        rec, err, status = await server._authorize_webrtc_session(key, session)
+        rec, err, status, _s = await server._authorize_webrtc_session(rq("/x", key, session), key, session)
         res[label] = {"status": status, "kind": rec[0] if rec else None, "path": rec[2] if rec else None}
     res["live_key"] = live
     res["pub_key"] = pub
@@ -110,9 +128,9 @@ async def body():
     for i in range(server._WEBRTC_SESSION_MAX + 50):
         server._webrtc_session_remember("flood-b-%d" % i, "whep", 100000 + i, live2)
     res["table_size"] = len(server._webrtc_sessions)
-    rec, err, status = await server._authorize_webrtc_session(live, "sess-whip")
+    rec, err, status, _s = await server._authorize_webrtc_session(rq("/x", live), live, "sess-whip")
     res["whip_after_flood"] = {"status": status, "kind": rec[0] if rec else None}
-    rec, err, status = await server._authorize_webrtc_session(pub, "sess-whip")
+    rec, err, status, _s = await server._authorize_webrtc_session(rq("/x", pub), pub, "sess-whip")
     res["whip_pub_after_flood"] = {"status": status, "kind": None}
 
     # The session handler must build the MediaMTX URL from the recorded type.
@@ -141,8 +159,7 @@ async def body():
     server._webrtc_session_remember("sess-url-whip", "whip", sid, live)
     server._webrtc_session_remember("sess-url-whep", "whep", sid, live)
     for sess, key in (("sess-url-whip", live), ("sess-url-whep", pub), ("sess-url-whip", pub)):
-        req = make_mocked_request("PATCH", "/api/stream/%s/webrtc/session/%s" % (key, sess),
-                                  match_info={"stream_key": key, "session_id": sess})
+        req = rq("/api/stream/%s/webrtc/session/%s" % (key, sess), key, sess, "PATCH")
         resp = await server.http_stream_webrtc_session(req)
         res.setdefault("handler", []).append({"status": resp.status})
     res["urls"] = [u for _, u in seen]
@@ -352,7 +369,7 @@ async def _main(ctx):
     ctx.ok("leaks: another stream's keys cannot touch the session",
            res["whip_other_stream_pub"]["status"] == 404 and res["whip_other_stream_live"]["status"] == 404,
            json.dumps([res["whip_other_stream_pub"], res["whip_other_stream_live"]]))
-    ctx.ok("leaks: invalid key refused", res["bad_key"]["status"] == 403, json.dumps(res["bad_key"]))
+    ctx.ok("leaks: invalid key refused (the same 404 as a missing stream)", res["bad_key"]["status"] == 404, json.dumps(res["bad_key"]))
 
     # ---- WebRTC session proxy: real HTTP route --------------------------
     async with ctx.http() as s:
@@ -361,7 +378,7 @@ async def _main(ctx):
             ctx.ok("leaks: DELETE with a playback key on an unknown session is refused over HTTP",
                    r.status in (403, 404), f"status {r.status}")
         async with s.delete(f"{base}/pub_notakey/webrtc/session/x") as r:
-            ctx.ok("leaks: DELETE with an invalid key is 403 over HTTP", r.status == 403, f"status {r.status}")
+            ctx.ok("leaks: DELETE with an invalid key is 404 over HTTP", r.status == 404, f"status {r.status}")
     return data
 
 

@@ -94,6 +94,34 @@ check("1.15.0 rollback does not claim a non-generic hook cannot be signed", "can
 check("1.15.0 rollback says 1.14.0 skips hooks without a secret and shows the destination URL",
       "no signing secret" in rb and "skips" in rb and "full destination url" in rb and "credential" in rb, rb[:120])
 
+# --- 1.16.0 notes: stream access --------------------------------------------------
+m16 = re.search(r"### Upgrade notes for 1\.16\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.16.0' section after the 1.15.0 one",
+      m16 is not None and text.index("### Upgrade notes for 1.16.0") > text.index("### Upgrade notes for 1.15.0"))
+sec16 = m16.group(1) if m16 else ""
+b16 = [b.strip() for b in re.findall(r"^- (.*)$", sec16, re.M)]
+check("1.16.0 notes are bullets and none is repeated", len(b16) >= 8 and len({b[:80] for b in b16}) == len(b16), str(len(b16)))
+low16 = sec16.lower()
+
+
+def says16(name, *needles):
+    check(f"1.16.0 states: {name}", all(n.lower() in low16 for n in needles), str(needles))
+
+
+says16("the one rule and who is let in", "one rule", "owner", "administrators", "moderator is not an administrator", "allow_unauthenticated", "current")
+says16("every refusal is a 404 with one body", "`404`", "same body", "never `401` or `403`", "rotated")
+says16("the links that stop working, all of them", "links that stop working", "private", "without the open link",
+       "other websites", "`live_` key", "scoped")
+says16("what keeps working", "open link on", "vlc", "access-control-allow-origin: *")
+says16("CORS and caching of everything else", "no wildcard cors", "cache-control: private")
+says16("cache time and invalidation", "5 seconds", "signed out", "rotated")
+says16("internal consumers", "relays", "recorder", "thumbnail capture", "loopback", "authhttpexclude")
+says16("webrtc media is outside the rule", "webrtc media", "keeps flowing")
+says16("the query token is not passed on", "?token=", "no longer passed on")
+says16("no database change and no static version moved", "no database change", "no `?v=` number moved")
+says16("rollback", "rollback", "1.15.0")
+says16("what was not tested", "not tested", "vlc", "cloudflare")
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

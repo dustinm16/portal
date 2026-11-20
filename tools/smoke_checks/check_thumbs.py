@@ -96,6 +96,12 @@ async def main():
     async def mtx():
         return {"hls_port": 8888}
     server._get_mediamtx_config = mtx
+    # Who may ask for a thumbnail is decided (and checked) by check_stream_access; here the
+    # capture mechanics are the subject, so the request is let through for any known key.
+    async def allow(key, require_publish=False, request=None):
+        s = await (db.get_stream_by_public_key(key) if key.startswith("pub_") else db.get_stream_by_key(key))
+        return (s, "") if s else (None, "Stream not found")
+    server._validate_stream_access = allow
     out = {}
     a, b, c = KEYS["a"]["key"], KEYS["b"]["key"], KEYS["c"]["key"]
 
@@ -237,10 +243,15 @@ async def run(ctx):
 
     # The route itself, on the running stage
     async with ctx.http() as s:
+        # Logged out these streams (public, but without the open share link) are not visible at all
+        async with s.get(f"{ctx.base_url}/api/stream/{keys['a']['pub']}/thumbnail") as resp:
+            ctx.ok("thumbs: HTTP: logged out, a live stream that is not an open share link is 404", resp.status == 404, str(resp.status))
+        login = await ctx.login(s, "thumb_owner", PW)
+        ctx.ok("thumbs: HTTP: the stream owner can sign in", login.status == 200, str(login.status))
         async with s.get(f"{ctx.base_url}/api/stream/{keys['off']['pub']}/thumbnail", allow_redirects=False) as resp:
             ctx.ok("thumbs: HTTP: an offline stream without a custom thumbnail is 404", resp.status == 404, str(resp.status))
         async with s.get(f"{ctx.base_url}/api/stream/live_doesnotexist/thumbnail") as resp:
-            ctx.ok("thumbs: HTTP: an unknown key is 403", resp.status == 403, str(resp.status))
+            ctx.ok("thumbs: HTTP: an unknown key is 404", resp.status == 404, str(resp.status))
         async with s.get(f"{ctx.base_url}/api/stream/{keys['a']['pub']}/thumbnail") as resp:
             body = await resp.text()
             # A fresh stage has no MediaMTX settings (503 "not configured"). A stage started
