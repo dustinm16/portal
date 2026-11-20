@@ -82,9 +82,10 @@ def apply_rules(existing: dict, incoming: dict, merged: dict, *, identity_change
 
     `existing` is what is stored now ({} on create), `incoming` what the request sent,
     `merged` the config about to be stored (existing overlaid with incoming). Returns
-    (config, cleared, error): `cleared` is True when a stored password was removed
-    that the request did not ask to remove (host, port or username changed, or
-    key authentication); `error` is a text for a 400 or None.
+    (config, cleared, error): `cleared` is True whenever a stored password was removed
+    (the request asked for "prompt" or sent an empty password, the host, port or
+    username changed, or key authentication), so the owner is always told; `error` is
+    a text for a 400 or None.
     """
     existing = existing if isinstance(existing, dict) else {}
     incoming = incoming if isinstance(incoming, dict) else {}
@@ -96,7 +97,7 @@ def apply_rules(existing: dict, incoming: dict, merged: dict, *, identity_change
 
     pw = incoming["password"] if "password" in incoming else existing.get("password", "")
     pw = pw if isinstance(pw, str) else ""
-    cleared = False
+    cleared = False        # removed because of a change the request did not ask for
 
     if mode_in == MODE_PROMPT:
         pw = ""                                   # asking each time: nothing is kept
@@ -113,6 +114,7 @@ def apply_rules(existing: dict, incoming: dict, merged: dict, *, identity_change
         out["password"] = pw
     else:
         out.pop("password", None)
+    removed = had and not pw        # a stored password existed and none is kept, whatever the reason
 
     if mode_in == MODE_PROMPT:
         mode = MODE_PROMPT
@@ -134,7 +136,7 @@ def apply_rules(existing: dict, incoming: dict, merged: dict, *, identity_change
     if mode == MODE_STORED and out.get("host_key_ignore") is True:
         return out, False, ("A stored password needs a verified host key: turn off "
                             "'Do not verify host key' or choose Prompt each time")
-    return out, cleared, None
+    return out, removed, None
 
 
 def apply_leaving(existing: dict, incoming: dict, merged: dict) -> tuple:

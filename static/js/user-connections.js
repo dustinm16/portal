@@ -830,6 +830,7 @@ async function showAddConnectionModal() {
         sshPwField.value = '';
         sshPwField.placeholder = '';
         sshPwField.dataset.hadStored = '';
+        delete sshPwField.dataset.initialPrompt;
     }
 
     // Reset SSH shell selector
@@ -1192,8 +1193,13 @@ function onSSHAuthChange() {
 /**
  * The SSH credential fields of the form as config entries. Returns null (after a toast)
  * when "Prompt each time" is off and there is no password to store.
+ *
+ * initialPrompt is the state the "Prompt each time" switch had when the edit form opened
+ * (undefined on a new connection). An edit that leaves the switch where it was sends no
+ * credential_mode: an older connection that holds a password and has no mode shows the
+ * switch on, and sending "prompt" for a rename would delete that password.
  */
-function collectSSHCredential(type, isEdit, hadStoredPassword) {
+function collectSSHCredential(type, isEdit, hadStoredPassword, initialPrompt) {
     if (document.getElementById('connection-ssh-auth').value === 'key') {
         return { credential_mode: 'prompt' };            // a key connection holds no stored password
     }
@@ -1201,7 +1207,11 @@ function collectSSHCredential(type, isEdit, hadStoredPassword) {
     if (type === 'sftp') {
         return pw ? { credential_mode: 'stored', password: pw } : {};
     }
-    if (document.getElementById('connection-ssh-prompt').checked) {
+    const promptOn = document.getElementById('connection-ssh-prompt').checked;
+    if (isEdit && initialPrompt !== undefined && promptOn === initialPrompt) {
+        return pw ? { password: pw } : {};               // the switch was not touched: the mode stays as stored
+    }
+    if (promptOn) {
         return { credential_mode: 'prompt' };            // the server clears any stored password
     }
     if (!pw && !(isEdit && hadStoredPassword)) {
@@ -1280,7 +1290,9 @@ async function submitConnection(event) {
             if (sshShell) config.shell = sshShell;
             config.host_key_ignore = document.getElementById('connection-ssh-host-key-ignore').checked;
             {
-                const cred = collectSSHCredential(type, isEdit, document.getElementById('connection-ssh-stored-password').dataset.hadStored === '1');
+                const pwFieldNow = document.getElementById('connection-ssh-stored-password');
+                const initialPrompt = isEdit && pwFieldNow.dataset.initialPrompt ? pwFieldNow.dataset.initialPrompt === '1' : undefined;
+                const cred = collectSSHCredential(type, isEdit, pwFieldNow.dataset.hadStored === '1', initialPrompt);
                 if (cred === null) {
                     Portal.setButtonLoading(submitBtn, false);
                     return;
@@ -1334,7 +1346,7 @@ async function submitConnection(event) {
         const saved = await response.json().catch(() => ({}));
         Portal.toast(isEdit ? 'Connection updated' : 'Connection added', 'success');
         if (saved.stored_password_cleared) {
-            Portal.toast('The stored password was removed because the host, port or username changed. Enter it again to keep using it.', 'info');
+            Portal.toast('The stored password was removed. Enter it again to keep using it.', 'info');
         }
         setTimeout(() => closeModal('add-connection-modal'), 800);
         await loadConnections();
@@ -1406,6 +1418,7 @@ async function editConnection(connectionId) {
                     pwField.dataset.hadStored = config.has_stored_password ? '1' : '';
                     pwField.placeholder = config.has_stored_password ? '(Password stored - leave empty to keep it)' : '';
                     document.getElementById('connection-ssh-prompt').checked = config.credential_mode !== 'stored';
+                    pwField.dataset.initialPrompt = config.credential_mode !== 'stored' ? '1' : '0';
                     onSSHAuthChange();
                 }
                 document.getElementById('connection-ssh-shell').value = config.shell || '';

@@ -29,7 +29,9 @@ check("the form says the grantee gets a shell without knowing the password",
       index.count("without knowing the password") >= 2)
 check("the stored password input is a password field the browser does not fill",
       re.search(r'<input type="password" id="connection-ssh-stored-password" autocomplete="new-password"', index) is not None)
-check("the script version in index.html was bumped", "user-connections.js?v=51" in index)
+check("the script version in index.html was bumped", "user-connections.js?v=52" in index)
+check("the edit form records the switch state it opened with and passes it on",
+      "pwField.dataset.initialPrompt = " in js and "collectSSHCredential(type, isEdit, pwFieldNow.dataset.hadStored === '1', initialPrompt)" in js)
 check("the edit form reads has_stored_password and never puts a value in the field", "config.has_stored_password" in js and "pwField.value = '';" in js)
 check("the share dialog warns for any connection that holds a password and does not prompt", "share-stored-password-warning" in js and "credential_mode !== 'prompt'" in js)
 
@@ -56,6 +58,14 @@ setup('password', false, '');       out.keep = collectSSHCredential('ssh', true,
 setup('key', false, 'typed');       out.key = collectSSHCredential('ssh', false, false);
 setup('password', true, '');        out.sftpEmpty = collectSSHCredential('sftp', false, false);
 setup('password', true, 'typed');   out.sftp = collectSSHCredential('sftp', false, false);
+// edit form: initialPrompt is the switch as the form opened it
+setup('password', true, '');        out.renameOlder = collectSSHCredential('ssh', true, true, true);
+setup('password', true, 'typed');   out.renameTyped = collectSSHCredential('ssh', true, true, true);
+setup('password', false, '');       out.renameStored = collectSSHCredential('ssh', true, true, false);
+setup('password', false, 'new');    out.replaceStored = collectSSHCredential('ssh', true, true, false);
+setup('password', true, '');        out.turnedOn = collectSSHCredential('ssh', true, true, false);
+setup('password', false, '');       out.turnedOff = collectSSHCredential('ssh', true, true, true);
+setup('password', true, 'typed');   out.addNew = collectSSHCredential('ssh', false, false, undefined);
 out.toasts = toasts.length;
 console.log(JSON.stringify(out));
 """
@@ -72,6 +82,12 @@ console.log(JSON.stringify(out));
           got.get("missing") is None and got.get("toasts") == 1)
     check("stored with nothing typed on an edit of a stored connection keeps the password",
           got.get("keep") == {"credential_mode": "stored"})
+    check("an edit that leaves the switch alone sends no credential_mode (a rename of an older row keeps its password)",
+          got.get("renameOlder") == {} and got.get("renameStored") == {} and got.get("renameTyped") == {"password": "typed"}
+          and got.get("replaceStored") == {"password": "new"})
+    check("an edit that turns the switch on sends prompt, off sends stored",
+          got.get("turnedOn") == {"credential_mode": "prompt"} and got.get("turnedOff") == {"credential_mode": "stored"})
+    check("a new connection is unchanged by this", got.get("addNew") == {"credential_mode": "prompt"})
     check("key authentication sends prompt (the server drops any stored password)", got.get("key") == {"credential_mode": "prompt"})
     check("an SFTP connection sends the password only when one was typed",
           got.get("sftpEmpty") == {} and got.get("sftp") == {"credential_mode": "stored", "password": "typed"})
