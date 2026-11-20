@@ -157,6 +157,10 @@ _rate_limits_last_prune = 0.0
 # blocked_ips and kept in sync in-process so the middleware check on every
 # request never touches the database.
 _blocked_ips: dict[str, Optional[str]] = {}
+# The addresses in _blocked_ips that were put there by an automatic (login or probe) ban. Only
+# these are skipped at request time when the address has since become exempt; a manual block
+# is always enforced.
+_auto_blocked_ips: set[str] = set()
 
 
 def _is_ip_blocked(ip: str) -> bool:
@@ -1241,6 +1245,7 @@ async def _auto_block(ip: str, reason: str, duration_seconds: int, kind: Optiona
     if await db.block_ip(canon, reason=(reason or "")[:200] or None, expires_at=expires_at,
                          source="auto", kind=kind):
         _blocked_ips[canon] = expires_at
+        _auto_blocked_ips.add(canon)
         return None, expires_at
     return None, None
 
@@ -1408,6 +1413,45 @@ def _forget_probe_state(nets) -> int:
     return dropped
 
 
+async def _drop_exempt_auto_bans() -> int:
+    """Delete stored automatic (login and probe) bans on addresses that are exempt now, and
+    add the addresses that remain to the set of automatic ones. Manual blocks are not touched.
+
+    Run once the exemption state is loaded at start, and again whenever the Cloudflare range
+    list changes: a proxy added to TRUSTED_PROXIES or NEVER_BAN_CIDRS after a ban was written
+    would otherwise keep every member behind it out until the ban expired. Never raises.
+    """
+    try:
+        rows = await db.list_auto_ban_rows()
+        gone = [(i, a) for i, a in rows if _never_ban_reason(a) is not None]
+        await db.delete_blocked_rows(i for i, _ in gone)
+        for _, addr in gone:
+            _blocked_ips.pop(addr, None)
+        # Discard and add, never clear: an automatic block written during the awaits above stays.
+        _auto_blocked_ips.difference_update(a for _, a in gone)
+        dropped = {i for i, _ in gone}
+        _auto_blocked_ips.update(a for i, a in rows if i not in dropped)
+        if gone:
+            logger.info(f"Dropped {len(gone)} stored automatic ban(s) on addresses that are now exempt")
+        return len(gone)
+    except Exception as e:
+        logger.warning(f"Could not drop automatic bans on exempt addresses: {type(e).__name__}: {e}")
+        return 0
+
+
+def _block_enforced(ip: str) -> bool:
+    """The request-time block decision: a stored or in-memory block counts, except an
+    automatic one on an address that is exempt (never enforce a ban on a proxy or a
+    never-ban address, whatever the stored state says)."""
+    if _is_ip_blocked(ip):
+        canon = ipguard.canonical_ip(ip) or ip
+        if canon not in _auto_blocked_ips or _never_ban_reason(ip) is None:
+            return True
+    if _is_probe_blocked(ip) and _never_ban_reason(ip) is None:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Proxy-trust self-check: most requests from a loopback or private peer that
 # carries Cloudflare headers, while that peer is not trusted, means
@@ -1551,6 +1595,8 @@ def _apply_cloudflare_networks(nets, source: str, fetched_at: Optional[str] = No
         _cf_saved_ignored = None
     _trusted_proxy_networks[:] = _build_trusted_proxies()
     _trusted_peer_cache.clear()
+    # A range that is newly trusted may cover an address with a stored automatic ban.
+    _spawn(_drop_exempt_auto_bans())
 
 
 async def _cf_load_last() -> dict:
@@ -12860,6 +12906,7 @@ async def http_block_ip(request: web.Request) -> web.Response:
 
     await db.block_ip(ip_address, reason=reason, blocked_by=token.user_id, expires_at=expires_at)
     _blocked_ips[ip_address] = expires_at
+    _auto_blocked_ips.discard(ip_address)       # a manual block replaces an automatic one
 
     admin_user = await db.get_user_by_id(token.user_id)
     await db.log_activity(
@@ -12887,6 +12934,8 @@ async def http_unblock_ip(request: web.Request) -> web.Response:
     removed = await db.unblock_ip(ip_address)
     _blocked_ips.pop(ip_address, None)
     _blocked_ips.pop(typed, None)
+    _auto_blocked_ips.discard(ip_address)
+    _auto_blocked_ips.discard(typed)
     # Unblocking also lifts a temporary scanner-probe block on that address.
     # Those are held in memory only, keyed by the canonical address form.
     probe_key = _valid_ip(ip_address) or ip_address
@@ -24254,6 +24303,7 @@ async def http_put_never_ban(request: web.Request) -> web.Response:
     # Stored automatic blocks (sign-in and scanner) on addresses the list now covers go too.
     for gone in await db.remove_auto_bans_in(nets):
         _blocked_ips.pop(gone, None)
+        _auto_blocked_ips.discard(gone)
         cleared += 1
     saved = [str(n) for n in nets]
     # Counts only, in both records: moderators can read the audit log, the never-ban list is
@@ -24707,7 +24757,7 @@ async def security_headers_middleware(request: web.Request, handler):
     """Block banned IPs app-wide, then add security headers to all responses."""
     client_ip = get_client_ip(request)
     _note_request_peer(request)
-    if _is_ip_blocked(client_ip) or _is_probe_blocked(client_ip):
+    if _block_enforced(client_ip):
         response = web.json_response({"error": "Access denied"}, status=403)
     else:
         try:
@@ -25732,6 +25782,8 @@ class PortalServer:
         # Never-ban list, the last good Cloudflare ranges, and the proxy-trust notice
         await _load_never_ban_state()
         await _load_cloudflare_state()
+        # Exemption state is complete now: lift stored automatic bans on addresses it covers
+        await _drop_exempt_auto_bans()
         _log_proxy_trust_at_startup()
 
         # Start traffic metrics recorder

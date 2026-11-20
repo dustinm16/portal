@@ -7022,6 +7022,20 @@ class Database:
             await self.conn.commit()
         return [c for _, c in hit]
 
+    async def list_auto_ban_rows(self) -> list:
+        """Stored automatic (login and probe) block rows as (id, canonical address)."""
+        cursor = await self.conn.execute(
+            "SELECT id, ip_address FROM blocked_ips WHERE source = 'auto' AND kind IN ('login', 'probe')")
+        return [(r["id"], ipguard.canonical_ip(r["ip_address"]) or r["ip_address"])
+                for r in await cursor.fetchall()]
+
+    async def delete_blocked_rows(self, ids) -> None:
+        """Delete block rows by id."""
+        ids = list(ids)
+        if ids:
+            await self.conn.executemany("DELETE FROM blocked_ips WHERE id = ?", [(i,) for i in ids])
+            await self.conn.commit()
+
     # Addresses a user signed in from
 
     LOGIN_ADDRESS_DAYS = 30

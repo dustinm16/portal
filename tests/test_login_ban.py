@@ -14,6 +14,7 @@ Run:  venv/bin/python tests/test_login_ban.py
 import asyncio
 import contextlib
 import io
+import ipaddress
 import json
 import os
 import shutil
@@ -603,6 +604,60 @@ async def main():
                   f"known {known} unknown {unknown}")
             check("timing: the dummy lookup leaves the known-address cache alone", not server._login_known_cache)
 
+            # ---- fix pass: a ban on an address that is exempt now is not enforced and is dropped
+            reset_state()
+            await d.conn.execute("DELETE FROM blocked_ips")
+            await d.conn.execute("DELETE FROM ip_ban_history")
+            await d.conn.commit()
+
+            async def ok_handler2(request):
+                return web.Response(text="fine")
+
+            async def status_for(ip):
+                return (await server.security_headers_middleware(
+                    make_mocked_request("GET", "/", transport=_Transport(ip)), ok_handler2)).status
+            server._auto_blocked_ips.clear()
+            check("exempt: setup, an automatic ban is written and enforced",
+                  await server._escalating_ban(GLOBAL_B, "login", 900, "test") and await status_for(GLOBAL_B) == 403)
+            await d.block_ip("45.9.9.10", reason="by hand", expires_at=None)
+            server._blocked_ips["45.9.9.10"] = None
+            server._probe_blocks[GLOBAL_B] = server.monotonic() + 100
+            server._never_ban_admin_nets = ipguard.validate_cidr_list(["45.9.9.0/24"])
+            try:
+                check("exempt: the address is exempt now, its stored automatic ban and probe block are not enforced",
+                      await status_for(GLOBAL_B) == 200)
+                check("exempt: a manual block on an exempt address is still enforced", await status_for("45.9.9.10") == 403)
+                # a restart: blocks are loaded before the exemption state, then filtered
+                server._blocked_ips.clear()
+                server._blocked_ips.update(await d.get_active_blocked_ips())
+                server._auto_blocked_ips.clear()
+                check("exempt: after a restart load the stale ban would still be there",
+                      server._is_ip_blocked(GLOBAL_B))
+                n = await server._drop_exempt_auto_bans()
+                check("exempt: the startup filter deletes the automatic row and leaves the manual one",
+                      n == 1 and not await rows(d, GLOBAL_B) and bool(await rows(d, "45.9.9.10"))
+                      and not server._is_ip_blocked(GLOBAL_B) and server._is_ip_blocked("45.9.9.10"))
+            finally:
+                server._never_ban_admin_nets = []
+                server._probe_blocks.clear()
+            # a Cloudflare range refresh that newly covers a banned address
+            await d.block_ip(GLOBAL_A, reason="x", expires_at="2999-01-01 00:00:00", source="auto", kind="login")
+            server._blocked_ips[GLOBAL_A] = "2999-01-01 00:00:00"
+            server._auto_blocked_ips.add(GLOBAL_A)
+            before_nets, before_src = list(server._cf_networks), server._cf_source
+            server._apply_cloudflare_networks(before_nets + [ipaddress.ip_network("1.2.3.0/24")], "fetched", "t")
+            try:
+                await asyncio.gather(*list(server._bg_tasks))
+                check("exempt: a Cloudflare range refresh drops the ban it now covers",
+                      not await rows(d, GLOBAL_A) and not server._is_ip_blocked(GLOBAL_A)
+                      and GLOBAL_A not in server._auto_blocked_ips)
+            finally:
+                server._apply_cloudflare_networks(before_nets, before_src)
+                await asyncio.gather(*list(server._bg_tasks))
+            src = Path(server.__file__).read_text()
+            i_cf = src.index("await _load_cloudflare_state()\n        # Exemption state")
+            check("exempt: startup drops them after the never-ban list and Cloudflare state are loaded",
+                  src.index("await _load_never_ban_state()") < i_cf < src.index("await _drop_exempt_auto_bans()", i_cf))
         finally:
             server.db, Config.PROBE_BLOCK_STRIKES, Config.PROBE_BLOCK_SECONDS = saved
             auth_module.db = saved_auth_db
