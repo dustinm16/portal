@@ -452,6 +452,45 @@ def _register_grant_dependent(kind: str, resource_id: int, user_id: int, obj) ->
     _grant_dependents.setdefault((kind, int(resource_id), int(user_id)), weakref.WeakSet()).add(obj)
 
 
+# How long a revoke, a sweep or a user delete waits for the grantee's WebSockets to finish
+# their close handshake. A socket whose peer is gone can take ~10 s to give up; the close
+# keeps running in the background, the caller is not held for it.
+GRANT_CLOSE_WAIT_SECONDS = 2.0
+_grant_close_background: set = set()
+
+
+def _drop_finished_close(task) -> None:
+    _grant_close_background.discard(task)
+    if not task.cancelled():
+        task.exception()        # retrieved so a failed close is not reported as never retrieved
+
+
+async def _close_grant_targets(targets: list) -> int:
+    """Close sockets, proxied calls and SSH connections that depended on a share or grant.
+    The synchronous ones go first; the WebSockets are closed concurrently and waited for at
+    most GRANT_CLOSE_WAIT_SECONDS in total."""
+    sockets = []
+    for obj in targets:
+        try:
+            if isinstance(obj, _ProxyHttpCall):
+                obj.abort()
+            elif isinstance(obj, (web.WebSocketResponse, MetricsWebSocket)):
+                sockets.append(obj)
+            else:
+                obj.close()     # an SSH connection (asyncssh's close() is synchronous)
+        except Exception:
+            logger.debug("closing something that depended on a share or grant failed", exc_info=True)
+    if sockets:
+        tasks = [asyncio.ensure_future(ws.close(code=GRANT_ENDED_CLOSE_CODE, message=b"access ended"))
+                 for ws in sockets]
+        _, pending = await asyncio.wait(tasks, timeout=GRANT_CLOSE_WAIT_SECONDS)
+        for task in tasks:
+            if task in pending:
+                _grant_close_background.add(task)
+            task.add_done_callback(_drop_finished_close)
+    return len(targets)
+
+
 async def close_grant_dependents(kind: str, resource_id: int, user_id: int = None) -> int:
     """End what the grantee holds open through one share or grant (user_id None: through
     every grantee of that resource, for a deleted connection). Other sockets of the user,
@@ -461,17 +500,7 @@ async def close_grant_dependents(kind: str, resource_id: int, user_id: int = Non
     targets = []
     for key in keys:
         targets.extend(list(_grant_dependents.pop(key, ())))
-    for obj in targets:
-        try:
-            if isinstance(obj, _ProxyHttpCall):
-                obj.abort()
-            elif isinstance(obj, (web.WebSocketResponse, MetricsWebSocket)):
-                await obj.close(code=GRANT_ENDED_CLOSE_CODE, message=b"access ended")
-            else:
-                obj.close()     # an SSH connection (asyncssh's close() is synchronous)
-        except Exception:
-            logger.debug("closing something that depended on a share or grant failed", exc_info=True)
-    return len(targets)
+    return await _close_grant_targets(targets)
 
 
 async def _track_shared_access(connection: dict, user_id: int, obj) -> bool:
@@ -23966,7 +23995,6 @@ async def http_delete_user(request: web.Request) -> web.Response:
         await close_user_websockets(user_id)
     except Exception as e:
         logger.warning(f"Could not close sockets of deleted user {user_id}: {e}")
-
     logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
     actor_name = await _username_of(token.user_id)
     await audit_log("user_delete", token.user_id, actor_name or "unknown",
