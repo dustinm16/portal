@@ -483,7 +483,7 @@ async def test_fix_b1():
                                       scopes="services:read", expires_at=None)
         made.append((uid, kid, full))
     check("prefix: the lookup returns every live key with the prefix",
-          [r["id"] for r in await db.get_api_keys_by_prefix(pfx[:10])] == [m[1] for m in made])
+          [r["id"] for r in await db.get_api_keys_by_prefix(pfx[:10])] == [m[1] for m in reversed(made)])
     ok = True
     for uid, kid, full in made:
         out = await server.authenticate_api_key(full, "198.51.100.7")
@@ -492,12 +492,43 @@ async def test_fix_b1():
     out = await server.authenticate_api_key(made[0][2][:-1] + ("0" if made[0][2][-1] != "0" else "1"), "198.51.100.7")
     check("prefix: a wrong key with the shared prefix is the generic refusal", out is None)
     check("prefix: the verified-key cache holds one entry per key and neither vouches for the other",
-          not server._api_key_cached_ok(made[0][1], made[1][2], (await db.get_api_keys_by_prefix(pfx[:10]))[0]["key_hash"]))
+          not server._api_key_cached_ok(made[0][1], made[1][2], (await db.get_api_keys_by_prefix(pfx[:10]))[-1]["key_hash"]))
     cred_a = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": made[1][2]}))
     cred_b = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": made[0][2]}))
     cred_x = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": made[0][2][:-1] + "z"}))
     check("prefix: the proxy limit's credential test sees both verified keys and not a forged one",
           cred_a and cred_b and not cred_x)
+
+    # 6b. expired keys on a prefix cannot hide a newer live key: the filter is in SQL, before the limit
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    pfx2 = "portal_e0e"
+    past = (_dt.now(_tz.utc) - _td(days=1)).isoformat()
+    future = (_dt.now(_tz.utc) + _td(days=30)).isoformat()
+    for i in range(db.API_KEY_PREFIX_CANDIDATES):
+        await db.create_api_key(user_id=u1, name=f"b1-exp{i}", key_hash=auth.hash_password("x" + str(i)), key_prefix=pfx2[:10],
+                                scopes="services:read", expires_at=past)
+    live_full = (pfx2 + secrets.token_hex(31)[:61])[:71]
+    live_id = await db.create_api_key(user_id=u1, name="b1-live", key_hash=auth.hash_password(live_full), key_prefix=pfx2[:10],
+                                      scopes="services:read", expires_at=future)
+    older_live = await db.create_api_key(user_id=u2, name="b1-live-old", key_hash=auth.hash_password("y"), key_prefix=pfx2[:10],
+                                         scopes="services:read", expires_at=None)
+    rows = await db.get_api_keys_by_prefix(pfx2[:10])
+    check("prefix: four expired keys do not hide the live ones; none of the expired come back",
+          [r["id"] for r in rows] == [older_live, live_id],
+          str([r["id"] for r in rows]))
+    check("prefix: live keys come newest first", [r["id"] for r in rows] == sorted([r["id"] for r in rows], reverse=True))
+    out = await server.authenticate_api_key(live_full, "198.51.100.7")
+    check("prefix: the live key behind four expired ones authenticates",
+          out is not None and out.token_id == f"apikey-{live_id}", str(out))
+    cred = await server._has_valid_credential(FakeRequest(headers={"X-API-Key": live_full}))
+    check("prefix: the proxy limit's credential test agrees (the live key behind four expired ones is valid)", cred)
+    # a key whose time passes between the two calls is judged by the same clock in both places
+    just_past = (_dt.now(_tz.utc) - _td(seconds=2)).isoformat()
+    await db.conn.execute("UPDATE api_keys SET expires_at = ? WHERE id = ?", (just_past, live_id))
+    await db.conn.commit()
+    check("prefix: a key that has just expired is gone from the lookup and from the viable list",
+          live_id not in [r["id"] for r in await db.get_api_keys_by_prefix(pfx2[:10])]
+          and server._api_key_viable_candidates([{"id": live_id, "expires_at": just_past}], "198.51.100.7")[0] == [])
     await db.revoke_api_key(made[0][1], made[0][0])
     out0 = await server.authenticate_api_key(made[0][2], "198.51.100.7")
     out1 = await server.authenticate_api_key(made[1][2], "198.51.100.7")

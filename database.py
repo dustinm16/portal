@@ -3533,21 +3533,28 @@ class Database:
     API_KEY_PREFIX_CANDIDATES = 4
 
     async def get_api_keys_by_prefix(self, prefix: str) -> list[dict]:
-        """Every live (not revoked) API key with this prefix, oldest first, at most
-        API_KEY_PREFIX_CANDIDATES. The prefix is 12 bits, so two keys can share one."""
+        """Every live (not revoked, not expired) API key with this prefix, newest first, at
+        most API_KEY_PREFIX_CANDIDATES. The prefix is 12 bits, so two keys can share one.
+
+        Expired keys are left out in SQL, before the limit, so a few expired keys on one
+        prefix cannot hide a newer live one. The clock is the caller's rule (a key is
+        expired when its expires_at is before now) and the stored text is the same
+        isoformat with an offset that cleanup_expired_api_keys compares."""
+        now = datetime.now(timezone.utc).isoformat()
         cursor = await self.conn.execute(
             """SELECT ak.*, u.username
                FROM api_keys ak
                JOIN users u ON ak.user_id = u.id
                WHERE ak.key_prefix = ? AND ak.revoked = 0
-               ORDER BY ak.id
+                 AND (ak.expires_at IS NULL OR ak.expires_at = '' OR ak.expires_at >= ?)
+               ORDER BY ak.id DESC
                LIMIT ?""",
-            (prefix, self.API_KEY_PREFIX_CANDIDATES)
+            (prefix, now, self.API_KEY_PREFIX_CANDIDATES)
         )
         return [dict(row) for row in await cursor.fetchall()]
 
     async def get_api_key_by_prefix(self, prefix: str) -> Optional[dict]:
-        """The first live key with this prefix (see get_api_keys_by_prefix for all of them)."""
+        """The newest live key with this prefix (see get_api_keys_by_prefix for all of them)."""
         rows = await self.get_api_keys_by_prefix(prefix)
         return rows[0] if rows else None
 
