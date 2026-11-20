@@ -551,7 +551,7 @@
                             <tr>
                                 <td><span class="param-name">scopes</span></td>
                                 <td><span class="param-type">string</span></td>
-                                <td>Comma-separated scopes or a list (default: "*" for full access). An unknown scope is a <code>400</code>; see <code>GET /api/api-keys/scopes</code>. Admin only; non-admin keys always get <code>services:read,access:*</code></td>
+                                <td>Comma-separated scopes or a list (default <code>"*"</code> when the field is left out or <code>null</code>; an empty list or empty text is a <code>400</code>). An unknown scope is a <code>400</code>; see <code>GET /api/api-keys/scopes</code>. A scope is stored exactly as written, case included. Admin only; non-admin keys always get <code>services:read,access:*</code></td>
                             </tr>
                             <tr>
                                 <td><span class="param-name">expires_days</span></td>
@@ -601,7 +601,7 @@
                         <span class="endpoint-desc">Scopes a key can carry</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>The scope registry (every scope the portal checks, with a description), plus the scopes services require (administrators only), <code>can_choose</code>, the <code>limited_scopes</code> a non-admin key always gets, and <code>default_expiry_days</code>.</p>
+                        <p>The scope registry (every scope the portal checks, with a description), plus the scopes services require (administrators only), <code>can_choose</code>, the <code>limited_scopes</code> a non-admin key always gets, and <code>default_expiry_days</code>. A scope an administrator made up for a service (up to 128 characters, no control characters or commas) is accepted as the service lists it, but only an administrator can name one; for anybody else it is as unknown as a made-up one. An <code>allowed_cidrs</code> entry with an IPv6 zone id (<code>fe80::1%eth0</code>) is a <code>400</code>. Two live keys can share the 10-character prefix; every live key with the prefix is checked (at most 4). A refusal for the address is the security event <code>api_key_ip_denied</code>, aggregated per source, minute and key.</p>
                     </div>
                 </div>
 

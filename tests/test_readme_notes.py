@@ -288,7 +288,7 @@ says18("the password is write-only and the API change", "write-only", "`has_stor
 says18("host keys", "unpinned or changed host key", "skips the host key check", "`400`", "behaviour change")
 says18("revoke closes the terminal and sftp", "revoking a share", "local test ssh server")
 says18("rollback", "rolling back", "ignores it")
-says18("what was not tested for the stored password", "not tested (stored ssh password)", "not proven", "no ssh key storage")
+says18("what was not tested for the stored password", "not tested", "no ssh key storage", "asyncssh's own")
 check("README says in Sharing Access that a share of a stored password gives a shell without the password",
       "without knowing the password" in text[text.index("### Sharing Access"):text.index("### File Management")])
 check("docs/API.md and api-docs.html document the stored password",
@@ -354,6 +354,33 @@ check("docs/API.md and api-docs.html describe the logged-out limit route",
       and all(n in api_html18 for n in ("/api/admin/proxy-limit", "proxy_limit_changed", "<code>429</code>", "Retry-After")))
 about18 = (ROOT / "static" / "about.html").read_text(encoding="utf-8")
 check("about.html no longer lists scopes the code does not check", "<code>chat</code> &mdash; Send and receive chat messages" not in about18)
+
+
+# --- 1.18.0 notes: one coherent section, not five lanes pasted together -------------------
+b18 = [b.strip() for b in re.findall(r"^- (.*)$", sec18, re.M)]
+lead18 = [re.match(r"\*\*([^*]+)\*\*", b).group(1) if re.match(r"\*\*([^*]+)\*\*", b) else "" for b in b18]
+check("1.18.0: no bullet is repeated (same first 80 characters)", len({b[:80] for b in b18}) == len(b18))
+for lead in ("Database.", "Static files.", "Rollback.", "Not tested."):
+    check(f"1.18.0: exactly one '{lead}' bullet", lead18.count(lead) == 1, str(lead18.count(lead)))
+check("1.18.0: no left-over per-lane Database, Static files, Rollback or Not tested bullet",
+      not [x for x in lead18 if re.match(r"(Database|Static files|Rollback|Rolling back|Not tested)\b", x)
+           and x not in ("Database.", "Static files.", "Rollback.", "Not tested.")], str(lead18))
+check("1.18.0: the section has no blank line inside its list", "\n\n- " not in sec18.strip("\n"))
+check("1.18.0: no contradiction about static files (one says only admin.html changed, one that nothing did)",
+      "is the only static file that changed" not in sec18 and "No static file changed" not in sec18)
+check("1.18.0: the logged-out limit answer is described with its Cache-Control header, not as having none",
+      "carries no cache header" not in sec18 and "`Cache-Control: no-store`" in sec18)
+import secevents as _secevents  # noqa: E402
+check("1.18.0: the key-refused-by-address event is counted per key, with the cap per address",
+      "per source and minute, because" not in sec18 and "per key" in sec18
+      and f"at most {_secevents.KEY_ROWS_PER_ADDRESS} distinct keys" in sec18)
+check("1.18.0: scopes are kept as written and an empty list is refused; only administrators name service scopes",
+      "exactly as written" in sec18 and "empty list" in low18 and "only administrators" in low18 and "zone id" in low18)
+check("1.18.0: two keys sharing a prefix both work (every candidate, at most 4)", "two live keys can share one" in low18 and "at most 4" in low18)
+check("1.18.0: an automatic ban on an address that became exempt is dropped and never enforced",
+      "never enforced at request time" in low18 and "exempt now" in low18)
+check("1.18.0: an offence is counted only when a ban row was written", "only when a ban row was written" in low18)
+check("1.18.0: deleting an account and the 2 second wait are stated", "deleting a user account" in low18 and "2 seconds" in low18)
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
