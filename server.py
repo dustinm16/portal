@@ -5270,8 +5270,14 @@ async def _post_go_live_card(stream: dict, payload: dict, channel: dict) -> Opti
     Returns the message id. If the card cannot be linked to its stream, the message is
     removed again and the error is raised."""
     streamer = payload["streamer"]
+    # The message row and the search index carry the account username, as a normal send
+    # does; the display name lives only in the card data (and the frame shown to the room).
+    account = stream.get("owner_username")
+    if not account:
+        owner = await db.get_user_by_id(stream["user_id"])
+        account = (owner or {}).get("username") or streamer
     msg_id = await db.create_chat_message(
-        channel["id"], stream["user_id"], streamer, _go_live_card_text(payload), message_type="stream_card")
+        channel["id"], stream["user_id"], account, _go_live_card_text(payload), message_type="stream_card")
     try:
         await db.add_stream_card(msg_id, stream["id"], channel["id"], streamer, payload["title"])
     except Exception:

@@ -564,6 +564,28 @@ async def test_a_card_goes_to_the_streams_own_chat_with_a_fallback_text(w):
 
 
 @case
+async def test_a_card_is_stored_under_the_account_username_not_the_display_name(w):
+    sid, key = await w.stream("a", public=True, audience="followers")
+    cid = (await w.db.get_user_stream(sid))["chat_channel_id"]
+    await w.db.conn.execute("UPDATE users SET nickname = 'The Owner' WHERE id = ?", (w.ids["owner"],))
+    await w.db.conn.commit()
+    await w.publish(key)
+    await w.drain()
+    cards = await w.cards(cid)
+    assert len(cards) == 1
+    cur = await w.db.conn.execute("SELECT username FROM chat_messages WHERE id = ?", (cards[0]["id"],))
+    assert (await cur.fetchone())["username"] == "owner"
+    # the search index row carries the same account name, never the display name
+    cur = await w.db.conn.execute("SELECT username FROM chat_fts_map WHERE message_id = ?", (cards[0]["id"],))
+    row = await cur.fetchone()
+    assert row is not None and row["username"] == "owner", row and dict(row)
+    # the display name is kept in the card data
+    status, body = await w.call("GET", "m1", f"/api/chat/channels/{cid}/messages")
+    m = [x for x in body["messages"] if x["message_type"] == "stream_card"][0]
+    assert m["card"]["streamer"] == "The Owner", m
+
+
+@case
 async def test_a_card_is_broadcast_to_the_room(w):
     sid, key = await w.stream("a", public=True)
     cid = (await w.db.get_user_stream(sid))["chat_channel_id"]
