@@ -1186,6 +1186,10 @@ function onSSHAuthChange() {
     document.getElementById('connection-ssh-password-fields').style.display = authMethod === 'key' ? 'none' : 'block';
     document.getElementById('connection-ssh-prompt-group').style.display = isSftp ? 'none' : 'block';
     const prompt = document.getElementById('connection-ssh-prompt');
+    if (!isSftp && prompt.checked) {
+        // "Prompt each time" keeps nothing: a password typed while the switch was off is dropped.
+        document.getElementById('connection-ssh-stored-password').value = '';
+    }
     document.getElementById('connection-ssh-stored-group').style.display =
         (authMethod !== 'key' && (isSftp || !prompt.checked)) ? 'block' : 'none';
 }
@@ -1209,7 +1213,9 @@ function collectSSHCredential(type, isEdit, hadStoredPassword, initialPrompt) {
     }
     const promptOn = document.getElementById('connection-ssh-prompt').checked;
     if (isEdit && initialPrompt !== undefined && promptOn === initialPrompt) {
-        return pw ? { password: pw } : {};               // the switch was not touched: the mode stays as stored
+        // The switch was not touched: the mode stays as it is. With the switch on the password
+        // field is hidden and its value is never sent (a bare password must not store itself).
+        return (pw && !promptOn) ? { password: pw } : {};
     }
     if (promptOn) {
         return { credential_mode: 'prompt' };            // the server clears any stored password

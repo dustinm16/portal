@@ -9,6 +9,10 @@ Rules enforced here and by the callers in server.py, plugins/ssh.py and sftp_bro
 - Write-only. API responses carry `has_stored_password` and never the value
   (server.redact_connection_config). Only the owner's edit route can set, change
   or clear it; a grantee has no edit route.
+- A password sent without `credential_mode` never switches the connection to "stored": a
+  "prompt" connection refuses it (400), a connection without a mode stays without one (the
+  terminal asks, the SFTP browser may use it), a "stored" one replaces its password. Only an
+  explicit `credential_mode: "stored"` makes the terminal use a password unasked.
 - Setting `credential_mode` to "prompt" clears the stored password. So does an
   explicit empty `password`. An absent `password` keeps the stored one.
 - A changed host, port, username or connection type clears it unless a new one comes in the
@@ -95,6 +99,11 @@ def apply_rules(existing: dict, incoming: dict, merged: dict, *, identity_change
     supplied = isinstance(incoming.get("password"), str) and bool(incoming["password"])
     mode_in = incoming.get("credential_mode")
 
+    if supplied and mode_in is None and existing.get("credential_mode") == MODE_PROMPT:
+        # A bare password never turns "Prompt each time" into a password the terminal uses
+        # unasked: that takes an explicit credential_mode "stored".
+        return out, False, "Choose the stored password option to store a password, or leave Prompt each time"
+
     pw = incoming["password"] if "password" in incoming else existing.get("password", "")
     pw = pw if isinstance(pw, str) else ""
     cleared = False        # removed because of a change the request did not ask for
@@ -118,7 +127,7 @@ def apply_rules(existing: dict, incoming: dict, merged: dict, *, identity_change
 
     if mode_in == MODE_PROMPT:
         mode = MODE_PROMPT
-    elif pw and (supplied or mode_in == MODE_STORED):
+    elif pw and (mode_in == MODE_STORED or (supplied and existing.get("credential_mode") == MODE_STORED)):
         mode = MODE_STORED
     elif pw:
         mode = existing.get("credential_mode")           # unchanged: keeps a mode-less row mode-less

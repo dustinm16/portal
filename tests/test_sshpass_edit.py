@@ -53,6 +53,20 @@ async def main():
     st, body = await put(u, {"config": {"credential_mode": "prompt"}})
     check("Prompt each time on a row with no password says nothing was cleared", st == 200 and "stored_password_cleared" not in body, str(body))
 
+    # A bare password (no credential_mode) must never turn Prompt each time into a stored password.
+    st, body = await put(u, {"config": {"password": "sneaky"}})
+    c = await stored(u)
+    check("a bare password on a Prompt each time row is refused and the row stays prompt with no password",
+          st == 400 and c.get("credential_mode") == "prompt" and "password" not in c, f"{st} {c} {body}")
+    st, body = await put(u, {"config": {"credential_mode": "stored", "password": "chosen"}})
+    c = await stored(u)
+    check("an explicit credential_mode stored still stores it", st == 200 and c.get("password") == "chosen" and c.get("credential_mode") == "stored", f"{st} {c}")
+    u_nm = await new_row("nomode", {"username": "u", "auth_method": "password"})
+    st, body = await put(u_nm, {"config": {"password": "bare"}})
+    c = await stored(u_nm)
+    check("a bare password on a row with no mode stays without a mode (the terminal still asks)",
+          st == 200 and c.get("password") == "bare" and "credential_mode" not in c, f"{st} {c}")
+
     u2 = await new_row("older2", dict(old, credential_mode="stored"))
     st, body = await put(u2, {"config": {"password": ""}})
     c = await stored(u2)

@@ -29,7 +29,7 @@ check("the form says the grantee gets a shell without knowing the password",
       index.count("without knowing the password") >= 2)
 check("the stored password input is a password field the browser does not fill",
       re.search(r'<input type="password" id="connection-ssh-stored-password" autocomplete="new-password"', index) is not None)
-check("the script version in index.html was bumped", "user-connections.js?v=52" in index)
+check("the script version in index.html was bumped", "user-connections.js?v=53" in index)
 check("the edit form records the switch state it opened with and passes it on",
       "pwField.dataset.initialPrompt = " in js and "collectSSHCredential(type, isEdit, pwFieldNow.dataset.hadStored === '1', initialPrompt)" in js)
 check("the edit form reads has_stored_password and never puts a value in the field", "config.has_stored_password" in js and "pwField.value = '';" in js)
@@ -63,6 +63,7 @@ setup('password', true, '');        out.renameOlder = collectSSHCredential('ssh'
 setup('password', true, 'typed');   out.renameTyped = collectSSHCredential('ssh', true, true, true);
 setup('password', false, '');       out.renameStored = collectSSHCredential('ssh', true, true, false);
 setup('password', false, 'new');    out.replaceStored = collectSSHCredential('ssh', true, true, false);
+setup('password', true, 'typed');   out.hiddenTyped = collectSSHCredential('ssh', true, false, true);
 setup('password', true, '');        out.turnedOn = collectSSHCredential('ssh', true, true, false);
 setup('password', false, '');       out.turnedOff = collectSSHCredential('ssh', true, true, true);
 setup('password', true, 'typed');   out.addNew = collectSSHCredential('ssh', false, false, undefined);
@@ -83,8 +84,12 @@ console.log(JSON.stringify(out));
     check("stored with nothing typed on an edit of a stored connection keeps the password",
           got.get("keep") == {"credential_mode": "stored"})
     check("an edit that leaves the switch alone sends no credential_mode (a rename of an older row keeps its password)",
-          got.get("renameOlder") == {} and got.get("renameStored") == {} and got.get("renameTyped") == {"password": "typed"}
+          got.get("renameOlder") == {} and got.get("renameStored") == {} and got.get("renameTyped") == {}
           and got.get("replaceStored") == {"password": "new"})
+    check("a password left in the hidden field with the switch on is never sent",
+          got.get("renameTyped") == {} and got.get("hiddenTyped") == {})
+    check("turning the switch on clears the stored-password field",
+          "if (!isSftp && prompt.checked)" in js and "connection-ssh-stored-password').value = ''" in js)
     check("an edit that turns the switch on sends prompt, off sends stored",
           got.get("turnedOn") == {"credential_mode": "prompt"} and got.get("turnedOff") == {"credential_mode": "stored"})
     check("a new connection is unchanged by this", got.get("addNew") == {"credential_mode": "prompt"})
