@@ -622,6 +622,8 @@ MIGRATIONS = [
         created_at TEXT DEFAULT (datetime('now'))
     )""",
     "CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)",
+    # The relabel of a private stream's activity rows (start-up pass and stream edits) selects by owner and action
+    "CREATE INDEX IF NOT EXISTS idx_activity_log_user_action ON activity_log(user_id, action)",
     "CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at DESC)",
     # Store reply preview inline so it persists when the original message is deleted
     "ALTER TABLE chat_messages ADD COLUMN reply_preview_username TEXT",
@@ -2112,7 +2114,7 @@ class Database:
         one of these streams into 'stream_live_private' / 'stream_offline_private', which no
         other member is shown. The rows carry no stream id, only the name in their text
         ("Stream 'x' went live"), so the match is by owner and exact text; it uses the
-        user_id index, so it costs one pass over that owner's rows. Idempotent."""
+        (user_id, action) index, so it reads only that owner's rows of those two actions. Idempotent."""
         total = 0
         for name in {n for n in names if n}:
             for verb in ("live", "offline"):

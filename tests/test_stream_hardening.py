@@ -29,6 +29,7 @@ outbound_guard.install()
 from aiohttp.test_utils import make_mocked_request  # noqa: E402
 
 import server  # noqa: E402
+from database import Database  # noqa: E402
 from test_stream_access import FakeSession, Transport, World, run  # noqa: E402
 
 
@@ -140,6 +141,72 @@ def test_stored_activity_rows_follow_the_stream_into_private_and_through_a_renam
 HUGE = "9" * 25
 BIG = str(2 ** 63)
 
+
+def test_relabel_runs_only_when_a_stream_became_non_public_or_a_non_public_stream_was_renamed():
+    async def body(w):
+        db = w.db
+        calls = []
+        real = db.relabel_private_stream_activity
+
+        async def counting(user_id, names, commit=True):
+            calls.append(sorted(n for n in names if n))
+            return await real(user_id, names, commit=commit)
+
+        db.relabel_private_stream_activity = counting
+        try:
+            async def put(stream, body):
+                sid = str(w.streams[stream]["id"])
+                resp = await server.http_update_user_stream(
+                    api(w, "PUT", f"/api/streams/{sid}", "owner", body=body, match={"id": sid}))
+                assert resp.status == 200, resp.body
+                return resp
+
+            # a stream that is not public: an edit of the go-live message, the description, the
+            # audience, or a name sent back unchanged, relabels nothing
+            await put("private", {"golive_message": "hello"})
+            await put("private", {"description": "text", "golive_audience": "everyone"})
+            private_name = (await db.get_user_stream(w.streams["private"]["id"]))["name"]
+            await put("private", {"name": private_name})
+            assert calls == [], calls
+            # the same edit of a public stream relabels nothing either
+            await put("public", {"golive_message": "hello"})
+            assert calls == [], calls
+            # a rename of a non-public stream does, under the old and the new name
+            await put("private", {"name": "renamed-private"})
+            assert calls == [sorted([private_name, "renamed-private"])], calls
+            # so does a public stream becoming non-public
+            calls.clear()
+            await put("public", {"is_public": False})
+            assert len(calls) == 1, calls
+            # and the message edit that follows does not
+            calls.clear()
+            await put("public", {"golive_message": "again"})
+            assert calls == [], calls
+        finally:
+            db.relabel_private_stream_activity = real
+    run(body)
+
+
+def test_activity_log_has_the_owner_action_index_and_a_second_start_changes_nothing():
+    async def body(w):
+        async def schema(conn):
+            cur = await conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+            return [tuple(r) for r in await cur.fetchall()]
+
+        cur = await w.db.conn.execute("PRAGMA index_info(idx_activity_log_user_action)")
+        assert [r["name"] for r in await cur.fetchall()] == ["user_id", "action"]
+        cur = await w.db.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM activity_log WHERE user_id = 1 AND action = 'stream_live' AND detail = 'x'")
+        plan = " ".join(str(tuple(r)) for r in await cur.fetchall())
+        assert "idx_activity_log_user_action" in plan, plan
+        before = await schema(w.db.conn)
+        second = Database(w.db.db_path)
+        await second.connect()
+        try:
+            assert await schema(second.conn) == before
+        finally:
+            await second.close()
+    run(body)
 
 def test_out_of_range_ids_answer_as_unknown_streams():
     async def body(w):
