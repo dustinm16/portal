@@ -5785,7 +5785,7 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         if (updated_stream and updated_stream.get("is_live") == 1
                 and (updated_stream.get("name") != stream.get("name")
                      or (updated_stream.get("game") or None) != (stream.get("game") or None))):
-            await _broadcast_stream_info(updated_stream)
+            _schedule_stream_info(stream_id)
         # Strip internal hash fields from response
         if updated_stream:
             updated_stream.pop("stream_key_hash", None)
@@ -18877,6 +18877,8 @@ async def _broadcast_stream_info(stream: dict) -> int:
                  "name": stream.get("name"), "game": stream.get("game")}
         binding = await db.get_stream_by_chat_channel(channel["id"])
         verdicts: dict = {}
+        targets: list = []
+        gate = asyncio.Semaphore(_STREAM_INFO_SENDS)
         for entry in list(chat_rooms.get(channel["name"], ())):
             key = (entry[1], entry[3] if len(entry) > 3 else None)
             if key not in verdicts:
@@ -18885,14 +18887,72 @@ async def _broadcast_stream_info(stream: dict) -> int:
                     and await _can_read_channel(channel, key[0], key[1] or "user", binding))
             if not verdicts[key] or entry[0].closed:
                 continue
-            try:
-                await asyncio.wait_for(entry[0].send_json(frame), 2)
-                sent += 1
-            except Exception:
-                pass
+            targets.append(entry)
+
+        async def send(entry) -> int:
+            async with gate:
+                try:
+                    await asyncio.wait_for(entry[0].send_json(frame), 2)
+                    return 1
+                except Exception:
+                    return 0
+        # All at once, at most _STREAM_INFO_SENDS in flight: a socket that does not read costs
+        # its own 2 s, not the 2 s of everybody behind it
+        sent = sum(await asyncio.gather(*(send(e) for e in targets)))
     except Exception as e:
         logger.warning(f"[Chat] Could not send the stream info of stream {stream.get('id')}: {e}")
     return sent
+
+
+# A live stream's name or game reaches the room in the background, at most once per
+# _STREAM_INFO_MIN_GAP per stream; changes inside the gap are merged and the last value wins.
+_STREAM_INFO_MIN_GAP = 2.0
+_STREAM_INFO_SENDS = 32
+_stream_info_tasks: dict = {}       # stream id -> the task that is sending / waiting out the gap
+_stream_info_dirty: set = set()     # stream ids whose latest name or game is not sent yet
+
+
+async def _stream_info_run(stream_id: int) -> None:
+    try:
+        while stream_id in _stream_info_dirty:
+            _stream_info_dirty.discard(stream_id)
+            # Read again: the frame carries the stream as it is now, and who may see it is
+            # decided from its visibility now, not from the moment of the change
+            stream = await db.get_user_stream(stream_id)
+            if stream and stream.get("is_live") == 1:
+                await _broadcast_stream_info(stream)
+            await asyncio.sleep(_STREAM_INFO_MIN_GAP)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"[Chat] Stream info of stream {stream_id} failed: {e}")
+
+
+def _schedule_stream_info(stream_id: int) -> None:
+    """Tell the room of a live stream its new name and game, off the request: the owner's PUT
+    never waits for a socket. The first change is sent at once, later ones within
+    _STREAM_INFO_MIN_GAP are merged into one frame."""
+    _stream_info_dirty.add(stream_id)
+    running = _stream_info_tasks.get(stream_id)
+    if running is not None and not running.done():
+        return
+    task = asyncio.create_task(_stream_info_run(stream_id), name="stream-info")
+    _stream_info_tasks[stream_id] = task
+
+    def done(t, sid=stream_id):
+        if _stream_info_tasks.get(sid) is t:
+            del _stream_info_tasks[sid]
+    task.add_done_callback(done)
+
+
+async def _cancel_stream_info_tasks() -> None:
+    tasks = [t for t in list(_stream_info_tasks.values()) if not t.done()]
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _stream_info_tasks.clear()
+    _stream_info_dirty.clear()
 
 
 async def _enrich_channel_messages(messages: list, viewer_id, viewer_role, channel_id) -> list:
@@ -25260,6 +25320,7 @@ class PortalServer:
 
         # Stop the go-live announcements still writing (cards, notifications) before anything else
         await _cancel_golive_tasks()
+        await _cancel_stream_info_tasks()
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):

@@ -38,6 +38,9 @@ from test_golive import World, with_world  # noqa: E402
 NEW_NAME = "Brand New Title"
 
 
+server._STREAM_INFO_MIN_GAP = 0.05      # the existing frame tests change one stream many times
+
+
 class GameEnv(Env):
     """The chat test environment with the stream routes this file needs as well."""
 
@@ -358,6 +361,91 @@ def test_the_game_suggestions_are_deduplicated_and_limited_in_sql():
         assert sum(1 for g in games if g.casefold() == "same game") <= 1
         # the caller's own pair differs only by non-ASCII case: one entry, and it comes first
         assert sum(1 for g in games if g.casefold() == "strasse \u00e4rger") == 1
+    run(body)
+
+
+class FakeWs:
+    """A room member's socket on the server side: records frames, optionally never finishes a send."""
+
+    def __init__(self, hang=False):
+        self.hang, self.frames, self.closed = hang, [], False
+
+    async def send_json(self, frame):
+        if self.hang:
+            await asyncio.sleep(60)
+        self.frames.append(frame)
+
+
+async def fake_room(env, ids, hangers=0):
+    cid, sid = await stream_chat(env.db, ids, public=True)
+    await set_live(env.db, sid)
+    name = (await env.db.get_chat_channel(cid))["name"]
+    good = FakeWs()
+    room = {(good, ids["viewer"], "viewer", "user")}
+    for i in range(hangers):
+        room.add((FakeWs(hang=True), ids["viewer"], "viewer", "user"))
+    server.chat_rooms[name] = room
+    return cid, sid, name, good
+
+
+def test_stream_info_sends_run_together_and_a_hanging_socket_costs_only_its_own_wait():
+    async def body(env):
+        ids = await users(env.db)
+        cid, sid, name, good = await fake_room(env, ids, hangers=4)
+        stream = await env.db.get_user_stream(sid)
+        t0 = asyncio.get_running_loop().time()
+        sent = await server._broadcast_stream_info(stream)
+        took = asyncio.get_running_loop().time() - t0
+        assert sent == 1 and len(good.frames) == 1
+        assert took < 3.0, f"sequential sends: {took:.1f}s"       # one 2 s wait, not four
+    run(body)
+
+
+def test_the_owners_put_does_not_wait_for_the_sockets_and_rapid_changes_merge():
+    async def body(env):
+        ids = await users(env.db)
+        old_gap = server._STREAM_INFO_MIN_GAP
+        server._STREAM_INFO_MIN_GAP = 0.5
+        try:
+            cid, sid, name, good = await fake_room(env, ids, hangers=3)
+            t0 = asyncio.get_running_loop().time()
+            for n in ("First", "Second", "Third", "Fourth"):
+                st, _ = await env.call("PUT", ids["owner"], f"/api/streams/{sid}", json={"name": n})
+                assert st == 200
+            assert asyncio.get_running_loop().time() - t0 < 1.5, "the PUTs waited for a hanging socket"
+            await asyncio.sleep(3.2)        # the first send waits 2 s for the hanging sockets
+            names = [f["name"] for f in good.frames]
+            assert 1 <= len(names) <= 2, names                      # at most one per gap
+            assert names[-1] == "Fourth", names                    # the last value wins
+            # a later change after the gap is sent again
+            await env.call("PUT", ids["owner"], f"/api/streams/{sid}", json={"name": "Fifth"})
+            await asyncio.sleep(3.2)
+            assert [f["name"] for f in good.frames][-1] == "Fifth"
+        finally:
+            server._STREAM_INFO_MIN_GAP = old_gap
+            await server._cancel_stream_info_tasks()
+    run(body)
+
+
+def test_a_change_followed_by_making_the_stream_private_sends_nothing_to_members():
+    async def body(env):
+        ids = await users(env.db)
+        old_gap = server._STREAM_INFO_MIN_GAP
+        server._STREAM_INFO_MIN_GAP = 0.5
+        try:
+            cid, sid, name, good = await fake_room(env, ids)
+            await env.call("PUT", ids["owner"], f"/api/streams/{sid}", json={"name": "Seen"})
+            await asyncio.sleep(0.15)
+            info = lambda: [f for f in good.frames if f.get("type") == "stream_info"]
+            n_before = len(info())
+            await env.call("PUT", ids["owner"], f"/api/streams/{sid}", json={"name": "Hidden"})
+            await env.call("PUT", ids["owner"], f"/api/streams/{sid}", json={"is_public": False})
+            await asyncio.sleep(1.2)
+            assert len(info()) == n_before, good.frames             # judged from the stream as it is at send time
+            assert all(f["name"] != "Hidden" for f in info())
+        finally:
+            server._STREAM_INFO_MIN_GAP = old_gap
+            await server._cancel_stream_info_tasks()
     run(body)
 
 
