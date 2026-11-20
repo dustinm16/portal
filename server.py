@@ -456,6 +456,7 @@ async def close_user_websockets(user_id: int, except_token_id: str = None,
     # revoked (the next playback request asks again; the cost of dropping the
     # sessions that were kept is one lookup).
     _playback_cache_forget(user_id=user_id)
+    _viewers.remove_user_everywhere(user_id)       # not counted as a viewer from now on
 
     # Proxied HTTP responses (long downloads, event streams) have no total
     # time limit, so they are cut here too.
@@ -5737,7 +5738,11 @@ async def http_update_user_stream(request: web.Request) -> web.Response:
         # Viewers are asked again at once; a viewer who lost access gets no new
         # playlist or segment from here on.
         _stream_access_changed(stream_id, drop_sessions=any(
-            k in data and bool(data[k]) != bool(stream.get(k)) for k in ("is_public", "allow_unauthenticated")))
+            k in data and bool(data[k]) != bool(stream.get(k)) for k in ("is_public", "allow_unauthenticated")),
+            viewers=("all" if became_private else
+                     "anonymous" if ("allow_unauthenticated" in data and not data["allow_unauthenticated"]
+                                     and stream.get("allow_unauthenticated")) else ""),
+            owner_id=stream.get("user_id"))
         if "is_public" in data and bool(data["is_public"]) != bool(stream.get("is_public")):
             # A visibility change in either direction starts follows afresh. Going private
             # drops them all; going public drops what is left from while it was private (an
@@ -5818,6 +5823,7 @@ async def http_delete_user_stream(request: web.Request) -> web.Response:
     if not success:
         return web.json_response({"error": "Stream not found"}, status=404)
     _stream_access_changed(stream_id)
+    _viewers.finish(stream_id)          # a deleted stream has no audience and no live session
     if not stream.get("is_public"):
         # Its "went live / went offline" rows from the time it was public must not come back
         # into other members' feed now that no non-public stream carries the name
@@ -6166,7 +6172,7 @@ async def http_create_stream_ban(request: web.Request) -> web.Response:
     )
 
     if ban_id:
-        _playback_cache_forget(stream_id=stream_id)      # playback is refused from the next request
+        _stream_member_lost_access(stream_id, user_id)      # playback is refused from the next request
         # A banned member does not stay in the stream chat's text room or its voice call.
         await _evict_unreadable_by_id(stream.get("chat_channel_id"))
         await _voice_eject_if_not_allowed(user_id)
@@ -9316,14 +9322,30 @@ def _webrtc_forget_playback(stream_id: int) -> int:
     return len(doomed)
 
 
-def _stream_access_changed(stream_id: int, drop_sessions: bool = True) -> None:
+def _stream_access_changed(stream_id: int, drop_sessions: bool = True, *,
+                           viewers: str = "", owner_id: Optional[int] = None) -> None:
     """Call when a stream's visibility, open-link flag, share key or publish key
     changed, or the stream was deleted: viewers are asked again at once. A change
     that cannot take anybody's right away (a rename) passes drop_sessions=False
-    and keeps the viewers' WHEP session records."""
+    and keeps the viewers' WHEP session records. viewers="all" (made non-public) removes
+    every identity but the owner's from the viewer map now, viewers="anonymous" (open link
+    switched off) the logged-out ones: nobody who lost access is counted until a request
+    of theirs passes the gate again."""
     _playback_cache_forget(stream_id=stream_id)
     if drop_sessions:
         _webrtc_forget_playback(stream_id)
+    if viewers in ("all", "anonymous"):
+        _viewers.remove_except_owner(stream_id, owner_id, anonymous_only=viewers == "anonymous")
+
+
+def _stream_member_lost_access(stream_id: int, user_id: int) -> None:
+    """A member was banned from a stream: playback is refused from the next request, they are
+    not counted any more and their WHEP session records are forgotten."""
+    _playback_cache_forget(stream_id=stream_id)
+    _viewers.remove_user(stream_id, user_id)
+    for k in [k for k, v in _webrtc_sessions.items()
+              if v[0] == "whep" and v[1] == stream_id and len(v) > 4 and v[4] == user_id]:
+        del _webrtc_sessions[k]
 
 
 def _playback_fingerprint(request: web.Request) -> str:
@@ -9808,7 +9830,7 @@ async def http_stream_thumbnail(request: web.Request) -> web.Response:
 # never from anything the client puts in the URL. In-memory only: after a portal
 # restart, sessions opened earlier are unknown and are refused (MediaMTX expires
 # them on its own).
-_webrtc_sessions: dict[str, tuple[str, int, str, float]] = {}
+_webrtc_sessions: dict[str, tuple] = {}     # (kind, stream_id, path, created, user_id or None)
 _WEBRTC_SESSION_MAX = 4096
 _WEBRTC_SESSION_TTL = 7 * 24 * 3600
 # Per stream and kind. Playback sessions need only a playback key and no login,
@@ -9818,7 +9840,8 @@ _WEBRTC_SESSION_TTL = 7 * 24 * 3600
 _WEBRTC_SESSION_MAX_PER_STREAM = {"whep": 64, "whip": 16}
 
 
-def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_path: str) -> None:
+def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_path: str,
+                             user_id: Optional[int] = None) -> None:
     """Record a session opened via the proxy; prune expired and excess entries."""
     if not session_id:
         return
@@ -9835,7 +9858,7 @@ def _webrtc_session_remember(session_id: str, kind: str, stream_id: int, mtx_pat
         if victim is None:
             victim = next(iter(_webrtc_sessions))
         del _webrtc_sessions[victim]
-    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now)
+    _webrtc_sessions[session_id] = (kind, stream_id, mtx_path, now, user_id)
 
 
 async def _authorize_webrtc_session(request: web.Request, key: str, session_id: str
@@ -9917,7 +9940,8 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                     if location:
                         # Extract session ID from location
                         session_id = location.split("/")[-1]
-                        _webrtc_session_remember(session_id, "whep", stream["id"], private_key)
+                        _webrtc_session_remember(session_id, "whep", stream["id"], private_key,
+                                                 request.get("viewer_user_id"))
                         # Use the same key type that was used to access
                         location = f"/api/stream/{key}/webrtc/session/{session_id}"
                     _viewer_touch(request, stream, _viewers_mod.BEAT_WINDOW)
@@ -10032,7 +10056,7 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
     rec, error, status, stream = await _authorize_webrtc_session(request, stream_key, session_id)
     if error:
         return _stream_not_found() if status == 404 else web.json_response({"error": error}, status=status)
-    kind, _stream_id, mtx_path, _created = rec
+    kind, _stream_id, mtx_path = rec[:3]
 
     # Get MediaMTX configuration
     mtx_config = await _get_mediamtx_config()
@@ -20968,7 +20992,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                         if ban_id:
                             # Playback is refused from the next request on, not after the
                             # cached decision runs out
-                            _playback_cache_forget(stream_id=stream["id"])
+                            _stream_member_lost_access(stream["id"], target_user_id)
                             # A banned member does not stay in the room or the voice call.
                             await _evict_unreadable_sockets(channel)
                             await _voice_eject_if_not_allowed(target_user_id)

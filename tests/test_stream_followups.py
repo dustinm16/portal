@@ -1,5 +1,5 @@
-"""Follow-ups to the stream night: what is logged and announced when a stream goes offline and
-the activity rows of a deleted private stream.
+"""Follow-ups to the stream night: what is logged and announced when a stream goes offline, the
+activity rows of a deleted private stream, and who is counted as a viewer after access is lost.
 
 Runs the real handlers in-process against the temporary database of tests/test_stream_access.py.
 Not proven here: a real MediaMTX, a real VOD finalisation, a browser.
@@ -26,8 +26,10 @@ outbound_guard.install()
 from aiohttp.test_utils import make_mocked_request  # noqa: E402
 
 import server  # noqa: E402
+import viewers  # noqa: E402
 from config import Config  # noqa: E402
-from test_stream_access import Transport, _coro, run  # noqa: E402
+from test_stream_access import Transport, _coro, _whep_request, run  # noqa: E402
+from test_viewers import Clock, beat  # noqa: E402
 
 
 async def activity(w, user, like="Stream %"):
@@ -136,6 +138,84 @@ def test_deleting_a_private_stream_keeps_its_public_time_rows_out_of_the_feed():
             owner_request(w, "DELETE", f"/api/streams/{pub['id']}", {"id": str(pub['id'])}))
         assert resp.status == 200
         assert ("stream_live", "Stream 'public' went live") in await activity(w, owner)
+    run(body)
+
+
+def fresh_viewers():
+    clock = Clock()
+    server._viewers = viewers.ViewerTracker(clock)
+    server._viewer_beat_rate = viewers.RateWindow(server._VIEWER_BEAT_LIMIT, 60.0, clock=clock)
+    return clock
+
+
+def test_tracker_removals():
+    t = viewers.ViewerTracker(Clock())
+    for u in (1, 2, 3):
+        t.touch(10, user_id=u)
+    t.touch(10, client_id="c" * 20, addr="198.51.100.4")
+    t.touch(11, user_id=2)
+    assert t.remove_user(10, 2) == 1 and t.count(10) == 3 and t.count(11) == 1
+    assert t.remove_user_everywhere(2) == 1 and t.count(11) == 0
+    assert t.remove_except_owner(10, 1, anonymous_only=True) == 1 and t.count(10) == 2
+    assert t.remove_except_owner(10, 1) == 1 and t.count(10) == 1
+    # the per-address slot of a removed anonymous viewer is free again
+    for i in range(viewers.MAX_ANON_PER_ADDRESS):
+        assert t.touch(12, client_id=("%016d" % i), addr="198.51.100.5")
+    assert not t.touch(12, client_id="z" * 16, addr="198.51.100.5")
+    t.remove_except_owner(12, None, anonymous_only=True)
+    assert t.touch(12, client_id="z" * 16, addr="198.51.100.5")
+
+
+def test_viewers_are_removed_at_once_when_access_is_lost():
+    async def body(w):
+        fresh_viewers()
+        server.db = w.db
+        pub, opened = w.streams["public"], w.streams["open"]
+        # made non-public: everybody but the owner goes
+        for who in ("owner", "member", "other", "admin"):
+            assert (await beat(w, pub["pub"], who)).status == 200
+        assert server._viewers.count(pub["id"]) == 4
+        resp = await server.http_update_user_stream(owner_request(
+            w, "PUT", f"/api/streams/{pub['id']}", {"id": str(pub["id"])}, {"is_public": False}))
+        assert resp.status == 200
+        assert server._viewers.count(pub["id"]) == 1
+        # an open link switched off: the logged-out viewer goes, the member stays
+        assert (await beat(w, opened["pub"], "member")).status == 200
+        assert (await beat(w, opened["pub"])).status == 200
+        assert server._viewers.count(opened["id"]) == 2
+        resp = await server.http_update_user_stream(owner_request(
+            w, "PUT", f"/api/streams/{opened['id']}", {"id": str(opened["id"])}, {"allow_unauthenticated": False}))
+        assert resp.status == 200
+        assert server._viewers.count(opened["id"]) == 1
+        # an edit that takes nobody's right (a rename) removes nobody
+        resp = await server.http_update_user_stream(owner_request(
+            w, "PUT", f"/api/streams/{opened['id']}", {"id": str(opened["id"])}, {"name": "open2"}))
+        assert resp.status == 200 and server._viewers.count(opened["id"]) == 1
+        # signed out everywhere (and the same call an account deletion makes)
+        await server.close_user_websockets(w.users["member"])
+        assert server._viewers.count(opened["id"]) == 0
+    run(body)
+
+
+def test_a_stream_ban_removes_the_viewer_and_forgets_his_whep_sessions():
+    async def body(w):
+        fresh_viewers()
+        server.db = w.db
+        pub = w.streams["public"]
+        r = await server.http_stream_webrtc_whep(_whep_request(w, pub["pub"], "member"))
+        assert r.status == 201
+        # (the fake MediaMTX gives every offer the same session id: the other member's is added by hand)
+        server._webrtc_session_remember("sess-other", "whep", pub["id"], "p", w.users["other"])
+        assert (await beat(w, pub["pub"], "other")).status == 200
+        assert server._viewers.count(pub["id"]) == 2
+        mine = [k for k, v in server._webrtc_sessions.items() if v[4] == w.users["member"]]
+        theirs = [k for k, v in server._webrtc_sessions.items() if v[4] == w.users["other"]]
+        assert len(mine) == 1 and len(theirs) == 1
+        resp = await server.http_create_stream_ban(owner_request(
+            w, "POST", f"/api/streams/{pub['id']}/bans", {"id": str(pub["id"])}, {"user_id": w.users["member"]}))
+        assert resp.status == 201, resp.body
+        assert server._viewers.count(pub["id"]) == 1
+        assert mine[0] not in server._webrtc_sessions and theirs[0] in server._webrtc_sessions
     run(body)
 
 

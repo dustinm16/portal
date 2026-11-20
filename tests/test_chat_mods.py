@@ -1071,6 +1071,30 @@ def test_ending_a_mod_through_the_generic_routes_is_audited_and_pushed():
     run(body)
 
 
+def test_a_ban_over_the_socket_removes_the_viewer_and_his_whep_sessions():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        sid, u = w.stream["a"], w.u
+        saved = server._viewers
+        server._viewers = server._viewers_mod.ViewerTracker()
+        server._webrtc_sessions.clear()
+        try:
+            server._viewers.touch(sid, user_id=u["spammer"])
+            server._viewers.touch(sid, user_id=u["plain"])
+            server._webrtc_session_remember("s-spam", "whep", sid, "p", u["spammer"])
+            server._webrtc_session_remember("s-plain", "whep", sid, "p", u["plain"])
+            owner = await joined(env, w, "owner")
+            got = await owner.act("ban_success", type="ban", user_id=u["spammer"])
+            assert got["type"] == "ban_success", got
+            assert server._viewers.count(sid) == 1
+            assert "s-spam" not in server._webrtc_sessions and "s-plain" in server._webrtc_sessions
+        finally:
+            server._viewers = saved
+            server._webrtc_sessions.clear()
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

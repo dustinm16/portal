@@ -101,6 +101,44 @@ class ViewerTracker:
         self._addr_of.pop(stream_id, None)
         self._addr_n.pop(stream_id, None)
 
+    def _drop_identities(self, stream_id: int, idents) -> int:
+        """Remove these identities from one stream's live map (and the per-address count)."""
+        live = self._live.get(stream_id)
+        if not live:
+            return 0
+        addr_of = self._addr_of.get(stream_id, {})
+        n = self._addr_n.get(stream_id)
+        dropped = 0
+        for ident in [i for i in idents if i in live]:
+            del live[ident]
+            dropped += 1
+            ah = addr_of.pop(ident, None)
+            if ah is not None and n is not None:
+                n[ah] -= 1
+                if n[ah] <= 0:
+                    del n[ah]
+        if not live:
+            self.clear_viewers(stream_id)
+        return dropped
+
+    def remove_user(self, stream_id: int, user_id) -> int:
+        """A member lost the right to watch this stream: they are not counted from this moment
+        (the next request they make is refused by the read gate and never comes back)."""
+        return self._drop_identities(stream_id, [f"u:{int(user_id)}"])
+
+    def remove_user_everywhere(self, user_id) -> int:
+        """An account was deleted or signed out everywhere: not counted on any stream."""
+        ident = f"u:{int(user_id)}"
+        return sum(self._drop_identities(sid, [ident]) for sid in list(self._live))
+
+    def remove_except_owner(self, stream_id: int, owner_id, anonymous_only: bool = False) -> int:
+        """The stream's audience as a whole lost access (made non-public: everybody but its
+        owner; open link switched off: the logged-out viewers only). The owner is never removed."""
+        keep = f"u:{int(owner_id)}" if owner_id is not None else None
+        return self._drop_identities(stream_id, [
+            i for i in list(self._live.get(stream_id, ()))
+            if i != keep and not (anonymous_only and i.startswith("u:"))])
+
     def forget_except(self, stream_ids) -> None:
         """Drop everything held for streams that are not in `stream_ids` (not live any more)."""
         keep = set(stream_ids)
