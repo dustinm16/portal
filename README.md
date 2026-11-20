@@ -235,6 +235,13 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 </tr>
 </table>
 
+<table>
+<tr>
+<td valign="top" width="30%"><img src="docs/screenshots/share-expiry.png" alt="Share dialog with the Access lasts list" width="100%"><br><em>Share dialog — the Access lasts list, who has access with the time left, and All my shares</em></td>
+<td valign="top" width="70%"><img src="docs/screenshots/api-keys.png" alt="API key window" width="100%"><br><em>API keys — scope picker, expiry and the addresses a key may be used from, with where each key was created and last used and a Stale badge</em></td>
+</tr>
+</table>
+
 ### Administration and security
 
 ![Admin Panel](docs/screenshots/admin.png)
@@ -252,6 +259,9 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 
 ![Security events](docs/screenshots/admin-security-events.png)
 *Audit Log, Security filter — sign-in failures, blocks and list changes with source addresses*
+
+<img src="docs/screenshots/admin-signin-limits.png" alt="Failed sign-in blocking and logged-out request limit" width="340"><br>
+*Admin > Settings — Failed sign-in blocking (off by default) and the Logged-out request limit*
 
 ![Address blocking](docs/screenshots/admin-blocking.png)
 *Blocked IPs with the never-ban list and the effective list*

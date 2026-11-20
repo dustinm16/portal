@@ -27,6 +27,9 @@ needed. The portal is reached as https://portal.example.org:<port> (a host
 resolver rule maps that name to 127.0.0.1 inside the browser only), so every
 link the portal builds shows the example name.
 
+Pictures of 1.18.0 (share-expiry, api-keys, admin-signin-limits) need no extra setup: their
+demo data (shares with end times, three administrator keys) is seeded with the rest.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -1188,6 +1191,53 @@ def _automod(s):
     s.save("admin-automod", page)
 
 
+@shot("share-expiry")
+def _share_expiry(s):
+    # a tall window so that the whole dialog is in view
+    ctx = s.context("alex", viewport={"width": 1280, "height": 1500})
+    page = s.open(ctx, "/", ".connection-card, .service-card")
+    page.evaluate("(id) => showShareConnectionModal(id, 'Build server')", s.info["ssh_connection"])
+    page.wait_for_selector("#share-current-list .share-row, #share-current-list li, #share-current-list div", timeout=15000)
+    page.wait_for_timeout(800)
+    page.click("button:has-text('All my shares')")
+    page.wait_for_selector("#all-shares-list", state="visible")
+    page.wait_for_timeout(800)
+    # a native list does not draw its pop-up in a headless picture: show it open, as a list box,
+    # with the default (30 days) chosen
+    page.evaluate("() => { const e = document.getElementById('share-duration'); e.value = '30d'; e.size = e.options.length; }")
+    page.wait_for_timeout(300)
+    s.save("share-expiry", page.locator("#share-connection-modal .modal-content"))
+
+
+@shot("api-keys")
+def _api_keys(s):
+    ctx = s.context(ADMIN_NAME, viewport={"width": 1280, "height": 1700})
+    page = s.open(ctx, "/", ".stat-card, .service-card")
+    page.evaluate("() => showApiKeysModal()")
+    page.wait_for_selector("#api-keys-modal .modal-content", state="visible")
+    page.wait_for_timeout(800)
+    page.evaluate("() => showCreateApiKeyForm()")
+    page.wait_for_selector("#api-key-scope-picker input", timeout=15000)
+    page.fill("#api-key-name", "Nightly export")
+    page.uncheck(".api-key-scope-cb[value='access:*']")
+    page.fill("#api-key-cidrs", "203.0.113.0/24")
+    # the window is narrow and clips the right-hand columns of the key list: widen it for the picture
+    page.evaluate("() => { const m = document.querySelector('#api-keys-modal .modal-content'); m.style.maxWidth = '1180px'; m.style.width = '1180px'; }")
+    page.wait_for_timeout(500)
+    s.save("api-keys", page.locator("#api-keys-modal .modal-content"))
+
+
+@shot("admin-signin-limits")
+def _signin_limits(s):
+    page = admin_page(s, "settings", "#loginban-body input, #loginban-body .btn")
+    page.wait_for_selector("#proxylimit-body input, #proxylimit-body .btn", timeout=15000)
+    page.wait_for_timeout(500)
+    page.evaluate("() => ['loginban-card', 'proxylimit-card'].forEach(id => { const c = document.getElementById(id); c.style.height = 'auto'; c.style.minHeight = '0'; c.style.alignSelf = 'flex-start'; c.style.flex = '0 0 auto'; })")
+    page.wait_for_timeout(300)
+    s.write("admin-signin-limits", stack([element_image(page.locator("#loginban-card")),
+                                          element_image(page.locator("#proxylimit-card"))]))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1363,6 +1413,44 @@ async def seed_stream_chat(stage: Stage, clients: dict, river_stream: dict, alex
     return {"stream_id": rid, "public_key": detail.get("public_key") or river_stream.get("public_key")}
 
 
+async def seed_access_limits(stage: Stage, clients: dict, info: dict) -> dict:
+    """Shares with end times and a few administrator API keys (1.18.0).
+
+    Two shares of alex's SSH connection with different end times, and three keys of the
+    administrator: one bound to a documentation network and used once from an address of it,
+    one plain, and one that looks forgotten (backdated in the stage's own database, a temp
+    file this script made, so that the Stale badge shows). Nothing here ever connects anywhere.
+    """
+    import sqlite3
+    alex, admin = clients["alex"], clients[ADMIN_NAME]
+    conn_id = info["ssh_connection"]
+    await alex.api("POST", f"/api/connections/{conn_id}/shares", {"usernames": ["sam"], "expires_in": "7d"})
+    await alex.api("POST", f"/api/connections/{conn_id}/shares", {"usernames": ["river"], "expires_in": "30d"})
+    bound = await admin.api("POST", "/api/api-keys", {
+        "name": "Nightly report", "scopes": "services:read", "expires_days": 90,
+        "allowed_cidrs": ["203.0.113.0/24"]})
+    await admin.api("POST", "/api/api-keys", {"name": "Status page", "scopes": "services:read", "expires_days": 30})
+    await admin.api("POST", "/api/api-keys", {"name": "Old integration", "scopes": "services:read", "expires_days": 365})
+    # the bound key is used once, from an address inside its network (the loopback peer is a trusted
+    # proxy, so the header decides which address the portal records)
+    used = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), timeout=aiohttp.ClientTimeout(total=30),
+                                 headers={"CF-Connecting-IP": "203.0.113.20", "User-Agent": "curl/8.5.0"})
+    try:
+        r = await used.get(f"{stage.direct}/api/services", headers={"Authorization": "Api-Key " + bound["key"]})
+        if r.status != 200:
+            raise Fail(f"the bound demo key was refused from its own network: {r.status}")
+    finally:
+        await used.close()
+    db = sqlite3.connect(str(stage.dir / "portal.db"), timeout=30)
+    try:
+        db.execute("UPDATE api_keys SET created_at = datetime('now', '-120 days'), last_used_at = datetime('now', '-100 days'),"
+                   " last_used_ip = '198.51.100.40', created_ip = '192.0.2.10' WHERE name = 'Old integration'")
+        db.commit()
+    finally:
+        db.close()
+    return {}
+
+
 async def seed_everything(stage: Stage) -> dict:
     admin = Client(stage, ADMIN_NAME)
     clients: dict = {ADMIN_NAME: admin}
@@ -1374,6 +1462,7 @@ async def seed_everything(stage: Stage) -> dict:
         spread_timestamps(stage)
         mark_index_complete(stage)
         info.update(await seed_golive(stage, clients, info["streams"]))
+        info.update(await seed_access_limits(stage, clients, info))
         return info
     finally:
         for c in clients.values():

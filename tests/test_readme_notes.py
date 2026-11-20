@@ -382,6 +382,12 @@ check("1.18.0: an automatic ban on an address that became exempt is dropped and 
 check("1.18.0: an offence is counted only when a ban row was written", "only when a ban row was written" in low18)
 check("1.18.0: deleting an account and the 2 second wait are stated", "deleting a user account" in low18 and "2 seconds" in low18)
 
+# --- 1.18.0 pictures --------------------------------------------------------------------
+for pic in ("share-expiry", "api-keys", "admin-signin-limits"):
+    check(f"README shows docs/screenshots/{pic}.png and the file exists",
+          f"docs/screenshots/{pic}.png" in text and (shots / f"{pic}.png").is_file())
+check("make_screenshots takes the 1.18.0 pictures", all(f'@shot("{n}")' in mk for n in ("share-expiry", "api-keys", "admin-signin-limits")))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
