@@ -516,6 +516,18 @@ async def close_grant_dependents_for(connection_ids=(), grantee_id: int = None) 
     return await _close_grant_targets(targets)
 
 
+def _forget_grant_dependent(kind: str, resource_id: int, user_id: int, obj) -> None:
+    """Drop one object from its share's dependents (no-op when it was never registered, as for
+    an owner's own connection). Used when the object stops being what must be ended: a
+    WebSocket upgrade's proxied-call record is replaced by the socket itself."""
+    key = (kind, int(resource_id), int(user_id))
+    deps = _grant_dependents.get(key)
+    if deps is not None:
+        deps.discard(obj)
+        if not deps:
+            _grant_dependents.pop(key, None)
+
+
 async def _track_shared_access(connection: dict, user_id: int, obj) -> bool:
     """Record that `obj` (a socket, proxied call or SSH connection) was opened through a
     share, then check the share is still live. False means it ended in between (a revoke
@@ -16595,6 +16607,11 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             if not await _track_shared_access(connection, token.user_id, ws):
                 await ws.close(code=GRANT_ENDED_CLOSE_CODE, message=b"access ended")
                 return ws
+            # The upgrade's HTTP call record must not stay under the share: ending it would abort
+            # the transport the relay runs on, and the client would see a dropped connection (1006)
+            # instead of the 4010 close frame. The socket itself is what ends with the share now.
+            if connection.get("shared"):
+                _forget_grant_dependent("conn", connection["id"], token.user_id, call)
             # The upgrade awaited since the credential was checked; as the chat and
             # generic handlers do, check it again now that the socket is registered.
             if not await _credential_still_valid(token):

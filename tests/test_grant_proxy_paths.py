@@ -28,7 +28,6 @@ T0 = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 clock = {"now": T0}
 grant_expiry.set_clock(lambda: clock["now"])
 upstream_events = []
-CLOSED_CODES = (server.GRANT_ENDED_CLOSE_CODE, 1006)
 
 
 async def held_download(request):
@@ -126,9 +125,7 @@ async def main():
     async with owner.delete(f"{share_url}/{env.uid['bob']}") as r:
         check("the owner revokes the share again", r.status == 200)
     cc = await h.close_code(ws)
-    # The relay's own reader sees the close first, so the client may see the connection drop (1006)
-    # rather than the 4010 frame; what is proved is that the relay ends.
-    check("the proxy WebSocket relay is closed on revoke", cc in CLOSED_CODES, str(cc))
+    check("the proxy WebSocket relay is closed with 4010 on revoke", cc == server.GRANT_ENDED_CLOSE_CODE, str(cc))
     check("the upstream socket was closed with it", await wait_event("ws-closed"))
     upstream_events.clear()
 
@@ -152,7 +149,7 @@ async def main():
     clock["now"] = T0 + timedelta(hours=1, seconds=1)
     check("the sweeper deletes the expired share (relay case)", await server.sweep_expired_grants_once() == 1)
     cc = await h.close_code(ws)
-    check("the proxy WebSocket relay is closed on expiry", cc in CLOSED_CODES, str(cc))
+    check("the proxy WebSocket relay is closed with 4010 on expiry", cc == server.GRANT_ENDED_CLOSE_CODE, str(cc))
 
     # ---- after the end, nothing new gets through -----------------------------------------------------------
     async with bob.get(f"{env.base}/proxy/{uuid}/download") as r:
