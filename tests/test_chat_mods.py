@@ -1085,6 +1085,46 @@ def test_a_ban_list_masks_the_banner_as_he_was_at_the_time_of_the_ban():
     server.chat_user_state.clear()
 
 
+def test_a_later_promotion_does_not_name_an_anonymous_banner_and_staff_stay_named():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        sid, u = w.stream["a"], w.u
+        label = server.ANON_MODERATOR_LABEL
+        spam2 = await d.create_user("spammer2", "x")
+        server.chat_user_state.clear()
+        await d.set_chat_anonymous(u["friend"], True)
+        await d.set_chat_anonymous(u["admin"], True)
+        st, _ = await env.call("POST", u["friend"], f"/api/streams/{sid}/bans", json={"user_id": u["spammer"]})
+        assert st == 201
+        # a staff member who bans with anonymous chat on stays named (the flag is never stored for him)
+        st, _ = await env.call("POST", u["admin"], f"/api/streams/{sid}/bans", json={"user_id": spam2})
+        assert st == 201
+
+        async def rows(viewer):
+            st, got = await env.call("GET", u[viewer], f"/api/streams/{sid}/bans")
+            assert st == 200, st
+            return {b["banned_username"] if b["user_id"] is None else
+                    {u["spammer"]: "spammer", spam2: "spammer2"}[b["user_id"]]: b for b in got["bans"]}
+
+        for role in ("moderator", "admin", "superadmin"):
+            assert await d.set_user_role(u["friend"], role)
+            for viewer in ("mod2", "owner"):
+                got = await rows(viewer)
+                row = got["spammer"]
+                assert row["banned_by"] is None and row["banned_by_username"] == label, (role, viewer, row)
+                assert "banned_by_role" not in row and "banned_by_anonymous" not in row, row
+                row = got["spammer2"]
+                assert row["banned_by"] == u["admin"] and row["banned_by_username"] == "admin", (role, viewer, row)
+        server.chat_user_state.clear()
+        mod2 = await joined(env, w, "mod2")
+        got = await mod2.act("bans_list", type="get_bans")
+        by_name = {b["banned_by_username"] for b in got["bans"]}
+        assert label in by_name and "friend" not in by_name, got
+    run(body)
+    server.chat_user_state.clear()
+
+
 class StuckWs:
     closed = False
 

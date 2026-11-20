@@ -18427,9 +18427,10 @@ def _mask_ban_rows(bans, viewer_id, viewer_role=None) -> list:
         if b.get("anonymous") and not _viewer_sees_identity(viewer_id, viewer_role, b.get("user_id")):
             b["user_id"] = None
             b["banned_username"] = "Anonymous"
-        # An ordinary member who banned with anonymous chat on is not named to anybody
-        # but staff and himself (one rule with the live frames, see _anon_actor)
-        by_anon = b.pop("banned_by_anonymous", None) and (b.pop("banned_by_role", None) or "") not in _CHAT_STAFF_ROLES
+        # The flag was stored at the time of the ban and is already false for staff (see
+        # _anon_actor and the HTTP ban route), so the banner's role today plays no part:
+        # a later promotion must not name him
+        by_anon = bool(b.pop("banned_by_anonymous", None))
         b.pop("banned_by_role", None)
         if by_anon and not _viewer_sees_identity(viewer_id, viewer_role, b.get("banned_by")):
             b["banned_by"] = None
