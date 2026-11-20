@@ -409,7 +409,9 @@ async function showStreamDetails(streamId) {
         // Set as a property, not rendered into the markup: escapeHtml leaves double quotes alone,
         // so a message containing one would cut the attribute short
         document.getElementById('stream-golive-input').value = stream.golive_message || '';
-        document.getElementById('stream-golive-audience').value = stream.golive_audience === 'everyone' ? 'everyone' : 'followers';
+        const audienceSelect = document.getElementById('stream-golive-audience');
+        audienceSelect.value = stream.golive_audience === 'everyone' ? 'everyone' : 'followers';
+        audienceSelect.dataset.current = audienceSelect.value;      // restored if a save fails
 
         showModal('stream-details-modal');
 
@@ -544,6 +546,10 @@ async function updateStreamGoLiveMessage(streamId) {
  * Choose who a go-live is announced to: followers or everyone who can watch
  */
 async function updateStreamGoLiveAudience(streamId, golive_audience) {
+    // The select shows the new choice already: on a failure it goes back to the saved one
+    const select = document.getElementById('stream-golive-audience');
+    const previous = select ? select.dataset.current : null;
+    const restore = () => { if (select && previous != null) select.value = previous; };
     try {
         const response = await Portal.fetch(`/api/streams/${streamId}`, {
             method: 'PUT',
@@ -551,12 +557,15 @@ async function updateStreamGoLiveAudience(streamId, golive_audience) {
             body: JSON.stringify({ golive_audience })
         });
         if (response.ok) {
+            if (select) select.dataset.current = golive_audience;
             Portal.toast('Go-live audience updated', 'success');
         } else {
+            restore();
             const data = await response.json().catch(() => ({}));
             Portal.toast(data.error || 'Failed to update the go-live audience', 'error');
         }
     } catch (error) {
+        restore();
         Portal.toast('Failed to update the go-live audience', 'error');
     }
 }

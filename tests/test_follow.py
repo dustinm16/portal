@@ -210,6 +210,7 @@ class World:
 def case(fn):
     def runner():
         async def go():
+            server._stream_state_lock = asyncio.Lock()      # one per test loop, as in test_golive
             w = await World().build()
             try:
                 await fn(w)
@@ -1033,6 +1034,21 @@ async def test_live_now_lists_only_what_the_viewer_may_watch_and_no_key(w):
 
 # ---------------------------------------------------------------------------
 # the pages (text checks: no browser here)
+
+def test_a_go_live_card_is_not_offered_edit_and_copies_its_fallback_text():
+    chat = (ROOT / "static" / "chat.html").read_text()
+    js = (ROOT / "static" / "js" / "streams.js").read_text()
+    # chat: the card keeps its stored fallback text; Edit is not offered; copy and reply use it
+    assert "div.dataset.cardText = data.message" in chat
+    assert "const canEdit = isOwner && !isCard && isWithinEditWindow(" in chat
+    assert "contextMenuMessageText = isCard ? (msgEl.dataset.cardText" in chat
+    assert "msgEl.classList.contains('stream-card-message') ? (msgEl.dataset.cardText" in chat
+    # streams.js: a failed save puts the previous audience back (rejected PUT and network error)
+    start = js.index("async function updateStreamGoLiveAudience(")
+    fn = js[start:js.index("\n}\n", start)]
+    assert "dataset.current" in fn and fn.count("restore();") == 2, fn
+    assert "audienceSelect.dataset.current = audienceSelect.value" in js
+
 
 def test_the_pages_use_the_servers_follow_state_and_build_cards_safely():
     chat = (ROOT / "static" / "chat.html").read_text()

@@ -4214,6 +4214,8 @@
             // numeric stream id only.
             if (data.message_type === 'stream_card' && data.card && Number.isInteger(Number(data.card.stream_id))) {
                 div.classList.add('stream-card-message');
+                // Copy and quote use the stored plain-text fallback, not the card's button text
+                div.dataset.cardText = data.message || '';
                 const textEl = div.querySelector('.message-text');
                 if (textEl) {
                     const card = document.createElement('div');
@@ -5899,7 +5901,9 @@
 
             contextMenuMessageId = parseInt(msgEl.dataset.messageId);
             contextMenuMessageUserId = parseInt(msgEl.dataset.userId) || null;
-            contextMenuMessageText = msgEl.querySelector('.message-text')?.textContent || '';
+            const isCard = msgEl.classList.contains('stream-card-message');     // a go-live card
+            contextMenuMessageText = isCard ? (msgEl.dataset.cardText || '')
+                : (msgEl.querySelector('.message-text')?.textContent || '');
             window._lastContextX = e.clientX;
             window._lastContextY = e.clientY;
 
@@ -5911,7 +5915,8 @@
             document.getElementById('delete-menu-item').style.display = canDelete ? '' : 'none';
 
             // Show/hide edit option (own messages within 5-min window)
-            const canEdit = isOwner && isWithinEditWindow(contextMenuMessageId);
+            // (a go-live card is not editable: the server refuses it, so it is not offered)
+            const canEdit = isOwner && !isCard && isWithinEditWindow(contextMenuMessageId);
             document.getElementById('edit-menu-item').style.display = canEdit ? '' : 'none';
 
             // Show/hide pin/unpin (mods only, channel view only)
@@ -5999,7 +6004,8 @@
             const msgEl = document.querySelector(`.message[data-message-id="${contextMenuMessageId}"]`);
             if (msgEl) {
                 replyToUsername = msgEl.querySelector('.message-username')?.textContent || 'Unknown';
-                const previewText = msgEl.querySelector('.message-text')?.textContent || '';
+                const previewText = msgEl.classList.contains('stream-card-message') ? (msgEl.dataset.cardText || '')
+                    : (msgEl.querySelector('.message-text')?.textContent || '');
                 document.getElementById('reply-indicator-name').textContent = replyToUsername;
                 document.getElementById('reply-indicator-text').textContent = previewText.length > 80 ? previewText.substring(0, 80) + '...' : previewText;
             }
