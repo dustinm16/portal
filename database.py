@@ -3471,6 +3471,24 @@ class Database:
         )
         await self.conn.commit()
 
+    async def set_settings(self, values: dict) -> None:
+        """Set several settings in one transaction: all of them are saved or none.
+
+        One executemany call runs on the connection's worker thread without yielding to the
+        event loop, so no other coroutine's commit can land between the rows."""
+        try:
+            await self.conn.executemany(
+                """INSERT INTO settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(key) DO UPDATE SET
+                   value = excluded.value,
+                   updated_at = CURRENT_TIMESTAMP""",
+                list(values.items()))
+            await self.conn.commit()
+        except BaseException:
+            await self.conn.rollback()
+            raise
+
     async def delete_setting(self, key: str) -> bool:
         """Delete a setting by key."""
         cursor = await self.conn.execute(

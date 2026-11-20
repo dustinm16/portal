@@ -187,6 +187,8 @@ async def main():
             check("logged out: the 429 carries Retry-After and a JSON error",
                   resp.status == 429 and int(resp.headers["Retry-After"]) >= 1 and b"error" in resp.body,
                   str(resp.headers))
+            check("logged out: the 429 is not cacheable (Cache-Control: no-store)",
+                  resp.headers.get("Cache-Control") == "no-store", str(resp.headers))
             check("logged out: another address is not affected", (await hit(B)).status == 404)
             check("logged out: each limited hit is counted as an aggregated rate_limited event",
                   any(e == "rate_limited" and kw.get("ip") == A and kw["details"]["scope"] == "logged_out_proxy"
@@ -275,6 +277,25 @@ async def main():
                 fresh()
                 got, _ = await hits(A, 40, headers={"X-API-Key": full})
                 check("API key revoked: limited", first_429(got) == 31, str(got))
+                # An expired key that is still in the verified-key cache must be counted; one that
+                # has not expired yet (same stored format as http_create_api_key) must not be.
+                from datetime import datetime, timedelta, timezone
+                future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+                await d.conn.execute("UPDATE api_keys SET revoked = 0, expires_at = ? WHERE id = ?", (future, key_id))
+                await d.conn.commit()
+                server._api_key_remember(key_id, full, key_hash)
+                fresh()
+                got, _ = await hits(A, 100, headers={"X-API-Key": full})
+                check("API key verified and not expired yet: never limited", set(got) == {404}, str(set(got)))
+                past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+                await d.conn.execute("UPDATE api_keys SET expires_at = ? WHERE id = ?", (past, key_id))
+                await d.conn.commit()
+                check("setup: the expired key is still in the verified-key cache",
+                      server._api_key_cached_ok(key_id, full, key_hash))
+                fresh()
+                got, _ = await hits(A, 40, headers={"X-API-Key": full})
+                check("API key expired but still in the verified-key cache: counted, limited at 31",
+                      first_429(got) == 31, str(got))
             finally:
                 server._verify_api_key_offloop = real_verify
                 server._verified_api_keys.clear()
@@ -401,6 +422,24 @@ async def main():
                 check("settings route: each change is a security event and an audit entry",
                       len(evs) == 2 and all(e["user_id"] == alice and e["category"] == "security" for e in evs)
                       and bool(await d.get_audit_log(action="proxy_limit.update")), str(evs))
+                # both settings are written in one transaction, memory follows only after success
+                fresh()
+                await d.conn.execute("DELETE FROM settings WHERE key LIKE 'proxy_limit_%'")
+                await d.conn.execute(
+                    """CREATE TEMP TRIGGER fail_per_minute BEFORE INSERT ON settings
+                       WHEN NEW.key = 'proxy_limit_per_minute'
+                       BEGIN SELECT RAISE(ABORT, 'refused for the test'); END""")
+                await d.conn.commit()
+                try:
+                    r = await server.http_put_proxy_limit(_JsonReq({"enabled": False, "per_minute": 20}))
+                finally:
+                    await d.conn.execute("DROP TRIGGER fail_per_minute")
+                    await d.conn.commit()
+                cur = await d.conn.execute("SELECT key FROM settings WHERE key LIKE 'proxy_limit_%'")
+                check("settings route: a failed save writes neither setting and keeps the old values in memory",
+                      r.status == 500 and not await cur.fetchall()
+                      and server._proxy_limit_cfg == server.PROXY_LIMIT_DEFAULTS, f"{r.status} {server._proxy_limit_cfg}")
+                r = await server.http_put_proxy_limit(_JsonReq({"enabled": False}))
                 g = await server.http_get_proxy_limit(_JsonReq({}))
                 gb = __import__("json").loads(g.body)
                 check("settings route: GET shows the values, defaults and limits",
@@ -434,6 +473,8 @@ async def main():
                       and not server._is_ip_blocked(A) and not server._is_probe_blocked(A)
                       and not [r for r in await (await d.conn.execute("SELECT * FROM blocked_ips")).fetchall()],
                       f"{statuses.count(429)} {server._probe_strikes}")
+                check("the 429 through the real middleware order still says no-store",
+                      last.headers.get("Cache-Control") == "no-store", str(last.headers))
                 check("the 429 passes the security headers", last.status == 429
                       and "Strict-Transport-Security" in last.headers and last.headers.get("X-Frame-Options") == "SAMEORIGIN")
             finally:

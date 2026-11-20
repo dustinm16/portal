@@ -24367,9 +24367,14 @@ async def http_put_proxy_limit(request: web.Request) -> web.Response:
                 return web.json_response({"error": f"{key} must be a whole number from {lo} to {hi}"}, status=400)
         new[key] = value
     before = dict(_proxy_limit_cfg)
-    for key, value in new.items():
-        await db.set_setting(PROXY_LIMIT_SETTING_PREFIX + key,
-                             ("1" if value else "0") if key == "enabled" else str(int(value)))
+    # Both values in one transaction; memory follows only after the write succeeded.
+    try:
+        await db.set_settings({
+            PROXY_LIMIT_SETTING_PREFIX + key: ("1" if value else "0") if key == "enabled" else str(int(value))
+            for key, value in new.items()})
+    except Exception as e:
+        logger.warning(f"Could not save the logged-out proxy limit: {type(e).__name__}")
+        return web.json_response({"error": "Could not save the setting"}, status=500)
     _proxy_limit_cfg.update(new)
     changed = {k: v for k, v in new.items() if before.get(k) != v}
     if changed:
@@ -24649,7 +24654,7 @@ async def _proxy_limit_refusal(request: web.Request) -> Optional[web.Response]:
     security_event_nowait("rate_limited", ip=ip, details={"scope": "logged_out_proxy"})
     retry = max(1, int(math.ceil(wait)))
     return web.json_response({"error": "Too many requests, retry shortly"}, status=429,
-                             headers={"Retry-After": str(retry)})
+                             headers={"Retry-After": str(retry), "Cache-Control": "no-store"})
 
 
 @web.middleware
