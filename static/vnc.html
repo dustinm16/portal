@@ -108,16 +108,32 @@
         // Close codes the portal sends when the target is not a VNC server
         // (plugins/vnc.py). noVNC's disconnect event does not carry them, so
         // the page owns the WebSocket and listens for the close itself.
+        // 4010 is also the code of a shared connection whose share ended
+        // (server.py GRANT_ENDED_CLOSE_CODE); that close carries the reason
+        // "access ended", the RDP refusal carries its own reason, so the two
+        // are told apart by the reason.
         const REFUSALS = {
             4010: {
                 title: 'This host speaks RDP, not VNC',
-                text: 'The address and port answer as a Windows Remote Desktop (RDP) server. Portal can only open VNC desktops here. Use an RDP client, or run a VNC server on the host and point this connection at its VNC port.'
+                text: 'The address and port answers as a Windows Remote Desktop (RDP) server. Portal can only open VNC desktops here. Use an RDP client, or run a VNC server on the host and point this connection at its VNC port.',
+                status: 'Not a VNC host'
             },
             4011: {
                 title: 'This host does not speak VNC',
-                text: 'The address and port answered with something other than a VNC (RFB) handshake. Check the host and port of this connection.'
+                text: 'The address and port answered with something other than a VNC (RFB) handshake. Check the host and port of this connection.',
+                status: 'Not a VNC host'
             }
         };
+        const ACCESS_ENDED = {
+            title: 'Access ended',
+            text: 'Your access to this connection ended: the share expired or was withdrawn. Ask its owner to share it again.',
+            status: 'Access ended'
+        };
+
+        function refusalFor(code, reason) {
+            if (code === 4010 && String(reason || '').trim().toLowerCase() === 'access ended') return ACCESS_ENDED;
+            return REFUSALS[code];
+        }
 
         function showRefusal(info) {
             refused = true;
@@ -125,7 +141,7 @@
             document.getElementById('vnc-refusal-title').textContent = info.title;
             document.getElementById('vnc-refusal-text').textContent = info.text;
             document.getElementById('vnc-refusal').style.display = 'block';
-            updateStatus('disconnected', 'Not a VNC host');
+            updateStatus('disconnected', info.status);
         }
 
         function connect() {
@@ -139,7 +155,7 @@
             try {
                 const channel = new WebSocket(wsUrl);
                 channel.addEventListener('close', (ev) => {
-                    const info = REFUSALS[ev.code];
+                    const info = refusalFor(ev.code, ev.reason);
                     if (info) showRefusal(info);
                 });
                 rfb = new RFB(
