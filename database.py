@@ -3672,6 +3672,12 @@ class Database:
             conn["share_expires_in"] = info["expires_in"]
         return out
 
+    async def list_owned_connection_ids(self, user_id: int) -> list[int]:
+        """Ids of the connections a user owns (no config read, nothing decrypted)."""
+        cursor = await self.conn.execute(
+            "SELECT id FROM user_connections WHERE user_id = ?", (user_id,))
+        return [r["id"] for r in await cursor.fetchall()]
+
     async def get_user_connections(self, user_id: int) -> list[dict]:
         """Get all connections for a user — owned (pinned first) then shared-with."""
         cursor = await self.conn.execute(

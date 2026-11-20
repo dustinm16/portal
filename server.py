@@ -503,6 +503,19 @@ async def close_grant_dependents(kind: str, resource_id: int, user_id: int = Non
     return await _close_grant_targets(targets)
 
 
+async def close_grant_dependents_for(connection_ids=(), grantee_id: int = None) -> int:
+    """End what is open through any share of the given connections (a deleted owner's) and
+    whatever the given user holds open as a grantee of any share or grant (a deleted
+    account's), in one pass."""
+    ids = {int(i) for i in connection_ids}
+    keys = [k for k in list(_grant_dependents)
+            if (k[0] == "conn" and k[1] in ids) or (grantee_id is not None and k[2] == int(grantee_id))]
+    targets = []
+    for key in keys:
+        targets.extend(list(_grant_dependents.pop(key, ())))
+    return await _close_grant_targets(targets)
+
+
 async def _track_shared_access(connection: dict, user_id: int, obj) -> bool:
     """Record that `obj` (a socket, proxied call or SSH connection) was opened through a
     share, then check the share is still live. False means it ended in between (a revoke
@@ -23986,6 +23999,10 @@ async def http_delete_user(request: web.Request) -> web.Response:
     # Superadmins can delete anyone (except themselves, checked above)
     target_role = target_user.get("role") or ("admin" if target_user.get("is_admin") else "user")
 
+    # The connections the account owns go with it, and their shares with them: the ids are
+    # read first, to end what grantees hold open through those shares afterwards.
+    owned_connection_ids = await db.list_owned_connection_ids(user_id)
+
     # Delete user and all associated data via ORM
     await db.delete_user(user_id)
     # The user's streams went with the account
@@ -23995,6 +24012,13 @@ async def http_delete_user(request: web.Request) -> web.Response:
         await close_user_websockets(user_id)
     except Exception as e:
         logger.warning(f"Could not close sockets of deleted user {user_id}: {e}")
+    # Grantees' terminals, relays and proxied calls on the owner's connections end (4010),
+    # and so does anything the deleted account still held open as a grantee.
+    try:
+        await close_grant_dependents_for(owned_connection_ids, grantee_id=user_id)
+    except Exception as e:
+        logger.warning(f"Could not close shared sessions of deleted user {user_id}: {e}")
+
     logger.info(f"User {target_user['username']} deleted by superadmin {token.user_id}")
     actor_name = await _username_of(token.user_id)
     await audit_log("user_delete", token.user_id, actor_name or "unknown",
