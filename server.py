@@ -5430,6 +5430,49 @@ async def _announce_go_live(stream_id: int) -> None:
                            f"{type(e).__name__}: {e}")
 
 
+async def _mark_stream_live(stream: dict, ip: str) -> None:
+    """A publisher arrived (the MediaMTX hook for RTMP and the like, or the WHIP proxy):
+    mark the stream live and, on a change of state, record it, tell the stream's chat and
+    announce it (notification, card and webhook) once per cooldown.
+
+    The one place both ways of publishing go through. The stream is read again here: the
+    caller's copy may be older than a publish hook that ran in the meantime. The claim is
+    one conditional UPDATE taken under the stream state lock, so a retried hook, an encoder
+    that restarts quickly, or the same stream arriving by both paths announces only once.
+    The announcement carries no key; the watch page resolves access itself."""
+    stream_id = stream["id"]
+    current = await db.get_user_stream(stream_id) or stream
+    was_live = current.get("is_live") == 1
+    await db.set_stream_live(stream_id, True)
+    if was_live:
+        return
+    stream = current
+    logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
+    await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_live", stream), f"Stream '{stream['name']}' went live", ip)
+    # Notify chat channel that stream went live
+    if stream.get("chat_channel_id"):
+        channel = await db.get_chat_channel(stream["chat_channel_id"])
+        if channel:
+            await broadcast_to_channel(channel["name"], {
+                "type": "stream_status",
+                "stream_id": stream_id,
+                "is_live": 1
+            })
+    try:
+        async with _stream_state_lock:
+            announce = await db.claim_golive(
+                stream_id, int(_golive_now()), _GOLIVE_COOLDOWN_SECONDS)
+    except Exception as e:
+        # A database fault must not stop a stream; nothing is announced
+        logger.warning(f"Go-live claim for stream {stream_id} failed, so nothing is announced "
+                       f"for this go-live: {type(e).__name__}: {e}")
+        announce = None
+    if announce:
+        _spawn_go_live(stream_id)          # fan-out in the background: the hook answers at once
+    elif announce is False:
+        logger.info(f"Stream {stream['name']}: go-live not announced again (cooldown)")
+
+
 async def http_create_user_stream(request: web.Request) -> web.Response:
     """Create a new stream for the authenticated user."""
     token = await authenticate_request(request)
@@ -8718,38 +8761,8 @@ async def http_stream_auth(request: web.Request) -> web.Response:
             grace_task.cancel()
             logger.info(f"Stream {stream['name']} reconnected, cancelled disconnect grace period")
 
-        # Mark stream as live (only log activity on state change)
-        was_live = stream.get("is_live") == 1
-        await db.set_stream_live(stream_id, True)
-        if not was_live:
-            logger.info(f"Stream {stream['name']} started by user {stream.get('owner_username', '?')} from {ip}")
-            await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_live", stream), f"Stream '{stream['name']}' went live", ip)
-            # Notify chat channel that stream went live
-            if stream.get("chat_channel_id"):
-                channel = await db.get_chat_channel(stream["chat_channel_id"])
-                if channel:
-                    await broadcast_to_channel(channel["name"], {
-                        "type": "stream_status",
-                        "stream_id": stream_id,
-                        "is_live": 1
-                    })
-            # Announce it (notification and webhook), once per cooldown. The check and
-            # the set are one conditional UPDATE, taken under the stream state lock, so
-            # a retried hook or an encoder that restarts quickly announces only once.
-            # The announcement carries no key; the watch page resolves access itself.
-            try:
-                async with _stream_state_lock:
-                    announce = await db.claim_golive(
-                        stream_id, int(_golive_now()), _GOLIVE_COOLDOWN_SECONDS)
-            except Exception as e:
-                # A database fault must not stop a stream; nothing is announced
-                logger.warning(f"Go-live claim for stream {stream_id} failed, so nothing is announced "
-                               f"for this go-live: {type(e).__name__}: {e}")
-                announce = None
-            if announce:
-                _spawn_go_live(stream_id)          # fan-out in the background: the hook answers at once
-            elif announce is False:
-                logger.info(f"Stream {stream['name']}: go-live not announced again (cooldown)")
+        # Mark stream as live; the announcement is the same for every way of publishing
+        await _mark_stream_live(stream, ip)
 
         # Start VOD recording on every publish (guards against duplicates internally)
         # Use the actual MediaMTX path key (rtmp_ token or live_ key)
@@ -9528,8 +9541,8 @@ async def http_stream_webrtc_whip(request: web.Request) -> web.Response:
                 sdp_answer = await resp.text()
 
                 if resp.status == 201:
-                    # Mark stream as live
-                    await db.set_stream_live(stream["id"], True)
+                    # Mark stream as live and announce it, the same way as a hook publish
+                    await _mark_stream_live(stream, get_client_ip(request))
                     logger.info(f"Stream {stream['name']} started via WHIP")
 
                     # Rewrite Location header

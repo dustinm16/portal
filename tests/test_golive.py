@@ -610,6 +610,80 @@ async def test_an_announcement_that_fails_before_sending_is_logged_clearly(w):
     assert w.sent == []
 
 
+class WhipRequest(HookRequest):
+    def __init__(self, key):
+        super().__init__({})
+        self.match_info = {"stream_key": key}
+
+    async def text(self):
+        return "v=0\r\n"
+
+
+class FakeMediaMTX:
+    """A loopback WHIP endpoint that answers 201 with a session Location, like MediaMTX."""
+
+    async def __aenter__(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        async def whip(request):
+            await asyncio.sleep(0)
+            return web.Response(status=201, text="v=0\r\n", content_type="application/sdp",
+                                headers={"Location": "/x/whip/abc123"})
+        app = web.Application()
+        app.router.add_post("/{key}/whip", whip)
+        self.srv = TestServer(app)
+        await self.srv.start_server()
+        self.real = server._get_mediamtx_config
+        port = self.srv.port
+
+        async def cfg():
+            return {"webrtc_port": port}
+        server._get_mediamtx_config = cfg
+        return self
+
+    async def __aexit__(self, *exc):
+        server._get_mediamtx_config = self.real
+        await self.srv.close()
+
+
+async def _whip(w, label="pub"):
+    resp = await server.http_stream_webrtc_whip(WhipRequest(w.keys[label]))
+    await w.drain()
+    return resp.status
+
+
+@with_world
+async def test_a_browser_publish_over_whip_is_announced_once(w):
+    async with FakeMediaMTX():
+        assert await _whip(w) == 201
+        assert len(await w.notes("m1")) == 1, "a WHIP publish announced nothing"
+        assert len(w.live_events("sys")) == 1
+        # the same publish again (a retried offer) stays inside the cooldown
+        await w.go_offline()
+        assert await _whip(w) == 201
+    assert len(await w.notes("m1")) == 1 and len(w.live_events("sys")) == 1
+
+
+@with_world
+async def test_whip_and_the_media_hook_together_announce_once(w):
+    async with FakeMediaMTX():
+        assert await _whip(w) == 201
+        assert await w.publish() == 200                       # MediaMTX's own publish hook after it
+        assert len(await w.notes("m1")) == 1 and len(w.live_events("sys")) == 1
+        await w.go_offline()
+        w.clock.now += 3600
+        assert await w.publish() == 200                       # hook first this time
+        assert await _whip(w) == 201
+        assert len(await w.notes("m1")) == 2 and len(w.live_events("sys")) == 2
+        # both at the same moment, both having read the stream as offline: the claim decides
+        await w.go_offline()
+        w.clock.now += 3600
+        first, second = await asyncio.gather(_whip(w), w.publish())
+        assert (first, second) == (201, 200)
+    assert len(await w.notes("m1")) == 3 and len(w.live_events("sys")) == 3
+
+
 @with_world
 async def test_a_database_made_before_the_columns_existed_is_upgraded_on_connect(w):
     """An existing database (here: one with the columns removed, as 1.15.0 left it) gets the two
