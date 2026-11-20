@@ -243,25 +243,47 @@ class ViewerTracker:
 
 
 class RateWindow:
-    """At most `limit` hits per `window` seconds for each key; the table is bounded."""
+    """At most `limit` hits per `window` seconds for each key; the table is bounded.
+
+    The table is kept in order of each key's latest hit (a key that hits again moves to the
+    end), so when it is full the expired keys are dropped from the front and, if that is not
+    enough, the key that was quiet the longest: a newcomer is never refused for the table's
+    sake, and a flood of new keys can only push out the oldest ones."""
 
     def __init__(self, limit: int, window: float, clock: Callable[[], float] = monotonic,
                  max_keys: int = 10000):
         self.limit, self.window, self._clock, self.max_keys = limit, window, clock, max_keys
         self._hits: dict[str, list[float]] = {}
 
+    def _make_room(self, start: float) -> None:
+        for k in list(self._hits):
+            v = self._hits[k]
+            if v and v[-1] > start:
+                break                       # in order of latest hit: the rest are live
+            del self._hits[k]
+        while len(self._hits) >= self.max_keys:
+            del self._hits[next(iter(self._hits))]
+
+    def full(self, key: str) -> bool:
+        """True when `key` has used its allowance now; counts nothing."""
+        start = self._clock() - self.window
+        return sum(1 for t in self._hits.get(key, ()) if t > start) >= self.limit
+
     def allow(self, key: str) -> bool:
         now = self._clock()
         start = now - self.window
         if key not in self._hits and len(self._hits) >= self.max_keys:
-            for k in [k for k, v in self._hits.items() if not v or v[-1] <= start]:
-                del self._hits[k]
-            if len(self._hits) >= self.max_keys:
-                return False        # full of live keys: refuse the newcomer, never evict others
-        hits = [t for t in self._hits.get(key, ()) if t > start]
+            self._make_room(start)
+        hits = [t for t in self._hits.pop(key, ()) if t > start]
         if len(hits) >= self.limit:
             self._hits[key] = hits
             return False
         hits.append(now)
         self._hits[key] = hits
         return True
+
+    def refund(self, key: str) -> None:
+        """Take back the latest hit of `key` (the request turned out not to count)."""
+        hits = self._hits.get(key)
+        if hits:
+            hits.pop()

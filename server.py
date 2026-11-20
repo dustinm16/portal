@@ -9495,8 +9495,16 @@ def _playback_headers(stream: dict, cache_control: str = "no-cache", extra: Opti
 # task turns it into user_streams.viewer_count. Refused requests never reach _viewer_touch.
 _viewers = _viewers_mod.ViewerTracker()
 # Heartbeats per address (hashed) before the gate, so a flood of keys costs no database read.
-_VIEWER_BEAT_LIMIT = 120
+# A viewer beats every 10 s, 6 a minute: 300 a minute keeps about 40 viewers behind one address
+# (a school, an office, a carrier-grade NAT) counted with room for the first beats and jitter.
+# A heartbeat the gate refused (404) does not stay in that allowance: it is taken back and
+# charged to a small allowance of its own, so somebody behind the same address who is refused
+# (banned, a stale tab) cannot use up the others' beats. When that small allowance is used
+# up, every heartbeat of the address answers 429 for the rest of the minute.
+_VIEWER_BEAT_LIMIT = 300
+_VIEWER_REFUSED_LIMIT = 60
 _viewer_beat_rate = _viewers_mod.RateWindow(_VIEWER_BEAT_LIMIT, 60.0)
+_viewer_refused_rate = _viewers_mod.RateWindow(_VIEWER_REFUSED_LIMIT, 60.0)
 _VIEWER_SYNC_SECONDS = 5
 
 
@@ -9520,11 +9528,14 @@ async def http_stream_viewer_beat(request: web.Request) -> web.Response:
     Goes through the same read gate as playback and answers the same 404 when refused, so it
     cannot be used to count somebody who may not watch or to probe a private stream."""
     key = request.match_info.get("stream_key", "")
-    if not _viewer_beat_rate.allow(_viewers.address_hash(get_client_ip(request))):
+    ah = _viewers.address_hash(get_client_ip(request))
+    if _viewer_refused_rate.full(ah) or not _viewer_beat_rate.allow(ah):
         return web.json_response({"error": "Too many requests"}, status=429,
                                  headers={"Retry-After": "10", "Cache-Control": "no-store"})
     stream, error = await _validate_stream_access(key, request=request)
     if error:
+        _viewer_beat_rate.refund(ah)        # not a viewer's beat: charged to the refusals instead
+        _viewer_refused_rate.allow(ah)
         return _stream_not_found()
     _viewer_touch(request, stream, _viewers_mod.BEAT_WINDOW)
     return web.json_response({"ok": True}, headers={"Cache-Control": "no-store"})

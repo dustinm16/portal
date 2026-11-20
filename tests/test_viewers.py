@@ -208,9 +208,21 @@ def test_rate_window_is_bounded_and_per_key():
     assert r.allow("a")
     for k in "cde":
         r.allow(k)
-    assert not r.allow("new"), "a full table refuses a newcomer instead of evicting somebody"
-    c.t += 61
+    # full of live keys: the newcomer is let in and the quietest key makes room for it
     assert r.allow("new")
+    assert len(r._hits) <= 4 and "new" in r._hits and "a" not in r._hits
+    c.t += 61
+    assert r.allow("newer") and len(r._hits) <= 4
+
+
+def test_rate_window_flood_of_new_keys_never_grows_the_table_or_refuses_one():
+    c = Clock()
+    r = viewers.RateWindow(2, 60, clock=c, max_keys=50)
+    assert all(r.allow(f"k{i}") for i in range(500))
+    assert len(r._hits) <= 50
+    assert r.full("k499") is False and r.allow("k499") and r.full("k499")
+    r.refund("k499")
+    assert not r.full("k499")
 
 
 # --- part 2: the handlers -----------------------------------------------------------------
@@ -219,6 +231,7 @@ def fresh():
     clock = Clock()
     server._viewers = viewers.ViewerTracker(clock)
     server._viewer_beat_rate = viewers.RateWindow(server._VIEWER_BEAT_LIMIT, 60.0, clock=clock)
+    server._viewer_refused_rate = viewers.RateWindow(server._VIEWER_REFUSED_LIMIT, 60.0, clock=clock)
     server._rtmp_stream_paths.clear()
     return clock
 
@@ -448,12 +461,33 @@ def test_heartbeat_is_rate_limited_before_the_gate():
     async def body(w):
         fresh()
         key = w.streams["private"]["pub"]
-        statuses = [(await beat(w, key, "member", peer="203.0.113.77")).status
-                    for _ in range(server._VIEWER_BEAT_LIMIT + 3)]
-        assert statuses[:server._VIEWER_BEAT_LIMIT] == [404] * server._VIEWER_BEAT_LIMIT
+        n = server._VIEWER_REFUSED_LIMIT
+        statuses = [(await beat(w, key, "member", peer="203.0.113.77")).status for _ in range(n + 3)]
+        assert statuses[:n] == [404] * n
         assert statuses[-1] == 429
         # another address is not affected
         assert (await beat(w, key, "member", peer="203.0.113.78")).status == 404
+    run(body)
+
+
+def test_forty_viewers_behind_one_address_and_refusals_do_not_eat_their_allowance():
+    async def body(w):
+        clock = fresh()
+        pub, private = w.streams["open"]["pub"], w.streams["private"]["pub"]
+        peer = "203.0.113.50"
+        # a refused viewer behind the same address (banned, stale tab) beats 55 times
+        assert [(await beat(w, private, "member", peer=peer)).status for _ in range(55)] == [404] * 55
+        # 41 viewers beat every 10 s for a minute: 246 beats; with the 55 refusals that would be 301
+        # hits of one allowance (the limit is 300), but the refusals took theirs back
+        seen = set()
+        for _round in range(6):
+            for v in range(41):
+                r = await beat(w, pub, None, peer=peer, headers={"X-Viewer-Id": f"viewer-{v:02d}-" + "x" * 10})
+                seen.add(r.status)
+            clock.t += 10 if _round < 5 else 0
+        assert seen == {200}, seen
+        # and the refusals alone, even without a single viewer, are still bounded
+        assert server._viewer_beat_rate.full(server._viewers.address_hash(peer)) is False
     run(body)
 
 
