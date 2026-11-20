@@ -4,6 +4,7 @@ before upgrading, and no bullet is repeated.
 Run: venv/bin/python tests/test_readme_notes.py
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -171,7 +172,7 @@ says17("what was not tested", "not tested", "hls.js", "safari", "mediamtx")
 
 says17("game field", "live title and game", "60 characters", "`game`", "`stream_info`", "`{game}`", "/api/streams/games")
 says17("game privacy", "judged per socket", "owner and administrators", "never contributes its game")
-says17("game not tested", "not tested (game)", "datalist")
+says17("game not tested", "datalist", "40 viewers behind one address")
 
 says17("chat controls: the helper and its order", "`chat_mod_level(channel, user)`", "looked up on every call", "stream mod", "real stream chat",
        "stream b", "no longer read", "does not let them watch")
@@ -184,8 +185,28 @@ says17("chat controls: slow mode", "`set_slowmode`", "0, 5, 15 or 30", "`slowmod
 says17("chat controls: watch page", "pop-out", "pinned", "poll", "badge", "go-live cards", "plain text")
 says17("chat controls: playback ban", "`_stream_read_allowed`", "same `404`", "cleared at every ban and unban", "`403` with `{\"banned\": true}`",
        "never confirms a private stream", "never banned from viewing", "open-link stream can still be watched signed out", "already flowing")
-says17("chat controls: not tested", "not tested (chat controls)", "browser", "real hls playlist")
-says17("chat controls: fixes after review", "fixes after review (chat controls)", "owner-made ban", "lifts any stream ban", "`pinned_by_username`", "not tested (fixes after review)")
+says17("chat controls: not tested", "no browser", "real hls playlist", "temporary database")
+says17("chat controls: lifting a stream ban", "lifting a stream ban", "administrator or a superadmin", "by ban id", "`pinned_by_username`",
+       "can lift a ban on staff")
+
+# one coherent section: one statement of each fact, and what the three lanes said agrees
+bullets17 = [b.strip() for b in re.findall(r"^- (.*)$", sec17, re.M)]
+check("1.17.0: no bullet is repeated (same first 80 characters)", len({b[:80] for b in bullets17}) == len(bullets17))
+check("1.17.0: no bullet is a left-over per-lane 'Not tested (...)', 'Fixes after review' or 'Database and static files'",
+      not any(re.match(r"\*\*(Not tested \(|Fixes after review|Database and static files)", b) for b in bullets17))
+sv = re.findall(r"`streams\.js`[^.]*?version (\d+)|`streams\.js` (?:is|moved to) (?:now )?(?:version |`\?v=)(\d+)", sec17)
+index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
+stated = {a or b for a, b in sv}
+check("1.17.0: exactly one streams.js version is stated and it is the one index.html loads",
+      stated == {real_v}, f"stated {stated}, index.html {real_v}")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ.setdefault("JWT_SECRET", "x" * 64)
+import server as _server  # noqa: E402
+check("1.17.0: the heartbeat limit stated is the one in the code",
+      f"{_server._VIEWER_BEAT_LIMIT} requests per minute" in sec17 and f"{_server._VIEWER_REFUSED_LIMIT} refusals per minute" in sec17)
+says17("external RTMPS and RTSP readers are no longer counted", "rtmps or rtsp port", "no longer counted")
+says17("an external WHEP player must send the heartbeat", "external whep player", "heartbeat route", "`patch`")
 
 # --- README: the live streaming section and the pictures of it ----------------------
 ls = re.search(r"### Live Streaming\n(.*?)\n### ", text, re.S)
