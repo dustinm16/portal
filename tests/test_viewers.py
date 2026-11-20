@@ -173,6 +173,33 @@ def test_forget_except_drops_streams_that_are_not_live():
     assert t.count(1) == 0 and t.finish(1) is None and t.count(2) == 1
 
 
+def test_forget_keeps_a_session_that_began_after_the_snapshot():
+    t = viewers.ViewerTracker(Clock())
+    t.start_session(1)
+    t.touch(1, user_id=1)
+    seen = t.generations()
+    t.start_session(2)                      # went live while the live list was being read
+    t.touch(2, user_id=1)
+    t.start_session(1)                      # went offline and live again in the same gap
+    t.touch(1, user_id=1)
+    t.forget_except([], seen)
+    assert t.count(1) == 1 and t.count(2) == 1
+    t.forget_except([], t.generations())    # a later pass, nothing new: now they are stale
+    assert t.count(1) == 0 and t.count(2) == 0 and t.finish(2) is None
+
+
+def test_end_audience_keeps_the_last_seconds_in_the_peak():
+    t = viewers.ViewerTracker(Clock())
+    t.start_session(1)
+    t.touch(1, user_id=1)
+    t.sample()                              # peak 1 at the last sync
+    for u in (2, 3):
+        t.touch(1, user_id=u)               # two more joined since, no sample taken
+    t.end_audience(1)
+    assert t.count(1) == 0
+    assert t.finish(1) == (3, 3)
+
+
 def test_rate_window_is_bounded_and_per_key():
     c = Clock()
     r = viewers.RateWindow(3, 60, clock=c, max_keys=4)
@@ -342,6 +369,50 @@ def test_a_viewer_who_stops_is_gone_and_only_changes_are_written():
         assert writes[-1] == (w.streams["public"]["id"], 0)
         assert await count_of(w, "public") == 0
     run(body)
+
+
+def test_a_stream_that_goes_live_while_the_sync_reads_its_list_keeps_its_session():
+    async def body(w):
+        fresh()
+        key = w.streams["public"]["pub"]
+        await beat(w, key, "member")
+        real_conn = w.db._connection
+
+        class Cur:
+            def __init__(self, cur):
+                self.cur = cur
+
+            async def fetchall(self):
+                rows = await self.cur.fetchall()
+                # the stream below went live after the SELECT ran, so it is not in `rows`
+                server._viewers.start_session(9999)
+                server._viewers.touch(9999, user_id=5)
+                return rows
+
+        class Spy:
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+            async def execute(self, sql, *a, **k):
+                cur = await real_conn.execute(sql, *a, **k)
+                return Cur(cur) if "FROM user_streams WHERE is_live" in sql else cur
+        w.db._connection = Spy()
+        try:
+            await server._viewer_sync_once()
+        finally:
+            w.db._connection = real_conn
+        assert server._viewers.count(9999) == 1, "the fresh session was wiped"
+        # the next pass sees it is not live in the database: it is forgotten then
+        await server._viewer_sync_once()
+        assert server._viewers.count(9999) == 0
+    run(body)
+
+
+def test_the_encoding_transition_takes_the_last_count_before_it_clears_the_audience():
+    src = Path(server.__file__).read_text(encoding="utf-8")
+    a = src.index("await db.set_stream_encoding(stream_id)")
+    chunk = src[a:a + 400]
+    assert "_viewers.end_audience(stream_id)" in chunk and "_viewers.clear_viewers(" not in chunk
 
 
 def test_heartbeat_is_rate_limited_before_the_gate():

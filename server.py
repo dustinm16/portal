@@ -7297,7 +7297,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
         if has_vod:
             # Transition to encoding state — VOD chunks still being finalized
             await db.set_stream_encoding(stream_id)
-            _viewers.clear_viewers(stream_id)       # the session's figures stay until it is offline
+            _viewers.end_audience(stream_id)        # last seconds into the peak; figures stay until offline
             logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
 
             # Broadcast encoding status to chat channel
@@ -9540,10 +9540,13 @@ async def _stream_set_offline(stream_id: int) -> bool:
 async def _viewer_sync_once() -> int:
     """Turn the viewer map into viewer_count; returns the number of rows written. A row is
     written only when its number changed, and only while the stream is live."""
+    # What the tracker holds is noted before the list is read: a stream that goes live while the
+    # read is under way is not in the list, and its fresh session must not be forgotten for that.
+    seen = _viewers.generations()
     cursor = await db.conn.execute("SELECT id, is_live, viewer_count FROM user_streams WHERE is_live != 0")
     rows = await cursor.fetchall()
     counts = _viewers.sample()
-    _viewers.forget_except([r["id"] for r in rows])
+    _viewers.forget_except([r["id"] for r in rows], seen)
     written = 0
     for r in rows:
         if r["is_live"] != 1:

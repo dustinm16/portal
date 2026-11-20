@@ -41,9 +41,10 @@ def valid_viewer_id(value) -> Optional[str]:
 
 
 class _Session:
-    __slots__ = ("peak", "seen")
+    __slots__ = ("peak", "seen", "gen")
 
-    def __init__(self):
+    def __init__(self, gen: int = 0):
+        self.gen = gen          # ViewerTracker.generation when the session began
         self.peak = 0
         self.seen: set = set()
 
@@ -58,6 +59,13 @@ class ViewerTracker:
         self._addr_of: dict[int, dict[str, str]] = {}
         self._addr_n: dict[int, Counter] = {}
         self._sessions: dict[int, _Session] = {}
+        # Raised whenever a session begins, so a caller that took generations() before an
+        # await can tell a session that began during it.
+        self._generation = 0
+
+    def _new_session(self) -> _Session:
+        self._generation += 1
+        return _Session(self._generation)
 
     def _hash(self, *parts: str) -> str:
         mac = hmac.new(self._salt, "\0".join(parts).encode("utf-8", "surrogatepass"), hashlib.sha256)
@@ -83,7 +91,7 @@ class ViewerTracker:
     def start_session(self, stream_id: int) -> None:
         """A stream went live: fresh peak and unique figures, nobody counted yet."""
         self.clear_viewers(stream_id)
-        self._sessions[stream_id] = _Session()
+        self._sessions[stream_id] = self._new_session()
 
     def finish(self, stream_id: int) -> Optional[tuple[int, int]]:
         """The stream's live session ended: (peak, unique), or None when there is no session
@@ -95,6 +103,14 @@ class ViewerTracker:
         peak = max(sess.peak, self.count(stream_id))
         self.clear_viewers(stream_id)
         return peak, len(sess.seen)
+
+    def end_audience(self, stream_id: int) -> None:
+        """The stream stopped being watchable but its session goes on (encoding): the highest
+        count up to this moment is kept for the session's figures, then nobody is counted."""
+        sess = self._sessions.get(stream_id)
+        if sess is not None:
+            sess.peak = max(sess.peak, self.count(stream_id))
+        self.clear_viewers(stream_id)
 
     def clear_viewers(self, stream_id: int) -> None:
         self._live.pop(stream_id, None)
@@ -139,10 +155,24 @@ class ViewerTracker:
             i for i in list(self._live.get(stream_id, ()))
             if i != keep and not (anonymous_only and i.startswith("u:"))])
 
-    def forget_except(self, stream_ids) -> None:
-        """Drop everything held for streams that are not in `stream_ids` (not live any more)."""
+    def generations(self) -> dict:
+        """Snapshot for forget_except: stream id -> generation of what is held for it now."""
+        out = {sid: -1 for sid in self._live}
+        out.update({sid: sess.gen for sid, sess in self._sessions.items()})
+        return out
+
+    def forget_except(self, stream_ids, seen=None) -> None:
+        """Drop everything held for streams that are not in `stream_ids` (not live any more).
+
+        With `seen` (generations() taken before the caller read its list of live streams) only
+        what was already there then is dropped: a session that began while the list was being
+        read belongs to a stream that went live after it, and is kept."""
         keep = set(stream_ids)
         for sid in {*self._live, *self._sessions} - keep:
+            if seen is not None:
+                sess = self._sessions.get(sid)
+                if sid not in seen or (sess is not None and sess.gen != seen[sid]):
+                    continue
             self.clear_viewers(sid)
             self._sessions.pop(sid, None)
 
@@ -174,7 +204,7 @@ class ViewerTracker:
         live[ident] = max(live.get(ident, 0.0), now + window)
         sess = self._sessions.get(stream_id)
         if sess is None:
-            sess = self._sessions[stream_id] = _Session()
+            sess = self._sessions[stream_id] = self._new_session()
         if len(sess.seen) < MAX_UNIQUE_PER_SESSION:
             sess.seen.add(ident)
         return True
