@@ -148,6 +148,27 @@ says16("the fixes made after review", "fixes made after review", "activity feed"
 says16("rollback", "rollback", "1.15.0")
 says16("what was not tested", "not tested", "vlc", "cloudflare")
 
+# --- 1.17.0 notes: viewer counts ----------------------------------------------------
+m17 = re.search(r"### Upgrade notes for 1\.17\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.17.0' section after the 1.16.0 one",
+      m17 is not None and text.index("### Upgrade notes for 1.17.0") > text.index("### Upgrade notes for 1.16.0"))
+sec17 = m17.group(1) if m17 else ""
+low17 = sec17.lower()
+
+
+def says17(name, *needles):
+    check(f"1.17.0 states: {name}", all(n.lower() in low17 for n in needles), str(needles))
+
+
+says17("the portal keeps the count and the old figure was wrong", "kept by the portal", "recorder", "`rtmp_` token")
+says17("what counts and the heartbeat", "playlist", "whep", "/api/stream/{key}/viewer", "same `404`", "`429`")
+says17("identity", "by account", "x-viewer-id", "salted hash")
+says17("bounds and timing", "5000", "5 anonymous", "15 seconds", "20 seconds", "only when it changes")
+says17("privacy", "in memory only", "no address", "only a number")
+says17("peak and unique", "last_peak_viewers", "last_unique_viewers", "nullable", "restart")
+says17("rollback", "rollback", "1.16.0")
+says17("what was not tested", "not tested", "hls.js", "safari", "mediamtx")
+
 # --- README: the live streaming section and the pictures of it ----------------------
 ls = re.search(r"### Live Streaming\n(.*?)\n### ", text, re.S)
 lstext = (ls.group(1) if ls else "").lower()

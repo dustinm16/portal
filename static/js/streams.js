@@ -264,6 +264,7 @@ async function showStreamDetails(streamId) {
                         ${stream.is_live === 1 ? 'LIVE' : stream.is_live === 2 ? 'Encoding VODs...' : 'Offline'}
                         ${stream.is_live === 1 ? `(${stream.viewer_count || 0} viewers)` : ''}
                     </p>
+                    ${stream.last_peak_viewers != null ? `<p class="info-description">Last session: peak ${stream.last_peak_viewers}, ${stream.last_unique_viewers != null ? stream.last_unique_viewers : 0} unique viewers</p>` : ''}
                 </div>
 
                 <div class="info-section">

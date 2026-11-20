@@ -1091,10 +1091,55 @@
             updatePipButton();
         }
 
+        // Viewer count. The portal counts a viewer when its playlist fetches and a heartbeat reach
+        // it. The random id is made for this page load only, never stored, and is used by the
+        // portal only for a viewer who is not signed in. A native HLS player (Safari) cannot set
+        // headers on its own requests, so there the heartbeat sends no id either and the portal
+        // recognises the same viewer by the same fallback on both.
+        const viewerId = (() => {
+            try {
+                const bytes = new Uint8Array(18);
+                crypto.getRandomValues(bytes);
+                return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_');
+            } catch (e) { return ''; }
+        })();
+        let viewerBeatTimer = null;
+        let viewerBeatNative = false;
+
+        async function sendViewerBeat() {
+            const video = document.getElementById('stream-video');
+            if (!streamData || streamData.is_live !== 1 || !video || video.paused || video.ended) return;
+            const viewKey = streamData.public_key || streamData.stream_key;
+            try {
+                const headers = {};
+                if (viewerId && !viewerBeatNative) headers['X-Viewer-Id'] = viewerId;
+                const resp = await fetch(`/api/stream/${encodeURIComponent(viewKey)}/viewer`, {
+                    method: 'POST', credentials: 'include', headers
+                });
+                if (resp.status === 404) stopViewerBeat();    // no longer allowed to watch
+            } catch (e) { /* the next beat tries again */ }
+        }
+
+        function startViewerBeat(native) {
+            viewerBeatNative = !!native;
+            if (viewerBeatTimer) return;
+            const video = document.getElementById('stream-video');
+            video.addEventListener('playing', sendViewerBeat);
+            viewerBeatTimer = setInterval(sendViewerBeat, 10000);
+        }
+
+        function stopViewerBeat() {
+            if (viewerBeatTimer) clearInterval(viewerBeatTimer);
+            viewerBeatTimer = null;
+            const video = document.getElementById('stream-video');
+            if (video) video.removeEventListener('playing', sendViewerBeat);
+        }
+
         function getHlsConfig(bufferSetting) {
             const preset = bufferPresets[bufferSetting] || bufferPresets.normal;
             return {
                 enableWorker: true,
+                xhrSetup: (xhr) => { if (viewerId) xhr.setRequestHeader('X-Viewer-Id', viewerId); },
                 lowLatencyMode: bufferSetting === 'low',
                 backBufferLength: 30,
                 ...preset
@@ -1134,6 +1179,7 @@
                     updateQualityIndicator(data.level);
                 });
 
+                startViewerBeat(false);
                 hlsPlayer.on(Hls.Events.ERROR, function(event, data) {
                     if (data.fatal) {
                         console.error('HLS error:', data);
@@ -1144,6 +1190,7 @@
                 video.src = hlsUrl;
                 // The bar stays, reduced to the PiP button (see .native-hls)
                 document.querySelector('.player-controls').classList.add('native-hls');
+                startViewerBeat(true);
             } else {
                 console.error('HLS not supported');
             }
@@ -1348,6 +1395,7 @@
                     showEncodingMessage();
                 } else {
                     showOfflineMessage();
+                    stopViewerBeat();
                     if (hlsPlayer) {
                         hlsPlayer.destroy();
                         hlsPlayer = null;
@@ -2052,6 +2100,7 @@
         // Clean up on close
         window.addEventListener('beforeunload', () => {
             if (refreshInterval) clearInterval(refreshInterval);
+            stopViewerBeat();
             if (chatWs) chatWs.close();
             if (hlsPlayer) hlsPlayer.destroy();
             stopStatsUpdates();

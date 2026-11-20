@@ -601,7 +601,7 @@ def test_every_playback_route_uses_the_decision():
     not call the key lookups directly."""
     src = (ROOT / "server.py").read_text()
     for name in ("http_stream_hls_proxy", "http_stream_thumbnail", "http_stream_info",
-                 "http_stream_webrtc_whep"):
+                 "http_stream_webrtc_whep", "http_stream_viewer_beat"):
         start = src.index(f"async def {name}(")
         end = src.index("\nasync def ", start + 10)
         chunk = src[start:end]

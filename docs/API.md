@@ -1411,6 +1411,21 @@ The session calls (`PATCH` and `DELETE /api/stream/{key}/webrtc/session/{id}`) n
 
 ---
 
+#### POST /api/stream/{key}/viewer
+The watch page's heartbeat (1.17.0), sent every 10 seconds while the video plays. It tells the portal that this viewer is still watching so the stream's `viewer_count` is right; it carries no body and is not needed for playback to work.
+
+**Key Types:** `pub_xxx` (or `live_xxx`, which only names the stream).
+
+**Access:** the same single rule and the same credentials as playback (see HLS above). A request that is not allowed to watch, a key that matches nothing and a stream key used as a credential all answer the same `404` with `{"error": "Stream not found"}`, and count nobody.
+
+**Who is one viewer:** a signed-in viewer is the account (several tabs count once). A viewer who is not signed in (open-link streams) is identified by the optional request header `X-Viewer-Id` (16 to 64 characters from `A-Z a-z 0-9 - _`; any other value is ignored), or, without it, by a salted hash of the client address and `User-Agent` (the portal's watch page sends the header, but it requires a sign-in, so a logged-out viewer is normally a player that sends none). At most 5 anonymous viewers per address and 5000 viewers per stream are counted. Playlist fetches (`GET .../hls/*.m3u8`) and WHEP offers count in the same way; segments, thumbnails and the info route do not. Nothing about who is watching is stored, logged or returned.
+
+**Response:** `200` with `{"ok": true}` (also for a stream that is not live: nothing is counted then). `429` with `Retry-After` when one client address sends more than 120 heartbeats in a minute; this is checked before the stream is looked up.
+
+A viewer drops out of the count 15 seconds after the last heartbeat (20 seconds after the last playlist fetch); `viewer_count` is refreshed every 5 seconds. The owner's stream detail (`GET /api/streams/{id}` and the list) also carries `last_peak_viewers` and `last_unique_viewers`, the highest count and the number of distinct viewers of the last finished live session (`null` until one is recorded); other members get neither field.
+
+---
+
 #### POST /api/stream/{key}/webrtc/whip
 WebRTC WHIP endpoint for publishing. **Same-network only:** only the signaling goes through Portal; the media needs a direct path to MediaMTX's WebRTC port (see Streaming Configuration). Use RTMPS from the internet.
 

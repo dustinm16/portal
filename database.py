@@ -660,6 +660,10 @@ MIGRATIONS = [
     # Rows that exist now keep today's behaviour ('everyone') through this default; a stream
     # created from now on is inserted with 'followers'.
     "ALTER TABLE user_streams ADD COLUMN golive_audience TEXT DEFAULT 'everyone'",
+    # Peak and unique viewers of the last live session, written when the stream goes offline
+    # (NULL: no session recorded yet, e.g. rows from before this was kept)
+    "ALTER TABLE user_streams ADD COLUMN last_peak_viewers INTEGER",
+    "ALTER TABLE user_streams ADD COLUMN last_unique_viewers INTEGER",
     # Follows: a member follows a stream to hear when it goes live. Private to the member.
     """CREATE TABLE IF NOT EXISTS stream_follow (
         user_id INTEGER NOT NULL,
@@ -4359,8 +4363,10 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount
 
-    async def set_stream_live(self, stream_id: int, is_live: bool) -> bool:
-        """Set stream live status and update timestamps."""
+    async def set_stream_live(self, stream_id: int, is_live: bool, session_stats=None) -> bool:
+        """Set stream live status and update timestamps. Going offline may carry
+        session_stats=(peak, unique) viewers of the session that ended; None leaves the
+        stored figures as they are."""
         now = datetime.now(timezone.utc).isoformat()
         if is_live:
             cursor = await self.conn.execute(
@@ -4373,10 +4379,22 @@ class Database:
             cursor = await self.conn.execute(
                 """UPDATE user_streams
                    SET is_live = 0, ended_at = ?, viewer_count = 0, updated_at = ?,
-                       total_views = total_views + viewer_count
+                       total_views = total_views + viewer_count,
+                       last_peak_viewers = COALESCE(?, last_peak_viewers),
+                       last_unique_viewers = COALESCE(?, last_unique_viewers)
                    WHERE id = ?""",
-                (now, now, stream_id)
+                (now, now, session_stats[0] if session_stats else None,
+                 session_stats[1] if session_stats else None, stream_id)
             )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_live_viewer_count(self, stream_id: int, count: int) -> bool:
+        """Write the viewer count of a stream that is live now (a late write cannot bring a
+        count back to a stream that has just gone offline)."""
+        cursor = await self.conn.execute(
+            "UPDATE user_streams SET viewer_count = ? WHERE id = ? AND is_live = 1",
+            (int(count), stream_id))
         await self.conn.commit()
         return cursor.rowcount > 0
 

@@ -133,6 +133,7 @@ from host_check import (
     _SSRFSafeResolver, _SSRFSafeConnector,
 )
 import alerts
+import viewers as _viewers_mod
 import backup_manager
 import ipguard
 import update_manager
@@ -5459,6 +5460,8 @@ async def _mark_stream_live(stream: dict, ip: str) -> None:
     current = await db.get_user_stream(stream_id) or stream
     was_live = current.get("is_live") == 1
     await db.set_stream_live(stream_id, True)
+    if not was_live:
+        _viewers.start_session(stream_id)       # fresh peak and unique figures
     if was_live:
         return
     stream = current
@@ -6988,6 +6991,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
         if has_vod:
             # Transition to encoding state — VOD chunks still being finalized
             await db.set_stream_encoding(stream_id)
+            _viewers.clear_viewers(stream_id)       # the session's figures stay until it is offline
             logger.info(f"Stream {stream_name} ended (after grace period), encoding VODs...")
 
             # Broadcast encoding status to chat channel
@@ -7004,7 +7008,7 @@ async def _handle_disconnect_grace(stream: dict) -> None:
             asyncio.create_task(_finalize_stream_offline(stream))
         else:
             # No VOD recording — go straight to offline
-            await db.set_stream_live(stream_id, False)
+            await _stream_set_offline(stream_id)
             logger.info(f"Stream {stream_name} ended (after grace period)")
             await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_offline", stream), f"Stream '{stream_name}' went offline")
             asyncio.create_task(fire_webhook_event("stream.offline", {
@@ -7052,7 +7056,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
         await stop_vod_recording(stream_id)
 
         # Now transition to fully offline
-        await db.set_stream_live(stream_id, False)
+        await _stream_set_offline(stream_id)
         logger.info(f"Stream {stream_name} VOD finalized, now offline")
         await db.log_activity(stream.get("user_id"), get_display_name(stream), _stream_activity_type("stream_offline", stream), f"Stream '{stream_name}' went offline")
         asyncio.create_task(fire_webhook_event("stream.offline", {
@@ -7080,7 +7084,7 @@ async def _finalize_stream_offline(stream: dict) -> None:
         logger.error(f"Error finalizing stream {stream_name} offline: {e}")
         # Ensure stream goes offline even if VOD finalization fails
         try:
-            await db.set_stream_live(stream_id, False)
+            await _stream_set_offline(stream_id)
         except (OSError, ValueError):
             pass
 
@@ -9048,7 +9052,10 @@ async def _stream_read_access(request: web.Request, key: str) -> tuple[Optional[
     now = _playback_now()
     hit = _playback_auth_cache.get(ckey)
     if hit is not None and hit[0] > now:
-        return (hit[3], "") if hit[4] else (None, _STREAM_NOT_FOUND)
+        if hit[4]:
+            request["viewer_user_id"] = hit[1]       # who was admitted, for the viewer count
+            return hit[3], ""
+        return None, _STREAM_NOT_FOUND
     generation = _playback_auth_generation
 
     stream, via_pub_key = await _resolve_stream_by_any_key(key)
@@ -9073,7 +9080,10 @@ async def _stream_read_access(request: web.Request, key: str) -> tuple[Optional[
                 for k, _v in oldest:
                     del _playback_auth_cache[k]
         _playback_auth_cache[ckey] = (now + _PLAYBACK_AUTH_TTL, user_id, stream["id"], stream, allowed)
-    return (stream, "") if allowed else (None, _STREAM_NOT_FOUND)
+    if allowed:
+        request["viewer_user_id"] = user_id
+        return stream, ""
+    return None, _STREAM_NOT_FOUND
 
 
 async def _validate_stream_access(key: str, require_publish: bool = False,
@@ -9131,6 +9141,74 @@ def _playback_headers(stream: dict, cache_control: str = "no-cache", extra: Opti
     else:
         headers["Cache-Control"] = "private, " + cache_control
     return headers
+
+
+# --- Viewer counts ----------------------------------------------------------------
+# Who is watching is known here, not in MediaMTX: its reader list also holds the recorder, the
+# relays, the thumbnail grabber and the portal's own proxy. A viewer is noted after the read gate
+# admitted the request: on an HLS playlist fetch (not on segments), on a WHEP offer that got an
+# answer, and on the watch page's heartbeat. The map lives in viewers.py (in memory); the sync
+# task turns it into user_streams.viewer_count. Refused requests never reach _viewer_touch.
+_viewers = _viewers_mod.ViewerTracker()
+# Heartbeats per address (hashed) before the gate, so a flood of keys costs no database read.
+_VIEWER_BEAT_LIMIT = 120
+_viewer_beat_rate = _viewers_mod.RateWindow(_VIEWER_BEAT_LIMIT, 60.0)
+_VIEWER_SYNC_SECONDS = 5
+
+
+def _viewer_touch(request: web.Request, stream: dict, window: float) -> bool:
+    """Count the viewer of an admitted request. Only a live stream has viewers."""
+    if stream.get("is_live") != 1:
+        return False
+    try:
+        return _viewers.touch(
+            stream["id"], user_id=request.get("viewer_user_id"),
+            client_id=_viewers_mod.valid_viewer_id(request.headers.get("X-Viewer-Id")),
+            addr=get_client_ip(request), ua=request.headers.get("User-Agent", ""), window=window)
+    except Exception as e:      # counting must never break playback
+        logger.warning(f"Viewer count: {type(e).__name__}: {e}")
+        return False
+
+
+async def http_stream_viewer_beat(request: web.Request) -> web.Response:
+    """POST /api/stream/{key}/viewer: the watch page's heartbeat (every ~10 s while playing).
+
+    Goes through the same read gate as playback and answers the same 404 when refused, so it
+    cannot be used to count somebody who may not watch or to probe a private stream."""
+    key = request.match_info.get("stream_key", "")
+    if not _viewer_beat_rate.allow(_viewers.address_hash(get_client_ip(request))):
+        return web.json_response({"error": "Too many requests"}, status=429,
+                                 headers={"Retry-After": "10", "Cache-Control": "no-store"})
+    stream, error = await _validate_stream_access(key, request=request)
+    if error:
+        return _stream_not_found()
+    _viewer_touch(request, stream, _viewers_mod.BEAT_WINDOW)
+    return web.json_response({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
+async def _stream_set_offline(stream_id: int) -> bool:
+    """The one way a stream's live session ends: peak and unique viewers of the session are
+    written with the offline transition, and nobody is counted any more. Idempotent."""
+    stats = _viewers.finish(stream_id)
+    return await db.set_stream_live(stream_id, False, session_stats=stats)
+
+
+async def _viewer_sync_once() -> int:
+    """Turn the viewer map into viewer_count; returns the number of rows written. A row is
+    written only when its number changed, and only while the stream is live."""
+    cursor = await db.conn.execute("SELECT id, is_live, viewer_count FROM user_streams WHERE is_live != 0")
+    rows = await cursor.fetchall()
+    counts = _viewers.sample()
+    _viewers.forget_except([r["id"] for r in rows])
+    written = 0
+    for r in rows:
+        if r["is_live"] != 1:
+            continue
+        n = counts.get(r["id"], 0)
+        if n != (r["viewer_count"] or 0):
+            if await db.set_live_viewer_count(r["id"], n):
+                written += 1
+    return written
 
 
 # What MediaMTX's HLS muxer serves under a path: playlists, init and media segments, parts.
@@ -9207,6 +9285,9 @@ async def http_stream_hls_proxy(request: web.Request) -> web.Response:
                     # Use the same key type that was used to access (preserves public/private key)
                     text = text.replace(f"/{mtx_path}/", f"/api/stream/{key}/hls/")
                     content = text.encode("utf-8")
+                    if resp.status == 200:
+                        # A playlist (not every segment) is the sign of a player that is running
+                        _viewer_touch(request, stream, _viewers_mod.HLS_WINDOW)
 
                 return web.Response(
                     body=content,
@@ -9517,6 +9598,7 @@ async def http_stream_webrtc_whep(request: web.Request) -> web.Response:
                         _webrtc_session_remember(session_id, "whep", stream["id"], private_key)
                         # Use the same key type that was used to access
                         location = f"/api/stream/{key}/webrtc/session/{session_id}"
+                    _viewer_touch(request, stream, _viewers_mod.BEAT_WINDOW)
 
                     return web.Response(
                         text=sdp_answer,
@@ -23649,6 +23731,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/stream/{stream_key}/info", http_stream_info)
     app.router.add_get("/api/stream/{stream_key}/thumbnail", http_stream_thumbnail)
     app.router.add_get("/api/stream/{stream_key}/hls/{path:.*}", http_stream_hls_proxy)
+    app.router.add_post("/api/stream/{stream_key}/viewer", http_stream_viewer_beat)
     app.router.add_post("/api/stream/{stream_key}/webrtc/whep", http_stream_webrtc_whep)
     app.router.add_post("/api/stream/{stream_key}/webrtc/whip", http_stream_webrtc_whip)
     app.router.add_patch("/api/stream/{stream_key}/webrtc/session/{session_id}", http_stream_webrtc_session)
@@ -24048,10 +24131,9 @@ class PortalServer:
             asyncio.create_task(_alert_cert_loop())
             asyncio.create_task(_alert_update_loop())
 
-        # Start viewer count sync task (syncs MediaMTX reader counts every 10 seconds)
-        # (skipped in staged test mode: it would poll the host's real MediaMTX)
-        if not Config.STAGE_MODE:
-            asyncio.create_task(self._viewer_sync_task())
+        # Start viewer count sync task (portal-side viewer map, every few seconds)
+        # (it only reads and writes the database, so it runs in staged mode too)
+        asyncio.create_task(self._viewer_sync_task())
 
         # Start RTMP token cleanup task (runs every 5 minutes)
         asyncio.create_task(self._rtmp_token_cleanup_task())
@@ -24394,50 +24476,11 @@ class PortalServer:
                 logger.error(f"[Retention] Cleanup error: {e}")
 
     async def _viewer_sync_task(self) -> None:
-        """Background task to sync viewer counts from MediaMTX (runs every 10 seconds)."""
+        """Background task: prune viewers not seen lately and write viewer_count when it changed."""
         while True:
             try:
-                await asyncio.sleep(10)  # 10 seconds
-
-                # Get MediaMTX API config
-                mtx_config = await _get_mediamtx_config()
-                if not mtx_config:
-                    continue
-
-                api_port = mtx_config.get("api_port", 9997)
-
-                # Query MediaMTX paths API for reader counts
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            f"https://127.0.0.1:{api_port}/v3/paths/list",
-                            ssl=False,
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as resp:
-                            if resp.status != 200:
-                                continue
-                            data = await resp.json()
-                except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
-                    continue
-
-                # Update viewer counts for each active path
-                items = data.get("items") or []
-                for item in items:
-                    path_name = item.get("name", "")
-                    readers = item.get("readers") or []
-                    reader_count = len(readers)
-
-                    # Path format is "live/{stream_key}"
-                    if path_name.startswith("live/"):
-                        stream_key = path_name[5:]  # Remove "live/" prefix
-
-                        # Get current stream
-                        stream = await db.get_stream_by_key(stream_key)
-                        if stream and stream.get("is_live") == 1:
-                            current_count = stream.get("viewer_count", 0)
-                            if current_count != reader_count:
-                                await db.update_viewer_count(stream["id"], reader_count)
-
+                await asyncio.sleep(_VIEWER_SYNC_SECONDS)
+                await _viewer_sync_once()
             except asyncio.CancelledError:
                 break
             except Exception as e:
