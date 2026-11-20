@@ -552,6 +552,29 @@ async def main():
             check("offence: a block that is written records exactly one offence",
                   got and [h["offences"] for h in await history(GLOBAL_A)] == [1], str(await history(GLOBAL_A)))
 
+            # ---- fix pass: the recorded sign-in address alone carries the household exemption
+            reset_state()
+            await d.conn.execute("DELETE FROM blocked_ips")
+            await d.conn.commit()
+            HOME = "5.6.7.8"
+            server._login_ban_cfg.update({"enabled": True, "max_failures": 20, "find_minutes": 10, "base_minutes": 15})
+            try:
+                check("household: a real sign-in from the address succeeds",
+                      await attempt(HOME, "alice_lb", PASSWORD) == 200)
+                cur = await d.conn.execute("SELECT COUNT(*) AS n FROM login_addresses WHERE user_id = ? AND ip_address = ?",
+                                           (alice, HOME))
+                check("household: the sign-in address was recorded", (await cur.fetchone())["n"] == 1)
+                await d.conn.execute("DELETE FROM tokens WHERE user_id = ?", (alice,))
+                await d.conn.commit()
+                server._login_known_cache.clear()
+                got = await flood(HOME, "alice_lb", 40)
+                check("household: 40 wrong passwords after the session tokens and the cache are gone: no ban",
+                      set(got) == {401} and not await rows(d, HOME) and not server._is_ip_blocked(HOME)
+                      and not server._login_fails.get(HOME), str(got))
+            finally:
+                server._login_ban_cfg.clear()
+                server._login_ban_cfg.update(server.LOGIN_BAN_DEFAULTS)
+
         finally:
             server.db, Config.PROBE_BLOCK_STRIKES, Config.PROBE_BLOCK_SECONDS = saved
             auth_module.db = saved_auth_db
