@@ -5356,7 +5356,7 @@ async def _remove_stream_cards(stream_id: int, only_open_to_members: bool) -> in
     return removed
 
 
-async def _post_go_live_cards(stream: dict, payload: dict) -> None:
+async def _post_go_live_cards(stream: dict, payload: dict, broad: bool = True) -> None:
     """The announce card: into the stream's own chat and, when allowed, the announce channel.
 
     A stream that is not public never gets a card in a channel ordinary members can
@@ -5366,7 +5366,7 @@ async def _post_go_live_cards(stream: dict, payload: dict) -> None:
     own = await db.get_chat_channel(stream["chat_channel_id"]) if stream.get("chat_channel_id") else None
     if own and (stream.get("is_public") or not await _channel_open_to_members(own)):
         targets.append(own)
-    extra = await _announce_channel(stream)
+    extra = await _announce_channel(stream) if broad else None     # the shared channel needs the owner's slot
     if extra and not any(extra["id"] == t["id"] for t in targets):
         targets.append(extra)
     written = []          # (message id, channel) of the cards this run wrote
@@ -5395,16 +5395,17 @@ async def _post_go_live_cards(stream: dict, payload: dict) -> None:
                                f"{type(e).__name__}: {e}")
 
 
-async def _notify_go_live(stream: dict, payload: dict) -> int:
+async def _notify_go_live(stream: dict, payload: dict, broad: bool = True) -> int:
     """The in-portal notification for a go-live, to the stream's audience.
 
-    'followers': the members who follow it; 'everyone': every member. In both cases
+    'followers': the members who follow it; 'everyone': every member, while the owner's
+    broad-announcement slot is free (`broad`), else only the followers. In both cases
     only a member who may watch the stream at that moment (checked again for each
     batch against the stream as it is then) and never the streamer. Inserted in
     batches of _GOLIVE_BATCH, one commit each, yielding to the event loop between
     batches, then pushed to the sockets that are open. Returns the number notified."""
     stream_id = stream["id"]
-    if (stream.get("golive_audience") or "everyone") == "followers":
+    if (stream.get("golive_audience") or "everyone") == "followers" or not broad:
         candidates = await db.get_follower_audience(stream_id)
     else:
         candidates = await db.get_all_users()
@@ -5450,9 +5451,29 @@ async def _announce_go_live(stream_id: int) -> None:
         logger.warning(f"Go-live announcement for stream {stream_id} failed before anything was sent, "
                        f"so this go-live is not announced: {type(e).__name__}: {e}")
         return
+    # The owner may broadcast to everybody (the "everyone" audience, a card in the shared
+    # announce channel) once per cooldown, however many streams they have or recreate. The
+    # per-stream cooldown was won already; this slot is stored per owner, so it survives the
+    # stream's deletion and a restart. A refused slot leaves the followers' notice and the card
+    # in the stream's own chat untouched. Only a public stream can reach members at large.
+    broad = True
+    try:
+        wants = bool(stream.get("is_public")) and (
+            (stream.get("golive_audience") or "everyone") == "everyone"
+            or await _announce_channel(stream) is not None)
+        if wants:
+            broad = await db.claim_golive_owner(
+                stream["user_id"], int(_golive_now()), _GOLIVE_COOLDOWN_SECONDS)
+            if not broad:
+                logger.info(f"Stream {stream['name']}: the owner announced to everybody within the "
+                            f"last {_GOLIVE_COOLDOWN_SECONDS // 60} minutes, so only followers and the "
+                            f"stream's own chat are told")
+    except Exception as e:
+        broad = False           # fails closed: followers and the own chat still get theirs
+        logger.warning(f"Go-live owner cooldown for stream {stream_id} failed: {type(e).__name__}: {e}")
     for step in (_post_go_live_cards, _notify_go_live):
         try:
-            await step(stream, payload)
+            await step(stream, payload, broad)
         except Exception as e:
             logger.warning(f"Go-live {step.__name__.strip('_')} for stream {stream_id} failed: "
                            f"{type(e).__name__}: {e}")

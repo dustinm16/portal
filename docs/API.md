@@ -2657,7 +2657,7 @@ The browser's `Notification` API is used for **desktop alerts** when the page is
 
 **Notification types:** `stream_live`, `stream_offline`, `dm_received`, `mention`, `system`
 
-**`stream_live` (1.16.0):** sent once per 10 minutes per stream, to the stream's audience (`golive_audience`: its followers, or everyone) and only to members who may watch it at that moment: a public stream's audience members, the audience's administrators for a private one; never the owner. It is written in the background in batches, a moment after the stream goes live. `data` has `stream_id`, `streamer`, `title` and `url` (the logged-in watch page, built from `PUBLIC_BASE_URL` or `HOSTNAME`, never from a request header); it never carries a stream key, a `pub_` key or an RTMP address. `message` is the owner's go-live message, filled in.
+**`stream_live` (1.16.0):** sent once per 10 minutes per stream, and an `everyone` notice (like a card in the shared announce channel) at most once per 10 minutes per streamer whatever stream it is for (stored per streamer, so deleting and recreating a stream does not reset it; while it is taken only the stream's followers are told), to the stream's audience (`golive_audience`: its followers, or everyone) and only to members who may watch it at that moment: a public stream's audience members, the audience's administrators for a private one; never the owner. It is written in the background in batches, a moment after the stream goes live. `data` has `stream_id`, `streamer`, `title` and `url` (the logged-in watch page, built from `PUBLIC_BASE_URL` or `HOSTNAME`, never from a request header); it never carries a stream key, a `pub_` key or an RTMP address. `message` is the owner's go-live message, filled in.
 
 ---
 

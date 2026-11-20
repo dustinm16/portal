@@ -528,6 +528,59 @@ async def test_one_announcement_per_cooldown_for_cards_and_notifications(w):
     assert len(await w.notes("m1")) == 2 and len(await w.cards(cid)) == 2
 
 
+@case
+async def test_an_owner_broadcasts_to_everybody_once_per_cooldown_however_many_streams(w):
+    ann = await w.channel("announce")
+    await w.db.set_setting("stream_announce_channel_id", str(ann))
+    a, akey = await w.stream("a", public=True, audience="everyone")
+    b, bkey = await w.stream("b", public=True, audience="everyone")
+    c, ckey = await w.stream("c", public=True, audience="followers")
+    assert await w.follow("m1", b) == 200
+    await w.publish(akey)
+    await w.drain()
+    w.clock.now += 60
+    await w.publish(bkey)
+    await w.publish(ckey)
+    await w.drain()
+    # a reached everybody; b (its own cooldown is free) reached only its follower; c is followers-only
+    assert len(await w.notes("m2")) == 1 and len(await w.notes("m3")) == 1
+    assert len(await w.notes("m1")) == 2, "a follower still gets the notice of the stream they follow"
+    assert len(await w.notes("admin")) == 1
+    # one card in the shared announce channel, and every stream's card in its own chat
+    assert len(await w.cards(ann)) == 1 and "Show a" in (await w.cards(ann))[0]["message"]
+    for sid in (a, b, c):
+        assert len(await w.cards((await w.db.get_user_stream(sid))["chat_channel_id"])) == 1, sid
+    # deleting the stream and making a new one does not reset it (the slot belongs to the owner)
+    await w.db.delete_user_stream(a)
+    d, dkey = await w.stream("d", public=True, audience="everyone")
+    w.clock.now += 60
+    await w.publish(dkey)
+    await w.drain()
+    assert len(await w.notes("m2")) == 1 and len(await w.cards(ann)) == 1
+    # another owner is not held back by it
+    e, ekey = await w.stream("e", public=True, audience="everyone", owner="admin")
+    await w.publish(ekey)
+    await w.drain()
+    assert len(await w.notes("m2")) == 2
+    # past the cooldown the owner's next stream reaches everybody again
+    w.clock.now += 700
+    f, fkey = await w.stream("f", public=True, audience="everyone")
+    await w.publish(fkey)
+    await w.drain()
+    assert len(await w.notes("m2")) == 3 and len(await w.cards(ann)) == 3     # a, the other owner's e, f
+
+
+@case
+async def test_the_owner_slot_is_stored_and_one_claim_wins(w):
+    uid = w.ids["owner"]
+    results = await asyncio.gather(*[w.db.claim_golive_owner(uid, 1_000, 600) for _ in range(5)])
+    assert results.count(True) == 1, results
+    assert not await w.db.claim_golive_owner(uid, 1_599, 600)
+    assert await w.db.claim_golive_owner(uid, 1_600, 600)
+    assert await w.db.claim_golive_owner(uid, 100, 600), "a stored time in the future never blocks"
+    assert await w.db.claim_golive_owner(w.ids["admin"], 100, 600), "per owner"
+
+
 # ---------------------------------------------------------------------------
 # cards
 

@@ -530,6 +530,14 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_user_streams_user ON user_streams(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_user_streams_stream_key ON user_streams(stream_key)",
     "CREATE INDEX IF NOT EXISTS idx_user_streams_public ON user_streams(is_public, is_live)",
+    # One row per streamer: when their last broad go-live announcement (the "everyone" audience, or
+    # a card in the shared announce channel) was made. Not tied to a stream, so deleting and
+    # recreating a stream does not reset it; it goes with the account.
+    """CREATE TABLE IF NOT EXISTS golive_owner_cooldown (
+        user_id INTEGER PRIMARY KEY,
+        announced_at INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
     # Unified services - add process management fields to services table
     "ALTER TABLE services ADD COLUMN service_type TEXT DEFAULT 'proxy'",
     "ALTER TABLE services ADD COLUMN display_name TEXT",
@@ -4188,6 +4196,19 @@ class Database:
                                  OR golive_announced_at > ?)""",
             (int(now), stream_id, int(now) - int(cooldown), int(now))
         )
+        await self.conn.commit()
+        return cursor.rowcount == 1
+
+    async def claim_golive_owner(self, user_id: int, now: int, cooldown: int) -> bool:
+        """Take the owner's broad-announcement slot: True for exactly one caller per cooldown
+        per streamer, whatever stream it is for. One upsert that only overwrites a time that is
+        old enough (or in the future: the clock was stepped back), so concurrent announcements
+        cannot both win and a restart does not reset it."""
+        cursor = await self.conn.execute(
+            """INSERT INTO golive_owner_cooldown (user_id, announced_at) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET announced_at = excluded.announced_at
+               WHERE golive_owner_cooldown.announced_at <= ? OR golive_owner_cooldown.announced_at > ?""",
+            (user_id, int(now), int(now) - int(cooldown), int(now)))
         await self.conn.commit()
         return cursor.rowcount == 1
 
