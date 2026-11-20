@@ -94,7 +94,7 @@ async def run(ctx):
     if rc != 0:
         return
 
-    addr1, addr2, addr0 = _addr(), _addr(), _addr()
+    addr1, addr2, addr0, addr3 = _addr(), _addr(), _addr(), _addr()
     saved = {k: _sql(ctx, "SELECT value FROM settings WHERE key = ?", (k,)) for k in SETTING_KEYS}
     envs = [e for e in (getattr(ctx, "_env", None), getattr(ctx.server, "env", None)) if e is not None]
     had_trust = [e.get("TRUSTED_PROXIES") for e in envs]
@@ -141,17 +141,22 @@ async def run(ctx):
                 loop_status = r.status
             ctx.ok("loginban: the same flood from 127.0.0.1 bans nothing", set(got) == {401} and loop_status == 200, f"{got} {loop_status}")
 
-            # household: a sign-in from addr2, then typos for the same user never ban; another user's do
+            # an address that any account signed in from within 30 days is never counted, whatever
+            # account the failures name; an address nobody signed in from is banned
             async with s.post(f"{ctx.base_url}/login", json={"username": USER_A, "password": PASSWORD},
                               headers={"CF-Connecting-IP": addr2}) as r:
                 await r.read()
                 good = r.status
             got = await _wrong(ctx, s, addr2, USER_A, 6)
-            ctx.ok("loginban: typos against an account the address signed in to are not counted",
+            ctx.ok("loginban: typos from an address that signed in are not counted",
                    good == 200 and set(got) == {401} and _row(ctx, addr2) is None and await _health(ctx, s, addr2) == 200,
                    f"login {good} {got}")
-            await _wrong(ctx, s, addr2, USER_B, 3)
-            ctx.ok("loginban: the household exemption is for that account only", _row(ctx, addr2) is not None)
+            got = await _wrong(ctx, s, addr2, USER_B, 6)
+            ctx.ok("loginban: failures against another account from an address that signed in are not counted either",
+                   set(got) == {401} and _row(ctx, addr2) is None and await _health(ctx, s, addr2) == 200, str(got))
+            got = await _wrong(ctx, s, addr3, USER_B, 3)
+            ctx.ok("loginban: an address nobody signed in from is banned after the same failures",
+                   _row(ctx, addr3) is not None and await _health(ctx, s, addr3) == 403, str(got))
 
         # ---- the admin list shows kind and expiry
         if ctx.admin_password:
