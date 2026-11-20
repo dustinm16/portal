@@ -141,15 +141,24 @@ def test_every_register_site_re_checks_the_credential():
     import re
     sites = [m.start() for m in re.finditer(r"^\s+_register_user_ws\(", src, re.M)]
     assert len(sites) == 3, "a new handler registers sockets: add the re-check, or this test"
+
+    def rest_of_function(i):
+        # from the register call to the end of the enclosing top-level function, so lines added
+        # between the two do not move the check out of reach
+        m = re.search(r"^(?:async def |def |class |@)", src[i:], re.M)
+        return src[i:i + m.start()] if m else src[i:]
+
     # the proxy relay too: the call registry (call.aborted) is not a substitute, it does not
     # see a revocation that landed before the call was registered
-    unchecked = [src[:i].count("\n") + 1 for i in sites if "_credential_still_valid(token)" not in src[i:i + 1400]]
+    unchecked = [src[:i].count("\n") + 1 for i in sites if "_credential_still_valid(token)" not in rest_of_function(i)]
     assert not unchecked, f"register sites without a credential re-check, at server.py lines {unchecked}"
-    proxy = [i for i in sites if "_unregister_user_proxy_call(" in src[i:i + 900]]
+    proxy = [i for i in sites if "_unregister_user_proxy_call(" in rest_of_function(i)]
     assert len(proxy) == 1
-    window = src[proxy[0]:proxy[0] + 1400]
-    credential = window.index("_credential_still_valid(token)")
-    assert "4001" in window[credential:credential + 250]
+    body = rest_of_function(proxy[0])
+    credential = body.index("_credential_still_valid(token)")
+    assert "4001" in body[credential:credential + 250]
+    # and the re-check comes before the relay opens its upstream connection
+    assert credential < body.index("ws_connect(")
 
 
 if __name__ == "__main__":
