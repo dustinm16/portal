@@ -340,6 +340,35 @@ def test_whep_offer_counts_a_viewer_and_patch_delete_do_not_change_it():
     run(body)
 
 
+def test_a_whep_session_patch_touches_the_viewer_and_a_delete_or_a_refused_one_does_not():
+    async def body(w):
+        clock = fresh()
+        key = w.streams["public"]["pub"]
+        sid = w.streams["public"]["id"]
+
+        async def text():
+            return "v=0 offer"
+        req = w.req(key, "member", method="POST", path="")
+        req.text = text
+        resp = await server.http_stream_webrtc_whep(req)
+        assert resp.status == 201 and server._viewers.count(sid) == 1
+        session = resp.headers["Location"].rsplit("/", 1)[-1]
+        clock.t += 20                                       # the offer's 15 s are over
+        assert server._viewers.count(sid) == 0
+        patch = w.req(key, "member", method="PATCH", path="", session=session)
+        assert (await server.http_stream_webrtc_session(patch)).status == 204
+        assert server._viewers.count(sid) == 1, "the PATCH did not touch the viewer"
+        clock.t += 20
+        delete = w.req(key, "member", method="DELETE", path="", session=session)
+        await server.http_stream_webrtc_session(delete)
+        assert server._viewers.count(sid) == 0, "a DELETE must not count anybody"
+        # a session of somebody else's stream or an unknown id is refused and counts nobody
+        bad = w.req(key, "member", method="PATCH", path="", session="no-such-session")
+        assert (await server.http_stream_webrtc_session(bad)).status == 404
+        assert server._viewers.count(sid) == 0
+    run(body)
+
+
 def test_a_viewer_who_stops_is_gone_and_only_changes_are_written():
     async def body(w):
         clock = fresh()
@@ -606,10 +635,13 @@ def test_migration_adds_nullable_columns_and_runs_twice():
 
 def test_sources_touch_only_after_the_gate_and_the_beat_uses_the_gate():
     src = (ROOT / "server.py").read_text()
-    assert src.count("_viewer_touch(request, stream") == 3          # playlist, WHEP, heartbeat
+    assert src.count("_viewer_touch(request, stream") == 4          # playlist, WHEP, WHEP session PATCH, heartbeat
     def chunk(name):
         a = src.index(f"async def {name}(")
         return src[a:src.index("\nasync def ", a + 10)]
+    sess_src = chunk("http_stream_webrtc_session")
+    assert sess_src.index("_authorize_webrtc_session(") < sess_src.index("_viewer_touch(")
+    assert 'kind == "whep"' in sess_src
     beat_src = chunk("http_stream_viewer_beat")
     assert "_validate_stream_access(" in beat_src and "request=request" in beat_src
     assert beat_src.index("_validate_stream_access(") < beat_src.index("_viewer_touch(")

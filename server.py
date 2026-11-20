@@ -10087,6 +10087,10 @@ async def http_stream_webrtc_session(request: web.Request) -> web.Response:
                 content = await resp.read()
                 if method == "DELETE" and resp.status < 300:
                     _webrtc_sessions.pop(session_id, None)
+                elif method == "PATCH" and kind == "whep" and resp.status < 300:
+                    # The player's trickle ICE call after the offer: the viewer is still here.
+                    # The read gate admitted it above, so it is counted like the offer was.
+                    _viewer_touch(request, stream, _viewers_mod.BEAT_WINDOW)
                 return web.Response(
                     body=content,
                     status=resp.status,

@@ -1407,6 +1407,8 @@ WebRTC WHEP endpoint for playback. **Same-network only:** only the signaling goe
 
 The session calls (`PATCH` and `DELETE /api/stream/{key}/webrtc/session/{id}`) need the same permission, and a publishing (WHIP) session needs the `live_xxx` key. Media that is already flowing goes straight to MediaMTX and is not stopped by a change of access.
 
+**Staying counted (1.17.0):** the offer counts the viewer for 15 seconds, and so does a successful `PATCH` on the session (the trickle ICE call most players send right after the offer; a `DELETE` counts nobody). A WHEP player sends nothing after that, so an **external WHEP player must call the heartbeat route, `POST /api/stream/{key}/viewer`, about every 10 seconds** (with the same credentials) to stay in the stream's `viewer_count`; without it the viewer drops out 15 seconds after the last offer or `PATCH`. The portal's own watch page does this already.
+
 **Request:**
 - Body: SDP offer (application/sdp)
 
@@ -1424,7 +1426,7 @@ The watch page's heartbeat (1.17.0), sent every 10 seconds while the video plays
 
 **Access:** the same single rule and the same credentials as playback (see HLS above). A request that is not allowed to watch, a key that matches nothing and a stream key used as a credential all answer the same `404` with `{"error": "Stream not found"}`, and count nobody.
 
-**Who is one viewer:** a signed-in viewer is the account (several tabs count once). A viewer who is not signed in (open-link streams) is identified by the optional request header `X-Viewer-Id` (16 to 64 characters from `A-Z a-z 0-9 - _`; any other value is ignored), or, without it, by a salted hash of the client address and `User-Agent` (the portal's watch page sends the header, but it requires a sign-in, so a logged-out viewer is normally a player that sends none). At most 5 anonymous viewers per address and 5000 viewers per stream are counted. Playlist fetches (`GET .../hls/*.m3u8`) and WHEP offers count in the same way; segments, thumbnails and the info route do not. Nothing about who is watching is stored, logged or returned.
+**Who is one viewer:** a signed-in viewer is the account (several tabs count once). A viewer who is not signed in (open-link streams) is identified by the optional request header `X-Viewer-Id` (16 to 64 characters from `A-Z a-z 0-9 - _`; any other value is ignored), or, without it, by a salted hash of the client address and `User-Agent` (the portal's watch page sends the header, but it requires a sign-in, so a logged-out viewer is normally a player that sends none). At most 5 anonymous viewers per address and 5000 viewers per stream are counted. Playlist fetches (`GET .../hls/*.m3u8`), WHEP offers and the `PATCH` of a WHEP session count in the same way (an external WHEP player must send this heartbeat to stay counted); segments, thumbnails and the info route do not. Nothing about who is watching is stored, logged or returned.
 
 **Response:** `200` with `{"ok": true}` (also for a stream that is not live: nothing is counted then). `429` with `Retry-After` when one client address sends more than 120 heartbeats in a minute; this is checked before the stream is looked up.
 
