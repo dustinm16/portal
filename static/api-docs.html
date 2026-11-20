@@ -1237,6 +1237,64 @@
                     </div>
                 </div>
 
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/connections/{id}/shares</span>
+                        <span class="endpoint-desc">Who a connection is shared with</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Owner only. Lists the live shares of the connection; an expired share is not listed.</p>
+                        <pre>{"shares": [{"user_id": 7, "username": "alice", "created_at": "2030-01-01 12:00:00",
+             "granted_by_username": "owner", "expires_at": "2030-01-01T13:00:00Z", "expires_in": 3600}]}</pre>
+                        <p><code>expires_at</code> and <code>expires_in</code> (seconds left) are <code>null</code> for a share that never expires.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/connections/{id}/shares</span>
+                        <span class="endpoint-desc">Share a connection</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Owner only. Body <code>{"usernames": ["alice", "bob"], "expires_in": "7d"}</code>; unknown names and yourself are skipped. Audited as <code>connection.share</code>. When the time passes the grantee no longer sees the connection and cannot open it, whether or not the sweeper has run; the sweeper (every 60 seconds) deletes the row, audits <code>connection.share_expired</code> and closes the grantee's open sockets and SFTP and proxy calls on it (WebSocket close code <code>4010</code>, "access ended").</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">expires_in</span></td><td><span class="param-type">string</span></td><td>How long the access lasts: <code>1h</code>, <code>8h</code>, <code>1d</code>, <code>7d</code>, <code>30d</code>, <code>90d</code> or <code>never</code>. Omitted or <code>null</code> means <code>never</code> (the API default, kept for compatibility; the dialogs preselect <code>30d</code>). The server computes the end time. Any other value, and a body that carries <code>expires_at</code>, gets <code>400</code> and nothing is written. Doing it again for the same person replaces the end time.</td></tr>
+                        </table>
+                        <pre>{"added": ["alice"], "skipped": [], "shares": [...]}</pre>
+                        <p>Errors: <code>400</code> unknown duration or a timestamp in the body; <code>404</code> not your connection.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/connections/{id}/shares/{grantee_id}</span>
+                        <span class="endpoint-desc">Revoke a share</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Owner only; <code>{grantee_id}</code> may be <code>me</code> for a grantee leaving. Closes what the grantee holds open through the share (code <code>4010</code>). Audited as <code>connection.unshare</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/me/shares</span>
+                        <span class="endpoint-desc">Everything I have shared</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Every live share of every connection the caller owns, with grantor, creation time and expiry.</p>
+                        <pre>{"shares": [{"connection_id": "k3F...", "connection_name": "box", "connection_type": "ssh",
+             "user_id": 7, "username": "alice", "created_at": "2030-01-01 12:00:00",
+             "granted_by_username": "owner", "expires_at": null, "expires_in": null}]}</pre>
+                        <p>A connection shared with the caller carries <code>share_expires_at</code> and <code>share_expires_in</code> on its entry in <code>GET /api/connections</code>.</p>
+                    </div>
+                </div>
+
                 <!-- Private Search -->
                 <h2 id="search">Private Search</h2>
                 <p>Portal can run <a href="https://github.com/searxng/searxng" target="_blank" rel="noopener">SearXNG</a> (AGPL-3.0), a privacy-respecting metasearch engine, as an optional managed service reverse-proxied under <code>/search/</code> behind Portal authentication.</p>
@@ -4823,6 +4881,60 @@ Headers:
                     </div>
                     <div class="endpoint-body">
                         <p>Returns the current runtime status of a managed service including health check results.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/grants</span>
+                        <span class="endpoint-desc">List grants on a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Live grants only (an expired grant is not listed): <code>{"grants": [{"user_id", "username", "actions", "created_at", "granted_by_username", "expires_at", "expires_in"}]}</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/grants</span>
+                        <span class="endpoint-desc">Grant a user access to a service</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Body <code>{"usernames": [...], "actions": ["control","logs","files"], "expires_in": "30d"}</code>. Granting again replaces the actions and the end time. After the end time every check (control, logs, files, the service lists) refuses at once; the sweeper deletes the row and audits <code>service.grant_expired</code>. Audited as <code>service.grant</code>.</p>
+                        <h4>Request Body</h4>
+                        <table class="param-table">
+                            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><span class="param-name">expires_in</span></td><td><span class="param-type">string</span></td><td>How long the access lasts: <code>1h</code>, <code>8h</code>, <code>1d</code>, <code>7d</code>, <code>30d</code>, <code>90d</code> or <code>never</code>. Omitted or <code>null</code> means <code>never</code> (the API default, kept for compatibility; the dialogs preselect <code>30d</code>). The server computes the end time. Any other value, and a body that carries <code>expires_at</code>, gets <code>400</code> and nothing is written. Doing it again for the same person replaces the end time.</td></tr>
+                        </table>
+                        <p>Errors: <code>400</code> unknown duration or a timestamp in the body; <code>404</code> unknown service.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/managed-services/{id}/grants/{grantee_id}</span>
+                        <span class="endpoint-desc">Revoke a service grant</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Audited as <code>service.ungrant</code>.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/grants</span>
+                        <span class="endpoint-desc">All live grants and shares</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Every live service grant and every live connection share on the portal, each with grantee, grantor, creation time and expiry: <code>{"service_grants": [...], "connection_shares": [...]}</code>.</p>
                     </div>
                 </div>
 

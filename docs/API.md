@@ -928,13 +928,18 @@ Trust (pin) the SSH host key of an `ssh`/`sftp` connection. **Owner only** (a us
 - Config `host_key_ignore: true` (boolean) is the explicit per-connection opt-out and skips the check. The older `known_hosts` setting is no longer read.
 
 #### GET /api/connections/{id}/shares
-List who a connection is shared with (owner only). → `{"shares": [{"user_id", "username", "created_at"}]}`
+List who a connection is shared with (owner only), live shares only. → `{"shares": [{"user_id", "username", "created_at", "granted_by_username", "expires_at", "expires_in"}]}`. `expires_at` (ISO, `Z`) and `expires_in` (seconds left) are `null` for a share that never expires.
 
 #### POST /api/connections/{id}/shares
-Share a connection with users (owner only). Body `{"usernames": ["alice", "bob"]}` — unknown names and self are skipped. → `{"added": [...], "skipped": [...], "shares": [...]}`. Audited as `connection.share`.
+Share a connection with users (owner only). Body `{"usernames": ["alice", "bob"], "expires_in": "7d"}` — unknown names and self are skipped. → `{"added": [...], "skipped": [...], "shares": [...]}`. Audited as `connection.share`.
+
+`expires_in` is one of `1h`, `8h`, `1d`, `7d`, `30d`, `90d`, `never`; the server computes the end time. Omitted or `null` means `never` (the API default, unchanged from before expiry existed; the share dialog preselects `30d`). Any other value, a non-string, or a body that carries `expires_at` answers 400 and writes nothing. Sharing again with the same user replaces the end time. When the time passes the grantee no longer lists the connection and cannot open it (HTTP, SFTP, proxy, `/ws/...`), without waiting for anything; a sweeper (every 60 s) then deletes the row, audits `connection.share_expired` (actor: the grantor) and closes what the grantee holds open through it (WebSockets with close code `4010` "access ended", SFTP connections, proxied calls). The grantee's other sockets are not touched.
 
 #### DELETE /api/connections/{id}/shares/{grantee_id}
-Revoke a share (owner only). `{grantee_id}` may be the literal `me` for a grantee removing their own access. Audited as `connection.unshare`.
+Revoke a share (owner only). `{grantee_id}` may be the literal `me` for a grantee removing their own access. Closes what the grantee holds open through it (code `4010`), as does deleting the connection. Audited as `connection.unshare`.
+
+#### GET /api/me/shares
+Every live share of every connection the caller owns: `{"shares": [{"connection_id", "connection_name", "connection_type", "user_id", "username", "created_at", "granted_by_username", "expires_at", "expires_in"}]}`. A connection shared with the caller carries `share_expires_at` and `share_expires_in` in `GET /api/connections`.
 
 > A shared connection appears on the grantee's dashboard (`shared: true`, `owner_username`), is usable through the in-browser tools and `/proxy/{id}`, but **not** the raw `/ws` relay. Edit / delete / pin remain owner-only.
 
@@ -3154,8 +3159,9 @@ within one health-monitor cycle (and immediately on any status read).
 
 An admin can let a non-admin control or read one managed service:
 
-- `GET  /api/managed-services/{id}/grants` — list `[{user_id, username, actions, created_at}]`
-- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs","files"]}`. `control` = start/stop/restart; `logs` = logs + status; `files` = the jailed file browser — browse/edit the server's files and download backups (game servers only). Audited `service.grant`.
+- `GET  /api/managed-services/{id}/grants` — list the live grants `[{user_id, username, actions, created_at, granted_by_username, expires_at, expires_in}]`
+- `GET  /api/admin/grants` — every live service grant and connection share on the portal (admin): `{"service_grants": [...], "connection_shares": [...]}`, each with grantee, grantor, `created_at`, `expires_at`, `expires_in`.
+- `POST /api/managed-services/{id}/grants` — body `{"usernames": [...], "actions": ["control","logs","files"], "expires_in": "30d"}`. `expires_in` works as for connection shares (`1h` ... `90d`, `never`; omitted means `never`; anything else, or an `expires_at` in the body, is 400); granting again replaces actions and end time; after the end time every check refuses at once and the sweeper deletes the row and audits `service.grant_expired`. `control` = start/stop/restart; `logs` = logs + status; `files` = the jailed file browser — browse/edit the server's files and download backups (game servers only). Audited `service.grant`.
 - `DELETE /api/managed-services/{id}/grants/{grantee_id}` — revoke. Audited `service.ungrant`.
 
 Once granted, `POST /api/services/{id}/start|stop|restart` (and the

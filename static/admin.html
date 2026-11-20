@@ -949,12 +949,29 @@
                                 <span>Files &mdash; edit config &amp; download backups <span style="color:var(--text-muted);">(game servers)</span></span>
                             </label>
                         </div>
+                        <div class="form-group">
+                            <label for="grant-duration">Access lasts</label>
+                            <select id="grant-duration">
+                                <option value="1h">1 hour</option>
+                                <option value="8h">8 hours</option>
+                                <option value="1d">1 day</option>
+                                <option value="7d">7 days</option>
+                                <option value="30d" selected>30 days</option>
+                                <option value="90d">90 days</option>
+                                <option value="never">Until revoked</option>
+                            </select>
+                            <small style="color:var(--text-muted);">Granting again to the same person sets a new time.</small>
+                        </div>
                         <div class="form-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;">
                             <button type="button" class="btn btn-primary" onclick="submitServiceGrant()">Grant</button>
                         </div>
                         <div class="form-group">
                             <label>People with access</label>
                             <div id="grant-current-list"><small style="color:var(--text-muted);">Loading…</small></div>
+                        </div>
+                        <div class="form-group">
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAllGrants()">All grants on the portal</button>
+                            <div id="all-grants-list" style="display:none; margin-top:0.5rem;"></div>
                         </div>
                     </div>
                 </div>
@@ -4488,10 +4505,50 @@
             document.getElementById('grant-action-control').checked = true;
             document.getElementById('grant-action-logs').checked = false;
             document.getElementById('grant-action-files').checked = false;
+            document.getElementById('grant-duration').value = '30d';
+            document.getElementById('all-grants-list').style.display = 'none';
             if (!_grantPicker) _grantPicker = adminInitUserPicker('grant-chip-box', 'grant-user-input', 'grant-user-results');
             _grantPicker.reset();
             document.getElementById('service-grant-modal').style.display = 'flex';
             loadServiceGrants(id);
+        }
+
+        // Time left on a grant, from the server's expires_in (seconds; null = never expires).
+        function formatGrantRemaining(sec) {
+            if (sec === null || sec === undefined) return 'never expires';
+            if (sec <= 0) return 'expired';
+            const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+            if (d >= 2) return `${d} days left`;
+            if (d === 1) return `1 day ${h} h left`;
+            if (h >= 1) return `${h} h ${m} min left`;
+            return `${Math.max(1, m)} min left`;
+        }
+        // Who gave it, when, and until when.
+        function describeGrantLine(g) {
+            const parts = [];
+            if (g.granted_by_username) parts.push('by ' + escapeHtml(g.granted_by_username));
+            if (g.created_at) parts.push('on ' + escapeHtml(String(g.created_at).slice(0, 10)));
+            parts.push(escapeHtml(formatGrantRemaining(g.expires_in)));
+            return parts.join(' &middot; ');
+        }
+
+        // Every live service grant and connection share on the portal.
+        async function toggleAllGrants() {
+            const box = document.getElementById('all-grants-list');
+            if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+            box.style.display = 'block';
+            box.innerHTML = '<small style="color:var(--text-muted);">Loading…</small>';
+            try {
+                const data = await Portal.fetchJSON('/api/admin/grants');
+                const rows = [];
+                (data.service_grants || []).forEach(g => rows.push(`
+                    <div class="userpick-current-row"><span>service ${escapeHtml(g.service_name || String(g.service_id))} &rarr; ${escapeHtml(g.username)}
+                        <span style="color:var(--text-muted);font-size:0.75rem;" title="${escapeHtml(g.expires_at || 'never expires')}">${(g.actions || []).join(', ')} &middot; ${describeGrantLine(g)}</span></span></div>`));
+                (data.connection_shares || []).forEach(s => rows.push(`
+                    <div class="userpick-current-row"><span>connection ${escapeHtml(s.owner_username)}/${escapeHtml(s.connection_name)} &rarr; ${escapeHtml(s.username)}
+                        <span style="color:var(--text-muted);font-size:0.75rem;" title="${escapeHtml(s.expires_at || 'never expires')}">${describeGrantLine(s)}</span></span></div>`));
+                box.innerHTML = rows.length ? rows.join('') : '<small style="color:var(--text-muted);">Nothing is shared or granted.</small>';
+            } catch (e) { box.innerHTML = '<small style="color:var(--accent-red);">Failed to load.</small>'; }
         }
 
         async function loadServiceGrants(id) {
@@ -4501,7 +4558,7 @@
                 const grants = data.grants || [];
                 list.innerHTML = grants.length ? grants.map(g => `
                     <div class="userpick-current-row">
-                        <span>${escapeHtml(g.username)} <span style="color:var(--text-muted);font-size:0.75rem;">${(g.actions || []).join(', ')}</span></span>
+                        <span>${escapeHtml(g.username)} <span style="color:var(--text-muted);font-size:0.75rem;" title="${escapeHtml(g.expires_at || 'never expires')}">${(g.actions || []).join(', ')} &middot; ${describeGrantLine(g)}</span></span>
                         <button class="btn btn-danger btn-sm" onclick="revokeServiceGrant(${id}, ${g.user_id})">Revoke</button>
                     </div>`).join('') : '<small style="color:var(--text-muted);">No grants yet.</small>';
             } catch (e) { list.innerHTML = '<small style="color:var(--accent-red);">Failed to load.</small>'; }
@@ -4519,7 +4576,7 @@
             try {
                 const res = await Portal.fetch(`/api/managed-services/${id}/grants`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ usernames, actions })
+                    body: JSON.stringify({ usernames, actions, expires_in: document.getElementById('grant-duration').value })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'Failed');

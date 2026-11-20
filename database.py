@@ -22,6 +22,7 @@ import secevents
 import ipguard
 import chat_search
 import webhook_formats
+import grant_expiry
 
 logger = logging.getLogger("portal.database")
 
@@ -1226,6 +1227,12 @@ MIGRATIONS = [
     "ALTER TABLE chat_fts_map ADD COLUMN has_file INTEGER DEFAULT 0",
     "ALTER TABLE dm_fts_map ADD COLUMN has_link INTEGER DEFAULT 0",
     "ALTER TABLE dm_fts_map ADD COLUMN has_file INTEGER DEFAULT 0",
+    # Expiring shares and grants: NULL = never (every row that exists today). A nullable
+    # column with no default is a schema-only change, cheap on a large database.
+    "ALTER TABLE connection_shares ADD COLUMN expires_at TEXT",
+    "ALTER TABLE service_grants ADD COLUMN expires_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_conn_shares_expires ON connection_shares(expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_service_grants_expires ON service_grants(expires_at)",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -3601,6 +3608,17 @@ class Database:
             out.append(conn)
         return out
 
+    def _decode_shared_rows(self, rows) -> list[dict]:
+        """Decode rows of connections shared with a user; they carry the share's expiry
+        as share_expires_at (ISO, Z) and share_expires_in (seconds left), both None for a
+        share that never expires."""
+        out = self._decode_conn_rows(rows)
+        for conn in out:
+            info = grant_expiry.describe(conn.pop("share_expires_raw", None))
+            conn["share_expires_at"] = info["expires_at"]
+            conn["share_expires_in"] = info["expires_in"]
+        return out
+
     async def get_user_connections(self, user_id: int) -> list[dict]:
         """Get all connections for a user — owned (pinned first) then shared-with."""
         cursor = await self.conn.execute(
@@ -3614,16 +3632,17 @@ class Database:
         connections = self._decode_conn_rows(await cursor.fetchall())
 
         cursor = await self.conn.execute(
-            """SELECT uc.*, NULL as ssh_key_name, NULL as ssh_key_fingerprint,
-                      1 as shared, owner.username as owner_username
+            f"""SELECT uc.*, NULL as ssh_key_name, NULL as ssh_key_fingerprint,
+                      1 as shared, owner.username as owner_username,
+                      cs.expires_at as share_expires_raw
                FROM connection_shares cs
                JOIN user_connections uc ON uc.id = cs.connection_id
                JOIN users owner ON owner.id = uc.user_id
-               WHERE cs.grantee_user_id = ?
+               WHERE cs.grantee_user_id = ? AND {grant_expiry.live_sql('cs')}
                ORDER BY uc.name""",
-            (user_id,)
+            (user_id, grant_expiry.live_param())
         )
-        connections.extend(self._decode_conn_rows(await cursor.fetchall()))
+        connections.extend(self._decode_shared_rows(await cursor.fetchall()))
         return connections
 
     async def update_user_connection(
@@ -3723,16 +3742,17 @@ class Database:
         connections = self._decode_conn_rows(await cursor.fetchall())
 
         cursor = await self.conn.execute(
-            """SELECT uc.*, NULL as ssh_key_name, NULL as ssh_key_fingerprint,
-                      1 as shared, owner.username as owner_username
+            f"""SELECT uc.*, NULL as ssh_key_name, NULL as ssh_key_fingerprint,
+                      1 as shared, owner.username as owner_username,
+                      cs.expires_at as share_expires_raw
                FROM connection_shares cs
                JOIN user_connections uc ON uc.id = cs.connection_id
                JOIN users owner ON owner.id = uc.user_id
-               WHERE cs.grantee_user_id = ? AND uc.type = ?
+               WHERE cs.grantee_user_id = ? AND uc.type = ? AND {grant_expiry.live_sql('cs')}
                ORDER BY uc.name""",
-            (user_id, conn_type)
+            (user_id, conn_type, grant_expiry.live_param())
         )
-        connections.extend(self._decode_conn_rows(await cursor.fetchall()))
+        connections.extend(self._decode_shared_rows(await cursor.fetchall()))
         return connections
 
     # ------------------------------------------------------------------
@@ -3748,33 +3768,102 @@ class Database:
         if owned:
             return owned
         cursor = await self.conn.execute(
-            """SELECT uc.*, 1 as shared, owner.username as owner_username
+            f"""SELECT uc.*, 1 as shared, owner.username as owner_username,
+                      cs.expires_at as share_expires_raw
                FROM connection_shares cs
                JOIN user_connections uc ON uc.id = cs.connection_id
                JOIN users owner ON owner.id = uc.user_id
-               WHERE uc.uuid = ? AND cs.grantee_user_id = ?""",
-            (uuid, user_id),
+               WHERE uc.uuid = ? AND cs.grantee_user_id = ? AND {grant_expiry.live_sql('cs')}""",
+            (uuid, user_id, grant_expiry.live_param()),
         )
         row = await cursor.fetchone()
         if not row:
             return None
-        return self._decode_conn_rows([row])[0]
+        return self._decode_shared_rows([row])[0]
 
     async def list_connection_shares(self, connection_id: int) -> list[dict]:
+        """Live shares of one connection (an expired one the sweeper has not deleted yet is not listed)."""
         cursor = await self.conn.execute(
-            """SELECT cs.grantee_user_id as user_id, u.username, cs.created_at
+            f"""SELECT cs.grantee_user_id as user_id, u.username, cs.created_at,
+                      cs.expires_at as expires_raw, g.username as granted_by_username
                FROM connection_shares cs JOIN users u ON u.id = cs.grantee_user_id
-               WHERE cs.connection_id = ? ORDER BY u.username""",
-            (connection_id,),
+               LEFT JOIN users g ON g.id = cs.granted_by
+               WHERE cs.connection_id = ? AND {grant_expiry.live_sql('cs')}
+               ORDER BY u.username""",
+            (connection_id, grant_expiry.live_param()),
         )
-        return [dict(r) for r in await cursor.fetchall()]
+        return [self._with_expiry(r) for r in await cursor.fetchall()]
 
-    async def add_connection_share(self, connection_id: int, grantee_id: int, owner_id: int) -> bool:
+    @staticmethod
+    def _with_expiry(row) -> dict:
+        d = dict(row)
+        d.update(grant_expiry.describe(d.pop("expires_raw", None)))
+        return d
+
+    async def list_shares_by_owner(self, owner_id: int) -> list[dict]:
+        """Every live share of every connection a user owns (the owner's "all shares" view)."""
+        cursor = await self.conn.execute(
+            f"""SELECT uc.uuid as connection_id, uc.name as connection_name, uc.type as connection_type,
+                      cs.grantee_user_id as user_id, u.username, cs.created_at,
+                      cs.expires_at as expires_raw, g.username as granted_by_username
+               FROM connection_shares cs
+               JOIN user_connections uc ON uc.id = cs.connection_id
+               JOIN users u ON u.id = cs.grantee_user_id
+               LEFT JOIN users g ON g.id = cs.granted_by
+               WHERE uc.user_id = ? AND {grant_expiry.live_sql('cs')}
+               ORDER BY uc.name, u.username""",
+            (owner_id, grant_expiry.live_param()),
+        )
+        return [self._with_expiry(r) for r in await cursor.fetchall()]
+
+    async def list_all_grants(self) -> dict:
+        """Every live service grant and connection share on the portal (the admin view)."""
+        live = grant_expiry.live_param()
+        cursor = await self.conn.execute(
+            f"""SELECT sg.service_id, s.name as service_name, sg.grantee_user_id as user_id,
+                      u.username, sg.actions, sg.created_at,
+                      sg.expires_at as expires_raw, g.username as granted_by_username
+               FROM service_grants sg
+               JOIN users u ON u.id = sg.grantee_user_id
+               LEFT JOIN services s ON s.id = sg.service_id
+               LEFT JOIN users g ON g.id = sg.granted_by
+               WHERE {grant_expiry.live_sql('sg')}
+               ORDER BY s.name, u.username""",
+            (live,),
+        )
+        grants = []
+        for r in await cursor.fetchall():
+            d = self._with_expiry(r)
+            d["actions"] = [a.strip() for a in (d["actions"] or "").split(",") if a.strip()]
+            grants.append(d)
+        cursor = await self.conn.execute(
+            f"""SELECT uc.uuid as connection_id, uc.name as connection_name, uc.type as connection_type,
+                      owner.username as owner_username,
+                      cs.grantee_user_id as user_id, u.username, cs.created_at,
+                      cs.expires_at as expires_raw, g.username as granted_by_username
+               FROM connection_shares cs
+               JOIN user_connections uc ON uc.id = cs.connection_id
+               JOIN users owner ON owner.id = uc.user_id
+               JOIN users u ON u.id = cs.grantee_user_id
+               LEFT JOIN users g ON g.id = cs.granted_by
+               WHERE {grant_expiry.live_sql('cs')}
+               ORDER BY owner.username, uc.name, u.username""",
+            (live,),
+        )
+        shares = [self._with_expiry(r) for r in await cursor.fetchall()]
+        return {"service_grants": grants, "connection_shares": shares}
+
+    async def add_connection_share(self, connection_id: int, grantee_id: int, owner_id: int,
+                                   duration: str = grant_expiry.API_DEFAULT) -> bool:
+        """Share a connection; sharing again with the same user replaces the expiry."""
+        expires_at = grant_expiry.expires_at_for(duration)
         try:
             await self.conn.execute(
-                """INSERT OR IGNORE INTO connection_shares
-                   (connection_id, grantee_user_id, granted_by) VALUES (?, ?, ?)""",
-                (connection_id, grantee_id, owner_id),
+                """INSERT INTO connection_shares
+                   (connection_id, grantee_user_id, granted_by, expires_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(connection_id, grantee_user_id)
+                   DO UPDATE SET expires_at = excluded.expires_at""",
+                (connection_id, grantee_id, owner_id, expires_at),
             )
             await self.conn.commit()
             return True
@@ -3791,10 +3880,12 @@ class Database:
         return cursor.rowcount > 0
 
     async def user_service_grant(self, user_id: int, service_id: int) -> Optional[set]:
-        """Set of granted actions ({'control','logs'}) for user on service, or None."""
+        """Set of granted actions ({'control','logs','files'}) for user on service, or None
+        (also None when the grant has expired)."""
         cursor = await self.conn.execute(
-            "SELECT actions FROM service_grants WHERE grantee_user_id = ? AND service_id = ?",
-            (user_id, service_id),
+            f"""SELECT sg.actions FROM service_grants sg
+                WHERE sg.grantee_user_id = ? AND sg.service_id = ? AND {grant_expiry.live_sql('sg')}""",
+            (user_id, service_id, grant_expiry.live_param()),
         )
         row = await cursor.fetchone()
         if not row:
@@ -3802,10 +3893,11 @@ class Database:
         return {a.strip() for a in (row["actions"] or "").split(",") if a.strip()}
 
     async def get_user_granted_service_ids(self, user_id: int) -> dict:
-        """{service_id: ['control','logs'], ...} for every grant this user holds."""
+        """{service_id: ['control','logs'], ...} for every live grant this user holds."""
         cursor = await self.conn.execute(
-            "SELECT service_id, actions FROM service_grants WHERE grantee_user_id = ?",
-            (user_id,),
+            f"""SELECT sg.service_id, sg.actions FROM service_grants sg
+                WHERE sg.grantee_user_id = ? AND {grant_expiry.live_sql('sg')}""",
+            (user_id, grant_expiry.live_param()),
         )
         out = {}
         for row in await cursor.fetchall():
@@ -3813,25 +3905,35 @@ class Database:
         return out
 
     async def list_service_grants(self, service_id: int) -> list[dict]:
+        """Live grants on one service (an expired one the sweeper has not deleted yet is not listed)."""
         cursor = await self.conn.execute(
-            """SELECT sg.grantee_user_id as user_id, u.username, sg.actions, sg.created_at
+            f"""SELECT sg.grantee_user_id as user_id, u.username, sg.actions, sg.created_at,
+                      sg.expires_at as expires_raw, g.username as granted_by_username
                FROM service_grants sg JOIN users u ON u.id = sg.grantee_user_id
-               WHERE sg.service_id = ? ORDER BY u.username""",
-            (service_id,),
+               LEFT JOIN users g ON g.id = sg.granted_by
+               WHERE sg.service_id = ? AND {grant_expiry.live_sql('sg')}
+               ORDER BY u.username""",
+            (service_id, grant_expiry.live_param()),
         )
-        return [
-            {**dict(r), "actions": [a.strip() for a in (r["actions"] or "").split(",") if a.strip()]}
-            for r in await cursor.fetchall()
-        ]
+        out = []
+        for r in await cursor.fetchall():
+            d = self._with_expiry(r)
+            d["actions"] = [a.strip() for a in (d["actions"] or "").split(",") if a.strip()]
+            out.append(d)
+        return out
 
-    async def add_service_grant(self, service_id: int, grantee_id: int, actions: list, granted_by: int) -> bool:
+    async def add_service_grant(self, service_id: int, grantee_id: int, actions: list, granted_by: int,
+                                duration: str = grant_expiry.API_DEFAULT) -> bool:
+        """Grant a service; granting again replaces the actions and the expiry."""
         clean = ",".join(sorted({a for a in actions if a in ("control", "logs", "files")})) or "control"
+        expires_at = grant_expiry.expires_at_for(duration)
         try:
             await self.conn.execute(
-                """INSERT INTO service_grants (service_id, grantee_user_id, actions, granted_by)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(service_id, grantee_user_id) DO UPDATE SET actions = excluded.actions""",
-                (service_id, grantee_id, clean, granted_by),
+                """INSERT INTO service_grants (service_id, grantee_user_id, actions, granted_by, expires_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(service_id, grantee_user_id)
+                   DO UPDATE SET actions = excluded.actions, expires_at = excluded.expires_at""",
+                (service_id, grantee_id, clean, granted_by, expires_at),
             )
             await self.conn.commit()
             return True
@@ -3846,6 +3948,54 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def sweep_expired_grants(self) -> list[dict]:
+        """Delete every share and grant whose time has passed; returns one dict per row
+        actually deleted (kind 'conn' or 'svc'), for the audit entry and for closing what
+        depended on it. A row renewed between the read and the delete is left alone. Access
+        was refused by the predicate long before this runs; this only cleans up."""
+        now = grant_expiry.live_param()
+        out = []
+        cursor = await self.conn.execute(
+            """SELECT cs.id, cs.connection_id, cs.grantee_user_id, cs.granted_by, cs.expires_at,
+                      uc.name as connection_name, uc.uuid as connection_uuid,
+                      u.username as grantee_username, g.username as granted_by_username
+               FROM connection_shares cs
+               JOIN user_connections uc ON uc.id = cs.connection_id
+               JOIN users u ON u.id = cs.grantee_user_id
+               LEFT JOIN users g ON g.id = cs.granted_by
+               WHERE cs.expires_at IS NOT NULL AND cs.expires_at <= ?""", (now,))
+        for r in await cursor.fetchall():
+            d = await self.conn.execute(
+                "DELETE FROM connection_shares WHERE id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+                (r["id"], now))
+            if d.rowcount > 0:
+                out.append({"kind": "conn", "resource_id": r["connection_id"],
+                            "resource_name": r["connection_name"], "resource_uuid": r["connection_uuid"],
+                            "grantee_id": r["grantee_user_id"], "grantee_username": r["grantee_username"],
+                            "granted_by": r["granted_by"], "granted_by_username": r["granted_by_username"],
+                            "expires_at": r["expires_at"]})
+        cursor = await self.conn.execute(
+            """SELECT sg.id, sg.service_id, sg.grantee_user_id, sg.granted_by, sg.expires_at, sg.actions,
+                      s.name as service_name, u.username as grantee_username,
+                      g.username as granted_by_username
+               FROM service_grants sg
+               JOIN users u ON u.id = sg.grantee_user_id
+               LEFT JOIN services s ON s.id = sg.service_id
+               LEFT JOIN users g ON g.id = sg.granted_by
+               WHERE sg.expires_at IS NOT NULL AND sg.expires_at <= ?""", (now,))
+        for r in await cursor.fetchall():
+            d = await self.conn.execute(
+                "DELETE FROM service_grants WHERE id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+                (r["id"], now))
+            if d.rowcount > 0:
+                out.append({"kind": "svc", "resource_id": r["service_id"],
+                            "resource_name": r["service_name"], "actions": r["actions"],
+                            "grantee_id": r["grantee_user_id"], "grantee_username": r["grantee_username"],
+                            "granted_by": r["granted_by"], "granted_by_username": r["granted_by_username"],
+                            "expires_at": r["expires_at"]})
+        await self.conn.commit()
+        return out
 
     async def find_usernames(self, prefix: str, limit: int = 10) -> list[dict]:
         """Case-insensitive username prefix search for the share/grant picker."""

@@ -242,6 +242,41 @@ check("about.html says the owner and stream mods can pin in a stream chat", "str
 api_md = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
 check("docs/API.md does not say that only stream owners ban", "Stream owners can ban users from their stream's chat." not in api_md)
 
+# --- 1.18.0 notes: expiring shares and grants -----------------------------------------
+m18 = re.search(r"### Upgrade notes for 1\.18\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.18.0' section after the 1.17.0 one",
+      m18 is not None and text.index("### Upgrade notes for 1.18.0") > text.index("### Upgrade notes for 1.17.0"))
+sec18 = m18.group(1) if m18 else ""
+low18 = sec18.lower()
+
+
+def says18(name, *needles):
+    check(f"1.18.0 states: {name}", all(n.lower() in low18 for n in needles), str(needles))
+
+
+says18("the durations, the UI default and the API default", "`1h`", "`8h`", "`1d`", "`7d`", "`30d`", "`90d`", "`never`",
+       "30 days preselected", "left out the api still means `never`", "`expires_at`", "`400`")
+says18("where it is enforced and that the clock decides, not the sweeper", "one predicate", "not at the sweeper", "no end time")
+says18("the sweeper", "every 60 seconds", "`connection.share_expired`", "`service.grant_expired`", "`4010`", "up to 60 seconds")
+says18("revoke closes sessions", "revoking a share", "leaving a shared connection", "deleting a connection")
+says18("views", "`get /api/me/shares`", "`get /api/admin/grants`")
+says18("what is not there", "no read-only", "no reminder", "no guest link")
+says18("database", "`connection_shares.expires_at`", "`service_grants.expires_at`", "nullable", "1.17.0's own database code")
+says18("rollback makes unswept rows permanent", "rollback", "1.17.0", "permanent again")
+says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
+check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
+      "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
+check("1.18.0: the user-connections, dashboard and terminal versions stated are the ones the pages load",
+      re.search(r"user-connections\.js\?v=48", (ROOT / "static" / "index.html").read_text())
+      and "`user-connections.js` is now version 48" in sec18
+      and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
+      and re.search(r"terminal\.js\?v=6", (ROOT / "static" / "terminal.html").read_text()) and "`terminal.js` 6" in sec18)
+check("README feature section says a share can expire", "the card shows the time left" in text and "All grants on the portal" in text)
+check("docs/API.md documents expires_in, the 400 case and both new routes",
+      all(n in (ROOT / "docs" / "API.md").read_text(encoding="utf-8") for n in ("expires_in", "GET /api/me/shares", "/api/admin/grants", "connection.share_expired", "service.grant_expired")))
+check("api-docs.html documents expires_in and both new routes",
+      all(n in (ROOT / "static" / "api-docs.html").read_text(encoding="utf-8") for n in ("expires_in", "/api/me/shares", "/api/admin/grants", "4010")))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

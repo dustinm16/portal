@@ -58,7 +58,7 @@ for direction in ("left", "right", "up", "down"):
 for page in STATIC.glob("*.html"):
     text = page.read_text()
     if "js/terminal.js" in text:
-        assert "js/terminal.js?v=5" in text, page.name
+        assert "js/terminal.js?v=6" in text, page.name
         assert "js/terminal-keybar.js?v=2" in text, page.name
 
 # storage access is guarded, no external code, host-key flow untouched

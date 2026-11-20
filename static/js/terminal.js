@@ -356,6 +356,11 @@ function connect() {
             window.location.replace('/login');
             return;
         }
+        if (event.code === 4010) {
+            // the share this session was opened through expired or was revoked: no reconnect
+            term.writeln('\r\n\x1b[31mYour access to this connection has ended\x1b[0m');
+            return;
+        }
         if (event.code === 4003) {
             term.writeln('\x1b[31mAccess denied - insufficient permissions\x1b[0m');
         } else if (event.code === 4004) {

@@ -126,6 +126,7 @@ import file_manager
 import gameservers
 import jobs as bg_jobs
 import hostkeys
+import grant_expiry
 import sftp_browser
 from host_check import (
     BLOCKED_HOSTS, is_blocked_host, is_private_or_loopback_address, resolve_checked_host, resolve_checked_host_cached, pick_dial_address, try_each_address,
@@ -397,7 +398,7 @@ class _ProxyHttpCall:
     credentials can end it: abort() drops the client connection and the
     upstream response, and `aborted` tells the handler why it stopped.
     """
-    __slots__ = ("request", "resp", "aborted")
+    __slots__ = ("request", "resp", "aborted", "__weakref__")
 
     def __init__(self, request):
         self.request = request
@@ -427,6 +428,56 @@ def _unregister_user_proxy_call(user_id: int, call: _ProxyHttpCall) -> None:
         calls.pop(call, None)
         if not calls:
             _user_proxy_calls.pop(user_id, None)
+
+
+# What depends on a share or a grant, so that ending it ends them: (kind, resource_id,
+# grantee user_id) -> the sockets, proxied HTTP calls and SSH connections opened through
+# it. kind is "conn" (a connection share, resource_id = user_connections.id) or "svc"
+# (a service grant; nothing is registered under it today because no socket is opened
+# through a service grant, the kind exists so a future one is closed by the same sweep).
+# Weak references: an entry disappears with the object, nothing has to unregister it.
+_grant_dependents: dict = {}
+
+# WebSocket close code for "your access to this connection ended" (expired or revoked),
+# distinct from 4001 (session revoked: clients go to /login) and 4003/4004.
+GRANT_ENDED_CLOSE_CODE = 4010
+
+
+def _register_grant_dependent(kind: str, resource_id: int, user_id: int, obj) -> None:
+    _grant_dependents.setdefault((kind, int(resource_id), int(user_id)), weakref.WeakSet()).add(obj)
+
+
+async def close_grant_dependents(kind: str, resource_id: int, user_id: int = None) -> int:
+    """End what the grantee holds open through one share or grant (user_id None: through
+    every grantee of that resource, for a deleted connection). Other sockets of the user,
+    the chat for one, are not touched. Returns how many were closed."""
+    keys = [k for k in list(_grant_dependents)
+            if k[0] == kind and k[1] == int(resource_id) and (user_id is None or k[2] == int(user_id))]
+    targets = []
+    for key in keys:
+        targets.extend(list(_grant_dependents.pop(key, ())))
+    for obj in targets:
+        try:
+            if isinstance(obj, _ProxyHttpCall):
+                obj.abort()
+            elif isinstance(obj, (web.WebSocketResponse, MetricsWebSocket)):
+                await obj.close(code=GRANT_ENDED_CLOSE_CODE, message=b"access ended")
+            else:
+                obj.close()     # an SSH connection (asyncssh's close() is synchronous)
+        except Exception:
+            logger.debug("closing something that depended on a share or grant failed", exc_info=True)
+    return len(targets)
+
+
+async def _track_shared_access(connection: dict, user_id: int, obj) -> bool:
+    """Record that `obj` (a socket, proxied call or SSH connection) was opened through a
+    share, then check the share is still live. False means it ended in between (a revoke
+    that landed before the registration did not see `obj`): the caller must close it.
+    Owner access (no share) is not tracked and always True."""
+    if not connection.get("shared"):
+        return True
+    _register_grant_dependent("conn", connection["id"], user_id, obj)
+    return await db.get_accessible_connection(connection["uuid"], user_id) is not None
 
 
 def _keeps_credential(token_id, except_token_id, keep_prefixes) -> bool:
@@ -4763,6 +4814,8 @@ async def http_delete_user_connection(request: web.Request) -> web.Response:
 
     if await db.delete_user_connection(connection["id"], token.user_id):
         logger.info(f"Connection {conn_uuid} deleted by user {token.user_id}")
+        # the shares went with it: what the grantees hold open through them ends too
+        await close_grant_dependents("conn", connection["id"])
         return web.json_response({"status": "deleted"})
     else:
         return web.json_response({"error": "Connection not found"}, status=404)
@@ -4966,6 +5019,12 @@ async def http_add_connection_shares(request: web.Request) -> web.Response:
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    # The duration is checked before anything is written; the server computes the timestamp.
+    try:
+        duration = grant_expiry.duration_from_body(data)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
     usernames = data.get("usernames") or ([data["username"]] if data.get("username") else [])
     added, skipped = [], []
     for name in usernames[:50]:
@@ -4973,7 +5032,7 @@ async def http_add_connection_shares(request: web.Request) -> web.Response:
         if not u or u["id"] == token.user_id:
             skipped.append(name)
             continue
-        if await db.add_connection_share(connection["id"], u["id"], token.user_id):
+        if await db.add_connection_share(connection["id"], u["id"], token.user_id, duration):
             added.append(u["username"])
         else:
             skipped.append(name)
@@ -4982,7 +5041,7 @@ async def http_add_connection_shares(request: web.Request) -> web.Response:
         await audit_log(
             "connection.share", token.user_id, (actor or {}).get("username", "unknown"),
             target_id=connection["id"], target_type="connection",
-            target_name=connection.get("name"), details={"grantees": added},
+            target_name=connection.get("name"), details={"grantees": added, "duration": duration},
         )
     return web.json_response({"added": added, "skipped": skipped,
                               "shares": await db.list_connection_shares(connection["id"])})
@@ -5001,6 +5060,7 @@ async def http_remove_connection_share(request: web.Request) -> web.Response:
         if not connection or not connection.get("shared"):
             return web.json_response({"error": "Not a shared connection"}, status=404)
         await db.remove_connection_share(connection["id"], token.user_id)
+        await close_grant_dependents("conn", connection["id"], token.user_id)
         return web.json_response({"success": True})
 
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)
@@ -5010,6 +5070,8 @@ async def http_remove_connection_share(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid grantee"}, status=400)
     ok = await db.remove_connection_share(connection["id"], int(grantee_raw))
     if ok:
+        # what the grantee holds open through this share ends with it
+        await close_grant_dependents("conn", connection["id"], int(grantee_raw))
         actor = await db.get_user_by_id(token.user_id)
         await audit_log(
             "connection.unshare", token.user_id, (actor or {}).get("username", "unknown"),
@@ -5018,6 +5080,61 @@ async def http_remove_connection_share(request: web.Request) -> web.Response:
         )
     return web.json_response({"success": ok,
                               "shares": await db.list_connection_shares(connection["id"])})
+
+
+async def http_list_my_shares(request: web.Request) -> web.Response:
+    """Every live share of every connection the caller owns: grantee, grantor, created, expiry."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    return web.json_response({"shares": await db.list_shares_by_owner(token.user_id)})
+
+
+async def http_admin_list_grants(request: web.Request) -> web.Response:
+    """Every live service grant and connection share on the portal (admin only)."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not token.has_scope("admin") and not token.has_scope("*"):
+        return forbidden_response(request)
+    return web.json_response(await db.list_all_grants())
+
+
+async def sweep_expired_grants_once() -> int:
+    """Delete the shares and grants whose time has passed, write one audit entry per row
+    and close what the grantee held open through each. Access was refused by the live
+    predicate from the second the time passed; this is the cleanup. Returns rows deleted."""
+    rows = await db.sweep_expired_grants()
+    for row in rows:
+        conn = row["kind"] == "conn"
+        # the grantor is the actor; a grantor who no longer exists cannot be an audit actor
+        if row.get("granted_by_username"):
+            actor_id, actor_name = row["granted_by"], row["granted_by_username"]
+        else:
+            actor_id, actor_name = row["grantee_id"], row["grantee_username"]
+        details = {"grantee": row["grantee_username"], "grantee_id": row["grantee_id"],
+                   "granted_by": row.get("granted_by_username"), "expired_at": row["expires_at"]}
+        if not conn:
+            details["actions"] = row.get("actions")
+        await audit_log(
+            "connection.share_expired" if conn else "service.grant_expired", actor_id, actor_name,
+            target_id=row["resource_id"], target_type="connection" if conn else "service",
+            target_name=row.get("resource_name"), details=details)
+        await close_grant_dependents(row["kind"], row["resource_id"], row["grantee_id"])
+    return len(rows)
+
+
+# How often the expiry sweeper runs. A staged instance may shorten it (never the real one).
+_GRANT_SWEEP_SECONDS = 60
+
+
+def _grant_sweep_interval() -> float:
+    if Config.STAGE_MODE:
+        try:
+            return max(1.0, float(os.getenv("PORTAL_GRANT_SWEEP_SECONDS", "") or _GRANT_SWEEP_SECONDS))
+        except ValueError:
+            pass
+    return float(_GRANT_SWEEP_SECONDS)
 
 
 # =============================================================================
@@ -12905,6 +13022,11 @@ async def _get_sftp_connection(request: web.Request, token: TokenPayload):
     if error:
         return None, None, web.json_response({"error": error}, status=502)
 
+    # An SSH connection opened through a share is closed when the share ends.
+    if not await _track_shared_access(connection, token.user_id, ssh_conn):
+        ssh_conn.close()
+        return None, None, web.json_response({"error": "Connection not found"}, status=404)
+
     return ssh_conn, sftp_client, None
 
 
@@ -13743,6 +13865,11 @@ async def http_add_service_grant(request: web.Request) -> web.Response:
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    try:
+        duration = grant_expiry.duration_from_body(data)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
     actions = [a for a in (data.get("actions") or ["control"]) if a in ("control", "logs", "files")] or ["control"]
     usernames = data.get("usernames") or ([data["username"]] if data.get("username") else [])
     added, skipped = [], []
@@ -13751,7 +13878,7 @@ async def http_add_service_grant(request: web.Request) -> web.Response:
         if not u:
             skipped.append(name)
             continue
-        if await db.add_service_grant(sid, u["id"], actions, token.user_id):
+        if await db.add_service_grant(sid, u["id"], actions, token.user_id, duration):
             added.append(u["username"])
         else:
             skipped.append(name)
@@ -13760,7 +13887,7 @@ async def http_add_service_grant(request: web.Request) -> web.Response:
         await audit_log(
             "service.grant", token.user_id, (actor or {}).get("username", "unknown"),
             target_id=sid, target_type="service", target_name=service.get("name"),
-            details={"grantees": added, "actions": actions},
+            details={"grantees": added, "actions": actions, "duration": duration},
         )
     return web.json_response({"added": added, "skipped": skipped,
                               "grants": await db.list_service_grants(sid)})
@@ -13779,6 +13906,7 @@ async def http_remove_service_grant(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid parameters"}, status=400)
     ok = await db.remove_service_grant(int(sid), int(grantee))
     if ok:
+        await close_grant_dependents("svc", int(sid), int(grantee))
         actor = await db.get_user_by_id(token.user_id)
         await audit_log(
             "service.ungrant", token.user_id, (actor or {}).get("username", "unknown"),
@@ -14792,6 +14920,12 @@ async def handle_user_connection_ws(
         return
 
     conn_id = connection["id"]  # Internal integer ID for traffic_metrics
+
+    # A socket opened through a share ends with the share (expiry, revoke).
+    if not await _track_shared_access(connection, token.user_id, ws):
+        await ws.send_json({"type": "error", "message": "Connection not found"})
+        await ws.close(code=4004, message=b"Connection not found")
+        return
 
     # Record connection usage
     await db.record_connection_usage(conn_id, token.user_id)
@@ -16011,6 +16145,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
     connection = await db.get_accessible_connection(conn_uuid, token.user_id)
     if not connection:
         return web.Response(status=404, text="Connection not found")
+    # A proxied call (a long download, an event stream) opened through a share ends with it.
+    if not await _track_shared_access(connection, token.user_id, call):
+        return web.Response(status=404, text="Connection not found")
 
     conn_type = connection.get("type", "custom")
     type_info = CONNECTION_TYPES.get(conn_type, {"plugin": "tcp_tunnel"})
@@ -16113,6 +16250,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
             _unregister_user_proxy_call(token.user_id, call)
             if call.aborted:
                 await ws.close(code=4001, message=b"session revoked")
+                return ws
+            # Through a share: the relay ends with it (checked again now that it is registered).
+            if not await _track_shared_access(connection, token.user_id, ws):
+                await ws.close(code=GRANT_ENDED_CLOSE_CODE, message=b"access ended")
                 return ws
             # The upgrade awaited since the credential was checked; as the chat and
             # generic handlers do, check it again now that the socket is registered.
@@ -24460,6 +24601,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/connections/{id}/host-key/accept", http_accept_connection_host_key)
     app.router.add_post("/api/services/{id}/host-key/accept", http_accept_service_host_key)
     app.router.add_get("/api/connections/{id}/shares", http_list_connection_shares)
+    app.router.add_get("/api/me/shares", http_list_my_shares)
+    app.router.add_get("/api/admin/grants", http_admin_list_grants)
     app.router.add_post("/api/connections/{id}/shares", http_add_connection_shares)
     app.router.add_delete("/api/connections/{id}/shares/{grantee}", http_remove_connection_share)
     app.router.add_get("/api/users/lookup", http_users_lookup)
@@ -24913,6 +25056,10 @@ class PortalServer:
         # Start RTMP token cleanup task (runs every 5 minutes)
         asyncio.create_task(self._rtmp_token_cleanup_task())
 
+        # Expired connection shares and service grants: deleted, audited, their sockets closed
+        # (runs in staged mode too; it only reads and writes the database and closes sockets)
+        asyncio.create_task(self._grant_expiry_task())
+
         # Start relay health monitor (restarts orphaned relays every 45 seconds)
         if not Config.STAGE_MODE:
             asyncio.create_task(self._relay_health_monitor_task())
@@ -25026,6 +25173,20 @@ class PortalServer:
                 break
             except Exception as e:
                 logger.error(f"RTMP token cleanup error: {e}")
+
+    async def _grant_expiry_task(self) -> None:
+        """Every 60 s: sweep_expired_grants_once(). Access is already refused by the
+        predicate when the time passes; a socket that was open then ends within one tick."""
+        while True:
+            try:
+                await asyncio.sleep(_grant_sweep_interval())
+                n = await sweep_expired_grants_once()
+                if n:
+                    logger.info(f"Expired {n} share(s) or grant(s)")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Grant expiry sweep error: {e}")
 
     async def _data_cleanup_task(self) -> None:
         """Unified data retention cleanup — interval configurable via settings."""

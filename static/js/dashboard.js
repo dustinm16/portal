@@ -1237,7 +1237,7 @@ async function loadInlineConnections() {
                     </div>
                 </div>
                 <div class="connection-details">
-                    ${conn.shared ? `<span class="connection-time">Shared by ${escapeHtml(conn.owner_username || '?')}</span>`
+                    ${conn.shared ? `<span class="connection-time">Shared by ${escapeHtml(conn.owner_username || '?')} &middot; ${escapeHtml(formatGrantRemaining(conn.share_expires_in))}</span>`
                         : (usageText ? `<span class="connection-time" title="${useCount} uses">Used ${usageText}</span>` : '<span class="connection-time">Never used</span>')}
                 </div>
                 <div class="connection-actions">

@@ -685,7 +685,7 @@ function renderConnections() {
                 ${actions}
                 <div class="connection-icon">${icon}</div>
                 <div class="connection-name">${escapeHtml(conn.name)}</div>
-                <div class="connection-type">${typeInfo.name}${conn.shared ? ` &middot; shared by ${escapeHtml(conn.owner_username || '?')}` : ''}</div>
+                <div class="connection-type">${typeInfo.name}${conn.shared ? ` &middot; shared by ${escapeHtml(conn.owner_username || '?')} &middot; ${escapeHtml(formatGrantRemaining(conn.share_expires_in))}` : ''}</div>
                 <div class="connection-host">${escapeHtml(conn.host)}${conn.port ? ':' + conn.port : ''}</div>
                 <button class="btn btn-primary btn-sm connection-connect-btn" onclick="event.stopPropagation(); connectTo('${conn.id}')">
                     Connect
@@ -1455,9 +1455,32 @@ async function showShareConnectionModal(uuid, name) {
     document.getElementById('share-conn-name').textContent = name || (conn ? conn.name : '');
     if (!_sharePicker) _sharePicker = initUserPicker('share-chip-box', 'share-user-input', 'share-user-results');
     _sharePicker.reset();
+    document.getElementById('share-duration').value = '30d';
+    const all = document.getElementById('all-shares-list');
+    if (all) all.style.display = 'none';
     if (typeof showModal === 'function') showModal('share-connection-modal');
     else document.getElementById('share-connection-modal').style.display = 'flex';
     await loadConnectionShares(uuid);
+}
+
+// Time left on a share or grant, from the server's expires_in (seconds; null = never expires).
+function formatGrantRemaining(sec) {
+    if (sec === null || sec === undefined) return 'never expires';
+    if (sec <= 0) return 'expired';
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    if (d >= 2) return `${d} days left`;
+    if (d === 1) return `1 day ${h} h left`;
+    if (h >= 1) return `${h} h ${m} min left`;
+    return `${Math.max(1, m)} min left`;
+}
+
+// One line about a share: who gave it, when, and until when.
+function describeGrant(g) {
+    const parts = [];
+    if (g.granted_by_username) parts.push(`by ${escapeHtml(g.granted_by_username)}`);
+    if (g.created_at) parts.push(`on ${escapeHtml(String(g.created_at).slice(0, 10))}`);
+    parts.push(escapeHtml(formatGrantRemaining(g.expires_in)));
+    return parts.join(' &middot; ');
 }
 
 async function loadConnectionShares(uuid) {
@@ -1467,7 +1490,8 @@ async function loadConnectionShares(uuid) {
         const shares = data.shares || [];
         list.innerHTML = shares.length ? shares.map(s => `
             <div class="userpick-current-row">
-                <span>${escapeHtml(s.username)}</span>
+                <span>${escapeHtml(s.username)}
+                    <span style="color:var(--text-muted);font-size:0.75rem;" title="${escapeHtml(s.expires_at || 'never expires')}">${describeGrant(s)}</span></span>
                 <button class="btn btn-sm btn-danger" onclick="revokeConnectionShare('${uuid}', ${s.user_id})">Revoke</button>
             </div>`).join('') : '<small style="color:var(--text-muted);">Not shared with anyone yet.</small>';
     } catch (e) {
@@ -1475,14 +1499,35 @@ async function loadConnectionShares(uuid) {
     }
 }
 
+// Everything the owner has shared, across all their connections.
+async function toggleAllMyShares() {
+    const box = document.getElementById('all-shares-list');
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    box.innerHTML = '<small style="color:var(--text-muted);">Loading…</small>';
+    try {
+        const data = await Portal.fetchJSON('/api/me/shares');
+        const shares = data.shares || [];
+        box.innerHTML = shares.length ? shares.map(s => `
+            <div class="userpick-current-row">
+                <span>${escapeHtml(s.connection_name)} &rarr; ${escapeHtml(s.username)}
+                    <span style="color:var(--text-muted);font-size:0.75rem;" title="${escapeHtml(s.expires_at || 'never expires')}">${describeGrant(s)}</span></span>
+            </div>`).join('') : '<small style="color:var(--text-muted);">You have not shared anything.</small>';
+    } catch (e) {
+        box.innerHTML = '<small style="color:var(--accent-red);">Failed to load.</small>';
+    }
+}
+
 async function submitConnectionShare() {
     const uuid = document.getElementById('share-conn-uuid').value;
     const usernames = _sharePicker ? _sharePicker.usernames() : [];
     if (!usernames.length) { Portal.toast('Type a username first', 'error'); return; }
+    // the server turns the chosen duration into the end time; the dialog never sends a timestamp
+    const expires_in = document.getElementById('share-duration').value;
     try {
         const res = await Portal.fetch(`/api/connections/${uuid}/shares`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ usernames }),
+            body: JSON.stringify({ usernames, expires_in }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed');
