@@ -1342,10 +1342,9 @@
                 </ul>
                 <h3>Automod Actions</h3>
                 <ul>
-                    <li><strong>Warn</strong> &mdash; Send a private error message to the user</li>
-                    <li><strong>Delete</strong> &mdash; Silently block the message from being sent</li>
-                    <li><strong>Timeout</strong> &mdash; Automatically timeout the user for a configurable duration</li>
-                    <li><strong>Mute</strong> &mdash; Automatically mute the user</li>
+                    <li><strong>Warn</strong> and <strong>Delete</strong> &mdash; Both act the same way today: the message (or the edit) is not sent, and the author gets a private error naming the rule. Nothing else happens to the member.</li>
+                    <li><strong>Timeout</strong> &mdash; The same block, plus the member is timed out in that channel for the rule&rsquo;s duration (5 minutes when none is set); the channel sees an &ldquo;AutoMod&rdquo; notice.</li>
+                    <li><strong>Mute</strong> &mdash; The same block, plus the member is muted in that channel until a moderator lifts it; the channel sees an &ldquo;AutoMod&rdquo; notice.</li>
                 </ul>
                 <p>Rules apply to new messages and to edits; an edit that breaks a rule is refused and the message keeps its old text. Moderators, admins, and superadmins are still blocked by a rule but are not timed out or muted by it. All triggers are logged to the audit log.</p>
 
