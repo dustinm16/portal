@@ -4068,9 +4068,21 @@ class Database:
                 logger.warning("Public key lookup used plaintext fallback — un-migrated stream key detected (stream_id=%s)", row["id"])
         return self._decrypt_stream_keys(dict(row)) if row else None
 
+    # The only user_streams columns a listing for other members or for logged-out visitors
+    # may carry. An allow-list on purpose: a column added later (the go-live message and
+    # audience, key hashes, rtmp state) is private until it is added here.
+    PUBLIC_STREAM_COLUMNS = ("id", "user_id", "name", "description", "is_public", "is_live",
+                             "viewer_count", "chat_channel_id", "thumbnail_url", "started_at",
+                             "total_views", "created_at", "public_key", "allow_unauthenticated")
+
+    @classmethod
+    def _public_stream_select(cls) -> str:
+        return ", ".join(f"us.{c}" for c in cls.PUBLIC_STREAM_COLUMNS)
+
     async def get_public_streams(self, live_only: bool = False) -> list[dict]:
-        """Get all public streams, optionally only live ones."""
-        query = """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname, c.name as chat_channel_name
+        """Get all public streams, optionally only live ones. Only PUBLIC_STREAM_COLUMNS
+        (plus owner names and the chat channel name) are returned."""
+        query = f"""SELECT {self._public_stream_select()}, u.username as owner_username, u.nickname as owner_nickname, c.name as chat_channel_name
                    FROM user_streams us
                    LEFT JOIN users u ON us.user_id = u.id
                    LEFT JOIN chat_channels c ON us.chat_channel_id = c.id
@@ -4084,8 +4096,8 @@ class Database:
         return [self._decrypt_stream_keys(dict(row)) for row in rows]
 
     async def get_open_streams(self) -> list[dict]:
-        """Get streams that allow unauthenticated public access."""
-        query = """SELECT us.*, u.username as owner_username, u.nickname as owner_nickname
+        """Get streams that allow unauthenticated public access (PUBLIC_STREAM_COLUMNS only)."""
+        query = f"""SELECT {self._public_stream_select()}, u.username as owner_username, u.nickname as owner_nickname
                    FROM user_streams us
                    LEFT JOIN users u ON us.user_id = u.id
                    WHERE us.is_public = 1 AND us.allow_unauthenticated = 1

@@ -699,6 +699,37 @@ def test_stream_detail_is_decided_by_the_role_based_read_rule():
     run(body)
 
 
+def test_public_listings_carry_only_allow_listed_columns():
+    async def body(w):
+        for label in ("public", "open"):
+            await w.db.update_user_stream(w.streams[label]["id"], golive_message="secret hello",
+                                          golive_audience="everyone", rtmp_enabled=1)
+            await w.db.conn.execute("UPDATE user_streams SET golive_announced_at = 5 WHERE id = ?",
+                                    (w.streams[label]["id"],))
+        await w.db.conn.commit()
+        allowed = set(w.db.PUBLIC_STREAM_COLUMNS) | {"owner_username", "owner_nickname", "chat_channel_name"}
+        banned = {"stream_key", "stream_key_hash", "public_key_hash", "golive_message", "golive_audience",
+                  "golive_announced_at", "rtmp_enabled", "updated_at", "ended_at"}
+        for rows in (await w.db.get_public_streams(), await w.db.get_open_streams(),
+                     await w.db.get_public_streams(live_only=True)):
+            assert rows
+            for row in rows:
+                assert set(row) <= allowed, set(row) - allowed
+                assert not (set(row) & banned)
+                assert row["public_key"].startswith("pub_")
+        # the HTTP listings: a member's view and the logged-out one
+        resp = await server.http_get_public_streams(make_mocked_request(
+            "GET", "/api/streams/public", headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie['member']}"},
+            transport=Transport()))
+        blob = resp.body.decode()
+        assert resp.status == 200 and "secret hello" not in blob and "golive" not in blob and "live_" not in blob
+        resp = await server.http_get_open_streams(make_mocked_request("GET", "/api/streams/open", transport=Transport()))
+        blob = resp.body.decode()
+        assert resp.status == 200 and "open" in blob and "secret hello" not in blob and "golive" not in blob \
+            and "live_" not in blob and "rtmp_enabled" not in blob
+    run(body)
+
+
 # stream handlers that only publish (the MediaMTX hooks and WHIP): the key in the body or URL
 # is the publish credential. Anything else under these prefixes must refuse stream keys.
 _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",
