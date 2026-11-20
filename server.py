@@ -5640,8 +5640,6 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     # One decision, role based: the owner, an admin, or any member for a public stream.
     role = await get_user_role_from_token(token)
     is_owner = stream["user_id"] == token.user_id
-    is_public = bool(stream.get("is_public", False))
-    is_admin = role in ("admin", "superadmin")
 
     # Everybody else gets 404 for a private stream (no enumeration)
     if not _stream_read_allowed(stream, token.user_id, role, False):
@@ -5652,12 +5650,12 @@ async def http_get_user_stream(request: web.Request) -> web.Response:
     stream.pop("public_key_hash", None)
 
     if not is_owner:
-        # Always hide the private stream_key from non-owners
-        stream.pop("stream_key", None)
-        # Also hide public_key for private streams, except from an admin by role (not by
-        # token scope): the read gate lets them watch it, and playback needs the key.
-        if not is_public and not is_admin:
-            stream.pop("public_key", None)
+        # Anyone but the owner (an admin included) gets only the allow-listed columns: no
+        # stream_key, hashes, go-live message or audience, rtmp or update times. The public_key
+        # stays in the list because the read gate lets a viewer watch with it.
+        shown = set(db.PUBLIC_STREAM_COLUMNS) | {"owner_username", "owner_nickname",
+                                                       "chat_channel_name"}
+        stream = {k: v for k, v in stream.items() if k in shown}
     if is_owner:
         stream["follower_count"] = await db.count_followers(stream["id"])    # a number, never names
     stream["following"] = stream["id"] in set(await db.get_followed_stream_ids(token.user_id))

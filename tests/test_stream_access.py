@@ -737,6 +737,38 @@ def test_public_listings_carry_only_allow_listed_columns():
     run(body)
 
 
+def test_stream_detail_carries_only_allow_listed_columns_for_non_owners():
+    async def body(w):
+        sid = w.streams["public"]["id"]
+        await w.db.update_user_stream(sid, golive_message="owner secret note",
+                                      golive_audience="everyone", rtmp_enabled=1)
+        await w.db.conn.execute("UPDATE user_streams SET golive_announced_at = 5 WHERE id = ?", (sid,))
+        await w.db.conn.commit()
+        allowed = set(w.db.PUBLIC_STREAM_COLUMNS) | {"owner_username", "owner_nickname", "chat_channel_name",
+                                                     "following"}
+        banned = {"stream_key", "stream_key_hash", "public_key_hash", "golive_message", "golive_audience",
+                  "golive_announced_at", "rtmp_enabled", "updated_at", "ended_at"}
+
+        async def get(user, ident=None):
+            ident = str(sid) if ident is None else ident
+            return await server.http_get_user_stream(make_mocked_request(
+                "GET", f"/api/streams/{ident}", match_info={"id": ident},
+                headers={"Cookie": f"{Config.SESSION_COOKIE_NAME}={w.cookie[user]}"}, transport=Transport()))
+        for user in ("member", "admin"):
+            for ident in (None, w.streams["public"]["pub"]):
+                resp = await get(user, ident)
+                assert resp.status == 200
+                row = json.loads(resp.body)["stream"]
+                assert set(row) <= allowed, set(row) - allowed
+                assert not (set(row) & banned)
+                assert row["public_key"].startswith("pub_") and row["name"] == "public"
+                assert "owner secret note" not in resp.body.decode()
+        # the owner still sees their own settings
+        row = json.loads((await get("owner")).body)["stream"]
+        assert row["golive_message"] == "owner secret note" and row["rtmp_enabled"] == 1 and row["stream_key"]
+    run(body)
+
+
 # stream handlers that only publish (the MediaMTX hooks and WHIP): the key in the body or URL
 # is the publish credential. Anything else under these prefixes must refuse stream keys.
 _PUBLISH_SIDE = {"http_stream_auth", "http_stream_event", "http_stream_webrtc_whip",
