@@ -312,6 +312,55 @@ def test_the_games_list_is_bounded_and_deduplicated_without_regard_to_case():
     run(body)
 
 
+def test_the_game_suggestions_are_deduplicated_and_limited_in_sql():
+    """200 public streams with one game in varied case (and a non-ASCII pair) read back one row
+    per game and never more than the limit: the database does the work, not Python."""
+    async def body(env):
+        d = env.db
+        ids = await users(d)
+        for i in range(200):
+            variant = "".join(c.upper() if (i >> n) & 1 else c for n, c in enumerate("same game"))
+            await d.create_user_stream(ids["alice"], f"v{i}", f"live_{i:024d}", public_key=f"pub_{i:024d}",
+                                       is_public=True, game=variant)
+        for i in range(70):
+            await d.create_user_stream(ids["alice"], f"u{i}", f"live_u{i:023d}", public_key=f"pub_u{i:023d}",
+                                       is_public=True, game=f"Other {i:03d}")
+        await d.create_user_stream(ids["viewer"], "de1", "live_" + "e" * 24, public_key="pub_" + "e" * 24,
+                                   is_public=False, game="Strasse \u00c4rger")
+        await d.create_user_stream(ids["viewer"], "de2", "live_" + "f" * 24, public_key="pub_" + "f" * 24,
+                                   is_public=False, game="STRASSE \u00e4RGER")
+        fetched = []
+        real_conn = d._connection
+
+        class Cur:
+            def __init__(self, cur):
+                self.cur = cur
+
+            async def fetchall(self):
+                rows = await self.cur.fetchall()
+                fetched.append(len(rows))
+                return rows
+
+        class Spy:
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+            async def execute(self, *a, **k):
+                return Cur(await real_conn.execute(*a, **k))
+        d._connection = Spy()
+        try:
+            games = await d.get_game_suggestions(ids["viewer"])
+        finally:
+            d._connection = real_conn
+        assert fetched and max(fetched) <= d.GAME_SUGGESTIONS_MAX, fetched
+        assert len(games) == d.GAME_SUGGESTIONS_MAX
+        assert len({g.casefold() for g in games}) == len(games)
+        assert sum(1 for g in games if g.casefold() == "same game") <= 1
+        # the caller's own pair differs only by non-ASCII case: one entry, and it comes first
+        assert sum(1 for g in games if g.casefold() == "strasse \u00e4rger") == 1
+    run(body)
+
+
 def test_the_games_route_starts_with_the_stream_user_auth():
     src = (ROOT / "server.py").read_text()
     start = src.index("async def http_stream_games(")

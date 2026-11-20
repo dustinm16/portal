@@ -1271,6 +1271,10 @@ def get_manageable_roles(actor_role: str) -> list[str]:
     return [r for r in ROLE_HIERARCHY if get_role_level(r) < actor_level]
 
 
+def _casefold_or_none(value):
+    return value.casefold() if isinstance(value, str) else value
+
+
 class Database:
     """Async database operations for Open Relay Portal."""
 
@@ -1294,6 +1298,9 @@ class Database:
 
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
+        # Unicode case folding for queries that group names without regard to case (SQLite's
+        # own lower() and NOCASE fold ASCII only)
+        await self._connection.create_function("casefold", 1, _casefold_or_none, deterministic=True)
         # Restrict DB file permissions even if umask is permissive
         os.chmod(self.db_path, 0o600)
         await self._connection.execute("PRAGMA journal_mode = WAL")
@@ -4239,27 +4246,26 @@ class Database:
         of streams that are public now. Never the game of another member's stream that is not
         public, and never another member's history: a stream that was public once and is
         private now shows nothing. At most GAME_SUGGESTIONS_MAX."""
+        # One row per game (case folded), the best one by own-before-public then newest, and the
+        # LIMIT, all in SQL: a community with thousands of streams reads at most the answer.
         cursor = await self.conn.execute(
-            """SELECT game, 0 AS prio, used_at AS at FROM stream_game_history WHERE user_id = ?
-               UNION ALL
-               SELECT game, 0, COALESCE(updated_at, created_at) FROM user_streams
-                WHERE user_id = ? AND game IS NOT NULL AND game != ''
-               UNION ALL
-               SELECT game, 1, COALESCE(updated_at, created_at) FROM user_streams
-                WHERE is_public = 1 AND game IS NOT NULL AND game != ''""",
-            (user_id, user_id))
-        rows = [(r["prio"], r["at"] or "", r["game"]) for r in await cursor.fetchall()]
-        rows.sort(key=lambda r: r[1], reverse=True)      # newest first ...
-        rows.sort(key=lambda r: r[0])                    # ... own before public (stable)
-        out, seen = [], set()
-        for _prio, _at, game in rows:
-            if game.casefold() in seen:
-                continue
-            seen.add(game.casefold())
-            out.append(game)
-            if len(out) >= self.GAME_SUGGESTIONS_MAX:
-                break
-        return out
+            """WITH cand(game, prio, at) AS (
+                   SELECT game, 0, COALESCE(used_at, '') FROM stream_game_history
+                    WHERE user_id = ? AND game IS NOT NULL AND game != ''
+                   UNION ALL
+                   SELECT game, 0, COALESCE(updated_at, created_at, '') FROM user_streams
+                    WHERE user_id = ? AND game IS NOT NULL AND game != ''
+                   UNION ALL
+                   SELECT game, 1, COALESCE(updated_at, created_at, '') FROM user_streams
+                    WHERE is_public = 1 AND game IS NOT NULL AND game != ''),
+               ranked AS (
+                   SELECT game, prio, at,
+                          ROW_NUMBER() OVER (PARTITION BY casefold(game)
+                                             ORDER BY prio, at DESC, game) AS n
+                   FROM cand)
+               SELECT game FROM ranked WHERE n = 1 ORDER BY prio, at DESC, game LIMIT ?""",
+            (user_id, user_id, self.GAME_SUGGESTIONS_MAX))
+        return [r["game"] for r in await cursor.fetchall()]
 
     async def claim_golive(self, stream_id: int, now: int, cooldown: int) -> bool:
         """Take the right to announce a go-live: True for exactly one caller per cooldown.
