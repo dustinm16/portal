@@ -1013,6 +1013,64 @@ def test_an_anonymous_owner_or_mod_is_one_label_to_the_room_and_in_lists():
     server.chat_user_state.clear()
 
 
+class StuckWs:
+    closed = False
+
+    async def send_json(self, _payload):
+        await asyncio.sleep(5)
+
+
+def test_ending_a_mod_through_the_generic_routes_is_audited_and_pushed():
+    async def body(env):
+        d = env.db
+        w = await World().build(d)
+        cid, u = w.chat["a"], w.u
+        name = (await w.channel("a"))["name"]
+        friend = await joined(env, w, "friend")
+        mod2 = await joined(env, w, "mod2")
+        # a socket that never takes a frame must neither hold the answer nor the other sockets
+        server.chat_rooms[name].add((StuckWs(), u["friend"], "friend", "user", "{}"))
+
+        async def audit(action, target):
+            entries = await d.get_audit_log(limit=200, channel_id=cid)
+            return [e for e in entries if e["action"] == action and e["target_id"] == target]
+
+        # demoted by an admin
+        mark = friend.mark()
+        t0 = asyncio.get_running_loop().time()
+        st, _ = await env.call("PUT", u["admin"], f"/api/chat/channels/{cid}/members/{u['friend']}",
+                               json={"role": "member"})
+        assert st == 200 and asyncio.get_running_loop().time() - t0 < 1.5, "the answer waited for a socket"
+        got = await friend.wait(lambda e: e.get("type") == "mod_level", mark)
+        assert got and got["mod_level"] == server.CHAT_LEVEL_NAMES[NONE], got
+        rows = await audit("stream_mod_remove", u["friend"])
+        assert rows and rows[0]["actor_id"] == u["admin"], rows
+        # a plain demotion of a member who was no mod writes nothing
+        st, _ = await env.call("PUT", u["admin"], f"/api/chat/channels/{cid}/members/{u['plain']}",
+                               json={"role": "member"})
+        assert st == 200 and not await audit("stream_mod_remove", u["plain"])
+        # removed by an admin
+        mark = mod2.mark()
+        st, _ = await env.call("DELETE", u["admin"], f"/api/chat/channels/{cid}/members/{u['mod2']}")
+        assert st == 200
+        got = await mod2.wait(lambda e: e.get("type") == "mod_level", mark)
+        assert got and got["mod_level"] == server.CHAT_LEVEL_NAMES[NONE], got
+        rows = await audit("stream_mod_remove", u["mod2"])
+        assert rows and rows[0]["actor_id"] == u["admin"], rows
+        # left by the mod himself
+        st, _ = await env.call("POST", u["owner"], f"/api/streams/{w.stream['a']}/mods", json={"user_id": u["plain"]})
+        assert st == 201
+        plain = await joined(env, w, "plain")
+        mark = plain.mark()
+        st, _ = await env.call("DELETE", u["plain"], f"/api/chat/channels/{cid}/members/{u['plain']}")
+        assert st == 200
+        rows = await audit("stream_mod_remove", u["plain"])
+        assert rows and rows[0]["actor_id"] == u["plain"], rows
+        assert rows[0]["details"] is not None and server.CHAT_LEVEL_NAMES[MOD] in str(rows[0]["details"]), rows[0]
+        await asyncio.wait_for(asyncio.gather(*list(server._mod_level_tasks)), 4)
+    run(body)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

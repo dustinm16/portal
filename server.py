@@ -6319,12 +6319,45 @@ async def _push_mod_level(channel, user_id: int) -> None:
         if not member:
             return
         level = await chat_mod_level(channel, {"id": user_id, "role": _user_role_of(member)})
-        for entry in list(chat_rooms.get(channel["name"], ())):
-            if entry[1] == user_id and not entry[0].closed:
-                await entry[0].send_json({"type": "mod_level", "channel_id": channel["id"],
-                                          "mod_level": CHAT_LEVEL_NAMES[level]})
+        frame = {"type": "mod_level", "channel_id": channel["id"], "mod_level": CHAT_LEVEL_NAMES[level]}
+        # Every socket at once, each with the 2 s limit of the other broadcasts: one stuck
+        # socket holds neither the others nor the caller for longer than that
+        await asyncio.gather(*[
+            asyncio.wait_for(entry[0].send_json(frame), 2)
+            for entry in list(chat_rooms.get(channel["name"], ()))
+            if entry[1] == user_id and not entry[0].closed], return_exceptions=True)
     except Exception as e:
         logger.debug(f"[Chat] mod_level push failed: {e}")
+
+
+_mod_level_tasks: set = set()        # strong references to the pushes in flight
+
+
+def _schedule_mod_level_push(channel, user_id: int) -> None:
+    """_push_mod_level in the background: the HTTP answer never waits for a socket."""
+    task = asyncio.create_task(_push_mod_level(channel, user_id), name="mod-level-push")
+    _mod_level_tasks.add(task)
+    task.add_done_callback(_mod_level_tasks.discard)
+
+
+async def _mod_row_of(channel_id: int, target_id: int):
+    """The stream whose own chat this is, when the member holds a stream-mod row in it (else None)."""
+    stream = await db.get_stream_by_chat_channel(channel_id)
+    if _real_stream_chat(stream) and await db.get_channel_member_role(channel_id, target_id) == "moderator":
+        return stream
+    return None
+
+
+async def _stream_mod_ended(channel, stream, actor_id: int, actor_name: str, actor_role: str, target_id: int) -> None:
+    """A stream mod's appointment ended through a generic channel-member route (demoted,
+    removed or left): the same stream_mod_remove audit entry as the /mods route and the
+    member's sockets learn their new level."""
+    # Leaving: the member acted at the level the row gave (it is gone by now)
+    level = CHAT_LEVEL_MOD if actor_id == target_id else (await _stream_route_mod_level(stream, actor_id, actor_role))[0]
+    target = await db.get_user_by_id(target_id)
+    await _audit_chat_mod("stream_mod_remove", actor_id, actor_name, level, channel, target_id=target_id,
+                          target_name=(target or {}).get("username"), extra={"stream_id": stream["id"]})
+    _schedule_mod_level_push(channel, target_id)
 
 
 async def http_list_stream_mods(request: web.Request) -> web.Response:
@@ -6389,7 +6422,7 @@ async def http_add_stream_mod(request: web.Request) -> web.Response:
     await _audit_chat_mod("stream_mod_add", token.user_id, (actor or {}).get("username", "?"), actor_level,
                           channel, target_id=target_id, target_name=target["username"],
                           extra={"stream_id": stream["id"]})
-    await _push_mod_level(channel, target_id)
+    _schedule_mod_level_push(channel, target_id)
     return web.json_response({"success": True, "user_id": target_id, "username": target["username"]},
                              status=201)
 
@@ -6424,7 +6457,7 @@ async def http_remove_stream_mod(request: web.Request) -> web.Response:
     await _audit_chat_mod("stream_mod_remove", token.user_id, (actor or {}).get("username", "?"), actor_level,
                           channel, target_id=target_id, target_name=(target or {}).get("username"),
                           extra={"stream_id": stream["id"]})
-    await _push_mod_level(channel, target_id)
+    _schedule_mod_level_push(channel, target_id)
     return web.json_response({"success": True})
 
 
@@ -19619,7 +19652,11 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
 
     # Users can leave channels themselves
     if target_id == token.user_id:
+        was_mod_of = await _mod_row_of(channel_id, target_id)
         await db.remove_channel_member(channel_id, target_id)
+        if was_mod_of:
+            await _stream_mod_ended(channel, was_mod_of, token.user_id,
+                                    user["username"] if user else "unknown", user_role, target_id)
         await _evict_unreadable_sockets(channel)
         await _voice_eject_if_not_allowed(target_id)
         return web.json_response({"success": True})
@@ -19630,7 +19667,11 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
     if await _member_routes_closed(channel, user_role):
         return web.json_response({"error": "Moderator access required"}, status=403)
 
+    was_mod_of = await _mod_row_of(channel_id, target_id)
     await db.remove_channel_member(channel_id, target_id)
+    if was_mod_of:
+        await _stream_mod_ended(channel, was_mod_of, token.user_id,
+                                user["username"] if user else "unknown", user_role, target_id)
     await _evict_unreadable_sockets(channel)
     await _voice_eject_if_not_allowed(target_id)
 
@@ -19687,8 +19728,12 @@ async def http_update_channel_member_role(request: web.Request) -> web.Response:
         return web.json_response({"error": "Appoint chat mods through the stream's mods list"}, status=400)
 
     # Remove and re-add with new role
+    was_mod_of = await _mod_row_of(channel_id, target_id)
     await db.remove_channel_member(channel_id, target_id)
     await db.add_channel_member(channel_id, target_id, role=new_role, added_by=token.user_id)
+    if was_mod_of and new_role != "moderator":
+        await _stream_mod_ended(channel, was_mod_of, token.user_id,
+                                user["username"] if user else "unknown", user_role, target_id)
 
     target_user = await db.get_user_by_id(target_id)
     await audit_log("channel_member_role", token.user_id, user["username"] if user else "unknown",
