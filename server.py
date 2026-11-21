@@ -7305,6 +7305,7 @@ async def http_remove_stream_ban(request: web.Request) -> web.Response:
         stream_id, user_id, include_anonymous=caller_role in _CHAT_STAFF_ROLES)
     if success:
         _playback_cache_forget(stream_id=stream_id)
+        _forget_activity_for_stream(stream_id)      # access widened: no stale "not allowed" for the member
         await _audit_chat_mod("user_unban", token.user_id, (await db.get_user_by_id(token.user_id) or {}).get("username", "?"),
                               level, ban_chan, target_id=user_id, extra={"stream_id": stream_id})
         logger.info(f"User {user_id} unbanned from stream {stream['name']} by user {token.user_id}")
@@ -7351,6 +7352,7 @@ async def http_remove_stream_ban_by_id(request: web.Request) -> web.Response:
     if not removed:
         return web.json_response({"error": "Ban not found"}, status=404)
     _playback_cache_forget(stream_id=stream_id)
+    _forget_activity_for_stream(stream_id)
     await _audit_chat_mod("user_unban", token.user_id, (await db.get_user_by_id(token.user_id) or {}).get("username", "?"),
                           level, ban_chan, target_id=pending["user_id"],
                           target_name="Anonymous" if pending.get("anonymous") else None,
@@ -7493,6 +7495,7 @@ async def http_add_stream_mod(request: web.Request) -> web.Response:
         if len(await db.get_channel_moderator_ids(channel["id"])) >= MAX_STREAM_MODS:
             return web.json_response({"error": f"At most {MAX_STREAM_MODS} mods per stream"}, status=409)
         return web.json_response({"error": "Could not appoint the mod"}, status=500)
+    _forget_activity_verdicts(channel["id"])
     actor_level, _ = await _stream_route_mod_level(stream, token.user_id, role)
     actor = await db.get_user_by_id(token.user_id)
     await _audit_chat_mod("stream_mod_add", token.user_id, (actor or {}).get("username", "?"), actor_level,
@@ -7527,6 +7530,7 @@ async def http_remove_stream_mod(request: web.Request) -> web.Response:
         await db.add_channel_member(channel["id"], target_id, role="member", added_by=token.user_id)
     else:
         await db.remove_channel_member(channel["id"], target_id)
+    _forget_activity_verdicts(channel["id"])
     target = await db.get_user_by_id(target_id)
     actor_level, _ = await _stream_route_mod_level(stream, token.user_id, role)
     actor = await db.get_user_by_id(token.user_id)
@@ -10401,6 +10405,7 @@ def _stream_access_changed(stream_id: int, drop_sessions: bool = True, *,
     switched off) the logged-out ones: nobody who lost access is counted until a request
     of theirs passes the gate again."""
     _playback_cache_forget(stream_id=stream_id)
+    _forget_activity_for_stream(stream_id)      # the chat's activity memo follows the stream
     if drop_sessions:
         _webrtc_forget_playback(stream_id)
     if viewers in ("all", "anonymous"):
@@ -10411,6 +10416,7 @@ def _stream_member_lost_access(stream_id: int, user_id: int) -> None:
     """A member was banned from a stream: playback is refused from the next request, they are
     not counted any more and their WHEP session records are forgotten."""
     _playback_cache_forget(stream_id=stream_id)
+    _forget_activity_for_stream(stream_id)
     _viewers.remove_user(stream_id, user_id)
     for k in [k for k, v in _webrtc_sessions.items()
               if v[0] == "whep" and v[1] == stream_id and len(v) > 4 and v[4] == user_id]:
@@ -18910,6 +18916,7 @@ async def http_update_chat_channel(request: web.Request) -> web.Response:
 
     old_name = channel["name"]
     success = await db.update_chat_channel(channel_id, **data)
+    _forget_activity_verdicts(channel_id)       # visibility may have widened
     if not success:
         return web.json_response({"error": "No updates applied"}, status=400)
 
@@ -19924,7 +19931,8 @@ def _stream_chat_hidden(stream, user_id: int, user_role: str) -> bool:
     return user_id not in owners and user_role not in ("admin", "superadmin")
 
 
-async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREAM_UNSET) -> _ReadAccess:
+async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREAM_UNSET,
+                            banned_ids=None, member_ids=None) -> _ReadAccess:
     """The one decision on whether a member may read a channel's messages.
 
     False for a missing channel, for the chat of a stream that is not public
@@ -19936,7 +19944,9 @@ async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREA
     `stream` when they already have it (None means the channel has no stream).
     The answer is looked up each time: a member removed from a private channel
     loses access on the next request, even on a socket that joined while still
-    a member.
+    a member. A caller that fans out over many members (the activity signal) may pass
+    `banned_ids` (the ids banned from that stream) and `member_ids` (the members of a private
+    channel), read once; the ban and the membership are then set lookups.
     """
     if not channel:
         return _ReadAccess(False, "missing", "Channel not found")
@@ -19944,10 +19954,12 @@ async def _can_read_channel(channel, user_id: int, user_role: str, stream=_STREA
         stream = await db.get_stream_by_chat_channel(channel["id"])
     if _stream_chat_hidden(stream, user_id, user_role):
         return _ReadAccess(False, "hidden", "Channel not found")
-    if stream and await db.is_user_banned_from_stream(stream["id"], user_id):
+    if stream and (user_id in banned_ids if banned_ids is not None
+                   else await db.is_user_banned_from_stream(stream["id"], user_id)):
         return _ReadAccess(False, "banned", "You are banned from this stream's chat")
     if channel.get("visibility", "public") == "private" and user_role not in ("admin", "superadmin"):
-        if not await db.is_channel_member(channel["id"], user_id):
+        if not (user_id in member_ids if member_ids is not None
+                else await db.is_channel_member(channel["id"], user_id)):
             return _ReadAccess(False, "private", "This channel is private")
     return _ReadAccess(True)
 
@@ -20194,7 +20206,8 @@ _notify_prefs_cache: dict[int, dict[int, tuple[str, int]]] = {}
 _notify_prefs_gen: dict[int, int] = {}
 _chat_sockets: dict = {}                   # chat socket -> (user_id, role), for open chat sockets only
 _activity_verdicts: dict[int, dict] = {}   # channel id -> {(user_id, role): (allowed, expiry)}
-_activity_gen: dict[int, int] = {}         # channel id -> bumped when access was lost
+_activity_context: dict[int, tuple] = {}   # channel id -> (stream, banned ids, member ids, expiry)
+_activity_gen: dict[int, int] = {}         # channel id -> bumped when access changed
 _activity_tasks: set = set()
 
 
@@ -20254,12 +20267,45 @@ def _chat_socket_close(ws, user_id: int) -> None:
 
 
 def _forget_activity_verdicts(channel_id) -> None:
+    """Drop what the activity signal remembers about a channel: the verdicts and the channel's
+    stream and ban set. Called wherever access to the channel changes, in either direction."""
     if channel_id is not None:
         _activity_verdicts.pop(channel_id, None)
+        _activity_context.pop(channel_id, None)
         _activity_gen[channel_id] = _activity_gen.get(channel_id, 0) + 1
 
 
-async def _activity_may_read(channel, stream, user_id: int, role: str) -> bool:
+def _forget_activity_for_stream(stream_id) -> None:
+    """A stream's visibility, bans or existence changed: forget its chat channel's memo."""
+    for cid in [c for c, ctx in _activity_context.items()
+                if ctx[0] and ctx[0].get("id") == stream_id]:
+        _forget_activity_verdicts(cid)
+
+
+async def _activity_channel_context(channel):
+    """(stream, banned ids, member ids) of a channel for the fan-out (None where not needed: no
+    stream, not private), read once and remembered for _ACTIVITY_VERDICT_TTL. Cold: at most three
+    reads for the channel, whatever the number of members. Warm: none.
+    _forget_activity_verdicts drops it."""
+    cid = channel["id"]
+    now = monotonic()
+    hit = _activity_context.get(cid)
+    if hit and hit[3] > now:
+        return hit[0], hit[1], hit[2]
+    gen = _activity_gen.get(cid, 0)
+    stream = await db.get_stream_by_chat_channel(cid)
+    bans = await db.get_banned_user_ids(stream["id"]) if stream else None
+    members = await db.get_channel_member_ids(cid) if channel.get("visibility", "public") == "private" else None
+    if _activity_gen.get(cid, 0) == gen:
+        if len(_activity_context) > 1000:
+            for k in [k for k, v in _activity_context.items() if v[3] <= now]:
+                _activity_context.pop(k, None)
+        _activity_context[cid] = (stream, bans, members, now + _ACTIVITY_VERDICT_TTL)
+    return stream, bans, members
+
+
+async def _activity_may_read(channel, stream, user_id: int, role: str, banned_ids=None,
+                             member_ids=None) -> bool:
     """_can_read_channel for the activity signal, remembered briefly per channel and member."""
     cid = channel["id"]
     now = monotonic()
@@ -20268,7 +20314,7 @@ async def _activity_may_read(channel, stream, user_id: int, role: str) -> bool:
         return hit[0]
     gen = _activity_gen.get(cid, 0)
     try:
-        allowed = bool(await _can_read_channel(channel, user_id, role, stream))
+        allowed = bool(await _can_read_channel(channel, user_id, role, stream, banned_ids, member_ids))
     except Exception as e:
         logger.warning(f"[Chat] Activity access check failed for channel {cid}: {e}")
         return False
@@ -20299,7 +20345,7 @@ async def _signal_channel_activity(channel, sender_id=None) -> int:
     try:
         if not channel or not _chat_sockets:
             return 0
-        stream = await db.get_stream_by_chat_channel(channel["id"])
+        stream, bans, members = await _activity_channel_context(channel)
         restricted = channel.get("visibility", "public") == "private" or bool(stream)
         joined = {entry[1] for entry in chat_rooms.get(channel["name"], ())}
         now = _notify_clock()
@@ -20311,9 +20357,12 @@ async def _signal_channel_activity(channel, sender_id=None) -> int:
                 continue
             key = (uid, role)
             if key not in decided:
-                ok = not _notify_quiet(_notify_prefs_cache.get(uid) or {}, channel["id"], now)
+                prefs = _notify_prefs_cache.get(uid)
+                # A member whose choices are not loaded yet (the socket is still opening) is
+                # skipped: an unloaded level none or mute must not be read as the default
+                ok = prefs is not None and not _notify_quiet(prefs, channel["id"], now)
                 if ok and restricted:
-                    ok = await _activity_may_read(channel, stream, uid, role)
+                    ok = await _activity_may_read(channel, stream, uid, role, bans, members)
                 decided[key] = ok
             if decided[key]:
                 targets.append(ws)
@@ -21292,6 +21341,7 @@ async def http_add_channel_member(request: web.Request) -> web.Response:
     # Adding a stream mod as a plain member replaces the row: that ends the appointment
     was_mod_of = await _mod_row_of(channel_id, target_id)
     await db.add_channel_member(channel_id, target_id, role=member_role, added_by=token.user_id)
+    _forget_activity_verdicts(channel_id)       # a remembered "not allowed" for the new member
     if was_mod_of and member_role != "moderator":
         await _stream_mod_ended(channel, was_mod_of, token.user_id,
                                 user["username"] if user else "unknown", user_role, target_id)
@@ -21330,10 +21380,11 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
     if target_id == token.user_id:
         was_mod_of = await _mod_row_of(channel_id, target_id)
         await db.remove_channel_member(channel_id, target_id)
+        # Out of the room and out of the activity memo before anything else is awaited
+        await _evict_unreadable_sockets(channel)
         if was_mod_of:
             await _stream_mod_ended(channel, was_mod_of, token.user_id,
                                     user["username"] if user else "unknown", user_role, target_id)
-        await _evict_unreadable_sockets(channel)
         await _voice_eject_if_not_allowed(target_id)
         return web.json_response({"success": True})
 
@@ -21345,10 +21396,11 @@ async def http_remove_channel_member(request: web.Request) -> web.Response:
 
     was_mod_of = await _mod_row_of(channel_id, target_id)
     await db.remove_channel_member(channel_id, target_id)
+    # Out of the room and out of the activity memo before anything else is awaited
+    await _evict_unreadable_sockets(channel)
     if was_mod_of:
         await _stream_mod_ended(channel, was_mod_of, token.user_id,
                                 user["username"] if user else "unknown", user_role, target_id)
-    await _evict_unreadable_sockets(channel)
     await _voice_eject_if_not_allowed(target_id)
 
     target = await db.get_user_by_id(target_id)
@@ -21407,6 +21459,7 @@ async def http_update_channel_member_role(request: web.Request) -> web.Response:
     was_mod_of = await _mod_row_of(channel_id, target_id)
     await db.remove_channel_member(channel_id, target_id)
     await db.add_channel_member(channel_id, target_id, role=new_role, added_by=token.user_id)
+    _forget_activity_verdicts(channel_id)
     if was_mod_of and new_role != "moderator":
         await _stream_mod_ended(channel, was_mod_of, token.user_id,
                                 user["username"] if user else "unknown", user_role, target_id)
@@ -21504,7 +21557,6 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             await raw_ws.close(code=1013, message=b"too many connections")
             return raw_ws
         _register_user_ws(user_id, raw_ws, token.token_id)
-        _chat_socket_open(user_entry[0], user_id, user_role)
         # Authentication and the upgrade awaited before this point; a revocation in that
         # window did not see this socket, so check the credential once it is registered.
         if not await _credential_still_valid(token):
@@ -21514,6 +21566,11 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
             await _notify_prefs_load(user_id)
         except Exception as e:
             logger.warning(f"[Chat] Could not load notification levels of user {user_id}: {e}")
+        # Offered to the activity signal only now that the choices are loaded (no await between
+        # the load and this line): a member at level none is never told for a moment. If the
+        # socket ended during the load, the finally below runs _chat_socket_close, which drops
+        # the cache entry when this was the member's last socket.
+        _chat_socket_open(user_entry[0], user_id, user_role)
 
         # Send DM conversations list on connect
         try:
@@ -22745,6 +22802,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                 include_anonymous=user_role in _CHAT_STAFF_ROLES)
                         if success:
                             _playback_cache_forget(stream_id=stream["id"])
+                            _forget_activity_for_stream(stream["id"])
                             banned_user = await db.get_user_by_id(target_user_id)
                             banned_username = banned_user["username"] if banned_user else f"User {target_user_id}"
                             hide_target = removed_anonymous and not _viewer_sees_identity(

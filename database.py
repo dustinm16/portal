@@ -6008,6 +6008,12 @@ class Database:
         )
         return (await cursor.fetchone()) is not None
 
+    async def get_channel_member_ids(self, channel_id: int) -> set:
+        """The ids of every member of a channel, read at once."""
+        cursor = await self.conn.execute(
+            "SELECT user_id FROM channel_members WHERE channel_id = ?", (channel_id,))
+        return {r[0] for r in await cursor.fetchall()}
+
     async def get_channel_member_role(self, channel_id: int, user_id: int) -> Optional[str]:
         """Get a user's role in a channel."""
         cursor = await self.conn.execute(

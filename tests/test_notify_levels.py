@@ -50,12 +50,18 @@ class Env(base.Env):
         server._chat_sockets.clear()
         server._notify_prefs_cache.clear()
         server._activity_verdicts.clear()
+        server._activity_context.clear()
         app = web.Application()
         app.router.add_get("/ws/chat", server.handle_chat_websocket)
         app.router.add_get("/api/chat/channels", server.http_get_chat_channels)
         app.router.add_get("/api/chat/channels/{id}/notify", server.http_get_channel_notify)
         app.router.add_put("/api/chat/channels/{id}/notify", server.http_put_channel_notify)
         app.router.add_delete("/api/chat/channels/{id}/members/{user_id}", server.http_remove_channel_member)
+        app.router.add_post("/api/chat/channels/{id}/members", server.http_add_channel_member)
+        app.router.add_put("/api/chat/channels/{id}", server.http_update_chat_channel)
+        app.router.add_put("/api/streams/{id}", server.http_update_user_stream)
+        app.router.add_post("/api/streams/{id}/bans", server.http_create_stream_ban)
+        app.router.add_delete("/api/streams/{id}/bans/{user_id}", server.http_remove_stream_ban)
         self.srv = TestServer(app)
         await self.srv.start_server()
         self.http = aiohttp.ClientSession()
@@ -193,9 +199,9 @@ def test_a_non_public_stream_chat_signal_reaches_only_those_who_may_read_it():
         assert activity(boss, marks[boss], cid)
         for s in (viewer, carol):
             assert not activity(s, marks[s]) and "strm" not in json.dumps(s.events[marks[s]:])
-        # made public: members may read it and are told
-        await d.update_user_stream(sid, is_public=True)
-        server._activity_verdicts.clear()
+        # made public through the route (nothing is cleared by hand): members may read it and are told
+        st, b = await env.call("PUT", ids["owner"], f"/api/streams/{sid}", json={"is_public": True})
+        assert st == 200, b
         mark = viewer.mark()
         await owner.send(type="message", message="now public")
         assert await viewer.wait(lambda e: e.get("type") == "channel_activity", mark)
@@ -212,8 +218,14 @@ def test_a_warm_fan_out_reads_nothing_per_member():
         socks = [await env.sock(ids[n]) for n in ("alice", "bob", "carol", "viewer")]
         for s in socks:
             await s.join(gen)
-        calls = {"member": 0, "stream": 0}
+        calls = {"member": 0, "stream": 0, "members": 0}
         real_member, real_stream = d.is_channel_member, d.get_stream_by_chat_channel
+        real_members = d.get_channel_member_ids
+
+        async def members(*a, **k):
+            calls["members"] += 1
+            return await real_members(*a, **k)
+        d.get_channel_member_ids = members
 
         async def member(*a, **k):
             calls["member"] += 1
@@ -226,12 +238,178 @@ def test_a_warm_fan_out_reads_nothing_per_member():
         try:
             assert await server._signal_channel_activity(channel, ids["boss"]) == 4
             cold = dict(calls)
-            assert cold["member"] == 4, cold                     # asked once per member while cold
+            assert cold["member"] == 0 and cold["members"] == 1 and cold["stream"] == 1, cold   # per channel, not per member
             assert await server._signal_channel_activity(channel, ids["boss"]) == 4
-            assert calls["member"] == cold["member"], calls     # warm: nothing per member
-            assert calls["stream"] == 2, calls                  # one lookup per message
+            assert calls == cold, calls                          # warm: no read at all, not even the stream
         finally:
             d.is_channel_member, d.get_stream_by_chat_channel = real_member, real_stream
+            d.get_channel_member_ids = real_members
+    run(body)
+
+
+def test_a_public_stream_chat_fan_out_reads_per_channel_not_per_member():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        cid, sid = await base.stream_chat(d, ids, public=True)
+        channel = await d.get_chat_channel(cid)
+        names = ("alice", "bob", "carol", "viewer", "boss")
+        socks = [await env.sock(ids[n]) for n in names]
+        for s_ in socks:
+            await s_.join(gen)
+        calls = {"stream": 0, "bans": 0, "ban": 0, "member": 0}
+        real = (d.get_stream_by_chat_channel, d.get_banned_user_ids, d.is_user_banned_from_stream, d.is_channel_member)
+
+        def counting(key, fn):
+            async def wrapped(*a, **k):
+                calls[key] += 1
+                return await fn(*a, **k)
+            return wrapped
+        d.get_stream_by_chat_channel = counting("stream", real[0])
+        d.get_banned_user_ids = counting("bans", real[1])
+        d.is_user_banned_from_stream = counting("ban", real[2])
+        d.is_channel_member = counting("member", real[3])
+        try:
+            assert await server._signal_channel_activity(channel, ids["owner"]) == len(names)
+            cold = dict(calls)
+            assert cold == {"stream": 1, "bans": 1, "ban": 0, "member": 0}, cold
+            assert await server._signal_channel_activity(channel, ids["owner"]) == len(names)
+            assert calls == cold, calls
+            # memo expiry: the verdicts are asked again from the remembered stream and bans, not the database
+            server._activity_verdicts.clear()
+            assert await server._signal_channel_activity(channel, ids["owner"]) == len(names)
+            assert calls == cold, calls
+        finally:
+            (d.get_stream_by_chat_channel, d.get_banned_user_ids,
+             d.is_user_banned_from_stream, d.is_channel_member) = real
+    run(body)
+
+
+def test_a_ban_and_its_lifting_take_effect_on_the_next_message():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        cid, sid = await base.stream_chat(d, ids, public=True)
+        owner, carol = await env.sock(ids["owner"]), await env.sock(ids["carol"])
+        await owner.join(cid)
+        await carol.join(gen)
+        mark = carol.mark()
+        await owner.send(type="message", message="one")
+        assert await carol.wait(lambda e: e.get("type") == "channel_activity", mark)    # warm and allowed
+        st, b = await env.call("POST", ids["owner"], f"/api/streams/{sid}/bans", json={"user_id": ids["carol"]})
+        assert st in (200, 201), b
+        mark = carol.mark()
+        await owner.send(type="message", message="two")
+        await settle()
+        assert not activity(carol, mark, cid), "a banned member is still told"
+        st, b = await env.call("DELETE", ids["owner"], f"/api/streams/{sid}/bans/{ids['carol']}")
+        assert st == 200, b
+        mark = carol.mark()
+        await owner.send(type="message", message="three")
+        assert await carol.wait(lambda e: e.get("type") == "channel_activity", mark), "ban lifted: no badge"
+    run(body)
+
+
+def test_a_member_added_to_a_private_channel_and_a_channel_made_public_get_the_signal_at_once():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        pvt = await base.private_channel(d, ids, members=("alice",))
+        boss, bob = await env.sock(ids["boss"]), await env.sock(ids["bob"])
+        await boss.join(pvt)
+        await bob.join(gen)
+        mark = bob.mark()
+        await boss.send(type="message", message="one")
+        await settle()
+        assert not activity(bob, mark, pvt)                       # "not allowed" is now remembered
+        st, b = await env.call("POST", ids["boss"], f"/api/chat/channels/{pvt}/members",
+                               json={"user_id": ids["bob"], "role": "member"})
+        assert st == 201, b
+        mark = bob.mark()
+        await boss.send(type="message", message="two")
+        assert await bob.wait(lambda e: e.get("type") == "channel_activity", mark), "added member not told"
+        # the other way: a channel made public (carol was never a member)
+        carol = await env.sock(ids["carol"])
+        await carol.join(gen)
+        mark = carol.mark()
+        await boss.send(type="message", message="three")
+        await settle()
+        assert not activity(carol, mark, pvt)
+        st, b = await env.call("PUT", ids["boss"], f"/api/chat/channels/{pvt}", json={"visibility": "public"})
+        assert st == 200, b
+        mark = carol.mark()
+        await boss.send(type="message", message="four")
+        assert await carol.wait(lambda e: e.get("type") == "channel_activity", mark), "public channel: no badge"
+    run(body)
+
+
+def test_a_removed_member_is_evicted_before_the_mod_ended_step_runs():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        pvt = await base.private_channel(d, ids)
+        bob = await env.sock(ids["bob"])
+        await bob.join(pvt)
+        seen = {}
+        real_ended, real_row = server._stream_mod_ended, server._mod_row_of
+
+        async def fake_row(channel_id, target_id):
+            return {"id": 0}
+
+        async def fake_ended(channel, *a, **k):
+            seen["in_room"] = any(e[1] == ids["bob"] for e in server.chat_rooms.get("pvt", ()))
+            seen["memo"] = pvt in server._activity_context or pvt in server._activity_verdicts
+        server._mod_row_of, server._stream_mod_ended = fake_row, fake_ended
+        server._activity_verdicts[pvt] = {(ids["bob"], "user"): (True, 1e18)}
+        try:
+            st, _ = await env.call("DELETE", ids["boss"], f"/api/chat/channels/{pvt}/members/{ids['bob']}")
+            assert st == 200
+        finally:
+            server._mod_row_of, server._stream_mod_ended = real_row, real_ended
+        assert seen == {"in_room": False, "memo": False}, seen
+    run(body)
+
+
+def test_a_socket_whose_levels_are_not_loaded_yet_gets_no_signal():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen, lobby = await general(d), await pub_channel(d, ids)
+        await d.set_notify_pref(ids["bob"], lobby, "none", 0)
+        carol = await env.sock(ids["carol"])
+        await carol.join(lobby)
+        gate = asyncio.Event()
+        real = d.get_notify_prefs
+
+        async def slow(user_id):
+            if user_id == ids["bob"]:
+                await gate.wait()
+            return await real(user_id)
+        d.get_notify_prefs = slow
+        try:
+            bob_ws = await env.http.ws_connect(env.url("/ws/chat"), headers={"X-Test-User": str(ids["bob"])})
+            mark = carol.mark()
+            await carol.send(type="message", message="while the levels load")
+            await carol.wait(lambda e: e.get("type") == "message", mark)
+            await asyncio.sleep(0.3)
+            got = []
+            while True:
+                try:
+                    got.append((await asyncio.wait_for(bob_ws.receive_json(), 0.2)))
+                except Exception:
+                    break
+            assert not [e for e in got if e.get("type") == "channel_activity"], got
+            gate.set()
+            await asyncio.sleep(0.3)
+            assert server._notify_prefs_cache.get(ids["bob"]) == {lobby: ("none", 0)}
+            await bob_ws.close()
+        finally:
+            d.get_notify_prefs = real
+            gate.set()
     run(body)
 
 
