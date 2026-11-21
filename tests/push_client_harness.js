@@ -40,9 +40,9 @@ function world(opts) {
     serviceWorker: {
       addEventListener(t, f) { (swListeners[t] = swListeners[t] || []).push(f); },
       startMessages() { state.messagesStarted = true; },
-      register() { state.registered++; return Promise.resolve({ active: {}, pushManager: { getSubscription: () => Promise.resolve(state.sub),
-        subscribe() { state.sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/new', unsubscribe() { return Promise.resolve(true); }, toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'p', auth: 'a' } }; } }; return Promise.resolve(state.sub); } } }); },
-      getRegistration() { return Promise.resolve(state.sub || opts.registered ? { pushManager: { getSubscription: () => Promise.resolve(state.sub) } } : undefined); },
+      register() { state.registered++; return Promise.resolve({ active: opts.activatedEarly ? null : {}, installing: opts.activatedEarly ? { state: 'activated', addEventListener() {} } : null, pushManager: { getSubscription: () => Promise.resolve(state.sub && !state.sub.unsubscribed ? state.sub : null),
+        subscribe() { state.sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/new', unsubscribed: false, unsubscribe() { this.unsubscribed = true; return Promise.resolve(true); }, toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'p', auth: 'a' } }; } }; return Promise.resolve(state.sub); } } }); },
+      getRegistration() { return Promise.resolve(state.sub || opts.registered ? { pushManager: { getSubscription: () => Promise.resolve(state.sub && !state.sub.unsubscribed ? state.sub : null) } } : undefined); },
     },
   };
   const doc = { addEventListener(t, f) { (docListeners[t] = docListeners[t] || []).push(f); }, createElement: t => new El(t) };
@@ -51,6 +51,8 @@ function world(opts) {
     o = o || {}; calls.push({ url, method: o.method || 'GET', body: o.body, headers: o.headers });
     if (url === '/api/push/config') return respond({ enabled: true, public_key: 'BP' + 'A'.repeat(85) });
     if (url === '/api/push/subscriptions' && (o.method || 'GET') === 'GET') return respond({ devices: state.devices });
+    if (url === '/api/push/subscriptions' && o.method === 'POST' && JSON.parse(o.body).rebind && opts.rebindStatus) return respond({ error: 'Device not found' }, opts.rebindStatus);
+    if (url === '/api/push/subscriptions' && o.method === 'POST' && !JSON.parse(o.body).rebind && opts.postStatus) return respond({ error: 'This device is held by another account' }, opts.postStatus);
     if (url === '/api/push/subscriptions' && o.method === 'POST') { state.devices = [{ id: 7, label: 'Firefox on Linux', this_session: true }]; return respond({ status: 'created' }, 201); }
     if (url.indexOf('/api/push/subscriptions/') === 0 && o.method === 'DELETE') { state.devices = []; return respond({ success: true }); }
     if (url === '/api/push/prefs' && (o.method || 'GET') === 'GET') return respond({ prefs: state.prefs });
@@ -216,6 +218,29 @@ function logoutClick(w) {
   const keptSub = w.state.sub;
   await w.win.PortalPush.enable(); await tick(40);
   check('a subscription made with the current key counts and is kept', st.subscribed === true && !keptSub.unsubscribed && w.state.sub === keptSub);
+
+  // the server refuses the device after the browser subscribed: the subscription is undone, the switch stays off and the error stays visible
+  for (const code of [409, 403, 500]) {
+    w = world({ postStatus: code });
+    const rf = new El('div'); w.win.PortalPush.mountSettings(rf); await tick(60);
+    const sf = rf.all(e => e.tag === 'input')[0]; sf.checked = true; sf.fire('change'); await tick(120);
+    check('a ' + code + ' from the server undoes the browser subscription, leaves the switch off and keeps the error text',
+          w.state.sub && w.state.sub.unsubscribed === true && sf.checked === false && !w.store.has('portal_push_on')
+          && rf.textContent.indexOf('This device is held by another account') >= 0, JSON.stringify({ sub: w.state.sub && w.state.sub.unsubscribed, checked: sf.checked, text: rf.textContent }));
+  }
+
+  // a re-announcement the server answers with 404: this browser is not subscribed
+  w = world(Object.assign({}, onLoad, { rebindStatus: 404 })); await tick(60);
+  check('a rebind answered 404 clears the local flag and drops the browser subscription', !w.store.has('portal_push_on') && w.state.sub.unsubscribed === true);
+  const nsub = await w.win.PortalPush.status();
+  check('after a 404 rebind the switch shows off', nsub.subscribed === false, JSON.stringify(nsub));
+  w = world(Object.assign({}, onLoad, { rebindStatus: 500 })); await tick(60);
+  check('a rebind answered with a server error keeps the device', w.store.has('portal_push_on') && w.state.sub.unsubscribed === false);
+
+  // a worker that activated before the listener was attached does not hang enable()
+  w = world({ activatedEarly: true });
+  const done = await Promise.race([w.win.PortalPush.enable().then(() => 'done', () => 'rejected'), tick(300).then(() => 'hung')]);
+  check('enable() does not hang when the worker is already activated', done === 'done', done);
 
   for (const r of results) console.log('RESULT ' + JSON.stringify(r));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'harness crashed', ok: false, detail: e && e.stack })); });

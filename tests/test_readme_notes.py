@@ -481,7 +481,7 @@ check("the chat part of What You Get describes levels, mute, badges and mass men
 check("the old 'enable desktop alerts' star sentence is gone from the chat part",
       "Enable desktop alerts to get browser notifications" not in text)
 _pages = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
-for js, ver in (("portal.js", 46), ("push.js", 3), ("admin.js", 39), ("chat-notify.js", 1)):
+for js, ver in (("portal.js", 46), ("push.js", 4), ("admin.js", 39), ("chat-notify.js", 1)):
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
           loaded == {str(ver)} and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))

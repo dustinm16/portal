@@ -17872,7 +17872,7 @@ _SEARXNG_HEAD_INJECT = (
     b'<link rel="stylesheet" href="/static/css/portal.css?v=55">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
-    b'<script src="/static/js/push.js?v=3" defer></script>'
+    b'<script src="/static/js/push.js?v=4" defer></script>'
 )
 
 

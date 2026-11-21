@@ -100,10 +100,14 @@
         var worker = reg.installing || reg.waiting;
         if (!worker) return Promise.reject(new Error('The worker did not install'));
         return new Promise(function (resolve, reject) {
-            worker.addEventListener('statechange', function () {
+            function settle() {
                 if (worker.state === 'activated') resolve(reg);
                 else if (worker.state === 'redundant') reject(new Error('The worker did not install'));
-            });
+                else return false;
+                return true;
+            }
+            worker.addEventListener('statechange', settle);
+            settle();   /* it may have activated before the listener was attached */
         });
     }
 
@@ -169,6 +173,12 @@
             return api('POST', '/api/push/subscriptions', sub.toJSON()).then(function () {
                 try { localStorage.setItem(HINT, '1'); } catch (e) { /* private mode */ }
                 return true;
+            }, function (err) {
+                /* The server did not take the device (another account holds it, push was switched off, a server
+                   error): a browser subscription nobody can send to is undone, so the switch is honestly off. */
+                forget();
+                var undo = function () { throw err; };
+                return Promise.resolve().then(function () { return sub.unsubscribe(); }).then(undo, undo);
             });
         });
     }
@@ -225,7 +235,13 @@
             if (!sub) return null;
             var body = sub.toJSON();
             body.rebind = true;     /* refresh a device the server holds for this member; never register or take one */
-            return api('POST', '/api/push/subscriptions', body);
+            return api('POST', '/api/push/subscriptions', body).then(null, function (err) {
+                if (!err || err.status !== 404) throw err;
+                /* The server does not hold this device (it was removed, or it belonged to another member): this
+                   browser is not subscribed as far as this member is concerned. */
+                forget();
+                return Promise.resolve().then(function () { return sub.unsubscribe(); }).then(null, function () { /* gone */ });
+            });
         }).then(null, function () { /* signed out, or the server refused: nothing to do */ });
     }
     reannounce();
@@ -351,7 +367,7 @@
             });
         }
 
-        function refresh() {
+        function refresh(keepMessage) {
             return Promise.all([status(), api('GET', '/api/push/prefs'), api('GET', '/api/push/subscriptions')])
                 .then(function (res) {
                     var st = res[0];
@@ -359,7 +375,7 @@
                     sw.disabled = !st.enabled;
                     if (!st.enabled) say('Push notifications are switched off on this server.');
                     else if (st.permission === 'denied') say('Notifications are blocked for this site in the browser settings.', true);
-                    else say('');
+                    else if (!keepMessage) say('');
                     drawKinds(res[1].prefs || {});
                     drawDevices(res[2].devices || []);
                 }).catch(function (e) { say(e.message, true); });
@@ -369,9 +385,11 @@
             var want = sw.checked;
             sw.disabled = true;
             /* the permission prompt is asked inside this click handler: a user gesture */
+            var failed = false;
             (want ? enable() : disable()).then(function () { say(''); }, function (e) {
+                failed = true;
                 say(e.message, true);
-            }).then(function () { sw.disabled = false; return refresh(); });
+            }).then(function () { sw.disabled = false; return refresh(failed); });
         });
         refresh();
     }
