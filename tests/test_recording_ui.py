@@ -38,7 +38,7 @@ check("terminal.html loads terminal.js v7", "terminal.js?v=7" in term_html)
 
 check("the tab button, its content and the modal exist in admin.html",
       all(x in admin_html for x in ('id="tab-btn-recordings"', 'id="tab-recordings"', 'id="rec-modal"',
-                                    "/static/js/recordings-admin.js?v=1")))
+                                    "/static/js/recordings-admin.js?v=2")))
 section = admin_html.split('<!-- Recordings Tab', 1)[1].split('<!-- Webhooks Tab', 1)[0]
 check("the new tab markup has no inline handlers", not re.search(r"\son[a-z]+\s*=", section), "")
 check("the new tab button has no inline handler", 'id="tab-btn-recordings" data-recordings-tab style="display:none;">' in admin_html)
@@ -62,6 +62,23 @@ import collections  # noqa: E402
 _defs = collections.Counter(re.findall(r"^(?:async )?def (\w+)", server_py, re.M))
 check("no function of server.py is defined twice (a later def silently replaces an earlier one)",
       [n for n, k in _defs.items() if k > 1] == [], str([n for n, k in _defs.items() if k > 1]))
+
+# ---- vendored xterm.js: exact files, no external host --------------------------------------
+import hashlib  # noqa: E402
+vend = ROOT / "static" / "vendor" / "xterm"
+for fname, want in (("xterm.js", "f0aea0f75f48559013ae6643c2479dd737d26da42d5524e6d2b70915ae6523c7"),
+                    ("xterm.css", "832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872"),
+                    ("LICENSE", "b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd")):
+    f = vend / fname
+    check(f"vendored xterm {fname} is the xterm 5.3.0 file",
+          f.is_file() and hashlib.sha256(f.read_bytes()).hexdigest() == want)
+    check(f"the vendor README lists the sha256 of {fname}", want in (vend / "README.md").read_text())
+check("the vendor README names the version", "xterm@5.3.0" in (vend / "README.md").read_text())
+check("the licence file is the MIT permission notice", "Permission is hereby granted, free of charge" in (vend / "LICENSE").read_text())
+check("recordings-admin.js loads xterm from the vendored folder",
+      "/static/vendor/xterm/xterm.js" in admin_js and "/static/vendor/xterm/xterm.css" in admin_js)
+check("recordings-admin.js names no external host", not re.search(r"https?://|//[a-z0-9.-]+\.[a-z]{2,}", admin_js))
+check("the README Third-Party table lists xterm.js", re.search(r"\| \[xterm\.js\].*MIT", (ROOT / "README.md").read_text()) is not None)
 
 if failures:
     print(f"\ntest_recording_ui: {len(failures)} FAILED: " + "; ".join(failures))

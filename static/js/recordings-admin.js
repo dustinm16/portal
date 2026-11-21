@@ -11,8 +11,8 @@
 (function () {
     'use strict';
 
-    const XTERM_JS = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js';
-    const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css';
+    const XTERM_JS = '/static/vendor/xterm/xterm.js?v=1';
+    const XTERM_CSS = '/static/vendor/xterm/xterm.css?v=1';
     const PAGE = 25;
     const MAX_GAP = 2.0;          // seconds: a long pause in the session is cut to this when playing
 
