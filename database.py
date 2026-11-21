@@ -1814,7 +1814,8 @@ class Database:
         added. Ids and every old column are copied as they are. Foreign keys are off
         for the rebuild (a DROP with them on would cascade). A deleted connection leaves
         its recordings (connection_id becomes NULL, the name stays), so a member cannot
-        remove an administrator's record by deleting a connection. The table holds one
+        remove an administrator's record by deleting a connection. The id counter of the old table
+        (sqlite_sequence) is carried over. The table holds one
         row per session, so the copy is cheap. Does nothing when already rebuilt, so it
         is safe to repeat; 1.19.0 runs on the result (it only reads the old columns).
         """
@@ -1853,8 +1854,18 @@ class Database:
                     await conn.execute(
                         f"INSERT INTO recordings_new ({cols}, connection_id, connection_name, kind) "
                         f"SELECT {cols}, {extra_src} FROM recordings ORDER BY id")
+                    cursor = await conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'recordings'")
+                    seq_row = await cursor.fetchone()
+                    old_seq = int(seq_row["seq"]) if seq_row else 0
                     await conn.execute("DROP TABLE recordings")
                     await conn.execute("ALTER TABLE recordings_new RENAME TO recordings")
+                    # The id counter is carried over: the copy alone leaves it at the highest surviving id,
+                    # and the ids of recordings deleted before the upgrade would be handed out again,
+                    # making their old audit entries ambiguous.
+                    cursor = await conn.execute(
+                        "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'recordings'", (old_seq,))
+                    if cursor.rowcount == 0 and old_seq:
+                        await conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('recordings', ?)", (old_seq,))
                     await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_user_id ON recordings(user_id)")
                     await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_service_id ON recordings(service_id)")
                     await conn.commit()

@@ -54,6 +54,12 @@ async def main():
             await d.conn.execute(
                 "INSERT INTO recordings (id, user_id, service_id, filename, size, duration, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, '2026-01-02 03:04:05')", (i, uid, sid, f"old{i}.cast", i * 10, i * 1.5))
+        # ids 10 to 12 were handed out and their recordings deleted before the upgrade: the counter is at 12
+        for i in (10, 11, 12):
+            await d.conn.execute(
+                "INSERT INTO recordings (id, user_id, service_id, filename) VALUES (?, ?, ?, ?)",
+                (i, uid, sid, f"gone{i}.cast"))
+        await d.conn.execute("DELETE FROM recordings WHERE id >= 10")
         await d.conn.commit()
         await d.conn.execute("PRAGMA foreign_keys = ON")
         await d.close()
@@ -87,7 +93,8 @@ async def main():
         got = await d.get_recording(rid)
         check("a recording of a user connection is stored", got["service_id"] is None and got["connection_id"] == cid
               and got["connection_name"] == "box" and got["type"] == "ssh", str(got))
-        check("ids continue after the old ones", rid > 9, str(rid))
+        check("ids of recordings deleted before the upgrade are not handed out again (counter carried over)",
+              rid == 13, str(rid))
         await d.conn.execute("DELETE FROM user_connections WHERE id = ?", (cid,))
         await d.conn.commit()
         got = await d.get_recording(rid)
