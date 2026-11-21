@@ -2934,6 +2934,11 @@ async def http_admin_push_put(request: web.Request) -> web.Response:
     data, bad = await _push_json(request)
     if bad is not None:
         return bad
+    # The allow-list decides which hosts the portal sends to: like a webhook's allow_private, only a
+    # superadmin's browser login session may change it, never a bearer token.
+    if "allowed_hosts" in data and not await _may_set_allow_private(request, token):
+        return web.json_response(
+            {"error": "Changing the allowed push hosts needs a superadmin's browser login session"}, status=403)
     values: dict[str, str] = {}
     try:
         if "enabled" in data:
@@ -2956,7 +2961,9 @@ async def http_admin_push_put(request: web.Request) -> web.Response:
     if values:
         await db.set_settings(values)
         await audit_log("push_settings", token.user_id, user["username"], target_type="settings",
-                        details={"changed": sorted(k.replace("push_", "") for k in values)})
+                        details={"changed": sorted(k.replace("push_", "") for k in values),
+                                 **({"allowed_hosts": values[webpush.SETTING_EXTRA_HOSTS]}
+                                    if webpush.SETTING_EXTRA_HOSTS in values else {})})
     return web.json_response(await _push_admin_state())
 
 

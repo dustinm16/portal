@@ -602,13 +602,32 @@ async def main():
         check("an API key of a superadmin is refused too", s == 403)
         s, st, _h = await w.call("GET", "root", "/api/admin/push")
         check("superadmin reads the settings", s == 200 and st["enabled"] and st["default_hosts"] == list(wp.DEFAULT_ALLOWED_HOSTS))
-        s, st, _h = await w.call("PUT", "root", "/api/admin/push", json={"allowed_hosts": ["push.example.org"], "subject": "https://portal.example.org"})
+        root_cookie, root_tid = await auth_mod.create_access_token(w.ids["root"], ["*"], name="web_session")
+        ck = lambda c: {"Cookie": f"{Config.SESSION_COOKIE_NAME}={c}"}
+        s, _b, _h = await w.call("PUT", "root", "/api/admin/push", json={"allowed_hosts": ["push.example.org"]})
+        check("a bearer token cannot change the allow-list (403, nothing stored)",
+              s == 403 and (await w.call("GET", "root", "/api/admin/push"))[1]["allowed_hosts"] == [], str(s))
+        s, _b, _h = await w.call("PUT", "root", "/api/admin/push", json={"allowed_hosts": ["push.example.org"]},
+                                 headers={**ck(root_cookie), "Authorization": "Bearer x", "X-Test-Tid": root_tid})
+        check("a request that also carries an Authorization header cannot either", s == 403, str(s))
+        s, _b, _h = await w.call("PUT", "root", "/api/admin/push", json={"allowed_hosts": ["push.example.org"]},
+                                 headers={**ck(root_cookie), "X-Test-Tid": "other-session"})
+        check("a cookie that is not the session of the credential cannot either", s == 403, str(s))
+        s, st, _h = await w.call("PUT", "root", "/api/admin/push", json={"subject": "https://portal.example.org", "enabled": True})
+        check("other fields still work with a bearer token", s == 200 and st["subject"] == "https://portal.example.org", str(s))
+        s, st, _h = await w.call("PUT", "root", "/api/admin/push", headers={**ck(root_cookie), "X-Test-Tid": root_tid},
+                                 json={"allowed_hosts": ["push.example.org"], "subject": "https://portal.example.org"})
         check("superadmin extends the allow-list and sets the subject", s == 200 and st["allowed_hosts"] == ["push.example.org"] and st["subject"] == "https://portal.example.org")
         for bad in ({"allowed_hosts": ["127.0.0.1"]}, {"allowed_hosts": ["localhost"]}, {"allowed_hosts": "*.com"},
                     {"subject": "mailto:someone@example.org"}, {"subject": "http://x.example"}, {"enabled": "yes"}):
-            s, _b, _h = await w.call("PUT", "root", "/api/admin/push", json=bad)
+            s, _b, _h = await w.call("PUT", "root", "/api/admin/push", json=bad,
+                                     headers={**ck(root_cookie), "X-Test-Tid": root_tid})
             check(f"a bad setting is refused: {list(bad)[0]}={str(list(bad.values())[0])[:20]}", s == 400)
-        await w.call("PUT", "root", "/api/admin/push", json={"allowed_hosts": [], "subject": None})
+        await w.call("PUT", "root", "/api/admin/push", json={"allowed_hosts": [], "subject": None},
+                     headers={**ck(root_cookie), "X-Test-Tid": root_tid})
+        entries = [e for e in await w.db.get_audit_log(limit=50, action="push_settings")
+                   if "push.example.org" in json.dumps(e.get("details"))]
+        check("an allow-list change is audited with the new list", len(entries) == 1, str(entries))
         s, b, _h = await w.call("POST", "root", "/api/admin/push/test")
         check("the test push with no device of the superadmin sends to none", s == 200 and b["devices"] == 0)
         dr = Receiver(w.service, "devroot")
@@ -792,9 +811,7 @@ async def main():
               and 'href="/logout"' in (ROOT / "static" / "js" / "searxng-portal.js").read_text())
 
         # ------------------------------------------------------------ VAPID reset, key state, shutdown
-        root_cookie, _tid = await auth_mod.create_access_token(w.ids["root"], ["*"], name="web_session")
         member_cookie, _tid = await auth_mod.create_access_token(w.ids["erin"], FULL, name="web_session")
-        ck = lambda c: {"Cookie": f"{Config.SESSION_COOKIE_NAME}={c}"}
         reset = "/api/admin/push/reset-key"
         server._PUSH_SUBSCRIBE_LIMIT = 1000
         server._push_subscribe_log.clear()
@@ -858,10 +875,9 @@ async def main():
         check("the worker script itself carries no page policy and no extra header from the middleware",
               "Content-Security-Policy" not in h)
         src = (ROOT / "server.py").read_text()
-        proxied = ('"default-src * \'unsafe-inline\' \'unsafe-eval\' data: blob:; "\n'
-                   '                        "worker-src \'none\'; "\n'
-                   '                        "frame-ancestors \'self\';"')
-        check("proxied HTML still gets worker-src 'none' from the proxy, as written before", src.count(proxied) == 1)
+        check("proxied HTML still gets worker-src 'none' from the proxy, as written before",
+              server._proxy_document_csp("text/html; charset=utf-8") == server._PROXY_HTML_CSP
+              and "worker-src 'none'" in server._PROXY_HTML_CSP and "_proxy_document_csp(" in src)
     finally:
         await w.close()
 
