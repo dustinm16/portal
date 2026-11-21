@@ -23,7 +23,7 @@ function world(opts) {
   opts = opts || {};
   const calls = [];
   const store = new Map(opts.storage || []);
-  const sub = opts.subscribed ? { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', unsubscribed: false,
+  const sub = opts.subscribed ? { options: opts.subKey ? { applicationServerKey: opts.subKey } : undefined, endpoint: 'https://fcm.googleapis.com/fcm/send/abc', unsubscribed: false,
     unsubscribe() { this.unsubscribed = true; return Promise.resolve(true); }, toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'p', auth: 'a' } }; } } : null;
   const state = { permissionAsked: 0, registered: 0, sub, navigated: null, devices: opts.devices || [], prefs: { dm: true, mention: true, golive: true } };
   const docListeners = {};
@@ -199,6 +199,23 @@ function logoutClick(w) {
   check('already on the target: no reload, the worker is still told', !w.state.navigated && port.sent.length === 1);
   check('a framed page does not listen', (world({ framed: true }).swListeners.message || []).length === 0);
   check('a proxied page does not listen', (world({ path: '/proxy/a/b' }).swListeners.message || []).length === 0);
+
+  // after the superadmin reset the server key, a subscription made with the old key is stale
+  const pub = 'BP' + 'A'.repeat(85);
+  const goodKey = Uint8Array.from(Buffer.from(pub.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - pub.length % 4) % 4), 'base64'));
+  w = world({ subscribed: true, registered: true, permission: 'granted', subKey: Uint8Array.from([1, 2, 3]) });
+  let st = await w.win.PortalPush.status();
+  check('a browser subscription made with another server key does not count as subscribed', st.subscribed === false, JSON.stringify(st));
+  const staleSub = w.state.sub;
+  await w.win.PortalPush.enable(); await tick(40);
+  check('turning push on again drops the stale subscription and subscribes with the current key',
+        staleSub.unsubscribed === true && w.state.sub !== staleSub && w.state.sub.endpoint.endsWith('/new')
+        && w.calls.some(c => c.method === 'POST' && c.url === '/api/push/subscriptions' && JSON.parse(c.body).endpoint.endsWith('/new')));
+  w = world({ subscribed: true, registered: true, permission: 'granted', subKey: goodKey });
+  st = await w.win.PortalPush.status();
+  const keptSub = w.state.sub;
+  await w.win.PortalPush.enable(); await tick(40);
+  check('a subscription made with the current key counts and is kept', st.subscribed === true && !keptSub.unsubscribed && w.state.sub === keptSub);
 
   for (const r of results) console.log('RESULT ' + JSON.stringify(r));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'harness crashed', ok: false, detail: e && e.stack })); });

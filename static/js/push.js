@@ -117,6 +117,18 @@
         });
     }
 
+    /* A subscription made with another application server key (the superadmin reset the VAPID key since) can
+       never receive a push again: it does not count as subscribed and enable() replaces it. A browser that does
+       not show the key counts as a match. */
+    function keyMatches(sub, publicKey) {
+        var have = sub && sub.options && sub.options.applicationServerKey;
+        if (!have || !publicKey) return true;
+        var a = new Uint8Array(have), b = urlBase64ToUint8Array(publicKey);
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+    }
+
     function status() {
         if (!supported()) {
             return Promise.resolve({ supported: false, enabled: false, permission: 'denied', subscribed: false, devices: 0 });
@@ -125,7 +137,7 @@
             .then(function (res) {
                 return {
                     supported: true, enabled: !!res[0].enabled, permission: Notification.permission,
-                    subscribed: !!res[1], devices: (res[2].devices || []).length
+                    subscribed: !!res[1] && keyMatches(res[1], res[0].public_key), devices: (res[2].devices || []).length
                 };
             });
     }
@@ -142,11 +154,16 @@
             if (!config.enabled || !config.public_key) throw new Error('Push notifications are switched off on this server');
             return navigator.serviceWorker.register('/sw.js', { scope: SCOPE });
         }).then(waitActive).then(function (reg) {
-            return reg.pushManager.getSubscription().then(function (existing) {
-                return existing || reg.pushManager.subscribe({
+            function fresh() {
+                return reg.pushManager.subscribe({
                     userVisibleOnly: true,
                     applicationServerKey: urlBase64ToUint8Array(config.public_key)
                 });
+            }
+            return reg.pushManager.getSubscription().then(function (existing) {
+                if (!existing) return fresh();
+                if (keyMatches(existing, config.public_key)) return existing;
+                return existing.unsubscribe().then(fresh, fresh);     // made with a key the server no longer has
             });
         }).then(function (sub) {
             return api('POST', '/api/push/subscriptions', sub.toJSON()).then(function () {
