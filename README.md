@@ -208,6 +208,18 @@ All pictures are taken from a throwaway demo instance with made-up members and a
 
 *Voice Settings — voice detection mode, live level meter with the threshold line, sensitivity, and input and output pickers*
 
+### Notifications
+
+![Channel notification menu](docs/screenshots/chat-notify-menu.png)
+*Chat bell menu — a notification level or a timed mute per channel, with a live unread badge on a channel that is not open*
+
+<table>
+<tr>
+<td valign="top" width="50%"><img src="docs/screenshots/phone-notifications.png" alt="Phone notifications" width="100%"><br><em>User settings > Phone notifications — the switch for this browser, the three kinds and the list of your devices</em></td>
+<td valign="top" width="50%"><img src="docs/screenshots/admin-push.png" alt="Push notifications admin card" width="100%"><br><em>Admin > Settings > Push notifications — feature switch, device count, extra push services, test push and key reset</em></td>
+</tr>
+</table>
+
 ### Streams
 
 ![Streams](docs/screenshots/streams.png)

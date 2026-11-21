@@ -485,6 +485,11 @@ for js, ver in (("portal.js", 46), ("push.js", 3), ("admin.js", 39), ("chat-noti
     loaded = {m for t_ in _pages.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.19.0 states {js} as version {ver} and the pages load exactly that",
           loaded == {str(ver)} and re.search(rf"`{re.escape(js)}`[^.]*?version {ver}", sec19) is not None, str(loaded))
+check("the README names the three pictures and they exist",
+      all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file()
+          for n in ("chat-notify-menu", "phone-notifications", "admin-push")))
+_mk = (ROOT / "tools" / "make_screenshots.py").read_text()
+check("make_screenshots takes the 1.19.0 pictures", all(f'@shot("{n}")' in _mk for n in ("chat-notify-menu", "phone-notifications", "admin-push")))
 check("api-docs.html and docs/API.md both describe the rebind call",
       "rebind" in (ROOT / "docs" / "API.md").read_text() and "rebind" in _pages["api-docs.html"])
 

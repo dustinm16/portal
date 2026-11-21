@@ -30,6 +30,13 @@ link the portal builds shows the example name.
 Pictures of 1.18.0 (share-expiry, api-keys, admin-signin-limits) need no extra setup: their
 demo data (shares with end times, three administrator keys) is seeded with the rest.
 
+Pictures of 1.19.0 (chat-notify-menu, phone-notifications, admin-push) need no extra setup either. The demo data
+holds a notification level for one member, and push devices of three members whose endpoints are made-up
+https://push.example.org addresses with freshly generated throw-away keys; push.example.org is added to the
+allowed push hosts of the staged instance through the real admin route. Nothing is ever sent to a push service
+(the staged instance only drops such an endpoint) and the test-push button is never pressed. The browser is only
+granted the notification permission; it does not subscribe.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -170,8 +177,8 @@ class Client:
             raise Fail(f"login of {self.name} failed: {r.status} {body}")
         return body
 
-    async def api(self, method: str, path: str, body=None, ok=(200, 201)):
-        r = await self.http.request(method, f"{self.stage.direct}{path}", json=body)
+    async def api(self, method: str, path: str, body=None, ok=(200, 201), headers=None):
+        r = await self.http.request(method, f"{self.stage.direct}{path}", json=body, headers=headers)
         try:
             data = await r.json(content_type=None)
         except Exception:
@@ -1238,6 +1245,55 @@ def _signin_limits(s):
                                           element_image(page.locator("#proxylimit-card"))]))
 
 
+@shot("chat-notify-menu")
+def _chat_notify_menu(s):
+    page = chat_page(s, "alex")
+    # sam (a chat page that is already open) writes in a channel alex has not joined: the badge appears live
+    sam = s.presence_pages[0]
+    sam.evaluate("switchChannel('projects')")
+    sam.wait_for_function("() => document.getElementById('chat-messages').textContent.length > 20", timeout=10000)
+    sam.wait_for_timeout(1500)
+    sam.fill("#chat-input", "Pushed the new parts list, take a look when you have a minute")
+    sam.evaluate("sendMessage()")
+    row = page.locator(".channel-item[data-channel='projects']")
+    row.locator(".unread-badge").wait_for(timeout=10000)
+    page.wait_for_timeout(500)
+    row.hover()
+    row.locator(".ch-notif-bell").click()
+    page.wait_for_selector(".notify-menu", timeout=5000)
+    page.wait_for_timeout(500)
+    s.save("chat-notify-menu", page)
+
+
+@shot("phone-notifications")
+def _phone_notifications(s):
+    ctx = s.context("alex", viewport={"width": 1280, "height": 1300})
+    ctx.grant_permissions(["notifications"], origin=s.stage.base)
+    page = s.open(ctx, "/", ".stat-card")
+    page.evaluate("showProfileModal()")
+    page.wait_for_selector("#push-settings #push-enable-switch", state="visible", timeout=15000)
+    page.wait_for_selector("#push-settings h5", state="visible", timeout=15000)
+    page.wait_for_timeout(800)
+    page.get_by_role("heading", name="Phone notifications").evaluate("el => el.scrollIntoView({block: 'start'})")
+    page.wait_for_timeout(500)
+    head = page.get_by_role("heading", name="Phone notifications").bounding_box()
+    body = page.locator("#push-settings").bounding_box()
+    pad = 24
+    clip = {"x": body["x"] - pad, "y": head["y"] - pad, "width": body["width"] + 2 * pad,
+            "height": body["y"] + body["height"] - head["y"] + 2 * pad}
+    s.write_bytes("phone-notifications", page.screenshot(clip=clip))
+
+
+@shot("admin-push")
+def _admin_push(s):
+    page = admin_page(s, "settings", "#push-admin-card")
+    page.wait_for_function("() => document.getElementById('push-admin-hosts').value.includes('push.example.org')", timeout=15000)
+    page.wait_for_timeout(500)
+    page.evaluate("() => { const c = document.getElementById('push-admin-card'); c.style.height = 'auto'; c.style.minHeight = '0'; c.style.alignSelf = 'flex-start'; }")
+    page.wait_for_timeout(300)
+    s.write("admin-push", element_image(page.locator("#push-admin-card")))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1451,6 +1507,37 @@ async def seed_access_limits(stage: Stage, clients: dict, info: dict) -> dict:
     return {}
 
 
+ANDROID_AGENT = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+                 "Chrome/126.0 Mobile Safari/537.36")
+IPHONE_AGENT = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/17.5 Mobile/15E148 Safari/604.1")
+
+
+def demo_push_keys() -> dict:
+    """A throw-away subscription key pair (P-256 point and auth secret); nothing here ever reaches a push service."""
+    import base64
+    import os
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    point = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    b64 = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    return {"p256dh": b64(point), "auth": b64(os.urandom(16))}
+
+
+async def seed_notifications(stage: Stage, clients: dict, info: dict) -> dict:
+    """A notification level for alex, push devices with documentation-name endpoints, push.example.org allowed."""
+    admin = clients[ADMIN_NAME]
+    await admin.api("PUT", "/api/admin/push", {"allowed_hosts": ["push.example.org"]})
+    await clients["alex"].api("PUT", f"/api/chat/channels/{info['projects']['id']}/notify", {"level": "all"})
+    await clients["alex"].api("PUT", f"/api/chat/channels/{info['help']['id']}/notify", {"level": "mentions"})
+    for who, agent in (("alex", ANDROID_AGENT), ("alex", IPHONE_AGENT), ("river", ANDROID_AGENT)):
+        endpoint = f"https://push.example.org/send/demo-{who}-{abs(hash(agent)) % 100000}"
+        await clients[who].api("POST", "/api/push/subscriptions",
+                               {"endpoint": endpoint, "keys": demo_push_keys()}, headers={"User-Agent": agent})
+    return {}
+
+
 async def seed_everything(stage: Stage) -> dict:
     admin = Client(stage, ADMIN_NAME)
     clients: dict = {ADMIN_NAME: admin}
@@ -1463,6 +1550,7 @@ async def seed_everything(stage: Stage) -> dict:
         mark_index_complete(stage)
         info.update(await seed_golive(stage, clients, info["streams"]))
         info.update(await seed_access_limits(stage, clients, info))
+        info.update(await seed_notifications(stage, clients, info))
         return info
     finally:
         for c in clients.values():
