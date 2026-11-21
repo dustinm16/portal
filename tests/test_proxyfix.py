@@ -445,6 +445,17 @@ async def slow_chain(request):
     return web.Response(status=302, headers={"Location": f"/slowchain/{n - 1}"})
 
 
+DOC_TYPES = {"html": "text/html; charset=utf-8", "svg": "image/svg+xml", "xhtml": "application/xhtml+xml",
+             "xml": "text/xml", "plain": "text/plain", "js": "application/javascript", "png": "image/png"}
+
+
+async def swdoc(request):
+    """A malicious upstream: a document of the asked type that tries to widen a worker's scope."""
+    kind = request.match_info["kind"]
+    return web.Response(body=b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>" if kind == "svg" else b"<p>x</p>",
+                        headers={"Content-Type": DOC_TYPES[kind], "Service-Worker-Allowed": "/"})
+
+
 ws_queries = []
 
 
@@ -574,6 +585,7 @@ async def main():
     up_app.router.add_get("/slowchain/{n}", slow_chain)
     up_app.router.add_get("/created", created)
     up_app.router.add_get("/trickle", trickle)
+    up_app.router.add_get("/swdoc/{kind}", swdoc)
     upstream = TestServer(up_app, host="127.0.0.1")
     await upstream.start_server()
     site_b = TestServer(up_app, host="127.0.0.1")       # a second site (other origin), same behaviour
@@ -615,6 +627,24 @@ async def main():
     Config.HOSTNAME = "127.0.0.1"       # the portal's configured name in this test
     try:
         async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as c:
+            # --- a malicious upstream: no widened worker scope, a policy on every kind of document
+            CONFIG.clear()
+            seen = {}
+            for kind in DOC_TYPES:
+                async with c.get(f"{base}/swdoc/{kind}") as r:
+                    await r.read()
+                    seen[kind] = (r.status, r.headers.get("Service-Worker-Allowed"), r.headers.get("Content-Security-Policy"))
+            check("service worker: Service-Worker-Allowed is stripped from every proxied response (buffered and streamed)",
+                  all(v[0] == 200 and v[1] is None for v in seen.values()), str(seen))
+            check("csp: HTML, XHTML and XML documents get the policy without workers",
+                  all(seen[k][2] and "worker-src 'none'" in seen[k][2] for k in ("html", "xhtml", "xml")), str(seen))
+            check("csp: an SVG document is sandboxed without scripts, so an image it embeds still draws but no script runs",
+                  seen["svg"][2] and seen["svg"][2].startswith("sandbox;") and "allow-scripts" not in seen["svg"][2]
+                  and "img-src" in seen["svg"][2], str(seen["svg"]))
+            check("csp: other types (text, script, image) get none from the proxy",
+                  all(seen[k][2] is None for k in ("plain", "js", "png")), str(seen))
+            check("service worker: the SearXNG proxy drops the header too",
+                  "service-worker-allowed" in server._SEARXNG_RESPONSE_HOP_HEADERS)
             # --- forwarded headers and cookies, streamed and buffered paths
             # default (forwarded_host off): neither X-Forwarded-Host nor X-Forwarded-Prefix is sent, client copies are dropped
             CONFIG.clear()

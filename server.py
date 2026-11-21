@@ -16765,6 +16765,31 @@ _PROXY_BLOCKED_HEADERS = frozenset({
 _PROXY_HOST_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]{1,255}$")
 
 
+_PROXY_HTML_CSP = (
+    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
+    "worker-src 'none'; "
+    "frame-ancestors 'self';"
+)
+# An SVG shown as a document: no script runs (sandbox without allow-scripts), nothing is fetched except
+# styles, images and fonts. An SVG used as an image by a page is unaffected (a CSP on an image is not applied).
+_PROXY_SVG_CSP = (
+    "sandbox; default-src 'none'; style-src * 'unsafe-inline'; img-src * data:; font-src * data:; "
+    "frame-ancestors 'self'"
+)
+
+
+def _proxy_document_csp(content_type: str):
+    """The Content-Security-Policy a proxied response gets, by its type: the permissive HTML one
+    (upstream pages need their own scripts, but no worker) for HTML, XHTML and XML documents, a
+    scriptless sandbox for SVG, none for anything else."""
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    if ct == "image/svg+xml":
+        return _PROXY_SVG_CSP
+    if ct in ("text/html", "application/xhtml+xml", "text/xml", "application/xml") or ct.endswith("+xml"):
+        return _PROXY_HTML_CSP
+    return None
+
+
 def _proxy_header_blocked(lower_name: str) -> bool:
     return lower_name in _PROXY_BLOCKED_HEADERS or lower_name.startswith("x-forwarded-")
 
@@ -17388,7 +17413,9 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                              "te", "trailers", "upgrade",
                              "content-security-policy", "x-frame-options",
                              "content-encoding", "content-length",
-                             "cache-control", "expires", "age"):
+                             "cache-control", "expires", "age",
+                             # an upstream may not widen the scope of a worker it serves to the portal's own paths
+                             "service-worker-allowed"):
                         continue
 
                     # Rewrite Location headers for redirects
@@ -17416,6 +17443,10 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                 # Proxied content is per-connection and session-scoped — never let a shared
                 # edge cache (e.g. Cloudflare) store it keyed by URL alone across sessions.
                 resp_headers["Cache-Control"] = "private, no-store"
+                # Documents get a policy before the body is streamed or buffered (see _proxy_document_csp)
+                doc_csp = _proxy_document_csp(resp.headers.get("Content-Type", ""))
+                if doc_csp:
+                    resp_headers["Content-Security-Policy"] = doc_csp
 
                 # Check if response needs URL rewriting
                 content_type = resp.headers.get("Content-Type", "")
@@ -17753,16 +17784,6 @@ async def _proxy_connection_authed(request: web.Request, token, call: _ProxyHttp
                     except (UnicodeDecodeError, UnicodeEncodeError, LookupError):
                         pass
 
-                # Set permissive CSP for proxied content (upstream sites need their own scripts)
-                # The middleware uses setdefault, so setting here takes priority
-                ct = resp_headers.get("Content-Type", "")
-                if "text/html" in ct:
-                    resp_headers["Content-Security-Policy"] = (
-                        "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
-                        "worker-src 'none'; "
-                        "frame-ancestors 'self';"
-                    )
-
                 return web.Response(
                     status=resp.status,
                     headers=resp_headers,
@@ -17832,7 +17853,7 @@ _SEARXNG_REQUEST_HOP_HEADERS = frozenset({
 _SEARXNG_RESPONSE_HOP_HEADERS = frozenset({
     "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
     "proxy-authorization", "te", "trailers", "upgrade", "content-encoding",
-    "content-length",
+    "content-length", "service-worker-allowed",
 })
 # Kept in sync with services/searxng.py DEFAULT_PORT (8888/8889 are MediaMTX).
 _SEARXNG_DEFAULT_PORT = 8890
