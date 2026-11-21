@@ -3971,6 +3971,24 @@
             }
 
             list.innerHTML = html;
+            bindChannelBells(list);
+        }
+
+        // The bell on each channel row: a stream chat's bell follows the stream, any other
+        // channel's opens the level and mute menu. The listener sits on the button itself, so
+        // stopping the click there keeps the row's own click (switch channel) from running.
+        function bindChannelBells(list) {
+            list.querySelectorAll('.ch-notif-bell').forEach(btn => {
+                btn.addEventListener('click', ev => {
+                    const id = Number(btn.dataset.bellChannelId);
+                    if (btn.dataset.bellKind === 'stream') {
+                        const ch = channelsList.find(c => Number(c.id) === id);
+                        toggleChannelNotif(ch ? ch.name : '', true, ev);
+                    } else {
+                        openNotifyMenu(id, ev);
+                    }
+                });
+            });
         }
 
         function toggleCategory(cat) {
@@ -3997,10 +4015,8 @@
             const bellTitle = isStream
                 ? (notifActive ? 'Stop following this stream' : 'Follow: tell me when this stream goes live')
                 : 'Notifications: ' + notifySummary(ch, false);
-            const bellClick = isStream
-                ? `toggleChannelNotif('${CSS.escape(ch.name)}',true,event)`
-                : `openNotifyMenu(${Number(ch.id)},event)`;
-            const bellBtn = `<button class="ch-notif-bell${notifActive ? ' active' : ''}${muted || ch.notify_level === 'none' ? ' muted' : ''}" onclick="${bellClick}" title="${escapeHtml(bellTitle)}" aria-haspopup="${isStream ? 'false' : 'menu'}"><svg width="12" height="12" viewBox="0 0 24 24" fill="${notifActive ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>`;
+            // No inline handler: the click is bound by bindChannelBells from these data attributes
+            const bellBtn = `<button type="button" class="ch-notif-bell${notifActive ? ' active' : ''}${muted || ch.notify_level === 'none' ? ' muted' : ''}" data-bell-channel-id="${Number(ch.id)}" data-bell-kind="${isStream ? 'stream' : 'channel'}" title="${escapeHtml(bellTitle)}" aria-haspopup="${isStream ? 'false' : 'menu'}"><svg width="12" height="12" viewBox="0 0 24 24" fill="${notifActive ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>`;
             return `<div class="channel-item ${extraClass} ${ch.name === currentChannel ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}"
                      onclick="switchChannel('${ch.name}')" data-channel="${ch.name}"
                      data-channel-id="${ch.id}" data-is-default="${ch.is_default || false}"

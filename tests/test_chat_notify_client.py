@@ -44,6 +44,11 @@ check("the channel list is rebuilt on reconnect and on window focus",
 check("the bell menu offers All, Mentions, Nothing and mute 1, 8, 24 hours",
       all(t in CHAT for t in ("All messages", "Mentions only", "'Nothing'", "Mute for 1 hour", "Mute for 8 hours", "Mute for 24 hours")))
 check("the stream follow bell is kept", "toggleStreamFollow(channelName, e)" in CHAT and "/api/me/follows" in CHAT)
+_bell = next((ln for ln in CHAT.splitlines() if "const bellBtn = " in ln), "")
+check("the bell button carries data attributes and no inline handler",
+      bool(_bell) and "onclick" not in _bell and 'data-bell-channel-id="${Number(ch.id)}"' in _bell and "data-bell-kind=" in _bell, _bell[:120])
+check("the bells are bound with addEventListener after each render",
+      "bindChannelBells(list);" in CHAT and "btn.addEventListener('click'" in CHAT and "btn.dataset.bellChannelId" in CHAT)
 check("the PUT goes to the notify route", "/notify`" in CHAT and "method: 'PUT'" in CHAT)
 check("no external fetch for the sound", "new Audio(" not in CHAT and "new Audio(" not in JS)
 check("portal.js gives each desktop notification its own tag and opens the channel on click",

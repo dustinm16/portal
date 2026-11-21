@@ -398,6 +398,7 @@ check("README has an 'Upgrade notes for 1.19.0' section after the 1.18.0 one",
 low19 = (m19.group(1) if m19 else "").lower()
 for name, needles in (("the table and the routes", ("channel_notify_prefs", "/api/chat/channels/{id}/notify")),
                       ("the levels and the mute lengths", ("mentions only", "nothing", "1, 8 or 24 hours")),
+                      ("stream chats and the level menu", ("api-only", "follows the stream")),
                       ("a mention still notifies while muted but not at level nothing", ("still notifies", "unless the level is nothing")),
                       ("the signal holds the channel id only and never reaches a non-reader", ("channel_activity", "nothing else", "same read check")),
                       ("the memory cache and the verdict memory", ("60 seconds", "forgotten whenever access is lost")),
