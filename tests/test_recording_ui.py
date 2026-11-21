@@ -38,7 +38,7 @@ check("terminal.html loads terminal.js v7", "terminal.js?v=7" in term_html)
 
 check("the tab button, its content and the modal exist in admin.html",
       all(x in admin_html for x in ('id="tab-btn-recordings"', 'id="tab-recordings"', 'id="rec-modal"',
-                                    "/static/js/recordings-admin.js?v=3")))
+                                    "/static/js/recordings-admin.js?v=4")))
 section = admin_html.split('<!-- Recordings Tab', 1)[1].split('<!-- Webhooks Tab', 1)[0]
 check("the new tab markup has no inline handlers", not re.search(r"\son[a-z]+\s*=", section), "")
 check("the new tab button has no inline handler", 'id="tab-btn-recordings" data-recordings-tab style="display:none;">' in admin_html)

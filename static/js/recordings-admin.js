@@ -15,6 +15,8 @@
     const XTERM_CSS = '/static/vendor/xterm/xterm.css?v=1';
     const PAGE = 25;
     const MAX_GAP = 2.0;          // seconds: a long pause in the session is cut to this when playing
+    const MAX_COLS = 500;         // the player never opens a terminal larger than this, whatever the file says
+    const MAX_ROWS = 200;
 
     let page = 1;
     let total = 0;
@@ -68,6 +70,12 @@
             return false;
         }
         total = data.total;
+        const lastPage = Math.max(1, Math.ceil(total / PAGE));
+        if (page > lastPage) {
+            // the last row of the last page was deleted: step back instead of showing an empty page
+            page = lastPage;
+            return load();
+        }
         body.textContent = '';
         if (!data.recordings.length) {
             const tr = document.createElement('tr');
@@ -154,13 +162,27 @@
 
     function status(text) { $('rec-play-status').textContent = text; }
 
+    // One dimension from a file: a whole number from 1 to max; anything else is the fallback.
+    function clampDim(value, max, fallback) {
+        const n = Math.floor(Number(value));
+        if (!isFinite(n) || n < 1) return fallback;
+        return Math.min(n, max);
+    }
+
+    function clampSize(cols, rows) {
+        return [clampDim(cols, MAX_COLS, 80), clampDim(rows, MAX_ROWS, 24)];
+    }
+
     function apply(e) {
         const kind = e[1];
         if (kind === 'o') {
             term.write(String(e[2]));
         } else if (kind === 'r') {
             const m = /^(\d{1,4})x(\d{1,4})$/.exec(String(e[2]));
-            if (m) term.resize(parseInt(m[1], 10), parseInt(m[2], 10));
+            if (m) {
+                const size = clampSize(parseInt(m[1], 10), parseInt(m[2], 10));
+                term.resize(size[0], size[1]);
+            }
         } else if (kind === 'm') {
             term.write('\r\n\x1b[33m[' + String(e[2]) + ']\x1b[0m\r\n');
         }
@@ -191,18 +213,34 @@
 
     let headerSize = [80, 24];
 
+    // Every load takes a number; closing the modal or starting another load makes the earlier
+    // one stale, and a stale load stops after its next await without touching the page.
+    let loadToken = 0;
+
+    function stopPlayer() {
+        stopTimer();
+        paused = true;
+        if (term) { term.dispose(); term = null; }
+        $('rec-player').textContent = '';
+    }
+
     async function play(id, label) {
+        const token = ++loadToken;
+        stopPlayer();
         $('rec-modal-title').textContent = 'Recording ' + id + ' (' + label + ')';
         $('rec-modal').style.display = '';
-        $('rec-player').textContent = '';
         status('Loading');
         try {
             await loadXterm();
+            if (token !== loadToken) return;
             const res = await Portal.fetch('/api/recordings/' + encodeURIComponent(id) + '/cast', { headers: { Accept: '*/*' } });
+            if (token !== loadToken) return;
             if (!res.ok) throw new Error(res.status === 404 ? 'The file is gone' : 'HTTP ' + res.status);
-            const cast = parseCast(await res.text());
+            const text = await res.text();
+            if (token !== loadToken) return;
+            const cast = parseCast(text);
             events = cast.events;
-            headerSize = [cast.header.width || 80, cast.header.height || 24];
+            headerSize = clampSize(cast.header.width, cast.header.height);
             if (term) { term.dispose(); }
             // No input handler is attached and stdin is off: the player never sends anything.
             term = new window.Terminal({
@@ -212,16 +250,34 @@
             term.open($('rec-player'));
             restart(headerSize[0], headerSize[1]);
         } catch (e) {
-            status('Could not play: ' + e.message);
+            if (token === loadToken) status('Could not play: ' + e.message);
         }
     }
 
     function closeModal() {
-        stopTimer();
-        paused = true;
+        loadToken++;
         $('rec-modal').style.display = 'none';
-        if (term) { term.dispose(); term = null; }
-        $('rec-player').textContent = '';
+        stopPlayer();
+    }
+
+    // Download goes through fetch, so a failure is a message here and the admin page itself is never
+    // navigated to the raw file. ?download=1 keeps the audit entry "recording_download".
+    async function download(id) {
+        try {
+            const res = await Portal.fetch('/api/recordings/' + encodeURIComponent(id) + '/cast?download=1', { headers: { Accept: '*/*' } });
+            if (!res.ok) throw new Error(res.status === 404 ? 'The file is gone' : 'HTTP ' + res.status);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'recording-' + id + '.cast';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+        } catch (e) {
+            Portal.toast('Could not download: ' + e.message, 'error');
+        }
     }
 
     async function remove(id, label) {
@@ -260,11 +316,14 @@
             if (!b) return;
             const { action, id, label } = b.dataset;
             if (action === 'play') play(id, label);
-            else if (action === 'download') window.location.assign('/api/recordings/' + encodeURIComponent(id) + '/cast?download=1');
+            else if (action === 'download') download(id);
             else if (action === 'delete') remove(id, label);
         });
         $('rec-modal-close').addEventListener('click', closeModal);
         $('rec-modal-backdrop').addEventListener('click', closeModal);
+        document.addEventListener('keydown', (evt) => {
+            if (evt.key === 'Escape' && $('rec-modal').style.display !== 'none') closeModal();
+        });
         $('rec-play-toggle').addEventListener('click', () => {
             if (!term) return;
             if (pos >= events.length) { restart(headerSize[0], headerSize[1]); return; }
