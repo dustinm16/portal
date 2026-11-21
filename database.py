@@ -4776,6 +4776,18 @@ class Database:
             await self.conn.commit()
             return cursor.rowcount > 0
 
+    async def drop_push_subscription_of_other_user(self, user_id: int, endpoint: str, p256dh: str,
+                                                   auth: str) -> bool:
+        """Delete a device row held by a member other than user_id when endpoint and both keys
+        match: the same browser, now used by someone else. Keys of another browser never match."""
+        async with self._push_sub_lock:
+            cursor = await self.conn.execute(
+                """DELETE FROM push_subscriptions
+                   WHERE user_id != ? AND endpoint = ? AND p256dh = ? AND auth = ?""",
+                (user_id, endpoint, p256dh, auth))
+            await self.conn.commit()
+            return cursor.rowcount > 0
+
     async def list_push_subscriptions(self, user_id: int) -> list[dict]:
         cursor = await self.conn.execute(
             """SELECT id, endpoint, user_agent, token_id, created_at, last_success_at, failure_count

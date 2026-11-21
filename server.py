@@ -2824,7 +2824,12 @@ async def http_push_subscribe(request: web.Request) -> web.Response:
         if data.get("rebind") is True:
             # A page-load re-announcement never registers, moves or takes a device: it only
             # refreshes one this member already holds. (A browser used by someone else since
-            # keeps no claim on the new member: they switch push on themselves.)
+            # keeps no claim on the new member: they switch push on themselves.) The same
+            # endpoint with the same keys held by another member is this browser, now signed in
+            # as someone else: that member's device is removed so their pushes (private channel
+            # names, direct message notices) stop appearing for this member.
+            await db.drop_push_subscription_of_other_user(token.user_id, endpoint, keys["p256dh"].strip(),
+                                                          keys["auth"].strip())
             return web.json_response({"error": "This device is not registered to your account"}, status=404)
         # Only a well-formed request on an allow-listed host reaches the name lookup, and
         # those are limited per member

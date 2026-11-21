@@ -767,7 +767,15 @@ async def main():
               s == 404 and await w.rows("erin") == [], str(s))
         await w.subscribe("fay", dev)
         s, _b, _h = await w.call("POST", "erin", "/api/push/subscriptions", json=body)
-        check("a re-announcement never moves another member's device", s == 404 and len(await w.rows("fay")) == 1 and await w.rows("erin") == [], str(s))
+        check("a re-announcement never moves another member's device to the caller (404, nothing registered for them)",
+              s == 404 and await w.rows("erin") == [], str(s))
+        check("the same browser re-announced by another member ends the first member's device (no more pushes to this browser)",
+              await w.rows("fay") == [] and await w.db.push_subscriptions_for_send(w.ids["fay"]) == [])
+        await w.subscribe("fay", dev)
+        s, _b, _h = await w.call("POST", "erin", "/api/push/subscriptions",
+                                 json=dict(Receiver(w.service, "tied").sub(), rebind=True))
+        check("a re-announcement with the endpoint but other keys leaves the first member's device alone",
+              s == 404 and len(await w.rows("fay")) == 1)
         s, _b, _h = await w.call("POST", "fay", "/api/push/subscriptions", json=body)
         check("a re-announcement of the member's own device is updated", s == 200, str(s))
         await w.call("DELETE", "fay", "/api/push/subscriptions")
