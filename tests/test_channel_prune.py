@@ -193,6 +193,32 @@ def test_who_may_prune():
     run(body)
 
 
+def test_staff_candidates_skip_legacy_empty_roles():
+    async def body(env):
+        d = env.db
+        real = {"adm": await env.user("adm", "admin"), "sup": await env.user("sup", "superadmin"),
+                "mod": await env.user("mod", "moderator")}
+        legacy_admin = await env.user("legacyadmin")      # is_admin set, empty role: counts as superadmin
+        legacy_plain = [await env.user(f"legacy{i}") for i in range(5)]
+        flagged_user = await env.user("flaggeduser")      # is_admin set but role user: loaded, decided by the caller
+        for uid in [legacy_admin, flagged_user, *legacy_plain]:
+            await d.conn.execute("UPDATE users SET role = ? WHERE id = ?", ("" if uid != flagged_user else "user", uid))
+        await d.conn.execute("UPDATE users SET role = NULL WHERE id = ?", (legacy_plain[0],))
+        await d.conn.execute("UPDATE users SET is_admin = 1 WHERE id IN (?, ?)", (legacy_admin, flagged_user))
+        await d.conn.commit()
+        rows = await d.list_chat_staff_candidates()
+        got = {r["id"] for r in rows}
+        check("no ordinary member with an empty or NULL role is loaded", not (got & set(legacy_plain)), str(got))
+        check("every real staff account is returned", set(real.values()) <= got and legacy_admin in got, str(got))
+        staff = {r["id"] for r in rows if server._user_role_of(r) in server._CHAT_STAFF_ROLES}
+        check("the staff the caller decides on are exactly the old result",
+              staff == set(real.values()) | {legacy_admin}, str(staff))
+        excluded, _ = await server._prune_protected(await d.get_chat_channel_by_name("general"), None,
+                                                    real["adm"], "admin", server.CHAT_LEVEL_STAFF)
+        check("the prune still protects the legacy administrator from an administrator", legacy_admin in excluded, str(excluded))
+    run(body)
+
+
 def test_range_and_input():
     async def body(env):
         w = await world(env)

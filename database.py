@@ -6208,10 +6208,13 @@ class Database:
 
     async def list_chat_staff_candidates(self) -> list:
         """Accounts that may count as global staff (id, role, is_admin), a handful of rows: the
-        caller decides with _user_role_of, which falls back to is_admin when role is empty."""
+        caller decides with _user_role_of, which falls back to is_admin when role is empty. Only
+        rows that can be staff are read: a staff role, or is_admin (whose empty-role legacy rows
+        count as superadmin). An empty role with no is_admin is an ordinary member and is not
+        loaded, so an install full of legacy empty roles does not read most of its users."""
         cursor = await self.conn.execute(
             "SELECT id, role, is_admin FROM users WHERE role IN ('moderator', 'admin', 'superadmin') "
-            "OR is_admin = 1 OR role IS NULL OR role = ''")
+            "OR is_admin = 1")
         return [dict(row) for row in await cursor.fetchall()]
 
     async def get_channel_moderator_ids(self, channel_id: int) -> list:
