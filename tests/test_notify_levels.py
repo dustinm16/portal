@@ -58,6 +58,8 @@ class Env(base.Env):
         app.router.add_put("/api/chat/channels/{id}/notify", server.http_put_channel_notify)
         app.router.add_delete("/api/chat/channels/{id}/members/{user_id}", server.http_remove_channel_member)
         app.router.add_post("/api/chat/channels/{id}/members", server.http_add_channel_member)
+        app.router.add_put("/api/me/nickname", server.http_update_user_nickname)
+        app.router.add_post("/api/users", server.http_create_user)
         app.router.add_put("/api/chat/channels/{id}", server.http_update_chat_channel)
         app.router.add_put("/api/streams/{id}", server.http_update_user_stream)
         app.router.add_post("/api/streams/{id}/bans", server.http_create_stream_ban)

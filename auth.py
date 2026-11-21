@@ -158,6 +158,16 @@ async def authenticate_user(username: str, password: str) -> Optional[dict]:
     return user
 
 
+# @here and @everyone are the mass mentions of the chat; no account may carry either as its
+# username or nickname (an @name of that kind could never reach the member, and it would
+# look like a mass mention)
+RESERVED_MENTION_NAMES = frozenset({"here", "everyone"})
+
+
+def is_reserved_mention_name(name) -> bool:
+    return isinstance(name, str) and name.strip().casefold() in RESERVED_MENTION_NAMES
+
+
 async def create_user(
     username: str,
     password: str,
@@ -165,6 +175,8 @@ async def create_user(
     registration_ip: str = None
 ) -> dict:
     """Create a new user."""
+    if is_reserved_mention_name(username):
+        raise ValueError("That username is reserved")
     password_hash = hash_password(password)
     user_id = await db.create_user(username, password_hash, is_admin, registration_ip=registration_ip)
     return await db.get_user_by_id(user_id)

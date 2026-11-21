@@ -365,6 +365,60 @@ def test_automod_weighs_a_mass_mention_five_times():
     run(body)
 
 
+def test_here_and_everyone_are_reserved_names_and_an_old_account_with_one_is_not_mentioned():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        # the routes refuse the names in any case; the nickname route and the account routes
+        st, b = await env.call("PUT", ids["bob"], "/api/me/nickname", json={"nickname": "Everyone"})
+        assert st == 400 and "reserved" in b["error"], (st, b)
+        st, b = await env.call("PUT", ids["bob"], "/api/me/nickname", json={"nickname": " here "})
+        assert st == 400, (st, b)
+        st, b = await env.call("PUT", ids["bob"], "/api/me/nickname", json={"nickname": "hero"})
+        assert st == 200, (st, b)
+        real_scope = base.Tok.has_scope
+        base.Tok.has_scope = lambda self, scope: True      # the stand-in credential has no admin scope
+        try:
+            st, b = await env.call("POST", ids["boss"], "/api/users", json={"username": "Everyone", "password": "longenough1"})
+        finally:
+            base.Tok.has_scope = real_scope
+        assert st == 400 and "reserved" in b["error"], (st, b)
+        try:
+            from auth import create_user
+            await create_user("HERE", "longenough1")
+            raise AssertionError("auth.create_user accepted a reserved name")
+        except ValueError:
+            pass
+        # accounts made before the names were reserved: the text does nothing special for them
+        old_here = await d.create_user("here", "x")
+        old_all = await d.create_user("Wide", "x")
+        await d.conn.execute("UPDATE users SET nickname = 'everyone' WHERE id = ?", (old_all,))
+        await d.conn.commit()
+        got = await server._parse_mentions("@here @Everyone and @bob")
+        assert got == {ids["bob"]}, got
+    run(body)
+
+
+def test_a_closed_sender_socket_does_not_drop_the_named_members_notifications():
+    class DeadSocket:
+        closed = True
+
+        async def send_json(self, payload):
+            raise ConnectionResetError("closed")
+
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await nl.general(d)
+        channel = await d.get_chat_channel(gen)
+        # alice is a moderator (may mass-mention, is rate limited); her slot is already used
+        server._mass_mention_last[ids["alice"]] = server._mass_clock()
+        await server._notify_mentions(DeadSocket(), channel, ids["alice"], "moderator", "alice",
+                                      "@everyone look @bob", 1)
+        assert (await rows(d, gen)).get(ids["bob"]) == 1, await rows(d, gen)
+    run(body)
+
+
 def test_detection_rules():
     k = server._mass_mention_kind
     assert k("@everyone dinner at 7") == "everyone" and k("hi @here.") == "here"

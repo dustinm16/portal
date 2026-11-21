@@ -59,6 +59,7 @@ from auth import (
     authenticate_user_reason,
     create_access_token,
     create_user,
+    is_reserved_mention_name,
     extract_token_from_request,
     validate_token,
     touch_due,
@@ -4417,6 +4418,8 @@ async def http_create_user(request: web.Request) -> web.Response:
             {"error": "Username must be 3-30 characters: letters, numbers, underscores, hyphens only"},
             status=400
         )
+    if is_reserved_mention_name(username):
+        return web.json_response({"error": "That username is reserved"}, status=400)
 
     if len(password) < 8 or len(password) > 128:
         return web.json_response(
@@ -4473,6 +4476,8 @@ async def http_register(request: web.Request) -> web.Response:
             {"error": "Username must be 3-30 characters: letters, numbers, underscores, hyphens only"},
             status=400
         )
+    if is_reserved_mention_name(username):
+        return web.json_response({"error": "That username is reserved"}, status=400)
 
     if len(password) < 8 or len(password) > 128:
         return web.json_response(
@@ -18549,6 +18554,10 @@ async def _parse_mentions(text: str) -> set[int]:
         name = name.strip()
         if not name:
             continue
+        if is_reserved_mention_name(name):
+            # @here and @everyone are the mass mentions; an account that already carries such
+            # a name (made before they were reserved) is not reachable by it
+            continue
         user = await db.get_user_by_username(name)
         if user:
             mentioned_user_ids.add(user["id"])
@@ -18685,10 +18694,14 @@ async def _notify_mentions(ws, channel, user_id: int, user_role: str, display_na
             if await _may_mass_mention(channel, user_id, user_role, stream):
                 wait = _mass_mention_wait(user_id, user_role)
                 if wait:
-                    await ws.send_json({
-                        "type": "notice", "code": "mass_mention_limited", "retry_after": wait,
-                        "message": f"Your message was posted without @{kind}: "
-                                   f"one @here or @everyone per {int(MASS_MENTION_COOLDOWN)} seconds"})
+                    # A closed sender socket must not drop the notifications of the names in the text
+                    try:
+                        await ws.send_json({
+                            "type": "notice", "code": "mass_mention_limited", "retry_after": wait,
+                            "message": f"Your message was posted without @{kind}: "
+                                       f"one @here or @everyone per {int(MASS_MENTION_COOLDOWN)} seconds"})
+                    except Exception as e:
+                        logger.debug(f"Mass mention notice not delivered: {e}")
                 else:
                     mass_done = True
                     ids, capped = await _mass_mention_recipients(channel, kind, user_id, stream)
@@ -18702,9 +18715,12 @@ async def _notify_mentions(ws, channel, user_id: int, user_role: str, display_na
                                          f"{display_name} mentioned {label} in #{channel['name']}",
                                          None, {**data, "mass": kind})
                     if capped:
-                        await ws.send_json({
-                            "type": "notice", "code": "mass_mention_capped",
-                            "message": f"@{kind} reached the first {MASS_MENTION_CAP} members"})
+                        try:
+                            await ws.send_json({
+                                "type": "notice", "code": "mass_mention_capped",
+                                "message": f"@{kind} reached the first {MASS_MENTION_CAP} members"})
+                        except Exception as e:
+                            logger.debug(f"Mass mention notice not delivered: {e}")
         # Who may be pushed: named members, and the members an @everyone reached (never @here)
         push_direct = set(direct)
         push_everyone = set(rows) if (mass_done and kind == "everyone") else set()
@@ -24673,6 +24689,8 @@ async def http_update_user_nickname(request: web.Request) -> web.Response:
         # Only allow alphanumeric, spaces, underscores, dashes
         if not re.match(r'^[\w\s\-]+$', nickname):
             return web.json_response({"error": "Nickname can only contain letters, numbers, spaces, underscores and dashes"}, status=400)
+        if is_reserved_mention_name(nickname):
+            return web.json_response({"error": "That nickname is reserved"}, status=400)
 
     await db.set_user_nickname(token.user_id, nickname if nickname else None)
 
