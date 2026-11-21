@@ -627,6 +627,31 @@ for name, needles in (
 check("1.20.0: What You Get and the guides page mention the new features",
       all(x in text for x in ("### Remote Access", "session recording", "Recordings tab")) and "Session recording" in _pages20["guides.html"])
 
+# --- 1.20.0 pictures ------------------------------------------------------------------------
+_pics20 = ("admin-recordings", "chat-prune", "chat-retention", "voice-moderation")
+check("make_screenshots takes the 1.20.0 pictures", all(f'@shot("{n}")' in _mk for n in _pics20))
+check("the README Screenshots section shows each 1.20.0 picture and the file exists",
+      all(f"docs/screenshots/{n}.png" in text and (ROOT / "docs" / "screenshots" / f"{n}.png").is_file() for n in _pics20))
+try:
+    import importlib.util
+    sys.path.insert(0, str(ROOT / "tools"))
+    _spec = importlib.util.spec_from_file_location("make_screenshots_for_test", ROOT / "tools" / "make_screenshots.py")
+    _ms = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_ms)
+    import getpass
+    import socket
+    _casts = " ".join(_ms.cast_text(ev, 0.0) + n + u for u, n, k, a_, ev in _ms.demo_casts())
+    _real = [v for v in (socket.gethostname(), getpass.getuser(), str(Path.home()), str(ROOT)) if v and len(v) >= 4]
+    check("the demo recordings hold nothing of this machine (host, user, home, source tree)",
+          not [v for v in _real if v.lower() in _casts.lower()])
+    _addrs = set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", _casts))
+    check("the only addresses in the demo recordings are documentation addresses (192.0.2.0/24)",
+          bool(_addrs) and all(a_.startswith("192.0.2.") for a_ in _addrs), str(_addrs))
+    check("the demo recordings are written with mode 0600 into the stage's own folder and are guarded",
+          "0o600" in (ROOT / "tools" / "make_screenshots.py").read_text() and "assert_clean" in (ROOT / "tools" / "make_screenshots.py").read_text())
+except Exception as e_:  # the screenshot script needs aiohttp, which the project venv has
+    check("the make_screenshots module loads for the picture checks", False, repr(e_))
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

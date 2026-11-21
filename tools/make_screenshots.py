@@ -37,6 +37,18 @@ allowed push hosts of the staged instance through the real admin route. Nothing 
 (the staged instance only drops such an endpoint) and the test-push button is never pressed. The browser is only
 granted the notification permission; it does not subscribe.
 
+Pictures of 1.20.0 (admin-recordings, chat-prune, chat-retention, voice-moderation) need no extra setup. The demo
+data holds four session recordings of the demo members: made-up shell output on a made-up host (example-host, a
+user called demo, the documentation address 192.0.2.50, a token that says it is not a secret), written as plain
+asciicast files with mode 0600 into the staged instance's own recordings folder, with rows in its own database.
+The recording that is played in the Recordings picture is seeded; nothing is recorded from this machine. The prune
+and retention pictures open the dialogs of the general channel as the administrator, count the messages of a range
+(a dry run) and type a value into a retention field; nothing is saved and nothing is removed. voice-moderation
+joins two demo members to one voice room in two headless browsers with Chromium's fake microphone, an empty list
+of ICE servers (so nothing is dialled outside the machine) and the real getStats readings. Every one of these
+pictures is checked for the host name, user name and home directory of this machine and for the temporary
+directory of the staged instance before it is written.
+
 Options: --only name,name  take only these pictures (the demo data is still
 seeded), --list  print the picture names, --port, --out, --no-optimize.
 
@@ -685,8 +697,8 @@ class Shooter:
         return self._admin_ctx
 
     # -- contexts and pages -------------------------------------------------
-    def context(self, user: str | None, viewport=None, theme: str | None = None, mobile: bool = False):
-        opts = dict(viewport=viewport or VIEWPORT, ignore_https_errors=True, device_scale_factor=1,
+    def context(self, user: str | None, viewport=None, theme: str | None = None, mobile: bool = False, scale: int = 1):
+        opts = dict(viewport=viewport or VIEWPORT, ignore_https_errors=True, device_scale_factor=scale,
                     extra_http_headers={"CF-Connecting-IP": ADDRESSES.get(user or "", "192.0.2.10")},
                     user_agent=DESKTOP_AGENT, locale="en-US", timezone_id="UTC")
         if mobile:
@@ -769,6 +781,19 @@ def stack(images: list, gap: int = 16):
     y = 0
     for i in images:
         canvas.paste(i, (0, y))
+        y += i.size[1] + gap
+    return canvas
+
+
+def stack_centered(images: list, gap: int = 16):
+    """Element pictures one above the other, each centred, on the first picture's background colour."""
+    from PIL import Image
+    width = max(i.size[0] for i in images)
+    height = sum(i.size[1] for i in images) + gap * (len(images) - 1)
+    canvas = Image.new("RGB", (width, height), images[0].getpixel((2, 2)))
+    y = 0
+    for i in images:
+        canvas.paste(i, ((width - i.size[0]) // 2, y))
         y += i.size[1] + gap
     return canvas
 
@@ -1294,6 +1319,151 @@ def _admin_push(s):
     s.write("admin-push", element_image(page.locator("#push-admin-card")))
 
 
+# -- 1.20.0: recordings, prune, retention, voice -----------------------------
+
+def forbidden_strings(s) -> list:
+    """What must never appear in a picture: this machine's host name, user name and home directory, the
+    staged instance's temporary directory and the source tree. Short values are ignored (a two-letter
+    user name would match everywhere)."""
+    import getpass
+    import socket
+    vals = [socket.gethostname(), socket.getfqdn(), getpass.getuser(), str(Path.home()),
+            str(s.stage.dir), "portal-shots-", str(REPO)]
+    return sorted({v for v in vals if v and len(v) >= 4 and v.lower() not in ("localhost", "root")})
+
+
+def assert_clean(s, page, name: str) -> None:
+    """Fail the picture when its page text (visible or not, and every input value) names something real."""
+    text = page.evaluate(
+        "() => document.body.textContent + ' ' + Array.from(document.querySelectorAll('input,textarea,select'))"
+        ".map(e => e.value).join(' ') + ' ' + Array.from(document.querySelectorAll('[title],[alt]'))"
+        ".map(e => (e.getAttribute('title') || '') + ' ' + (e.getAttribute('alt') || '')).join(' ')").lower()
+    for bad in forbidden_strings(s):
+        if bad.lower() in text:
+            raise Fail(f"picture {name}: the page text holds a value of this machine ({len(bad)} characters)")
+
+
+@shot("admin-recordings")
+def _admin_recordings(s):
+    page = s.open(s.admin_ctx, "/admin", ".tab-btn")
+    page.wait_for_selector("#tab-btn-recordings", state="visible", timeout=15000)
+    page.click("#tab-btn-recordings")
+    page.wait_for_selector("#rec-body button[data-action=play]", timeout=15000)
+    page.wait_for_timeout(500)
+    # the tab bar and the tab, before the player opens over them
+    bar = page.locator("#tab-btn-recordings").locator("xpath=..").bounding_box()
+    tab = page.locator("#tab-recordings").bounding_box()
+    from io import BytesIO
+    from PIL import Image
+    listing = Image.open(BytesIO(page.screenshot(clip={
+        "x": tab["x"], "y": bar["y"], "width": tab["width"], "height": tab["y"] + tab["height"] - bar["y"]}))).convert("RGB")
+    page.evaluate("() => { document.getElementById('rec-speed').value = '4'; }")   # the modal is closed until Play
+    row = page.locator("#rec-body tr", has_text="Build server").first
+    row.locator("button[data-action=play]").click()
+    page.wait_for_function("() => document.getElementById('rec-play-status').textContent === 'Finished'", timeout=40000)
+    page.wait_for_timeout(500)
+    if "ping statistics" not in page.evaluate("() => document.getElementById('rec-player').textContent"):
+        raise Fail("the player did not show the end of the demo recording")
+    assert_clean(s, page, "admin-recordings")
+    # the player covers the list (the modal dims the page), so the picture is the tab above the player
+    player = element_image(page.locator("#rec-modal .modal-content"))
+    s.write("admin-recordings", stack_centered([listing, player]))
+
+
+def _chat_admin_general(s):
+    ctx = s.admin_ctx
+    page = s.open(ctx, "/chat", ".message[data-message-id]", settle=1200)
+    page.wait_for_selector("#prune-btn", state="visible", timeout=15000)
+    return page
+
+
+@shot("chat-prune")
+def _chat_prune(s):
+    page = _chat_admin_general(s)
+    page.click("#prune-btn")
+    page.wait_for_selector(".cr-modal input[type=datetime-local]", timeout=10000)
+    # a range that covers the demo conversation: the last three days
+    page.evaluate("""() => {
+        const pad = (n) => String(n).padStart(2, '0');
+        const f = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        const ins = document.querySelectorAll('.cr-modal input[type=datetime-local]');
+        const now = new Date();
+        ins[0].value = f(new Date(now.getTime() - 3 * 86400000));
+        ins[1].value = f(now);
+        ins[0].dispatchEvent(new Event('input', {bubbles: true}));
+        ins[1].dispatchEvent(new Event('input', {bubbles: true}));
+    }""")
+    # the dry run only: the Remove button is never pressed
+    page.locator(".cr-modal button", has_text="Count").click()
+    page.wait_for_function("() => /message/.test(document.querySelector('.cr-modal .cr-result').textContent)", timeout=15000)
+    page.wait_for_timeout(400)
+    assert_clean(s, page, "chat-prune")
+    s.save("chat-prune", page.locator(".cr-modal .modal-content"))
+
+
+@shot("chat-retention")
+def _chat_retention(s):
+    page = _chat_admin_general(s)
+    page.click("#retention-btn")
+    page.wait_for_selector(".cr-modal .cr-field input", timeout=10000)
+    fields = page.locator(".cr-modal .cr-field input")
+    fields.nth(0).fill("90")
+    fields.nth(1).fill("30")
+    page.wait_for_timeout(300)
+    assert_clean(s, page, "chat-retention")
+    # typed, never saved: the Save button is not pressed
+    s.save("chat-retention", page.locator(".cr-modal .modal-content"))
+
+
+
+NO_ICE = json.dumps({"ice_servers": []})
+
+
+@shot("voice-moderation")
+def _voice_moderation(s):
+    """Two demo members in one voice room. The browsers use Chromium's fake microphone; the portal's ICE
+    server list is answered empty, so no STUN or TURN address is ever dialled and the two browsers
+    connect over this machine's own interfaces. The quality bars are the real getStats readings."""
+    route = lambda r: r.fulfill(status=200, content_type="application/json", body=NO_ICE)
+    admin_ctx = s.context(ADMIN_NAME, scale=2)       # twice the pixels: the bars are small
+    admin_ctx.route("**/api/voice/ice-servers", route)
+    alex_ctx = s.context("alex")
+    alex_ctx.route("**/api/voice/ice-servers", route)
+    alex = s.open(alex_ctx, "/chat", ".message[data-message-id]", settle=800)
+    mod = s.open(admin_ctx, "/chat", ".message[data-message-id]", settle=800)
+    for pg in (alex, mod):
+        pg.click("#voice-join-btn")
+        pg.wait_for_selector("#voice-controls.active", timeout=20000)
+    mod.wait_for_selector("#voice-users-mini .voice-user-mini[data-voice-uid]", timeout=20000)
+    # real figures only: wait until the bars of the other member are lit (the first reading takes a few seconds)
+    mod.wait_for_function(
+        "() => document.querySelectorAll('#voice-users-mini .vq-bar.on').length >= 1", timeout=30000)
+    mod.wait_for_timeout(1500)
+    tile = mod.locator("#voice-users-mini .voice-user-mini[data-voice-uid]").first
+    box = tile.bounding_box()
+    # the right-click lands on the lower edge of the tile, so the menu opens below it and the tile stays in view
+    tile.click(button="right", position={"x": 6, "y": max(1, box["height"] - 2)})
+    mod.wait_for_selector(".voice-user-menu", timeout=10000)
+    mod.wait_for_timeout(400)
+    assert_clean(s, mod, "voice-moderation")
+    bar = mod.locator("#voice-controls").bounding_box()
+    menu = mod.locator(".voice-user-menu").bounding_box()
+    top = min(bar["y"], menu["y"]) - 12
+    bottom = max(bar["y"] + bar["height"], menu["y"] + menu["height"]) + 12
+    left = min(bar["x"], menu["x"]) - 12
+    right = max(bar["x"] + bar["width"], menu["x"] + menu["width"]) + 12
+    s.write_bytes("voice-moderation", mod.screenshot(clip={"x": max(0, left), "y": max(0, top),
+                                                           "width": min(1280, right) - max(0, left), "height": bottom - top}))
+    # leave the call so that nothing is left connected when the next picture is taken
+    for pg in (mod, alex):
+        try:
+            pg.keyboard.press("Escape")
+            pg.click("#voice-join-btn", timeout=3000)
+        except Exception:
+            pass
+
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1538,6 +1708,85 @@ async def seed_notifications(stage: Stage, clients: dict, info: dict) -> dict:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Session recordings (1.20.0): made-up shell output, written into the stage's own folder
+# ---------------------------------------------------------------------------
+
+def demo_casts() -> list:
+    """(user, connection name, kind, minutes ago, events) of the demo recordings. Every line is
+    invented: a made-up host (example-host), a user called demo, a documentation address and a token
+    that says it is not a secret. Events are (seconds, text); the player cuts long pauses anyway."""
+    prompt = "\x1b[1;32mdemo@example-host\x1b[0m:\x1b[1;34m~\x1b[0m$ "
+    long_session = [
+        (0.2, prompt),
+        (0.9, "ls\r\n"),
+        (1.1, "notes.txt  reports  scripts\r\n" + prompt),
+        (1.9, "cat notes.txt\r\n"),
+        (2.1, "Weekly checklist\r\n  - rotate the demo logs\r\n  - update the example config\r\n  - ask about the spare disk\r\n" + prompt),
+        (3.0, "echo $DEMO_TOKEN\r\n"),
+        (3.2, "demo-token-not-a-secret-0000\r\n" + prompt),
+        (4.1, "ping -c 2 192.0.2.50\r\n"),
+        (4.4, "PING 192.0.2.50 (192.0.2.50) 56(84) bytes of data.\r\n"),
+        (4.9, "64 bytes from 192.0.2.50: icmp_seq=1 ttl=64 time=0.41 ms\r\n"),
+        (5.9, "64 bytes from 192.0.2.50: icmp_seq=2 ttl=64 time=0.38 ms\r\n"),
+        (6.0, "\r\n--- 192.0.2.50 ping statistics ---\r\n2 packets transmitted, 2 received, 0% packet loss\r\n" + prompt),
+        (7.0, "exit\r\n"),
+        (7.2, "logout\r\n"),
+    ]
+    short_session = [
+        (0.2, prompt), (0.8, "uptime\r\n"),
+        (1.0, " 10:42:01 up 12 days,  3:14,  1 user,  load average: 0.08, 0.05, 0.01\r\n" + prompt),
+        (1.8, "exit\r\n"),
+    ]
+    return [
+        ("alex", "Build server", "ssh", 35, long_session),
+        ("river", "Media box", "ssh", 140, short_session),
+        ("admin", "Example lab shell", "terminal", 300, short_session),
+        ("alex", "Build server", "ssh", 1500, short_session),
+    ]
+
+
+def cast_text(events: list, started: float) -> str:
+    header = {"version": 2, "width": 100, "height": 20, "timestamp": int(started),
+              "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"}}
+    lines = [json.dumps(header)]
+    for t, text in events:
+        lines.append(json.dumps([t, "o", text]))
+    return "\n".join(lines) + "\n"
+
+
+def seed_recordings(stage: Stage) -> dict:
+    """Plain files (mode 0600) in the stage's recordings folder (0700) and one row each in its own database.
+    A row has a duration, so it is a finished recording and the start-up sweep leaves it alone."""
+    import os
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    folder = stage.dir / "recordings"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    conn = sqlite3.connect(str(stage.dir / "portal.db"), timeout=30)
+    ids = []
+    try:
+        for user, name, kind, ago, events in demo_casts():
+            uid = conn.execute("SELECT id FROM users WHERE username = ?", (user,)).fetchone()[0]
+            started = datetime.now(timezone.utc) - timedelta(minutes=ago)
+            body = cast_text(events, started.timestamp())
+            fname = f"rec_{uid}_{int(started.timestamp())}_{len(ids)}.cast"
+            path = folder / fname
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+            cur = conn.execute(
+                "INSERT INTO recordings (user_id, service_id, filename, size, duration, created_at, connection_name, kind) "
+                "VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
+                (uid, fname, len(body.encode("utf-8")), events[-1][0], started.strftime("%Y-%m-%d %H:%M:%S"), name, kind))
+            ids.append(cur.lastrowid)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"recordings": ids}
+
+
 async def seed_everything(stage: Stage) -> dict:
     admin = Client(stage, ADMIN_NAME)
     clients: dict = {ADMIN_NAME: admin}
@@ -1551,6 +1800,7 @@ async def seed_everything(stage: Stage) -> dict:
         info.update(await seed_golive(stage, clients, info["streams"]))
         info.update(await seed_access_limits(stage, clients, info))
         info.update(await seed_notifications(stage, clients, info))
+        info.update(seed_recordings(stage))
         return info
     finally:
         for c in clients.values():
