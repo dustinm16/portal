@@ -146,6 +146,8 @@ import chat_search
 import secevents
 import apikey_policy
 import webhook_formats
+import webpush
+import session_devices
 setup_logging()
 logger = logging.getLogger("portal")
 
@@ -2698,6 +2700,277 @@ async def http_favicon(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+# =========================================================================
+# Web Push (webpush.py): devices, service worker, manifest
+# =========================================================================
+
+PUSH_SW_SCOPE = "/push-sw/"          # nothing is ever served here: the worker controls no page
+_push_pusher: Optional["webpush.Pusher"] = None
+_push_subscribe_log: dict[int, list[float]] = {}
+_PUSH_SUBSCRIBE_LIMIT = 10           # subscribe calls per user per minute (each may resolve a name)
+PUSH_ICON_SIZES = ((192, "icon-192.png", "any"), (512, "icon-512.png", "any"),
+                   (512, "icon-maskable-512.png", "maskable"))
+
+
+def _get_pusher() -> "webpush.Pusher":
+    """The sender bound to the current database (tests swap `db`)."""
+    global _push_pusher
+    if _push_pusher is None or _push_pusher.db is not db:
+        if _push_pusher is not None:
+            _push_pusher.cancel_all()
+        _push_pusher = webpush.Pusher(db)
+    return _push_pusher
+
+
+def send_push(user_id: int, payload: dict, **kwargs):
+    """Fire and forget: push `payload` (from webpush.build_payload) to the user's devices.
+    Sends nothing to a user with no device, nor while the feature flag is off."""
+    return _get_pusher().send_push(user_id, payload, **kwargs)
+
+
+async def _push_user_auth(request: web.Request):
+    """(token, None) or (None, response) for the push routes: a browser session or a bearer
+    token that carries the user's full scope. API keys and stream keys are refused, and so is
+    a token given in the URL (it would land in logs next to the device it registers)."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    tid = str(token.token_id or "")
+    if tid.startswith(("apikey-", "streamkey-")) or request.get(_AUTH_VIA_QUERY_TOKEN):
+        return None, web.json_response(
+            {"error": "Push devices are managed from a browser session or a bearer token; "
+                      "API keys, stream keys and tokens in the URL cannot do this"}, status=403)
+    if not has_full_user_scope(token):
+        return None, full_scope_required_response()
+    return token, None
+
+
+async def _push_superadmin(request: web.Request):
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return None, None, refusal
+    user = await db.get_user_by_id(token.user_id)
+    if not user or user.get("role") != "superadmin":
+        return None, None, web.json_response({"error": "Superadmin required"}, status=403)
+    return token, user, None
+
+
+async def _push_json(request: web.Request):
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return None, web.json_response({"error": "JSON object required"}, status=400)
+    return data, None
+
+
+def _push_device_view(row: dict, token_id: str) -> dict:
+    """What a list shows: label, push service host, times. Never the endpoint or the keys."""
+    return {"id": row["id"], "label": row.get("user_agent") or "Unknown device",
+            "service": webpush.endpoint_label(row["endpoint"]),
+            "created_at": row.get("created_at"), "last_success_at": row.get("last_success_at"),
+            "failure_count": row.get("failure_count") or 0,
+            "this_session": bool(row.get("token_id")) and row.get("token_id") == token_id}
+
+
+async def http_push_config(request: web.Request) -> web.Response:
+    """GET /api/push/config: whether push is on and the server's public VAPID key."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    pusher = _get_pusher()
+    enabled = await pusher.enabled()
+    key = await webpush.get_vapid(db) if enabled else None
+    return web.json_response({
+        "enabled": bool(enabled and key), "public_key": key.public_b64 if key else None,
+        "max_devices": webpush.MAX_DEVICES_PER_USER, "worker_url": "/sw.js",
+        "worker_scope": PUSH_SW_SCOPE})
+
+
+async def http_push_list(request: web.Request) -> web.Response:
+    """GET /api/push/subscriptions: the caller's own devices."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    rows = await db.list_push_subscriptions(token.user_id)
+    return web.json_response({"devices": [_push_device_view(r, token.token_id) for r in rows]})
+
+
+async def http_push_subscribe(request: web.Request) -> web.Response:
+    """POST /api/push/subscriptions: register this browser (a PushSubscription as JSON)."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    pusher = _get_pusher()
+    if not await pusher.enabled():
+        return web.json_response({"error": "Push notifications are switched off"}, status=403)
+    data, bad = await _push_json(request)
+    if bad is not None:
+        return bad
+    keys = data.get("keys") if isinstance(data.get("keys"), dict) else data
+    sink = await pusher.sink_port()
+    try:
+        endpoint = webpush.validate_endpoint(data.get("endpoint"), await pusher.extra_hosts(), sink)
+        webpush.validate_keys(keys.get("p256dh"), keys.get("auth"))
+        # Only a well-formed request on an allow-listed host reaches the name lookup, and
+        # those are limited per member
+        now = monotonic()
+        recent = [t for t in _push_subscribe_log.get(token.user_id, []) if t > now - 60]
+        if len(recent) >= _PUSH_SUBSCRIBE_LIMIT:
+            return web.json_response({"error": "Too many attempts, try again in a minute"}, status=429,
+                                     headers={"Retry-After": "30"})
+        recent.append(now)
+        _push_subscribe_log[token.user_id] = recent
+        await webpush.check_resolves_public(endpoint, sink)
+    except webpush.PushError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if await webpush.get_vapid(db) is None:
+        return web.json_response({"error": "Push is unavailable on this server"}, status=503)
+    label = parse_user_agent(session_devices.clean_user_agent(request.headers.get("User-Agent")))["label"]
+    result = await db.add_push_subscription(
+        token.user_id, endpoint, keys["p256dh"].strip(), keys["auth"].strip(), label,
+        token.token_id, webpush.MAX_DEVICES_PER_USER)
+    if result == "limit":
+        return web.json_response(
+            {"error": f"At most {webpush.MAX_DEVICES_PER_USER} devices; remove one first"}, status=409)
+    if result == "conflict":
+        return web.json_response(
+            {"error": "This browser is registered to another account; remove it there first"}, status=409)
+    return web.json_response({"status": result}, status=201 if result == "created" else 200)
+
+
+async def http_push_delete(request: web.Request) -> web.Response:
+    """DELETE /api/push/subscriptions/{id}: remove one of the caller's own devices."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    try:
+        sub_id = _row_id(request.match_info.get("id", ""))
+    except (ValueError, TypeError):
+        sub_id = None
+    if not sub_id or not await db.delete_push_subscription(token.user_id, sub_id=sub_id):
+        return web.json_response({"error": "Device not found"}, status=404)
+    return web.json_response({"status": "removed"})
+
+
+async def http_push_unsubscribe(request: web.Request) -> web.Response:
+    """POST /api/push/unsubscribe {endpoint}: remove the device with that endpoint (own
+    devices only). Always answers the same, so it tells nothing about other accounts."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    data, bad = await _push_json(request)
+    if bad is not None:
+        return bad
+    endpoint = data.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint or len(endpoint) > webpush.MAX_ENDPOINT_LEN:
+        return web.json_response({"error": "endpoint required"}, status=400)
+    await db.delete_push_subscription(token.user_id, endpoint=endpoint)
+    return web.json_response({"status": "ok"})
+
+
+async def http_push_delete_all(request: web.Request) -> web.Response:
+    """DELETE /api/push/subscriptions: remove every device of the caller."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    removed = await db.delete_user_push_subscriptions(token.user_id)
+    return web.json_response({"status": "ok", "removed": removed})
+
+
+async def _push_admin_state() -> dict:
+    pusher = _get_pusher()
+    return {"enabled": await pusher.enabled(),
+            "default_hosts": list(webpush.DEFAULT_ALLOWED_HOSTS),
+            "allowed_hosts": await pusher.extra_hosts(),
+            "subject": (await db.get_setting(webpush.SETTING_SUBJECT) or "").strip() or None,
+            "effective_subject": await pusher.subject(),
+            "device_count": await db.count_push_subscriptions()}
+
+
+async def http_admin_push_get(request: web.Request) -> web.Response:
+    """GET /api/admin/push: the push settings (superadmin)."""
+    _token, _user, refusal = await _push_superadmin(request)
+    if refusal is not None:
+        return refusal
+    return web.json_response(await _push_admin_state())
+
+
+async def http_admin_push_put(request: web.Request) -> web.Response:
+    """PUT /api/admin/push {enabled, allowed_hosts, subject}: change the push settings (superadmin)."""
+    token, user, refusal = await _push_superadmin(request)
+    if refusal is not None:
+        return refusal
+    data, bad = await _push_json(request)
+    if bad is not None:
+        return bad
+    values: dict[str, str] = {}
+    try:
+        if "enabled" in data:
+            if not isinstance(data["enabled"], bool):
+                raise webpush.PushError("enabled must be true or false")
+            values[webpush.SETTING_ENABLED] = "1" if data["enabled"] else "0"
+        if "allowed_hosts" in data:
+            values[webpush.SETTING_EXTRA_HOSTS] = ",".join(webpush.parse_extra_hosts(data["allowed_hosts"]))
+        if "subject" in data:
+            subject = data["subject"]
+            if subject in (None, ""):
+                values[webpush.SETTING_SUBJECT] = ""
+            else:
+                if (not isinstance(subject, str) or len(subject) > 200 or not subject.startswith("https://")
+                        or any(c.isspace() or ord(c) < 32 for c in subject)):
+                    raise webpush.PushError("subject must be an https address")
+                values[webpush.SETTING_SUBJECT] = subject
+    except webpush.PushError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if values:
+        await db.set_settings(values)
+        await audit_log("push_settings", token.user_id, user["username"], target_type="settings",
+                        details={"changed": sorted(k.replace("push_", "") for k in values)})
+    return web.json_response(await _push_admin_state())
+
+
+async def http_admin_push_test(request: web.Request) -> web.Response:
+    """POST /api/admin/push/test: send a test push to the caller's own devices (superadmin)."""
+    token, _user, refusal = await _push_superadmin(request)
+    if refusal is not None:
+        return refusal
+    pusher = _get_pusher()
+    if not await pusher.enabled():
+        return web.json_response({"error": "Push notifications are switched off"}, status=409)
+    results = await pusher.deliver(token.user_id, webpush.make_test_payload(), ttl=300, urgency="high")
+    return web.json_response({"devices": len(results), "results": [
+        {"id": r["id"], "outcome": r["outcome"], "status": r["status"]} for r in results]})
+
+
+async def http_service_worker(request: web.Request) -> web.Response:
+    """GET /sw.js: the push worker. Public and identical for everyone. Its scope is limited to
+    a path nothing is served from (Service-Worker-Allowed), so it never controls a portal page
+    and certainly not proxied content; push and notification clicks work without a controlled page."""
+    path = STATIC_DIR / "sw.js"
+    try:
+        body = path.read_bytes()
+    except OSError:
+        return web.Response(status=404, text="Not found")
+    return web.Response(body=body, content_type="text/javascript", charset="utf-8", headers={
+        "Cache-Control": "no-cache",
+        "Service-Worker-Allowed": PUSH_SW_SCOPE,
+        "X-Content-Type-Options": "nosniff"})
+
+
+async def http_web_manifest(request: web.Request) -> web.Response:
+    """GET /manifest.webmanifest: static, public, nothing private or per-site."""
+    manifest = {
+        "name": "Open Relay Portal", "short_name": "Portal", "description": "Open Relay Portal",
+        "start_url": "/", "scope": "/", "display": "standalone",
+        "background_color": "#0f172a", "theme_color": "#0f172a",
+        "icons": [{"src": f"/static/icons/{name}", "sizes": f"{size}x{size}", "type": "image/png",
+                   "purpose": purpose} for size, name, purpose in PUSH_ICON_SIZES]}
+    return web.Response(text=json.dumps(manifest), content_type="application/manifest+json",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
 async def http_robots_txt(request: web.Request) -> web.Response:
     """Serve robots.txt for search engine crawling."""
     hostname = Config.HOSTNAME or request.host
@@ -3207,6 +3480,8 @@ async def http_admin_revoke_user_sessions(request: web.Request) -> web.Response:
                 {"error": f"You cannot sign out users with role '{target_role}'"}, status=403)
     keep_token_id = token.token_id if own else None
     revoked = await db.revoke_user_tokens(user_id, except_token_id=keep_token_id)
+    # "Everywhere" includes push devices, the current session's too
+    await db.delete_user_push_subscriptions(user_id)
     closed = await close_user_websockets(user_id, except_token_id=keep_token_id,
                                          keep_prefixes=("apikey-", "streamkey-"))
     actor = await db.get_user_by_id(token.user_id)
@@ -25644,6 +25919,8 @@ def create_app() -> web.Application:
     app.router.add_get("/health", http_health)
     app.router.add_get("/favicon.ico", http_favicon)
     app.router.add_get("/robots.txt", http_robots_txt)
+    app.router.add_get("/sw.js", http_service_worker)
+    app.router.add_get("/manifest.webmanifest", http_web_manifest)
     app.router.add_get("/sitemap.xml", http_sitemap_xml)
     if Config.GOOGLE_VERIFICATION_FILE:
         app.router.add_get(f"/google{Config.GOOGLE_VERIFICATION_FILE}.html", http_google_verification)
@@ -25807,6 +26084,15 @@ def create_app() -> web.Application:
     app.router.add_get("/api/streams/live", http_live_now)
     app.router.add_get("/api/streams/games", http_stream_games)
     app.router.add_get("/api/me/follows", http_my_follows)
+    app.router.add_get("/api/push/config", http_push_config)
+    app.router.add_get("/api/push/subscriptions", http_push_list)
+    app.router.add_post("/api/push/subscriptions", http_push_subscribe)
+    app.router.add_delete("/api/push/subscriptions", http_push_delete_all)
+    app.router.add_delete("/api/push/subscriptions/{id}", http_push_delete)
+    app.router.add_post("/api/push/unsubscribe", http_push_unsubscribe)
+    app.router.add_get("/api/admin/push", http_admin_push_get)
+    app.router.add_put("/api/admin/push", http_admin_push_put)
+    app.router.add_post("/api/admin/push/test", http_admin_push_test)
     app.router.add_put("/api/streams/{id}/follow", http_follow_stream)
     app.router.add_delete("/api/streams/{id}/follow", http_unfollow_stream)
     app.router.add_get("/api/streams/open", http_get_open_streams)
@@ -26700,6 +26986,8 @@ class PortalServer:
         # Stop the go-live announcements still writing (cards, notifications) before anything else
         await _cancel_golive_tasks()
         await _cancel_stream_info_tasks()
+        if _push_pusher is not None:
+            _push_pusher.cancel_all()
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):

@@ -254,6 +254,20 @@ Admin "sign out everywhere": revoke every browser session and token of one user 
 
 ---
 
+#### Web push (1.19.0)
+Foundation only: no event sends a push yet. The device routes need a **browser session or a bearer token with the user's full scope**; API keys (even `*`), stream keys, a token given in the URL and narrow tokens get `403`.
+
+- `GET /api/push/config` returns `{"enabled": true, "public_key": "<base64url VAPID key>", "max_devices": 10, "worker_url": "/sw.js", "worker_scope": "/push-sw/"}`; `enabled` is false (and `public_key` null) while the feature is switched off or the key is unavailable.
+- `GET /api/push/subscriptions` returns `{"devices": [{"id", "label", "service", "created_at", "last_success_at", "failure_count", "this_session"}]}`: the caller's own devices, never the endpoint or the keys.
+- `POST /api/push/subscriptions` with a `PushSubscription` as JSON (`{"endpoint": "...", "keys": {"p256dh": "...", "auth": "..."}}`). `201 {"status": "created"}`, `200 {"status": "updated"}` for a known endpoint. `400` for an endpoint that is not `https` on port 443 to an allowed push service, one whose name resolves to a private, loopback, link-local or metadata address, or keys that are not a P-256 point and a 16 byte secret; `403` while the feature is off; `409` at 10 devices or when the endpoint belongs to another account with other keys; `429` after 10 lookups a minute.
+- `DELETE /api/push/subscriptions/{id}` removes one of the caller's own devices (`404` otherwise). `POST /api/push/unsubscribe` with `{"endpoint": "..."}` removes the caller's device with that endpoint and always answers `{"status": "ok"}`. `DELETE /api/push/subscriptions` removes all of the caller's devices: `{"status": "ok", "removed": 2}`.
+- Superadmin (the same credential rule, and the account must be a superadmin): `GET /api/admin/push` returns `{"enabled", "default_hosts", "allowed_hosts", "subject", "effective_subject", "device_count"}`; `PUT /api/admin/push` takes any of `enabled` (boolean), `allowed_hosts` (host names or `*.suffix`, no IP addresses, `localhost` or internal names; added to the built-in list) and `subject` (an `https://` address or null); `POST /api/admin/push/test` sends a test push to the caller's own devices and returns `{"devices": 1, "results": [{"id", "outcome", "status"}]}` where `outcome` is `sent`, `gone`, `slow_down`, `paused`, `failed`, `pruned`, `error`, `refused`, `rate_limited`, `staged` or `unavailable`.
+- `GET /sw.js` and `GET /manifest.webmanifest` need no session and are the same for everyone. The worker has `push` and `notificationclick` handlers only, `Cache-Control: no-cache` and `Service-Worker-Allowed: /push-sw/`.
+
+A device belongs to the session that registered it: it is deleted when that session is revoked, and nothing is sent to it while the session is not live.
+
+---
+
 #### GET /api/invite-code
 Get the current daily invite code (admin only).
 

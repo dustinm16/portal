@@ -699,6 +699,61 @@
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/push/config</span>
+                        <span class="endpoint-desc">Web push: is it on, and the public VAPID key (1.19.0)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Needs a browser session or a bearer token with the full scope; API keys, stream keys, a token in the URL and narrow tokens get <code>403</code>. Answers <code>{"enabled": true, "public_key": "...", "max_devices": 10, "worker_url": "/sw.js", "worker_scope": "/push-sw/"}</code>. Foundation only: no event sends a push yet.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/push/subscriptions</span>
+                        <span class="endpoint-desc">List your push devices (POST registers one)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>GET</code> returns <code>{"devices": [{"id", "label", "service", "created_at", "last_success_at", "failure_count", "this_session"}]}</code>, never an endpoint or a key. <code>POST</code> takes a <code>PushSubscription</code> as JSON (<code>{"endpoint", "keys": {"p256dh", "auth"}}</code>): <code>201</code> created, <code>200</code> updated, <code>400</code> for an endpoint that is not https on port 443 to an allowed push service (fcm.googleapis.com, updates.push.services.mozilla.com, *.push.apple.com, *.notify.windows.com and hosts a superadmin adds), a name that resolves to a private, loopback, link-local or metadata address, or bad keys; <code>403</code> while push is switched off; <code>409</code> at 10 devices or when another account holds the endpoint; <code>429</code> after 10 lookups a minute.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/push/subscriptions/{id}</span>
+                        <span class="endpoint-desc">Remove one of your push devices</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>404</code> for a device that is not yours. <code>POST /api/push/unsubscribe</code> with <code>{"endpoint": "..."}</code> removes your device with that endpoint and always answers <code>{"status": "ok"}</code>; <code>DELETE /api/push/subscriptions</code> removes all of your devices. A device is also removed when the session that registered it ends, and when the account is deleted.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/admin/push</span>
+                        <span class="endpoint-desc">Push settings and test push (superadmin)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>GET</code> returns <code>{"enabled", "default_hosts", "allowed_hosts", "subject", "effective_subject", "device_count"}</code>. <code>PUT</code> takes any of <code>enabled</code>, <code>allowed_hosts</code> (host names or <code>*.suffix</code>; no IP addresses, localhost or internal names) and <code>subject</code> (an https address or null). <code>POST /api/admin/push/test</code> sends a test push to your own devices and returns one result per device. The same credential rule as the device routes applies, and the account must be a superadmin.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/sw.js</span>
+                        <span class="endpoint-desc">Push service worker (and /manifest.webmanifest)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>No session needed; identical for everyone. <code>push</code> and <code>notificationclick</code> handlers only, no fetch handler, <code>Cache-Control: no-cache</code>, <code>Service-Worker-Allowed: /push-sw/</code>. <code>/manifest.webmanifest</code> is the web app manifest with generated icons.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
                         <span class="endpoint-path">/api/users/{id}/sessions/revoke</span>
                         <span class="endpoint-desc">Admin: sign a user out everywhere</span>

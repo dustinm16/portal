@@ -680,6 +680,23 @@ MIGRATIONS = [
         FOREIGN KEY (stream_id) REFERENCES user_streams(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_stream_follow_stream ON stream_follow(stream_id)",
+    # Web Push devices of a member (private to them). The endpoint is a capability: never logged,
+    # never returned in full. token_id is the session that registered the device: when that
+    # session is revoked the row goes with it, and nothing is sent to it meanwhile.
+    """CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        user_agent TEXT,
+        token_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        last_success_at TEXT,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)",
     # Per-channel notification choice of one member (private to them): level all, mentions
     # or none, and an optional end of a timed mute (epoch seconds). No row means the default.
     """CREATE TABLE IF NOT EXISTS channel_notify_prefs (
@@ -2510,6 +2527,7 @@ class Database:
             ("stream_bans", "DELETE FROM stream_bans WHERE user_id = ?"),
             # Stream follows
             ("stream_follow", "DELETE FROM stream_follow WHERE user_id = ?"),
+            ("push_subscriptions", "DELETE FROM push_subscriptions WHERE user_id = ?"),
             # Notification levels per channel
             ("channel_notify_prefs", "DELETE FROM channel_notify_prefs WHERE user_id = ?"),
             # Recordings
@@ -2804,8 +2822,12 @@ class Database:
                 "UPDATE tokens SET revoked = 1 WHERE token_id = ? AND user_id = ?",
                 (token_id, user_id)
             )
+        revoked = cursor.rowcount > 0
+        if revoked:
+            # Devices registered by a session end with it
+            await self.conn.execute("DELETE FROM push_subscriptions WHERE token_id = ?", (token_id,))
         await self.conn.commit()
-        return cursor.rowcount > 0
+        return revoked
 
     async def revoke_user_tokens(self, user_id: int, except_token_id: str = None) -> int:
         """Revoke every live token (API tokens and browser sessions) of a user.
@@ -2823,8 +2845,12 @@ class Database:
                 "UPDATE tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0",
                 (user_id,)
             )
+        count = cursor.rowcount
+        # Signing out everywhere ends every device of the user, except the ones the kept
+        # session registered (rows with no session recorded go too).
+        await self._delete_push_subscriptions(user_id, except_token_id)
         await self.conn.commit()
-        return cursor.rowcount
+        return count
 
     async def revoke_user_api_keys(self, user_id: int, except_token_id: str = None) -> int:
         """Revoke every live API key of a user. Returns the number revoked.
@@ -4623,6 +4649,117 @@ class Database:
     # ids of a stream to a route. get_follower_audience is for the go-live
     # fan-out only; the owner sees count_followers, never names.
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Web Push devices (webpush.py)
+    # ------------------------------------------------------------------
+
+    async def _delete_push_subscriptions(self, user_id: int, except_token_id: str | None = None) -> int:
+        """Delete a user's devices without committing (the caller commits)."""
+        try:
+            if except_token_id:
+                cursor = await self.conn.execute(
+                    "DELETE FROM push_subscriptions WHERE user_id = ? AND (token_id IS NULL OR token_id != ?)",
+                    (user_id, except_token_id))
+            else:
+                cursor = await self.conn.execute(
+                    "DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,))
+            return cursor.rowcount
+        except Exception as e:  # table missing on a database that has not migrated: nothing to delete
+            logger.warning(f"push_subscriptions cleanup skipped: {type(e).__name__}")
+            return 0
+
+    async def delete_user_push_subscriptions(self, user_id: int, except_token_id: str | None = None) -> int:
+        n = await self._delete_push_subscriptions(user_id, except_token_id)
+        await self.conn.commit()
+        return n
+
+    async def add_push_subscription(self, user_id: int, endpoint: str, p256dh: str, auth: str,
+                                    user_agent: str | None, token_id: str | None, limit: int) -> str:
+        """Register or refresh a device. Returns 'created', 'updated', 'limit' or 'conflict'.
+        An endpoint that exists under another user moves to this one only when the browser's
+        keys are the same ones (one browser, a new sign-in); with different keys the answer is
+        'conflict' and nothing changes. The cap does not count the moved device."""
+        cursor = await self.conn.execute(
+            "SELECT id, user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+        row = await cursor.fetchone()
+        if row and row["user_id"] != user_id and (row["p256dh"] != p256dh or row["auth"] != auth):
+            return "conflict"
+        if row and row["user_id"] == user_id:
+            await self.conn.execute(
+                """UPDATE push_subscriptions SET p256dh = ?, auth = ?, user_agent = ?, token_id = ?,
+                   failure_count = 0 WHERE id = ?""",
+                (p256dh, auth, user_agent, token_id, row["id"]))
+            await self.conn.commit()
+            return "updated"
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?", (user_id,))
+        if (await cursor.fetchone())["n"] >= limit:
+            return "limit"
+        if row:
+            await self.conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (row["id"],))
+        await self.conn.execute(
+            """INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, token_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, endpoint, p256dh, auth, user_agent, token_id))
+        await self.conn.commit()
+        return "created"
+
+    async def list_push_subscriptions(self, user_id: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            """SELECT id, endpoint, user_agent, token_id, created_at, last_success_at, failure_count
+               FROM push_subscriptions WHERE user_id = ? ORDER BY id""", (user_id,))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def push_subscriptions_for_send(self, user_id: int) -> list[dict]:
+        """Devices a push may go to now: not those of a session that was revoked."""
+        cursor = await self.conn.execute(
+            """SELECT s.id, s.endpoint, s.p256dh, s.auth, s.token_id, t.id AS tid, t.revoked, t.expires_at
+               FROM push_subscriptions s LEFT JOIN tokens t ON t.token_id = s.token_id
+               WHERE s.user_id = ? ORDER BY s.id""", (user_id,))
+        out = []
+        for r in await cursor.fetchall():
+            # Only a revoked session ends its devices. A session that merely expired keeps them:
+            # the browser still holds its subscription and nothing would register it again.
+            if r["token_id"] is not None and r["tid"] is not None and r["revoked"]:
+                continue
+            out.append({"id": r["id"], "endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"]})
+        return out
+
+    async def count_push_subscriptions(self) -> int:
+        cursor = await self.conn.execute("SELECT COUNT(*) AS n FROM push_subscriptions")
+        return (await cursor.fetchone())["n"]
+
+    async def delete_push_subscription(self, user_id: int, sub_id: int | None = None,
+                                       endpoint: str | None = None) -> bool:
+        if sub_id is not None:
+            cursor = await self.conn.execute(
+                "DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?", (sub_id, user_id))
+        else:
+            cursor = await self.conn.execute(
+                "DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", (endpoint, user_id))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_push_subscription_by_id(self, sub_id: int) -> bool:
+        cursor = await self.conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (sub_id,))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def push_record_success(self, sub_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE push_subscriptions SET failure_count = 0, last_success_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (sub_id,))
+        await self.conn.commit()
+
+    async def push_record_failure(self, sub_id: int, prune_after: int) -> bool:
+        """Count one failure; delete the row at the threshold. True when it was deleted."""
+        await self.conn.execute(
+            "UPDATE push_subscriptions SET failure_count = failure_count + 1 WHERE id = ?", (sub_id,))
+        cursor = await self.conn.execute(
+            "DELETE FROM push_subscriptions WHERE id = ? AND failure_count >= ?", (sub_id, prune_after))
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     FOLLOW_LIMIT_PER_USER = 200
 

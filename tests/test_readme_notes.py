@@ -425,6 +425,26 @@ _defaults = (ROOT / "server.py").read_text()
 check("1.19.0: the cap and the cooldown stated are the ones in the code",
       "MASS_MENTION_CAP = 500" in _defaults and "MASS_MENTION_COOLDOWN = 60.0" in _defaults and "MASS_MENTION_WEIGHT = 5" in _defaults)
 
+# --- 1.19.0 notes: web push foundation --------------------------------------------------
+for name, needles in (("what exists and that nothing is sent yet", ("web push foundation", "no notification is sent yet", "webpush.py", "push_subscriptions", "no new dependency")),
+                      ("the device routes and who may use them", ("/api/push/subscriptions", "/api/push/unsubscribe", "/api/push/config", "api keys (even with the all-scope)", "10 devices")),
+                      ("the session lifecycle", ("session that registered it", "log out", "password change", "deleting an account", "sign out other sessions", "only expires")),
+                      ("the allow-list and the outbound rules", ("fcm.googleapis.com", "*.push.apple.com", "*.notify.windows.com", "port 443", "no redirects", "4096 bytes", "never logged")),
+                      ("the key storage and the flag", ("encrypted in the settings table", "push_enabled", "push_vapid_subject")),
+                      ("the sender", ("send_push", "30 pushes per user per minute", "429", "retry-after", "build_payload")),
+                      ("the worker, scope and policy", ("no fetch handler", "service-worker-allowed: /push-sw/", "worker-src 'none'", "/manifest.webmanifest")),
+                      ("the migration and the rollback", ("create table if not exists", "1.18.0 starts on the migrated database")),
+                      ("the static files", ("`push.js` is new", "`portal.js` is unchanged")),
+                      ("what is not proven", ("not tested (web push)", "no browser", "real push service", "cloudflare", "rfc 8291 appendix vector"))):
+    check(f"1.19.0 states: web push {name}", all(n in low19 for n in needles), str(needles))
+check("docs/API.md and api-docs.html describe the push routes",
+      all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/push/subscriptions", "/api/admin/push/test", "/sw.js"))
+      and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/push/subscriptions", "/api/admin/push", "/sw.js")))
+check("the limits stated for web push are the ones in the code",
+      "MAX_DEVICES_PER_USER = 10" in (ROOT / "webpush.py").read_text() and "USER_RATE_LIMIT = 30" in (ROOT / "webpush.py").read_text()
+      and "SEND_CONCURRENCY = 8" in (ROOT / "webpush.py").read_text() and "PRUNE_AFTER_FAILURES = 8" in (ROOT / "webpush.py").read_text()
+      and "_PUSH_SUBSCRIBE_LIMIT = 10 " in _defaults)
+
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)
