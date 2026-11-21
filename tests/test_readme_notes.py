@@ -550,8 +550,8 @@ for name, needles in (("what is shown", ("voice connection quality", "1 to 4 sma
                       ("the firefox fallback and privacy", ("nominated pair", "unknown", "no address, candidate ip or port")),
                       ("the hint", ("not advanced for 6 seconds", "self-muted nor server muted", "never closes, restarts or renegotiates")),
                       ("the lifecycle", ("pauses while the page is hidden", "stops when you leave")),
-                      ("no server change and no breaking change", ("nothing new is sent to the server", "docs/api.md", "**breaking changes.** none")),
-                      ("what is not tested", ("not tested (connection quality)", "no browser", "real `getstats` shapes"))):
+                      ("no server change and no breaking change", ("nothing new is sent to the server", "docs/api.md", "no frame, route, setting or database column changed")),
+                      ("what is not tested", ("connection quality: there is no browser", "real `getstats` shapes"))):
     check(f"1.20.0 quality states: {name}", all(n in low20 for n in needles), str(needles))
 check("1.20.0 quality: the thresholds stated are the ones in the code",
       all(s_ in _vq_js for s_ in ("QUALITY_POLL_MS = 4000", "QUALITY_NOAUDIO_MS = 6000", "QUALITY_LOSS_PCT = [2, 5, 10]",
@@ -595,6 +595,37 @@ check("docs/API.md and api-docs.html both describe the retention route, the prun
       all(x in (ROOT / "docs" / "API.md").read_text() and x in _pages20["api-docs.html"]
           for x in ("/retention", "/prune", "messages_pruned")))
 check("the 1.20.0 retention notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", m20r.group(1) if m20r else ""))
+
+# --- 1.20.0 notes: one coherent section --------------------------------------------------
+_sec = m20.group(1) if m20 else ""
+_lead = re.findall(r"^- \*\*(.*?)\*\*", _sec, re.M)
+for _name in ("Breaking changes.", "Database.", "Static files.", "Rollback.", "Not tested."):
+    check(f"1.20.0: exactly one '{_name}' bullet", _lead.count(_name) == 1, str(_lead.count(_name)))
+check("1.20.0: no stray Breaking, Not tested, Rollback or upgrading bullet of one feature",
+      not [x for x in _lead if re.match(r"(?i)breaking|not tested|rollback|upgrading and going back|no server change|static files|database", x)
+           and x not in ("Breaking changes.", "Database.", "Static files.", "Rollback.", "Not tested.")], str(_lead))
+check("1.20.0: the four feature groups are headed", all(h in _sec for h in (
+    "**SSH session recording**", "**Voice moderation and an enforced room cap**", "**Voice connection quality (client only)**",
+    "**Per-channel retention and the prune tool**")))
+check("1.20.0: the section has no 'see below' pointing upward and no 'unchanged' claim for the API reference",
+      "see below" not in low20 and "are unchanged" not in low20 and "only other script that changed" not in low20)
+_static = next((b for b in re.findall(r"^- (\*\*Static files\.\*\*.*)$", _sec, re.M)), "")
+_stated = dict(re.findall(r"`([\w.-]+\.js)` version (\d+)", _static))
+_loaded_all = {}
+for _js in ("terminal.js", "recordings-admin.js", "user-connections.js", "voice.js", "chat-retention.js", "streams.js"):
+    _loaded_all[_js] = {m_ for t_ in _pages20.values() for m_ in re.findall(rf"/static/js/{re.escape(_js)}\?v=(\d+)", t_)}
+check("1.20.0: the one Static files bullet states each changed script at the version the pages load",
+      all(_loaded_all[j] == {_stated.get(j)} for j in _loaded_all) and set(_stated) == set(_loaded_all), f"{_stated} vs {_loaded_all}")
+for name, needles in (
+        ("recordings can contain secrets shown on screen", ("recordings can contain secrets", "shown on screen")),
+        ("who switches recording on and who plays", ("only administrators can switch recording on or off", "only administrators can list, play, download or delete")),
+        ("what the banner tells the member", ("the banner tells the member only", "this session is recorded", "does not say")),
+        ("a moderator's range prune removes anonymous posts, an administrator's leaves them",
+         ("a moderator's range prune removes anonymous posts whoever wrote them", "an administrator's range prune leaves them")),
+        ("a kick cannot cut a modified client's existing direct links", ("cannot cut an existing peer-to-peer link of a modified client",))):
+    check(f"1.20.0 states plainly: {name}", all(n in low20 for n in needles), str(needles))
+check("1.20.0: What You Get and the guides page mention the new features",
+      all(x in text for x in ("### Remote Access", "session recording", "Recordings tab")) and "Session recording" in _pages20["guides.html"])
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))
