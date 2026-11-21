@@ -6880,8 +6880,7 @@ class Database:
     async def _purge_messages(self, table: str, source: str, reaction_table: str,
                               where: str, params: tuple, stats: Optional[dict],
                               names: Optional[set] = None, on_batch=None,
-                              batch_size: int = 500, flag_anonymous: bool = False,
-                              should_stop=None) -> int:
+                              batch_size: int = 500, should_stop=None) -> int:
         """Delete the rows of `table` matching `where` in batches of `batch_size`
         (500), each batch in one transaction: the search rows (map table), the
         reactions and the messages go together. After the last commit, the upload
@@ -6891,8 +6890,7 @@ class Database:
         removed here: the names are collected and, in the transaction of the batch, written
         to chat_upload_pending; the caller removes the files once for a whole pass
         (finish_purge_files, which settles those rows). `on_batch`, when given, is awaited with
-        the list of ids after each committed batch (with `flag_anonymous`, also the list of
-        those that were anonymous posts, read before the rows went); the loop yields to the event
+        the list of ids after each committed batch; the loop yields to the event
         loop between batches. `should_stop`, when given, is called before each batch and, when
         true, ends the purge with PurgeStopped between two batches (never inside one), so no
         batch is left half done. The contentless full-text rows themselves stay (they
@@ -6907,7 +6905,7 @@ class Database:
             if should_stop is not None and should_stop():
                 raise PurgeStopped()
             cursor = await self.conn.execute(
-                f"SELECT id, image_url, attachment_url{', COALESCE(anonymous, 0) AS anon' if flag_anonymous else ''} "
+                f"SELECT id, image_url, attachment_url "
                 f"FROM {table} WHERE ({where}) AND id > ? ORDER BY id LIMIT ?", (*params, last_id, batch_size))
             rows = await cursor.fetchall()
             if not rows:
@@ -6930,10 +6928,7 @@ class Database:
             names |= batch_names
             if on_batch is not None:
                 try:
-                    if flag_anonymous:
-                        await on_batch(batch, [r["id"] for r in rows if r["anon"]])
-                    else:
-                        await on_batch(batch)
+                    await on_batch(batch)
                 except Exception as e:
                     logger.warning(f"Purge batch callback failed: {type(e).__name__}: {e}")
             await asyncio.sleep(0)
@@ -6981,15 +6976,13 @@ class Database:
         return (await cursor.fetchone())[0]
 
     async def prune_chat_messages(self, where: str, params: tuple, stats: dict, names: set,
-                                  on_batch=None, batch_size: int = 200, flag_anonymous: bool = False,
-                                  should_stop=None) -> int:
+                                  on_batch=None, batch_size: int = 200, should_stop=None) -> int:
         """The real prune: delete what `where` matches in batches (see _purge_messages); the
         caller removes the upload files afterwards through finish_purge_files. Raises PurgeStopped
         at a batch boundary once `should_stop()` is true."""
         return await self._purge_messages(
             "chat_messages", "channel", "chat_reactions", where, params, stats,
-            names=names, on_batch=on_batch, batch_size=batch_size, flag_anonymous=flag_anonymous,
-            should_stop=should_stop)
+            names=names, on_batch=on_batch, batch_size=batch_size, should_stop=should_stop)
 
     async def _delete_one_message(self, table: str, source: str, message_id: int,
                                   user_id: Optional[int]) -> bool:

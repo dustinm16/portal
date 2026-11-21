@@ -170,6 +170,7 @@ async def main():
     for name in names:
         await create_user(name, PW, is_admin=(name in ("adm", "sup")))
     uid = {n: (await db.get_user_by_username(n))["id"] for n in names}
+    await db.set_user_role(uid["owner"], "admin")   # a connection's flag records only while its owner is an administrator
     await db.set_user_role(uid["adm"], "admin")
     await db.set_user_role(uid["sup"], "superadmin")
     await db.set_user_role(uid["mod"], "moderator")
@@ -276,6 +277,7 @@ async def main():
     check("the owner's session is recorded under the owner's id",
           len(rows) == 2 and rows[1]["user_id"] == uid["owner"], str(rows))
     rid_bob, rid_owner = rows[0]["id"], rows[1]["id"]
+    await db.set_user_role(uid["owner"], "user")    # from here on the owner is an ordinary member again
 
     # ---- who may reach recordings -------------------------------------------------------------
     for who in ("bob", "owner", "mod"):
@@ -447,6 +449,45 @@ async def main():
         mine = [x for x in d["recordings"] if x["id"] == rid_bob]
         check("a recording outlives its deleted connection, still named", len(mine) == 1
               and mine[0]["connection"] == "rec box", str(d))
+
+    # ---- a shared connection through the connection WebSocket, both ways ---------------------------
+    async def shared_row(owner, grantee, name, **extra):
+        c = {"username": "u", "auth_method": "password", "credential_mode": "stored", "password": SSH_PW,
+             "host_key_fingerprint": fp_a, **extra}
+        uuid = await db.create_user_connection(uid[owner], name, "ssh", PUBLIC, port, json.dumps(c))
+        cid_ = (await (await db.conn.execute("SELECT id FROM user_connections WHERE uuid = ?", (uuid,))).fetchone())["id"]
+        await db.add_connection_share(cid_, uid[grantee], uid[owner])
+        return uuid, cid_
+
+    async def rows_of(conn_id):
+        cur = await db.conn.execute("SELECT * FROM recordings WHERE connection_id = ?", (conn_id,))
+        return [dict(r) for r in await cur.fetchall()]
+
+    check("the setup has an administrator owner and a member owner",
+          (await db.get_user_by_id(uid["adm"]))["role"] == "admin" and (await db.get_user_by_id(uid["owner"]))["role"] == "user")
+    u_adm, cid_adm = await shared_row("adm", "bob", "admin shares", recording=True)
+    ws = await open_ws("bob", u_adm)
+    conn, before = await until_connected(ws)
+    await drain(ws, 0.5)
+    await ws.close()
+    await asyncio.sleep(0.8)
+    got = await rows_of(cid_adm)
+    check("an administrator's recording-enabled connection shared with a member: the banner fact says recorded",
+          conn is not None and conn.get("recording") is True and before == [], str(conn))
+    check("... and the member's session is recorded under the member's id, not the owner's",
+          len(got) == 1 and got[0]["user_id"] == uid["bob"] and got[0]["connection_name"] == "admin shares", str(got))
+
+    u_mem, cid_mem = await shared_row("owner", "adm", "member shares", recording=True)
+    ws = await open_ws("adm", u_mem)
+    conn, before = await until_connected(ws)
+    await drain(ws, 0.5)
+    await ws.close()
+    await asyncio.sleep(0.8)
+    check("a member's connection carrying a stored flag, shared with an administrator: not announced as recorded",
+          conn is not None and conn.get("type") == "connected" and conn.get("recording") is False, str(conn))
+    check("... and the administrator's session on it records nothing (no row, no file)",
+          await rows_of(cid_mem) == [] and not any(
+              f"rec_{uid['adm']}_c{cid_mem}_" in x.name for x in Path(rec_dir).iterdir()), str(await rows_of(cid_mem)))
 
     sshd.close()
     await srv.close()
