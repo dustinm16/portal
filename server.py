@@ -19552,6 +19552,9 @@ async def http_prune_chat_channel(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=400)
     if start > end:
         return web.json_response({"error": "from must not be after to"}, status=400)
+    # The range never reaches past the moment of the request: a later "to" would take in every message
+    # posted while the batches run, which no dry run counted
+    end = min(end, datetime.now(timezone.utc).isoformat())
     skip_pinned = data.get("skip_pinned", True)
     dry_run = data.get("dry_run", False)
     if not isinstance(skip_pinned, bool) or not isinstance(dry_run, bool):

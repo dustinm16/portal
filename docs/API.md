@@ -1832,7 +1832,7 @@ Remove the messages of a channel inside a date range (1.20.0). **Allowed:** admi
 ```json
 {"from": "2026-11-21T10:00:00Z", "to": "2026-11-21T11:00:00Z", "user": "alice", "skip_pinned": true, "dry_run": true}
 ```
-- `from`, `to`: ISO 8601, both required, both ends inclusive (no offset = UTC).
+- `from`, `to`: ISO 8601, both required, both ends inclusive (no offset = UTC). A `to` later than the moment of the request ends at that moment, so a message posted while the prune runs is never taken and the real run removes only what the dry run counted.
 - `user`: optional, an account id or a username (an unknown one matches nothing). A user filter from anybody but an administrator never matches that user's **anonymous** messages, so the count cannot reveal them; an administrator's does (the audit entry then says `anonymous_included`). Without a user filter, an **anonymous** message in the range is matched for every caller but an administrator whoever wrote it: the rank rules apply to named messages only, so a count can never tell the rank of an anonymous author (this includes anonymous messages of higher-ranked authors that a single delete would refuse). An administrator's prune without a user filter leaves every **anonymous** message alone when the rank rules exclude any author (another administrator, or a superadmin), so no frame or count shows which anonymous messages survived; with a user filter an administrator matches that user's anonymous messages, subject to the same rank rules.
 - `skip_pinned`: default `true`; `false` includes pinned messages.
 - `dry_run`: `{"dry_run": true, "count": 12, "margin": 2, "skip_pinned": true}` and nothing is removed.

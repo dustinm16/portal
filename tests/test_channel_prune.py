@@ -960,6 +960,39 @@ def test_audit_once_when_cancelled():
     run(body)
 
 
+def test_future_to_takes_no_message_posted_during_the_run():
+    async def body(env):
+        d = env.db
+        w = await world(env)
+        path = f"/api/chat/channels/{w.chat}/prune"
+        old = [await env.message(w.chat, w.talker, f"old {i}", hours_old=0.5 + i * 0.1) for i in range(5)]
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        st, r = await env.call("POST", w.admin, path, json=body_for(to=future, dry_run=True))
+        check("the dry run counts the five messages posted so far", st == 200 and r["count"] == 5, str(r))
+        late = []
+        real = d.prune_chat_messages
+
+        async def wrapped(*a, **k):
+            # a member posts while the batches run
+            late.extend([await env.message(w.chat, w.viewer, f"late {i}", hours_old=0) for i in range(6)])
+            return await real(*a, **k)
+        d.prune_chat_messages = wrapped
+        try:
+            st, r = await env.call("POST", w.admin, path, json=body_for(to=future, expected_count=5))
+            check("the real run is accepted", st == 202, str(r))
+            await env.wait_prune(w.chat)
+        finally:
+            d.prune_chat_messages = real
+        left = await env.ids(w.chat)
+        check("the five counted messages are gone", not (set(old) & left), str(left))
+        check("the messages posted while it ran are kept", set(late) <= left, str(left))
+        entries = await env.audit("chat_prune")
+        check("the audit entry counts what the dry run counted, and its range ends no later than the request",
+              len(entries) == 1 and entries[0]["details"]["count"] == 5 and entries[0]["details"]["to"] < future,
+              str(entries))
+    run(body)
+
+
 for name, fn in list(globals().items()):
     if name.startswith("test_") and callable(fn):
         fn()
