@@ -21,6 +21,7 @@ Run: venv/bin/python tests/test_webpush_triggers.py
 """
 
 import asyncio
+from time import monotonic
 import json
 import os
 import sys
@@ -110,13 +111,28 @@ class PushEnv(nl.Env):
         self.devices[name] = dev
         return dev
 
-    async def settle(self):
-        for _ in range(200):
-            tasks = list(server._get_pusher().tasks)
-            if not tasks:
-                break
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(0.05)
+    async def settle(self, quiet=0.25, deadline=15.0):
+        """Wait until every background piece of a push has finished, however slow the machine is: the
+        trigger tasks (held by the pusher, the go-live fan-out and the activity signal) and the delivery
+        tasks they start, then a quiet stretch with none left, so a trigger the server has not started
+        yet when the test calls this (it runs after the message is echoed) is still waited for. A hard
+        deadline keeps a stuck task from hanging the test."""
+        end = monotonic() + deadline
+        quiet_since = None
+        while monotonic() < end:
+            pending = [t for t in (set(server._get_pusher().tasks) | set(server._golive_tasks)
+                                   | set(server._activity_tasks) | set(server._bg_tasks)) if not t.done()]
+            if pending:
+                quiet_since = None
+                await asyncio.wait(pending, timeout=max(0.01, end - monotonic()))
+                continue
+            now = monotonic()
+            if quiet_since is None:
+                quiet_since = now
+            elif now - quiet_since >= quiet:
+                return
+            await asyncio.sleep(0.02)
+        raise AssertionError("push tasks did not finish before the deadline")
 
     def pushes(self, name=None):
         """Decrypted payloads, in order, for one device or all."""
