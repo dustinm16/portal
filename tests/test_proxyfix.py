@@ -456,6 +456,16 @@ async def swdoc(request):
                         headers={"Content-Type": DOC_TYPES[kind], "Service-Worker-Allowed": "/"})
 
 
+async def sxdoc(request):
+    """A fake SearXNG: its image proxy answers an SVG with a script, its page answers HTML."""
+    kind = request.match_info["kind"]
+    ctype = {"svg": "image/svg+xml", "html": "text/html; charset=utf-8", "png": "image/png"}[kind]
+    body = b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>" if kind == "svg" else b"<p>x</p>"
+    return web.Response(body=body, headers={"Content-Type": ctype, "Service-Worker-Allowed": "/",
+                                            **({"content-security-policy": "default-src 'none'"} if kind == "svg" else {}),
+                                            **({"X-Page": "1"} if kind == "html" else {})})
+
+
 ws_queries = []
 
 
@@ -586,6 +596,7 @@ async def main():
     up_app.router.add_get("/created", created)
     up_app.router.add_get("/trickle", trickle)
     up_app.router.add_get("/swdoc/{kind}", swdoc)
+    up_app.router.add_get("/search/image_proxy/{kind}", sxdoc)
     upstream = TestServer(up_app, host="127.0.0.1")
     await upstream.start_server()
     site_b = TestServer(up_app, host="127.0.0.1")       # a second site (other origin), same behaviour
@@ -598,6 +609,7 @@ async def main():
     proxy_app = web.Application()
     proxy_app.router.add_route("*", "/proxy/{conn_id}", server.http_proxy_connection)
     proxy_app.router.add_route("*", "/proxy/{conn_id}/{path:.*}", server.http_proxy_connection)
+    proxy_app.router.add_route("*", "/search/{path:.*}", server.http_searxng_proxy)
     portal = TestServer(proxy_app, host="127.0.0.1")
     await portal.start_server()
 
@@ -607,6 +619,11 @@ async def main():
              server.db.record_connection_usage, server.resolve_checked_host,
              server.resolve_checked_host_cached, server._SSRFSafeConnector)
     saved_cred = (server.db.get_user_by_id, server.db.is_token_valid)
+    saved_sx_status = server._searxng_status
+
+    async def fake_sx_status():
+        return True, upstream.port
+    server._searxng_status = fake_sx_status
 
     # The relay re-checks the credential once its socket is registered (user 1, session "t").
     async def fake_user(user_id):
@@ -645,6 +662,16 @@ async def main():
                   all(seen[k][2] is None for k in ("plain", "js", "png")), str(seen))
             check("service worker: the SearXNG proxy drops the header too",
                   "service-worker-allowed" in server._SEARXNG_RESPONSE_HOP_HEADERS)
+            sx = {}
+            for kind in ("svg", "html", "png"):
+                async with c.get(f"http://127.0.0.1:{portal.port}/search/image_proxy/{kind}") as r:
+                    await r.read()
+                    sx[kind] = (r.status, r.headers.getall("Content-Security-Policy", []),
+                                r.headers.get("Service-Worker-Allowed"))
+            check("csp: an SVG from the SearXNG image proxy is sandboxed without scripts, one policy only",
+                  sx["svg"][0] == 200 and sx["svg"][1] == [server._PROXY_SVG_CSP] and sx["svg"][2] is None, str(sx))
+            check("csp: SearXNG HTML is left to the portal page policy (no proxy policy here) and other images get none",
+                  sx["html"][1] == [] and sx["png"][1] == [], str(sx))
             # --- forwarded headers and cookies, streamed and buffered paths
             # default (forwarded_host off): neither X-Forwarded-Host nor X-Forwarded-Prefix is sent, client copies are dropped
             CONFIG.clear()
@@ -1210,6 +1237,7 @@ async def main():
          server.db.record_connection_usage, server.resolve_checked_host,
          server.resolve_checked_host_cached, server._SSRFSafeConnector) = saved
         server.db.get_user_by_id, server.db.is_token_valid = saved_cred
+        server._searxng_status = saved_sx_status
         await portal.close()
         await upstream.close()
         await site_b.close()

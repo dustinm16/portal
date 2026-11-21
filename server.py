@@ -17982,6 +17982,14 @@ async def http_searxng_proxy(request: web.Request) -> web.Response:
                 }
                 # Never let a shared edge cache store authenticated content.
                 resp_headers["Cache-Control"] = "private, no-store"
+                # SVG, XHTML and XML (SearXNG's image proxy passes any image/* type from any host)
+                # get the HTTP proxy's policy; text/html keeps the portal page policy the middleware adds.
+                sx_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                sx_csp = _proxy_document_csp(sx_type) if sx_type != "text/html" else None
+                if sx_csp:
+                    for key in [k for k in resp_headers if k.lower() == "content-security-policy"]:
+                        del resp_headers[key]
+                    resp_headers["Content-Security-Policy"] = sx_csp
 
                 # Buffer the full body (StreamReader.read(n) can return early on a
                 # chunked response, so loop to EOF) so security_headers_middleware
