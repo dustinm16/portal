@@ -1625,6 +1625,24 @@
                         </div>
                     </div>
 
+                    <!-- Web push (superadmin only: the card appears when the route answers) -->
+                    <div class="admin-card" id="push-admin-card" style="display:none;">
+                        <h3>Push notifications</h3>
+                        <p style="color:var(--text-secondary); font-size:0.8125rem; margin:0 0 0.75rem;">A phone or browser notice that a direct message, a mention or a followed stream needs attention, sent only to members who have no Portal tab open. It never carries a message text. It travels through the browser maker's push service (Google, Mozilla, Apple or Microsoft), encrypted to the device.</p>
+                        <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+                            <input type="checkbox" id="push-admin-enabled"> <span>Push notifications enabled</span>
+                        </label>
+                        <p style="font-size:0.8125rem; margin:0 0 0.75rem;">Subscribed devices: <strong id="push-admin-count">0</strong> <span style="color:var(--text-muted);">(a number only; the addresses are never shown)</span></p>
+                        <label style="display:block; font-size:0.8rem; color:var(--text-secondary); margin-bottom:0.25rem;">Push services allowed (besides the built-in list)</label>
+                        <div id="push-admin-defaults" style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.25rem;"></div>
+                        <textarea id="push-admin-hosts" rows="3" placeholder="one host name per line, for example push.example.org" style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:6px; color:var(--text-primary); font-family:monospace; font-size:0.75rem; padding:0.5rem; resize:vertical; box-sizing:border-box;"></textarea>
+                        <div style="display:flex; gap:0.5rem; margin-top:0.75rem; flex-wrap:wrap;">
+                            <button class="btn btn-primary btn-sm" onclick="savePushAdmin()">Save</button>
+                            <button class="btn btn-secondary btn-sm" onclick="sendPushTest()">Send test push to my devices</button>
+                        </div>
+                        <p id="push-admin-msg" style="font-size:0.8125rem; margin:0.5rem 0 0; color:var(--text-muted);"></p>
+                    </div>
+
                     <!-- Certificate Management Card -->
                     <div class="admin-card" style="grid-column: span 1;">
                         <h3>
@@ -2391,6 +2409,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=46"></script>
+    <script src="/static/js/push.js?v=2"></script>
     <script src="/static/js/filebrowser.js?v=2"></script>
     <!-- CodeMirror 5, vendored locally (static/js/vendor/codemirror/, MIT — LICENSE
          alongside it) — core first, then only the modes actually used by
@@ -5425,7 +5444,54 @@
         // =====================================================
 
         async function loadSettingsTab() {
-            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadLoginBan(), loadProxyLimit(), loadCfRanges()]);
+            await Promise.all([loadCertInfo(), loadServerSettings(), loadFeaturePermissions(), loadRetentionConfig(), loadBackups(), loadNeverBan(), loadLoginBan(), loadProxyLimit(), loadCfRanges(), loadPushAdmin()]);
+        }
+
+        // Web push settings (superadmin): the switch, the extra push-service hosts, a device count, a test push
+        async function loadPushAdmin() {
+            const card = document.getElementById('push-admin-card');
+            if (!card) return;
+            try {
+                const resp = await Portal.fetch('/api/admin/push');
+                if (!resp.ok) { card.style.display = 'none'; return; }
+                const s = await resp.json();
+                card.style.display = '';
+                document.getElementById('push-admin-enabled').checked = !!s.enabled;
+                document.getElementById('push-admin-count').textContent = String(s.device_count || 0);
+                document.getElementById('push-admin-hosts').value = (s.allowed_hosts || []).join('\n');
+                document.getElementById('push-admin-defaults').textContent = 'Built in: ' + (s.default_hosts || []).join(', ');
+            } catch (e) {
+                card.style.display = 'none';
+            }
+        }
+
+        function pushAdminSay(text, bad) {
+            const m = document.getElementById('push-admin-msg');
+            m.textContent = text || '';
+            m.style.color = bad ? 'var(--accent-red)' : 'var(--text-muted)';
+        }
+
+        async function savePushAdmin() {
+            const hosts = document.getElementById('push-admin-hosts').value.split(/[\s,]+/).filter(Boolean);
+            const resp = await Portal.fetch('/api/admin/push', {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled: document.getElementById('push-admin-enabled').checked, allowed_hosts: hosts})
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) { pushAdminSay(data.error || 'Could not save', true); return; }
+            pushAdminSay('Saved.');
+            loadPushAdmin();
+        }
+
+        async function sendPushTest() {
+            pushAdminSay('Sending...');
+            const resp = await Portal.fetch('/api/admin/push/test', {method: 'POST'});
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) { pushAdminSay(data.error || 'Could not send', true); return; }
+            const results = data.results || [];
+            if (!results.length) { pushAdminSay('You have no subscribed device. Turn on "Phone notifications" in your user settings first.', true); return; }
+            const sent = results.filter(r => r.outcome === 'sent').length;
+            pushAdminSay(sent + ' of ' + results.length + ' devices accepted the test push.', sent === 0);
         }
 
         async function loadCertInfo() {

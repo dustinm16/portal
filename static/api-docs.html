@@ -704,7 +704,7 @@
                         <span class="endpoint-desc">Web push: is it on, and the public VAPID key (1.19.0)</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Needs a browser session or a bearer token with the full scope; API keys, stream keys, a token in the URL and narrow tokens get <code>403</code>. Answers <code>{"enabled": true, "public_key": "...", "max_devices": 10, "worker_url": "/sw.js", "worker_scope": "/push-sw/"}</code>. Foundation only: no event sends a push yet.</p>
+                        <p>Needs a browser session or a bearer token with the full scope; API keys, stream keys, a token in the URL and narrow tokens get <code>403</code>. Answers <code>{"enabled": true, "public_key": "...", "max_devices": 10, "worker_url": "/sw.js", "worker_scope": "/push-sw/"}</code>. A push is sent for a direct message, an @mention or @everyone and a followed stream going live, only to a member with a device and no open chat socket, with no message text and no sender name.</p>
                     </div>
                 </div>
 
@@ -738,6 +738,28 @@
                     </div>
                     <div class="endpoint-body">
                         <p><code>GET</code> returns <code>{"enabled", "default_hosts", "allowed_hosts", "subject", "effective_subject", "device_count"}</code>. <code>PUT</code> takes any of <code>enabled</code>, <code>allowed_hosts</code> (host names or <code>*.suffix</code>; no IP addresses, localhost or internal names) and <code>subject</code> (an https address or null). <code>POST /api/admin/push/test</code> sends a test push to your own devices and returns one result per device. The same credential rule as the device routes applies, and the account must be a superadmin.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/push/prefs</span>
+                        <span class="endpoint-desc">Which kinds of push you want (PUT changes them)</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p><code>GET</code> returns <code>{"prefs": {"dm": true, "mention": true, "golive": true}, "kinds": [...]}</code>, your own switches (all on until switched off). <code>PUT</code> takes one or more of those keys with <code>true</code> or <code>false</code> and returns the full set; an unknown key, a non-boolean value or an empty body is <code>400</code>. Same credential rule as the device routes.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/logout</span>
+                        <span class="endpoint-desc">Sign out and remove this browser's push device</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Like <code>GET /logout</code> but answers <code>200 {"success": true}</code> instead of a redirect. With <code>{"endpoint": "..."}</code> in the JSON body (never in the URL) it also removes your push device with that endpoint, even one an earlier session registered; another member's endpoint removes nothing.</p>
                     </div>
                 </div>
 

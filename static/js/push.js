@@ -5,6 +5,10 @@
  *   PortalPush.enable()               ask permission, register the worker, subscribe, tell the server
  *   PortalPush.disable()              remove this browser's subscription (server and browser)
  *   PortalPush.disableAll()           remove every device of the signed-in member
+ *   PortalPush.mountSettings(el)      draw the "Phone notifications" block into el (user settings)
+ *
+ * Push is off (supported() is false) inside a frame, on a proxied page (/proxy/, /search/) and in the
+ * embedded browser (/browser): nothing is registered or asked there.
  *
  * The worker (/sw.js) is registered with a scope nothing is served from, so it controls no page; push
  * and notification clicks work without that. Signing out removes this browser's device first when it
@@ -16,9 +20,29 @@
     var SCOPE = '/push-sw/';
     var HINT = 'portal_push_on';
 
+    function inForeignContext() {
+        try {
+            if (window.top !== window.self) return true;
+        } catch (e) {
+            return true;
+        }
+        var path = window.location.pathname || '';
+        return path.indexOf('/proxy/') === 0 || path.indexOf('/search/') === 0 || path === '/browser';
+    }
+
     function supported() {
         return typeof navigator !== 'undefined' && 'serviceWorker' in navigator &&
-            typeof window !== 'undefined' && 'PushManager' in window && 'Notification' in window;
+            typeof window !== 'undefined' && 'PushManager' in window && 'Notification' in window &&
+            !inForeignContext();
+    }
+
+    function isIOS() {
+        var ua = navigator.userAgent || '';
+        return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    function isStandalone() {
+        return !!(navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
     }
 
     function api(method, url, body) {
@@ -85,12 +109,13 @@
     function enable() {
         if (!supported()) return Promise.reject(new Error('This browser cannot receive push notifications'));
         var config;
-        return api('GET', '/api/push/config').then(function (c) {
-            config = c;
-            if (!c.enabled || !c.public_key) throw new Error('Push notifications are switched off on this server');
-            return Notification.requestPermission();
-        }).then(function (permission) {
-            if (permission !== 'granted') throw new Error('Notifications were not allowed in the browser');
+        /* The permission prompt starts here, synchronously, inside the click that called enable(): some
+           browsers (Safari) do not count it as a user gesture after an await. The config is fetched meanwhile. */
+        var asked = Notification.requestPermission();
+        return Promise.all([asked, api('GET', '/api/push/config')]).then(function (res) {
+            config = res[1];
+            if (res[0] !== 'granted') throw new Error('Notifications were not allowed in the browser');
+            if (!config.enabled || !config.public_key) throw new Error('Push notifications are switched off on this server');
             return navigator.serviceWorker.register('/sw.js', { scope: SCOPE });
         }).then(waitActive).then(function (reg) {
             return reg.pushManager.getSubscription().then(function (existing) {
@@ -126,7 +151,9 @@
         return api('DELETE', '/api/push/subscriptions').then(function () { return disable(); });
     }
 
-    /* Sign out: when this browser was enabled here, remove its device first (bounded wait). */
+    /* Sign out: when this browser was enabled here, tell the server which device it is (POST /logout with
+       the endpoint in the body, never in the URL), drop the browser's own subscription, then go to /logout
+       (bounded wait). Without a push device here the link works as it always did. */
     document.addEventListener('click', function (ev) {
         var a = ev.target && ev.target.closest ? ev.target.closest('a[href="/logout"]') : null;
         var on = false;
@@ -134,10 +161,146 @@
         if (!a || !on || !supported()) return;
         ev.preventDefault();
         var done = false;
+        /* Always /logout, never /login: when the POST was slow or failed the link still signs the member out;
+           when it worked the session is gone and /logout just redirects to the login page. */
         function go() { if (!done) { done = true; window.location.href = '/logout'; } }
-        setTimeout(go, 1500);
-        disable().then(go, go);
+        setTimeout(go, 2500);
+        currentSubscription().then(function (sub) {
+            forget();
+            if (!sub) return fetch('/logout', { method: 'POST', credentials: 'same-origin' });
+            return fetch('/logout', {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoint: sub.endpoint })
+            }).then(function () { return sub.unsubscribe(); });
+        }).then(go, go);
     });
 
-    window.PortalPush = { supported: supported, status: status, enable: enable, disable: disable, disableAll: disableAll };
+    /* ---- the "Phone notifications" block of the user settings ---- */
+    var KINDS = [
+        ['dm', 'Direct messages'],
+        ['mention', 'Mentions (not in channels you muted)'],
+        ['golive', 'Streams you follow going live']
+    ];
+
+    function el(tag, text, cls) {
+        var n = document.createElement(tag);
+        if (text) n.textContent = text;
+        if (cls) n.className = cls;
+        return n;
+    }
+
+    function mountSettings(root) {
+        if (!root) return;
+        root.textContent = '';
+        var note = el('p', '', 'push-note');
+        note.style.cssText = 'color: var(--text-secondary); font-size: 0.8125rem; margin: 0 0 0.75rem;';
+        root.appendChild(note);
+        if (!supported()) {
+            note.textContent = isIOS() && !isStandalone()
+                ? 'On iPhone and iPad, push notifications work only from the installed app (iOS 16.4 or later): ' +
+                  'open Share, choose Add to Home Screen, then open Portal from its icon and turn this on there.'
+                : 'This browser or page cannot receive push notifications.';
+            return;
+        }
+        note.textContent = 'A phone or browser notification for the things below, only while Portal is not open. ' +
+            'It says that something happened, never what was written.';
+        if (isIOS() && !isStandalone()) {
+            var hint = el('p', 'Install hint: on iPhone and iPad this works only from the home-screen app (iOS 16.4 or later).');
+            hint.style.cssText = 'color: var(--accent-yellow, #d29922); font-size: 0.8125rem; margin: 0 0 0.75rem;';
+            root.appendChild(hint);
+        }
+        var row = el('label', '', 'push-switch');
+        row.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;';
+        var sw = document.createElement('input');
+        sw.type = 'checkbox';
+        sw.id = 'push-enable-switch';
+        row.appendChild(sw);
+        row.appendChild(el('span', 'Notify me on this browser'));
+        root.appendChild(row);
+        var msg = el('p', '');
+        msg.style.cssText = 'font-size: 0.8125rem; margin: 0 0 0.75rem; color: var(--text-muted);';
+        root.appendChild(msg);
+        var kinds = el('div', '');
+        root.appendChild(kinds);
+        var devices = el('div', '');
+        root.appendChild(devices);
+
+        function say(text, bad) {
+            msg.textContent = text || '';
+            msg.style.color = bad ? 'var(--accent-red, #f85149)' : 'var(--text-muted)';
+        }
+
+        function drawKinds(prefs) {
+            kinds.textContent = '';
+            KINDS.forEach(function (k) {
+                var l = el('label', '');
+                l.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;';
+                var c = document.createElement('input');
+                c.type = 'checkbox';
+                c.checked = prefs[k[0]] !== false;
+                c.addEventListener('change', function () {
+                    var body = {};
+                    body[k[0]] = c.checked;
+                    api('PUT', '/api/push/prefs', body).catch(function (e) {
+                        c.checked = !c.checked;
+                        say(e.message, true);
+                    });
+                });
+                l.appendChild(c);
+                l.appendChild(el('span', k[1]));
+                kinds.appendChild(l);
+            });
+        }
+
+        function drawDevices(list) {
+            devices.textContent = '';
+            if (!list.length) return;
+            devices.appendChild(el('h5', 'Your devices')).style.cssText = 'margin: 0.75rem 0 0.25rem;';
+            list.forEach(function (d) {
+                var r = el('div', '');
+                r.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.25rem;';
+                var label = String(d.label || 'Device') + (d.this_session ? ' (this session)' : '');
+                r.appendChild(el('span', label));
+                var b = el('button', 'Remove', 'btn btn-secondary btn-sm');
+                b.type = 'button';
+                b.addEventListener('click', function () {
+                    b.disabled = true;
+                    api('DELETE', '/api/push/subscriptions/' + encodeURIComponent(d.id)).then(refresh, function (e) {
+                        b.disabled = false;
+                        say(e.message, true);
+                    });
+                });
+                r.appendChild(b);
+                devices.appendChild(r);
+            });
+        }
+
+        function refresh() {
+            return Promise.all([status(), api('GET', '/api/push/prefs'), api('GET', '/api/push/subscriptions')])
+                .then(function (res) {
+                    var st = res[0];
+                    sw.checked = !!(st.subscribed && st.permission === 'granted');
+                    sw.disabled = !st.enabled;
+                    if (!st.enabled) say('Push notifications are switched off on this server.');
+                    else if (st.permission === 'denied') say('Notifications are blocked for this site in the browser settings.', true);
+                    else say('');
+                    drawKinds(res[1].prefs || {});
+                    drawDevices(res[2].devices || []);
+                }).catch(function (e) { say(e.message, true); });
+        }
+
+        sw.addEventListener('change', function () {
+            var want = sw.checked;
+            sw.disabled = true;
+            /* the permission prompt is asked inside this click handler: a user gesture */
+            (want ? enable() : disable()).then(function () { say(''); }, function (e) {
+                say(e.message, true);
+            }).then(function () { sw.disabled = false; return refresh(); });
+        });
+        refresh();
+    }
+
+    window.PortalPush = { supported: supported, status: status, enable: enable, disable: disable, disableAll: disableAll,
+                          mountSettings: mountSettings };
 })();

@@ -697,6 +697,14 @@ MIGRATIONS = [
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)",
+    # Which kinds of push a member wants (private to them). No row means every kind is on.
+    """CREATE TABLE IF NOT EXISTS push_prefs (
+        user_id INTEGER PRIMARY KEY,
+        dm INTEGER NOT NULL DEFAULT 1,
+        mention INTEGER NOT NULL DEFAULT 1,
+        golive INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )""",
     # Per-channel notification choice of one member (private to them): level all, mentions
     # or none, and an optional end of a timed mute (epoch seconds). No row means the default.
     """CREATE TABLE IF NOT EXISTS channel_notify_prefs (
@@ -2528,6 +2536,7 @@ class Database:
             # Stream follows
             ("stream_follow", "DELETE FROM stream_follow WHERE user_id = ?"),
             ("push_subscriptions", "DELETE FROM push_subscriptions WHERE user_id = ?"),
+            ("push_prefs", "DELETE FROM push_prefs WHERE user_id = ?"),
             # Notification levels per channel
             ("channel_notify_prefs", "DELETE FROM channel_notify_prefs WHERE user_id = ?"),
             # Recordings
@@ -4725,6 +4734,49 @@ class Database:
                 continue
             out.append({"id": r["id"], "endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"]})
         return out
+
+    PUSH_KINDS = ("dm", "mention", "golive")
+
+    async def get_push_prefs(self, user_id: int) -> dict:
+        """{kind: bool} for one member; every kind is on until they switch it off."""
+        cursor = await self.conn.execute(
+            "SELECT dm, mention, golive FROM push_prefs WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return {k: (bool(row[k]) if row else True) for k in self.PUSH_KINDS}
+
+    async def set_push_prefs(self, user_id: int, changes: dict) -> dict:
+        """Change some kinds (keys from PUSH_KINDS, bool values) and return the full set."""
+        current = await self.get_push_prefs(user_id)
+        current.update({k: bool(v) for k, v in changes.items() if k in self.PUSH_KINDS})
+        await self.conn.execute(
+            """INSERT INTO push_prefs (user_id, dm, mention, golive) VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET dm = excluded.dm, mention = excluded.mention,
+                                                  golive = excluded.golive""",
+            (user_id, int(current["dm"]), int(current["mention"]), int(current["golive"])))
+        await self.conn.commit()
+        return current
+
+    async def push_targets(self, user_ids, kind: str) -> set:
+        """The members among `user_ids` who have at least one device and want this kind."""
+        if kind not in self.PUSH_KINDS:
+            return set()
+        ids = [int(u) for u in user_ids]
+        out = set()
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            marks = ",".join("?" * len(chunk))
+            cursor = await self.conn.execute(
+                f"""SELECT DISTINCT s.user_id FROM push_subscriptions s
+                    LEFT JOIN push_prefs p ON p.user_id = s.user_id
+                    WHERE s.user_id IN ({marks}) AND COALESCE(p.{kind}, 1) = 1""", chunk)
+            out.update(r["user_id"] for r in await cursor.fetchall())
+        return out
+
+    async def get_dm_muted_ids(self, conversation_id: int) -> set:
+        cursor = await self.conn.execute(
+            "SELECT user_id FROM dm_participants WHERE conversation_id = ? AND muted = 1 AND left_at IS NULL",
+            (conversation_id,))
+        return {r["user_id"] for r in await cursor.fetchall()}
 
     async def count_push_subscriptions(self) -> int:
         cursor = await self.conn.execute("SELECT COUNT(*) AS n FROM push_subscriptions")

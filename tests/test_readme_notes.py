@@ -274,8 +274,8 @@ check("1.18.0: the user-connections, dashboard and terminal versions stated are 
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and re.search(r"terminal\.js\?v=6", (ROOT / "static" / "terminal.html").read_text()) and "`terminal.js` 6" in sec18)
-check("1.18.0: the admin.js and portal.css versions stated are the ones the pages load",
-      re.search(r"js/admin\.js\?v=38", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
+check("1.18.0: the admin.js and portal.css versions stated are the ones the 1.18.0 pages loaded (admin.js moved on in 1.19.0)",
+      re.search(r"js/admin\.js\?v=39", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
       and re.search(r"css/portal\.css\?v=55", (ROOT / "static" / "index.html").read_text()) and "`portal.css` 55" in sec18)
 check("README feature section says a share can expire", "the card shows the time left" in text and "All grants on the portal" in text)
 check("docs/API.md documents expires_in, the 400 case and both new routes",
@@ -426,7 +426,7 @@ check("1.19.0: the cap and the cooldown stated are the ones in the code",
       "MASS_MENTION_CAP = 500" in _defaults and "MASS_MENTION_COOLDOWN = 60.0" in _defaults and "MASS_MENTION_WEIGHT = 5" in _defaults)
 
 # --- 1.19.0 notes: web push foundation --------------------------------------------------
-for name, needles in (("what exists and that nothing is sent yet", ("web push foundation", "no notification is sent yet", "webpush.py", "push_subscriptions", "no new dependency")),
+for name, needles in (("what exists", ("web push foundation", "user settings > phone notifications", "webpush.py", "push_subscriptions", "no new dependency")),
                       ("the device routes and who may use them", ("/api/push/subscriptions", "/api/push/unsubscribe", "/api/push/config", "api keys (even with the all-scope)", "10 devices")),
                       ("the session lifecycle", ("session that registered it", "log out", "password change", "deleting an account", "sign out other sessions", "only expires")),
                       ("the allow-list and the outbound rules", ("fcm.googleapis.com", "*.push.apple.com", "*.notify.windows.com", "port 443", "no redirects", "4096 bytes", "never logged")),
@@ -434,7 +434,7 @@ for name, needles in (("what exists and that nothing is sent yet", ("web push fo
                       ("the sender", ("send_push", "30 pushes per user per minute", "429", "retry-after", "build_payload")),
                       ("the worker, scope and policy", ("no fetch handler", "service-worker-allowed: /push-sw/", "worker-src 'none'", "/manifest.webmanifest")),
                       ("the migration and the rollback", ("create table if not exists", "1.18.0 starts on the migrated database")),
-                      ("the static files", ("`push.js` is new", "`portal.js` is unchanged")),
+                      ("the static files", ("`push.js` is new", "`portal.js` is unchanged", "`admin.js` is now version 39")),
                       ("what is not proven", ("not tested (web push)", "no browser", "real push service", "cloudflare", "rfc 8291 appendix vector"))):
     check(f"1.19.0 states: web push {name}", all(n in low19 for n in needles), str(needles))
 check("docs/API.md and api-docs.html describe the push routes",
@@ -444,6 +444,22 @@ check("the limits stated for web push are the ones in the code",
       "MAX_DEVICES_PER_USER = 10" in (ROOT / "webpush.py").read_text() and "USER_RATE_LIMIT = 30" in (ROOT / "webpush.py").read_text()
       and "SEND_CONCURRENCY = 8" in (ROOT / "webpush.py").read_text() and "PRUNE_AFTER_FAILURES = 8" in (ROOT / "webpush.py").read_text()
       and "_PUSH_SUBSCRIBE_LIMIT = 10 " in _defaults)
+
+# --- 1.19.0 notes: web push delivery ------------------------------------------------------
+for name, needles in (("when a push is sent", ("when a push is sent", "no open chat socket", "@here never pushes", "followers only", "may watch the stream at the moment of the push")),
+                      ("no text, no names", ("no message text, no sender or author name and no stream title", "anonymous sender", "new direct message", "you were mentioned in #channel", "<streamer> is live")),
+                      ("the tap url and the collapse", ("/chat?dm=<conversation>", "/chat?channel_id=<id>&message_id=<id>", "/watch/<stream>", "`topic` header", "opaque keyed hash")),
+                      ("the per-kind switches", ("push_prefs", "/api/push/prefs", "streams you follow going live")),
+                      ("the settings screens", ("send test push to my devices", "install hint", "ios 16.4", "never as markup", "embedded browser")),
+                      ("sign-out and backups", ("post /logout", "never in the url", "encryption_salt", "same public key")),
+                      ("what is not proven", ("push delivery", "not proven at all", "installed ios or android app", "delivery latency"))):
+    check(f"1.19.0 states: web push delivery {name}", all(n in low19 for n in needles), str(needles))
+check("the README names the same tag, topic and kinds as the code",
+      '"golive"' in _defaults and 'PUSH_KINDS = ("dm", "mention", "golive")' in (ROOT / "database.py").read_text()
+      and "def _push_topic" in _defaults)
+check("docs/API.md and api-docs.html describe the prefs route and POST /logout",
+      all(x in (ROOT / "docs" / "API.md").read_text() for x in ("/api/push/prefs", "POST /logout"))
+      and all(x in (ROOT / "static" / "api-docs.html").read_text() for x in ("/api/push/prefs", "/logout")))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

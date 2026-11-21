@@ -6,7 +6,9 @@ entry point other code calls; `build_payload()` is the one way to make a payload
 
 Privacy rules this module keeps by construction:
   * A payload is a type, a short generic title, a short generic body and a same-origin
-    relative URL. It never carries a message text, a channel name or an author.
+    relative URL. It never carries a message text or an author. A channel name or a
+    streamer's name appears only when the caller (the triggers in server.py) has checked that
+    the recipient may read that channel or the stream is public.
   * A subscription endpoint is a capability (whoever holds it can push to that device),
     so it is never logged and never returned by a list route in full.
   * The endpoint is attacker-chosen input and the server POSTs to it. `validate_endpoint`

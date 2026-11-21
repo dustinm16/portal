@@ -6,6 +6,7 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Chat</title>
     <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#0f172a">
     <link rel="stylesheet" href="/static/css/portal.css?v=55">
     <script src="/static/js/theme.js?v=3"></script>
     <style>
@@ -3232,7 +3233,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=46"></script>
-    <script src="/static/js/push.js?v=1"></script>
+    <script src="/static/js/push.js?v=2"></script>
     <script src="/static/js/voice.js?v=13"></script>
     <script src="/static/js/chat-notify.js?v=1"></script>
     <script>
@@ -3558,6 +3559,7 @@
         let currentView = 'channel'; // 'channel' or 'dm'
         let currentDmConversationId = null;
         let dmConversations = []; // cached from dm_conversations_list
+        let pendingDmLink = 0; // /chat?dm=<id>: opened when the list arrives
         let dmUnreadCounts = {}; // conversation_id -> count
         let dmSelectedUsers = []; // for new DM modal multi-select
 
@@ -3655,6 +3657,18 @@
                     jp.delete('channel_id');
                     jp.delete('message_id');
                     const rest = jp.toString();
+                    history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
+                }
+            }
+            // Link to a direct message (a push notification): /chat?dm=<conversation id>, opened once
+            // the conversation list has arrived (only a conversation of the member is in it)
+            {
+                const dp = new URLSearchParams(location.search);
+                const dmId = parseInt(dp.get('dm'), 10);
+                if (dp.has('dm')) {
+                    if (dmId > 0) pendingDmLink = dmId;
+                    dp.delete('dm');
+                    const rest = dp.toString();
                     history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
                 }
             }
@@ -4243,6 +4257,11 @@
                     dmConversations = data.conversations || [];
                     dmUnreadCounts = data.unread_counts || {};
                     renderDmList();
+                    if (pendingDmLink) {
+                        const linked = pendingDmLink;
+                        pendingDmLink = 0;
+                        openDmConversation(linked);     // the server opens it only for a participant
+                    }
                     break;
                 case 'dm_conversation_opened':
                     resetChannelUnavailable();

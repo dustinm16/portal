@@ -6,6 +6,7 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Open Relay Portal - Dashboard</title>
     <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#0f172a">
     <link rel="stylesheet" href="/static/css/portal.css?v=55">
     <link rel="stylesheet" href="/static/js/vendor/codemirror/lib/codemirror.css?v=1">
     <link rel="stylesheet" href="/static/css/codemirror-portal.css?v=1">
@@ -1008,6 +1009,11 @@
                     <div id="sessions-list" class="table-responsive" style="display: none;"></div>
                     <button type="button" class="btn btn-danger btn-sm" id="sessions-revoke-others" style="display: none; margin-top: 0.75rem;">Sign out other devices</button>
                 </div>
+
+                <hr style="border-color: var(--card-border); margin: 1.5rem 0;">
+
+                <h4 style="margin-bottom: 0.5rem;">Phone notifications</h4>
+                <div id="push-settings"></div>
             </div>
         </div>
     </div>
@@ -2002,7 +2008,7 @@
     </div>
 
     <script src="/static/js/portal.js?v=46"></script>
-    <script src="/static/js/push.js?v=1"></script>
+    <script src="/static/js/push.js?v=2"></script>
     <script src="/static/js/filebrowser.js?v=2"></script>
     <!-- CodeMirror 5, vendored locally (static/js/vendor/codemirror/, MIT — LICENSE
          alongside it) — core first, then only the modes actually used by
@@ -2024,7 +2030,7 @@
     <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
     <script src="/static/js/fileeditor.js?v=1"></script>
     <script src="/static/js/dashboard.js?v=59"></script>
-    <script src="/static/js/admin.js?v=38"></script>
+    <script src="/static/js/admin.js?v=39"></script>
     <script src="/static/js/ssh-keys.js?v=25"></script>
     <script src="/static/js/user-connections.js?v=55"></script>
     <!-- VOD Storage Settings Modal -->

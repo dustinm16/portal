@@ -1453,6 +1453,7 @@ function showProfileModal() {
     // Load 2FA status
     load2FAStatus();
     loadSessions();
+    if (window.PortalPush && PortalPush.mountSettings) PortalPush.mountSettings(document.getElementById('push-settings'));
 }
 
 // =============================================================================

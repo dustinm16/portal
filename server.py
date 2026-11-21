@@ -2944,6 +2944,166 @@ async def http_admin_push_test(request: web.Request) -> web.Response:
         {"id": r["id"], "outcome": r["outcome"], "status": r["status"]} for r in results]})
 
 
+# ---------------------------------------------------------------------------
+# Web Push triggers: a direct message, an @mention (or @everyone) and a followed stream going live
+#
+# One dispatcher, _push_dispatch, used by the three call sites. A push goes out only when
+#   * the recipient has no open chat socket (notification_subscribers: the sockets the in-portal
+#     notification frame lands on, so an open tab never gets a duplicate; terminal, relay and
+#     proxy sockets are deliberately not counted, they show no notification),
+#   * the feature switch is on, the member has a device and has this kind switched on
+#     (db.push_targets, one query for all candidates), and
+#   * the kind's own rule holds (a muted DM, a channel at level none or under a timed mute, access
+#     to the channel or stream as it is now).
+# The payload is generic by kind (webpush.build_payload): never a message text, a sender or an
+# author name; a channel name only for a recipient who may read that channel; a streamer name only
+# for a public stream. The tap URL is a relative page of this site. A repeated push for the same
+# conversation, channel or stream carries one tag (replaced on the device) and one Topic header
+# (replaced at the push service); the Topic is an opaque hash, the service never sees an id.
+# Everything runs in a background task of the pusher and never raises into the message path.
+# ---------------------------------------------------------------------------
+
+def _has_open_notification_socket(user_id: int) -> bool:
+    return any(not ws.closed for ws in list(notification_subscribers.get(user_id, ())))
+
+
+def _push_topic(user_id: int, kind: str, ref) -> str:
+    """Opaque Topic header value: a keyed hash (the server's secret), so the push service sees neither a
+    conversation id nor anything it could work out by trying small numbers."""
+    return webpush.b64u(hmac.new(Config.JWT_SECRET.encode(), f"push-topic:{user_id}:{kind}:{ref}".encode(),
+                                 hashlib.sha256).digest()[:16])
+
+
+async def _push_dispatch(user_ids, kind: str, build) -> int:
+    """Push to the members of `user_ids` who are away. `build(uid)` returns a dict
+    (title, body, url, ref, optional urgency) or None to skip that member. Returns the number
+    of pushes scheduled. Never raises."""
+    try:
+        pusher = _get_pusher()
+        if not await pusher.enabled():
+            return 0
+        away = [u for u in dict.fromkeys(user_ids) if not _has_open_notification_socket(u)]
+        if not away:
+            return 0
+        sent = 0
+        for uid in sorted(await db.push_targets(away, kind)):
+            if _has_open_notification_socket(uid):       # opened while we were looking
+                continue
+            spec = await build(uid)
+            if not spec:
+                continue
+            payload = webpush.build_payload(kind, spec["title"], spec.get("body", ""), spec["url"],
+                                            tag=spec["ref"])
+            pusher.send_push(uid, payload, urgency=spec.get("urgency", "normal"),
+                             topic=_push_topic(uid, kind, spec["ref"]))
+            sent += 1
+        return sent
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"Web push trigger ({kind}) failed: {type(e).__name__}")
+        return 0
+
+
+def _schedule_push(coro) -> "asyncio.Task | None":
+    """Run a trigger off the message path; the task is held by the pusher (cancelled at shutdown)."""
+    try:
+        pusher = _get_pusher()
+        task = asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        coro.close()
+        return None
+    pusher.tasks.add(task)
+    task.add_done_callback(pusher.tasks.discard)
+    return task
+
+
+async def _push_dm(conv_id: int, sender_id: int) -> int:
+    """A direct message: every other participant who has not muted the conversation. Never names
+    the sender (an anonymous one least of all) and never carries the text."""
+    muted = await db.get_dm_muted_ids(conv_id)
+    ids = [p for p in await db.get_dm_participant_ids(conv_id) if p != sender_id and p not in muted]
+
+    async def build(uid):
+        return {"title": "New direct message", "body": "Open the portal to read it.",
+                "url": f"/chat?dm={int(conv_id)}", "ref": f"dm-{int(conv_id)}"}
+    return await _push_dispatch(ids, "dm", build)
+
+
+async def _push_mentions(channel, msg_id: int, direct_ids, everyone_ids) -> int:
+    """Members named in a message (`direct_ids`) and members reached by an @everyone
+    (`everyone_ids`; an @here never pushes, it targets members who are online). A channel at
+    level none or under a timed mute gets none; the member must be able to read the channel now."""
+    ids = list(direct_ids) + [u for u in everyone_ids if u not in direct_ids]
+    direct = set(direct_ids)
+    cid = int(channel["id"])
+    channel = await db.get_chat_channel(cid)          # as it is now: it may have turned private
+    if not channel:
+        return 0
+    stream = await db.get_stream_by_chat_channel(cid)
+
+    async def build(uid):
+        level, muted_until = (await _notify_prefs_for(uid)).get(cid, ("default", 0))
+        if level == "none" or (muted_until and muted_until > _notify_clock()):
+            return None
+        user = await db.get_user_by_id(uid)
+        if not user:
+            return None
+        role = user.get("role") or ("superadmin" if user.get("is_admin") else "user")
+        if not await _can_read_channel(channel, uid, role, stream):
+            return None
+        who = "You were" if uid in direct else "Everyone was"
+        return {"title": "New mention", "body": f"{who} mentioned in #{channel['name']}",
+                "url": f"/chat?channel_id={cid}&message_id={int(msg_id)}", "ref": f"mention-{cid}"}
+    return await _push_dispatch(ids, "mention", build)
+
+
+async def _push_go_live(stream: dict, payload: dict, follower_roles: dict, uids) -> int:
+    """A followed stream went live: `uids` are members the in-portal notification just reached
+    (so access was checked); each is checked again as the stream is at the moment of the push.
+    The streamer is named only for a public stream."""
+    stream_id = int(stream["id"])
+    state = {}
+
+    async def build(uid):
+        if "fresh" not in state:
+            state["fresh"] = await db.get_user_stream(stream_id)
+            state["banned"] = await db.get_banned_user_ids(stream_id)
+        fresh = state["fresh"]
+        if not fresh or uid == fresh.get("user_id"):
+            return None
+        if not _stream_read_allowed(fresh, uid, follower_roles.get(uid, "user"), False, uid in state["banned"]):
+            return None
+        title = f"{payload['streamer']} is live" if fresh.get("is_public") else "A stream you follow is live"
+        return {"title": title, "body": "Open to watch.", "url": f"/watch/{stream_id}",
+                "ref": f"live-{stream_id}", "urgency": "high"}
+    return await _push_dispatch(uids, "golive", build)
+
+
+async def http_push_prefs_get(request: web.Request) -> web.Response:
+    """GET /api/push/prefs: which kinds of push the caller wants (dm, mention, golive)."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    return web.json_response({"prefs": await db.get_push_prefs(token.user_id), "kinds": list(db.PUSH_KINDS)})
+
+
+async def http_push_prefs_put(request: web.Request) -> web.Response:
+    """PUT /api/push/prefs {dm?, mention?, golive?}: switch kinds on or off for the caller."""
+    token, refusal = await _push_user_auth(request)
+    if refusal is not None:
+        return refusal
+    data, bad = await _push_json(request)
+    if bad is not None:
+        return bad
+    unknown = [k for k in data if k not in db.PUSH_KINDS]
+    if unknown or not data:
+        return web.json_response({"error": "Send one or more of: " + ", ".join(db.PUSH_KINDS)}, status=400)
+    if any(not isinstance(v, bool) for v in data.values()):
+        return web.json_response({"error": "Each value must be true or false"}, status=400)
+    return web.json_response({"prefs": await db.set_push_prefs(token.user_id, data)})
+
+
 async def http_service_worker(request: web.Request) -> web.Response:
     """GET /sw.js: the push worker. Public and identical for everyone. Its scope is limited to
     a path nothing is served from (Service-Worker-Allowed), so it never controls a portal page
@@ -6224,6 +6384,12 @@ async def _notify_go_live(stream: dict, payload: dict, broad: bool = True) -> in
         data["url"] = payload["url"]
     title = f"{payload['streamer']} is live!"
     notified = 0
+    # Only followers get a push (the 'everyone' audience is an in-portal notification only)
+    if (stream.get("golive_audience") or "everyone") == "followers" or not broad:
+        follower_ids = {c["id"] for c in candidates}
+    else:
+        follower_ids = {c["id"] for c in await db.get_follower_audience(stream_id)}
+    roles = {c["id"]: (c.get("role") or ("admin" if c.get("is_admin") else "user")) for c in candidates}
     for i in range(0, len(candidates), _GOLIVE_BATCH):
         current = await db.get_user_stream(stream_id) or None      # access as it is now
         if not current:
@@ -6238,9 +6404,14 @@ async def _notify_go_live(stream: dict, payload: dict, broad: bool = True) -> in
                 continue
             rows.append((uid, "stream_live", title, payload["message"], data))
         if rows:
+            pushable = []
             for uid, notif_id in await db.create_notifications_bulk(rows):
                 await _push_notification_frame(uid, notif_id, "stream_live", title, payload["message"], data)
+                if uid in follower_ids:
+                    pushable.append(uid)
             notified += len(rows)
+            if pushable:
+                _schedule_push(_push_go_live(current, payload, roles, pushable))
         await asyncio.sleep(0)
     return notified
 
@@ -16094,13 +16265,28 @@ async def http_login_submit(request: web.Request) -> web.Response:
 
 
 async def http_logout(request: web.Request) -> web.Response:
-    """Handle logout."""
+    """Handle logout. GET (a link) answers with a redirect to the login page. POST {endpoint}
+    (the push script) also removes the push device of this browser, found by its endpoint (in
+    the body, never in the URL), then answers 200; a device of an earlier session of the same
+    member is removed too, which revoking this session's token alone would miss."""
+    post = request.method == "POST"
+    endpoint = None
+    if post:
+        try:
+            data = await request.json()
+            endpoint = data.get("endpoint") if isinstance(data, dict) else None
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            endpoint = None
+        if not isinstance(endpoint, str) or not endpoint or len(endpoint) > webpush.MAX_ENDPOINT_LEN:
+            endpoint = None
     # Try to revoke the session token before clearing cookie
     cookie = request.cookies.get(Config.SESSION_COOKIE_NAME)
     if cookie:
         try:
             token = await authenticate_request(request)
             if token:
+                if endpoint:
+                    await db.delete_push_subscription(token.user_id, endpoint=endpoint)
                 await db.revoke_token(token.token_id)
                 # The chat sockets opened with this session and its voice call
                 # end with it (code 4001); the user's other sessions stay.
@@ -16111,6 +16297,10 @@ async def http_logout(request: web.Request) -> web.Response:
         except Exception:
             pass  # Best effort - still clear cookie
 
+    if post:
+        response = web.json_response({"success": True})
+        response.del_cookie(Config.SESSION_COOKIE_NAME)
+        return response
     response = web.HTTPFound("/login")
     response.del_cookie(Config.SESSION_COOKIE_NAME)
     raise response
@@ -18435,6 +18625,9 @@ async def _notify_mentions(ws, channel, user_id: int, user_role: str, display_na
                         await ws.send_json({
                             "type": "notice", "code": "mass_mention_capped",
                             "message": f"@{kind} reached the first {MASS_MENTION_CAP} members"})
+        # Who may be pushed: named members, and the members an @everyone reached (never @here)
+        push_direct = set(direct)
+        push_everyone = set(rows) if (mass_done and kind == "everyone") else set()
         if mass_done:
             # one transaction for everybody this message notifies; a member named in the text
             # keeps the personal title and is in it once
@@ -18449,6 +18642,8 @@ async def _notify_mentions(ws, channel, user_id: int, user_role: str, display_na
                     await _push_notification_frame(uid, nid, row[1], row[2], row[3] or "", row[4])
                 except Exception as e:
                     logger.debug(f"Mention push failed: {e}")
+        if push_direct or push_everyone:
+            _schedule_push(_push_mentions(channel, msg_id, sorted(push_direct), sorted(push_everyone)))
     except Exception as e:
         logger.error(f"Mention notification error: {e}")
 
@@ -22946,6 +23141,8 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                                     None,
                                     {"conversation_id": conv_id, "message_id": msg_id}
                                 )
+                        # A member with no open chat socket also gets a push (no text, no sender name)
+                        _schedule_push(_push_dm(conv_id, user_id))
 
                     elif msg_type == "dm_typing":
                         try:
@@ -26090,6 +26287,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/push/subscriptions", http_push_delete_all)
     app.router.add_delete("/api/push/subscriptions/{id}", http_push_delete)
     app.router.add_post("/api/push/unsubscribe", http_push_unsubscribe)
+    app.router.add_get("/api/push/prefs", http_push_prefs_get)
+    app.router.add_put("/api/push/prefs", http_push_prefs_put)
     app.router.add_get("/api/admin/push", http_admin_push_get)
     app.router.add_put("/api/admin/push", http_admin_push_put)
     app.router.add_post("/api/admin/push/test", http_admin_push_test)
@@ -26248,6 +26447,7 @@ def create_app() -> web.Application:
     app.router.add_get("/login", http_login_page)
     app.router.add_post("/login", http_login_submit)
     app.router.add_get("/logout", http_logout)
+    app.router.add_post("/logout", http_logout)
     app.router.add_get("/dashboard", http_dashboard)
     app.router.add_get("/terminal/{service_id}", http_terminal_page)
     app.router.add_get("/vnc/{service_id}", http_vnc_page)

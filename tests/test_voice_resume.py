@@ -331,6 +331,8 @@ def test_logout_closes_only_that_sessions_sockets_and_call():
             token_id, user_id = "sess-1", ALICE
 
         class Req:
+            method = "GET"      # the sign-out link
+
             class cookies:
                 @staticmethod
                 def get(name):
