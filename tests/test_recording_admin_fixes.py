@@ -186,6 +186,31 @@ async def main():
         mid = (await r.json())["id"]
     check("a moderator is not an administrator here", "recording" not in await stored(mid))
 
+    # a flag a member stored before this release (1.19 kept any key) is not honoured when the session opens
+    import plugins.ssh as ssh_plugin  # noqa: E402
+    seen = {}
+
+    async def spy(self, ws, target, user_id):
+        seen[target.name] = (user_id, target.config.get("recording"))
+        await ws.close()
+
+    real_handle = ssh_plugin.SSHPlugin.handle_websocket
+    ssh_plugin.SSHPlugin.handle_websocket = spy
+    try:
+        c_old = await make("bob", "stored-by-member", base_cfg)
+        await db.conn.execute("UPDATE user_connections SET config = ? WHERE uuid = ?",
+                              (encrypt_config(json.dumps({**base_cfg, "recording": True})), c_old))
+        await db.conn.commit()
+        for who, cid, label in (("bob", c_old, "stored-by-member"), ("adm", c_admin, "a1")):
+            ws = await sess[who].ws_connect(base.replace("http", "ws") + f"/ws/terminal/{cid}")
+            await ws.receive(timeout=5)
+            await ws.close()
+        check("a member's stored recording flag does not reach the plugin", seen.get("stored-by-member", (0, "x"))[1] is None,
+              str(seen))
+        check("an administrator's connection still carries it", seen.get("a1", (0, None))[1] is True, str(seen))
+    finally:
+        ssh_plugin.SSHPlugin.handle_websocket = real_handle
+
     # the form: the toggle exists for administrators only, nothing inline, the text says what is recorded
     root = Path(__file__).resolve().parent.parent
     index = (root / "static" / "index.html").read_text()

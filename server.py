@@ -5436,7 +5436,12 @@ async def _may_set_recording(token) -> bool:
     of a connection: a recording takes disk space (up to 50 MB a session) and holds what was
     shown on a terminal. Services are already administrator-only (http_create_service and
     http_update_service), so this is the one place a member could reach the flag."""
-    user = await db.get_user_by_id(token.user_id)
+    return await _is_recording_admin(token.user_id)
+
+
+async def _is_recording_admin(user_id) -> bool:
+    """Whether the account (read from the database now) has the role admin or superadmin."""
+    user = await db.get_user_by_id(user_id) if user_id is not None else None
     role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else None
     return role in ("admin", "superadmin")
 
@@ -16016,6 +16021,12 @@ async def handle_user_connection_ws(
         await ws.send_json({"type": "error", "message": f"Plugin not found: {plugin_name}"})
         await ws.close(code=4005, message=b"Plugin not found")
         return
+
+    # The recording flag counts only on a connection an administrator owns: a flag a member stored
+    # before recording existed (or by any other route) is ignored, so a member cannot start recordings
+    # or fill the shared recording budget
+    if "recording" in config and not await _is_recording_admin(connection.get("user_id")):
+        config.pop("recording", None)
 
     # Create ServiceTarget
     target = ServiceTarget(

@@ -880,7 +880,7 @@ List user's remote connections. Sensitive config fields (passwords, private keys
 ---
 
 #### POST /api/connections
-Create a new connection. `config.recording` (SSH connections) is an administrator's setting: only a user with the role `admin` or `superadmin` can set or clear it. From anyone else the key is ignored, not refused: a create stores no flag and an update keeps the stored value, so existing clients that send it keep working and get no error. The stored flag counts as on for exactly `true`, `1`, `"1"` and `"true"` (any case). Output is recorded, keystrokes are not, and only administrators can play recordings back.
+Create a new connection. `config.recording` (SSH connections) is an administrator's setting: only a user with the role `admin` or `superadmin` can set or clear it. From anyone else the key is ignored, not refused: a create stores no flag and an update keeps the stored value, so existing clients that send it keep working and get no error. A session records only when the connection's owner is an administrator when it opens: a flag a member's connection already holds is ignored. The stored flag counts as on for exactly `true`, `1`, `"1"` and `"true"` (any case). Output is recorded, keystrokes are not, and only administrators can play recordings back.
 
 **Request:**
 ```json
@@ -937,7 +937,7 @@ Get connection details. `{id}` is the opaque string token. Sensitive config fiel
 ---
 
 #### PUT /api/connections/{id}
-Update connection. `config.recording` (SSH connections) is an administrator's setting: only a user with the role `admin` or `superadmin` can set or clear it. From anyone else the key is ignored, not refused: a create stores no flag and an update keeps the stored value, so existing clients that send it keep working and get no error. The stored flag counts as on for exactly `true`, `1`, `"1"` and `"true"` (any case). Output is recorded, keystrokes are not, and only administrators can play recordings back. `{id}` is the opaque string token. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
+Update connection. `config.recording` (SSH connections) is an administrator's setting: only a user with the role `admin` or `superadmin` can set or clear it. From anyone else the key is ignored, not refused: a create stores no flag and an update keeps the stored value, so existing clients that send it keep working and get no error. A session records only when the connection's owner is an administrator when it opens: a flag a member's connection already holds is ignored. The stored flag counts as on for exactly `true`, `1`, `"1"` and `"true"` (any case). Output is recorded, keystrokes are not, and only administrators can play recordings back. `{id}` is the opaque string token. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
 
 **Request:**
 ```json
