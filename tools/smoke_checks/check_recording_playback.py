@@ -6,7 +6,7 @@ no exact counts on shared tables, the administrator it needs is made in-process 
 password), and everything it creates it removes. The SSH session goes to a throwaway
 asyncssh server (127.0.0.1, generated host key, random password) started by this module and
 an admin ssh service that points at it with its host key pinned; the shell sends "first",
-waits half a second and sends "second", and does not echo a line that starts with SECRET:.
+waits one and a half seconds and sends "second", and does not echo a line that starts with SECRET:.
 
 Proves: the frame that announces a recorded session arrives before any output; the cast has
 the session's timing and holds no keystrokes; the list never shows a path; the cast route
@@ -44,7 +44,7 @@ class _Sshd(asyncssh.SSHServer):
 
 async def _shell(process):
     process.stdout.write("first\r\n")
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.5)   # the recorder stamps events when it reads them, so the pause is long
     process.stdout.write("second\r\n")
     while not process.stdin.at_eof():
         try:
@@ -208,7 +208,7 @@ async def run(ctx):
                     await ws.send_json({"type": "input", "data": "SECRET:" + TYPED + ("\n" if label == "terminal" else "")})
                     await asyncio.sleep(0.4)
                     await ws.send_json({"type": "input", "data": "echo smokemark\n" if label == "terminal" else "hello"})
-                    await asyncio.sleep(0.8)
+                    await asyncio.sleep(1.8)   # the ssh shell's "second" comes 1.5 s after its "first"
                 seen[label] = True
             await asyncio.sleep(1.0)
 
@@ -232,11 +232,17 @@ async def run(ctx):
                 lines = [json.loads(x) for x in body.splitlines() if x.strip()]
                 events = lines[1:]
                 outs = [(e[0], e[2]) for e in events if e[1] == "o"]
-                first = next((t for t, d in outs if "first" in d), None)
-                second = next((t for t, d in outs if "second" in d), None)
+                first_at = next((i for i, (t, d) in enumerate(outs) if "first" in d), None)
+                second_at = next((i for i, (t, d) in enumerate(outs) if "second" in d), None)
+                first = outs[first_at][0] if first_at is not None else None
+                second = outs[second_at][0] if second_at is not None else None
+                # The shell pauses 1.5 s between the two; the recorder stamps an event when it reads it,
+                # so a slow start can only shrink the gap a little. 1.0 s is a gap the session had to
+                # produce on its own; 6 s is far above anything but a broken clock.
                 ctx.ok("recording playback: the cast route returns an asciicast with the session's own timing",
-                       status == 200 and lines[0].get("version") == 2 and first is not None and second is not None
-                       and 0.4 <= second - first <= 2.0, f"{status} {first} {second}")
+                       status == 200 and lines[0].get("version") == 2 and first_at is not None and second_at is not None
+                       and first_at < second_at and 1.0 <= second - first <= 6.0,
+                       f"{status} {first} {second} {first_at} {second_at}")
                 ctx.ok("recording playback: the cast is not cached, holds a resize and no keystrokes",
                        "no-store" in cc and any(e[1] == "r" and e[2] == "90x28" for e in events)
                        and TYPED not in body and not any(e[1] == "i" for e in events), cc)
