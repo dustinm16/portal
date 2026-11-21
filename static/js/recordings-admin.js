@@ -230,7 +230,9 @@
             const res = await Portal.fetch('/api/recordings/' + encodeURIComponent(id), { method: 'DELETE' });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
-            Portal.toast('Recording deleted', 'success');
+            Portal.toast(data.file_removed === false
+                ? 'Entry removed, no file was touched'
+                : 'Recording deleted', 'success');
         } catch (e) {
             Portal.toast('Could not delete: ' + e.message, 'error');
         }

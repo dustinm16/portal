@@ -21654,7 +21654,8 @@ async def http_recording_cast(request: web.Request) -> web.StreamResponse:
 
 async def http_delete_recording(request: web.Request) -> web.Response:
     """DELETE /api/recordings/{id}: remove the row and the file. A session that is still
-    running cannot be deleted (409)."""
+    running cannot be deleted (409). A row whose file cannot be removed is kept (500); a row whose
+    stored name is not a plain file name is removed without touching any file (file_removed false)."""
     admin, refused = await _recordings_gate(request)
     if refused:
         return refused
@@ -21675,6 +21676,14 @@ async def http_delete_recording(request: web.Request) -> web.Response:
         logger.warning(f"Could not remove recording file of {row['id']}: {e}")
         if not await _recording_audit(admin, "recording_delete_failed", row,
                                       reason=f"file not removed: {e.strerror or type(e).__name__}"):
+            logger.error(f"[AuditLog] Could not record the failed delete of recording {row['id']}")
+        return web.json_response({"error": "The file could not be removed; nothing was deleted"}, status=500)
+    if not file_removed and session_recording.plain_recording_name(row["filename"]):
+        # A plain name that was not removed means the recordings folder failed its safety check: the
+        # file may still be on disk, so the row stays (it is the only way to find the file again).
+        logger.warning(f"Could not remove recording file of {row['id']}: the recordings folder is refused")
+        if not await _recording_audit(admin, "recording_delete_failed", row,
+                                      reason="file not removed: the recordings folder is refused"):
             logger.error(f"[AuditLog] Could not record the failed delete of recording {row['id']}")
         return web.json_response({"error": "The file could not be removed; nothing was deleted"}, status=500)
     try:

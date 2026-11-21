@@ -138,6 +138,26 @@ async def main():
         check("the delete works once the file can be removed", r.status == 200, str(r.status))
     check("a successful delete adds no failed entry", len(await audit(db, "recording_delete_failed")) == 1)
 
+    # ---- a refused recordings folder is a failed delete, not a deleted row ----------------------
+    rid2, fname2 = await add_row(db, rec_dir, uid["bob"], "folder-refused")
+    before_failed = len(await audit(db, "recording_delete_failed"))
+    real_check = recording_paths.check
+    recording_paths.check = lambda *a, **k: "refused for the test"
+    try:
+        async with sess["adm"].delete(f"{base}/api/recordings/{rid2}") as r:
+            refused_status, refused_body = r.status, await r.text()
+    finally:
+        recording_paths.check = real_check
+    check("a plain-named row whose folder fails the safety check answers 500, not deleted",
+          refused_status == 500 and "\"deleted\":" not in refused_body, f"{refused_status} {refused_body}")
+    check("the row and the file are both still there", (Path(rec_dir) / fname2).exists()
+          and await db.get_recording(rid2) is not None)
+    failed_now = await audit(db, "recording_delete_failed")
+    check("one failed-delete entry was written for it", len(failed_now) == before_failed + 1
+          and failed_now[-1]["target_id"] == rid2, str(failed_now[-1:]))
+    async with sess["adm"].delete(f"{base}/api/recordings/{rid2}") as r:
+        check("it can be deleted once the folder passes the check again", r.status == 200, str(r.status))
+
     # ---- item 1: only an administrator sets or clears the recording flag -------------------------
     PUBLIC = "93.184.216.34"
 
