@@ -1412,6 +1412,9 @@ class Database:
         # System webhooks have no owner: webhooks.user_id becomes nullable
         await self._migrate_webhooks_owner_nullable()
 
+        # A recording may belong to a user connection instead of an admin service
+        await self._migrate_recordings_connections()
+
         # Allow several bans per user and stream (one named, any number
         # recorded from anonymous posts)
         await self._migrate_stream_bans_anonymous()
@@ -1728,6 +1731,71 @@ class Database:
                 await conn.execute("PRAGMA foreign_keys = ON")
         except Exception as e:
             logger.warning(f"webhooks migration failed: {e}")
+
+    async def _migrate_recordings_connections(self) -> None:
+        """Rebuild recordings so a recording can belong to a user connection (SSH sessions).
+
+        service_id becomes nullable and connection_id, connection_name and kind are
+        added. Ids and every old column are copied as they are. Foreign keys are off
+        for the rebuild (a DROP with them on would cascade). A deleted connection leaves
+        its recordings (connection_id becomes NULL, the name stays), so a member cannot
+        remove an administrator's record by deleting a connection. The table holds one
+        row per session, so the copy is cheap. Does nothing when already rebuilt, so it
+        is safe to repeat; 1.19.0 runs on the result (it only reads the old columns).
+        """
+        conn = self._connection
+        try:
+            cursor = await conn.execute("PRAGMA table_info(recordings)")
+            info = {row["name"]: row for row in await cursor.fetchall()}
+            if not info:
+                return
+            if "connection_id" not in info or info["service_id"]["notnull"]:
+                await conn.commit()
+                await conn.execute("PRAGMA foreign_keys = OFF")
+                try:
+                    await conn.execute("BEGIN")
+                    await conn.execute("DROP TABLE IF EXISTS recordings_new")
+                    await conn.execute("""
+                        CREATE TABLE recordings_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER NOT NULL,
+                            service_id INTEGER,
+                            filename TEXT NOT NULL,
+                            format TEXT NOT NULL DEFAULT 'asciicast',
+                            size INTEGER DEFAULT 0,
+                            duration REAL DEFAULT 0,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            connection_id INTEGER,
+                            connection_name TEXT,
+                            kind TEXT,
+                            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE,
+                            FOREIGN KEY (connection_id) REFERENCES user_connections(id) ON DELETE SET NULL
+                        )""")
+                    cols = "id, user_id, service_id, filename, format, size, duration, created_at"
+                    extra_src = ", ".join(c if c in info else "NULL" for c in
+                                          ("connection_id", "connection_name", "kind"))
+                    await conn.execute(
+                        f"INSERT INTO recordings_new ({cols}, connection_id, connection_name, kind) "
+                        f"SELECT {cols}, {extra_src} FROM recordings ORDER BY id")
+                    await conn.execute("DROP TABLE recordings")
+                    await conn.execute("ALTER TABLE recordings_new RENAME TO recordings")
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_user_id ON recordings(user_id)")
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_service_id ON recordings(service_id)")
+                    await conn.commit()
+                except Exception:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    await conn.execute("PRAGMA foreign_keys = ON")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_connection_id ON recordings(connection_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at)")
+            await conn.commit()
+        except Exception as e:
+            logger.warning(f"recordings migration failed: {e}")
 
     async def _migrate_stream_bans_anonymous(self) -> None:
         """Rebuild stream_bans without UNIQUE(stream_id, user_id).
@@ -3359,17 +3427,27 @@ class Database:
     async def create_recording(
         self,
         user_id: int,
-        service_id: int,
+        service_id: Optional[int],
         filename: str,
         format: str = "asciicast",
         size: int = 0,
-        duration: float = 0
+        duration: float = 0,
+        connection_id: Optional[int] = None,
+        connection_name: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> int:
-        """Create a new recording record and return its ID."""
+        """Create a new recording record and return its ID.
+
+        An admin service's session carries service_id; a user connection's session
+        carries connection_id (and service_id None). The connection name is kept as
+        it was, so the row stays identifiable after the connection is deleted.
+        """
         cursor = await self.conn.execute(
-            """INSERT INTO recordings (user_id, service_id, filename, format, size, duration)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, service_id, filename, format, size, duration)
+            """INSERT INTO recordings (user_id, service_id, filename, format, size, duration,
+                                       connection_id, connection_name, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, service_id, filename, format, size, duration,
+             connection_id, connection_name, kind)
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -3382,32 +3460,66 @@ class Database:
         )
         await self.conn.commit()
 
+    _RECORDING_SELECT = """
+        SELECT r.id, r.user_id, u.username, r.service_id, r.connection_id, r.filename, r.format,
+               r.size, r.duration, r.created_at,
+               COALESCE(r.connection_name, s.name, uc.name) AS connection_name,
+               COALESCE(r.kind, s.plugin, 'terminal') AS type
+        FROM recordings r
+        LEFT JOIN users u ON u.id = r.user_id
+        LEFT JOIN services s ON s.id = r.service_id
+        LEFT JOIN user_connections uc ON uc.id = r.connection_id"""
+
     async def get_recording(self, recording_id: int) -> Optional[dict]:
-        """Get recording by ID with user and service names."""
+        """Get recording by ID with user and connection names."""
         cursor = await self.conn.execute(
-            """SELECT r.*, u.username, s.name as service_name
-               FROM recordings r
-               JOIN users u ON r.user_id = u.id
-               JOIN services s ON r.service_id = s.id
-               WHERE r.id = ?""",
-            (recording_id,)
-        )
+            self._RECORDING_SELECT + " WHERE r.id = ?", (recording_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
     async def get_all_recordings(self, limit: int = 100) -> list[dict]:
-        """Get all recordings (admin) with user and service names."""
+        """Get all recordings (admin) with user and connection names."""
         cursor = await self.conn.execute(
-            """SELECT r.*, u.username, s.name as service_name
-               FROM recordings r
-               JOIN users u ON r.user_id = u.id
-               JOIN services s ON r.service_id = s.id
-               ORDER BY r.created_at DESC
-               LIMIT ?""",
-            (limit,)
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+            self._RECORDING_SELECT + " ORDER BY r.created_at DESC, r.id DESC LIMIT ?", (limit,))
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_recordings(self, *, user: Optional[str] = None, connection: Optional[str] = None,
+                              since: Optional[str] = None, until: Optional[str] = None,
+                              limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
+        """One page of recordings, newest first, and the total that matches the filters.
+
+        user: a user name (exact, any case) or a numeric user id. connection: part of the
+        connection name. since / until: YYYY-MM-DD, both days included (UTC).
+        """
+        where, params = [], []
+        if user:
+            if user.isdigit() and len(user) <= 18:
+                where.append("(r.user_id = ? OR casefold(u.username) = casefold(?))")
+                params += [int(user), user]
+            else:
+                where.append("casefold(u.username) = casefold(?)")
+                params.append(user)
+        if connection:
+            esc = connection.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("COALESCE(r.connection_name, s.name, uc.name) LIKE ? ESCAPE '\\'")
+            params.append(f"%{esc}%")
+        if since:
+            where.append("r.created_at >= ?")
+            params.append(f"{since} 00:00:00")
+        if until:
+            where.append("r.created_at < datetime(?, '+1 day')")
+            params.append(f"{until} 00:00:00")
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        base = self._RECORDING_SELECT
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM recordings r LEFT JOIN users u ON u.id = r.user_id "
+            "LEFT JOIN services s ON s.id = r.service_id "
+            "LEFT JOIN user_connections uc ON uc.id = r.connection_id" + clause, params)
+        total = (await cursor.fetchone())["n"]
+        cursor = await self.conn.execute(
+            base + clause + " ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset])
+        return [dict(row) for row in await cursor.fetchall()], total
 
     async def cleanup_old_recordings(self, days: int, recordings_dir: Optional[str] = None) -> int:
         """Remove recordings older than `days`: the file first, then the row.

@@ -104,6 +104,16 @@
             gap: 0.5rem;
             margin-top: 0.75rem;
         }
+        .recording-banner {
+            flex: 0 0 auto;
+            background: #7a1f1f;
+            color: #fff;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-align: center;
+            padding: 0.25rem 0.5rem;
+        }
+        .recording-banner[hidden] { display: none; }
         .xterm {
             height: 100%;
             padding: 8px;
@@ -155,6 +165,8 @@
         </div>
     </header>
 
+    <div id="recording-banner" class="recording-banner" role="status" hidden>This session is recorded</div>
+
     <div id="terminal-container"></div>
 
     <div class="keybar" id="keybar" role="toolbar" aria-label="Terminal keys">
@@ -191,7 +203,7 @@
     <script src="/static/js/portal.js?v=46"></script>
     <script src="/static/js/hostkey.js?v=1"></script>
     <script src="/static/js/terminal-keybar.js?v=2"></script>
-    <script src="/static/js/terminal.js?v=6"></script>
+    <script src="/static/js/terminal.js?v=7"></script>
     <script>
         // Initialize terminal with service ID and WS path from server
         const serviceId = '{{SERVICE_ID}}';

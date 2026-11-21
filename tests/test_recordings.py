@@ -21,6 +21,7 @@ os.environ.setdefault("JWT_SECRET", "x" * 64)
 from config import Config  # noqa: E402
 from database import Database  # noqa: E402
 import plugins.terminal as term  # noqa: E402
+import session_recording as sr  # noqa: E402
 import recording_paths  # noqa: E402
 
 # The sandboxes live under /tmp, which a recordings folder may not (see
@@ -38,15 +39,15 @@ def run_with_db(body):
         with tempfile.TemporaryDirectory() as tmp:
             d = Database(str(Path(tmp) / "t.db"))
             await d.connect()
-            saved = (Config.RECORDINGS_DIR, term.db)
+            saved = (Config.RECORDINGS_DIR, sr.db)
             rec_dir = str(Path(tmp) / "recordings")
             Config.RECORDINGS_DIR = rec_dir
             recording_paths.reset()
-            term.db = d
+            sr.db = d
             try:
                 await body(d, rec_dir, Path(tmp))
             finally:
-                Config.RECORDINGS_DIR, term.db = saved
+                Config.RECORDINGS_DIR, sr.db = saved
                 await d.close()
     asyncio.run(go())
 
@@ -203,6 +204,27 @@ def test_marker_is_skipped_when_it_cannot_fit_and_untruncated_files_have_none():
         await tiny.finish()
         text = (Path(rec_dir) / tiny.filename).read_text().splitlines()
         assert tiny.truncated and len(text) == 1 and json.loads(text[0])["version"] == 2
+    run_with_db(body)
+
+
+def test_resize_events_are_recorded_and_bounded():
+    async def body(d, rec_dir, tmp):
+        uid, sid = await make_ids(d)
+        r = term.AsciicastRecorder(uid, sid, cols=100, rows=30)
+        await r.start()
+        r.record_output("a")
+        r.record_resize(120, 40)
+        for bad in ((0, 10), (10, 0), (5000, 10), ("x", 1), (None, None), ([1], 2), (float("inf"), 3)):
+            r.record_resize(*bad)
+        r.record_resize("90", "25")
+        await r.finish()
+        header, events = read_cast(Path(rec_dir) / r.filename)
+        assert header["width"] == 100 and header["height"] == 30
+        assert [(e[1], e[2]) for e in events] == [("o", "a"), ("r", "120x40"), ("r", "90x25")], events
+        assert [e[0] for e in events] == sorted(e[0] for e in events)
+        # a client-sent size that is not a sane integer never reaches the header either
+        r2 = term.AsciicastRecorder(uid, sid, cols="wide", rows=[24])
+        assert (r2.cols, r2.rows) == (80, 24)
     run_with_db(body)
 
 

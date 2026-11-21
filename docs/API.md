@@ -4187,6 +4187,25 @@ Query audit log with optional filters.
 
 ---
 
+### Session Recordings (Admin)
+
+Recorded terminal and SSH sessions (asciicast v2). Only administrators (role `admin` or `superadmin`) can use these routes, and only with a browser session or an all-scope (`*`) bearer token. A member, a moderator or the owner of the connection gets **404** for every route and every id (an existing id and a missing one answer alike); without a credential the answer is `401`; every API key, also one made with `*`, and every narrowly scoped token get `403` (no existing scope covers recordings). A file name or path is never returned. Recording is off per connection unless its config has `"recording": true`.
+
+#### GET /api/recordings
+One page, newest first. Query: `user` (name, any case, or id), `connection` (part of the connection name), `from` and `to` (`YYYY-MM-DD`, both days included), `page` (default 1), `limit` (default 25, max 100). A bad date or number is `400`. Not audited.
+
+**Response:** `{"recordings": [{"id": 7, "user": "bob", "user_id": 3, "connection": "build box", "type": "ssh", "started_at": "2026-11-21T12:00:00Z", "ended_at": "2026-11-21T12:04:10Z", "duration": 250.0, "size": 18234, "live": false}], "total": 1, "page": 1, "limit": 25}`. A session that is still running has `live: true` and no end time.
+
+#### GET /api/recordings/{id}/cast
+The recording file (`application/x-asciicast`, `Cache-Control: no-store`). `?download=1` sends it as an attachment. The file is found through the database row only and must be a plain file inside the recordings folder (no symlink, no path in the name): a row that points anywhere else is `403`, a missing file `404`. Audited as `recording_play` or `recording_download` (administrator, recording id, owner, connection); if the entry cannot be written the request is `500` and nothing is sent.
+
+#### DELETE /api/recordings/{id}
+Removes the row and the file. `409` while the session is still running. Audited as `recording_delete`. **Response:** `{"deleted": 7, "file_removed": true}` (`false` when the row's name was not a plain file name, in which case no file was touched).
+
+The audit actions `recording_play`, `recording_download` and `recording_delete` are visible to administrators, not to moderators.
+
+---
+
 ### Security Events (Superadmin)
 
 A separate log of authentication and credential events, in its own table (`security_events`) because the audit log needs a signed-in actor and cannot hold a failed login for an unknown user. Rows are kept when an account is deleted. Reading and exporting need the **superadmin** role on a credential with admin scope; moderators, admins and narrower keys get `403`.

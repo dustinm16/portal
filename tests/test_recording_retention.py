@@ -19,6 +19,7 @@ os.environ.setdefault("JWT_SECRET", "x" * 64)
 from config import Config  # noqa: E402
 from database import Database  # noqa: E402
 import plugins.terminal as term  # noqa: E402
+import session_recording as sr  # noqa: E402
 import recording_paths  # noqa: E402
 
 # The sandboxes live under /tmp, which a recordings folder may not (see
@@ -152,8 +153,8 @@ def test_row_kept_when_file_cannot_be_removed():
 def test_running_session_recording_survives_retention():
     async def body(d, rec_dir, tmp):
         uid, sid = await make_ids(d)
-        saved = term.db
-        term.db = d
+        saved = sr.db
+        sr.db = d
         try:
             r = term.AsciicastRecorder(uid, sid)
             rid = await r.start()
@@ -179,7 +180,7 @@ def test_running_session_recording_survives_retention():
             assert await d.cleanup_old_recordings(30) == 1
             assert not path.exists() and rid not in await row_ids(d)
         finally:
-            term.db = saved
+            sr.db = saved
     run_with_db(body)
 
 

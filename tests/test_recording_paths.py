@@ -19,6 +19,7 @@ os.environ.setdefault("JWT_SECRET", "x" * 64)
 from config import Config  # noqa: E402
 from database import Database  # noqa: E402
 import plugins.terminal as term  # noqa: E402
+import session_recording as sr  # noqa: E402
 import recording_paths  # noqa: E402
 import vod_staging  # noqa: E402
 
@@ -82,12 +83,12 @@ def test_content_rule():
 def test_refused_folder_is_not_chmodded_not_swept_and_recording_goes_off():
     async def go():
         recording_paths.reset()
-        saved = (Config.RECORDINGS_DIR, term.db, vod_staging.TEMP_ROOTS)
+        saved = (Config.RECORDINGS_DIR, sr.db, vod_staging.TEMP_ROOTS)
         vod_staging.TEMP_ROOTS = ()
         with tempfile.TemporaryDirectory() as tmp:
             d = Database(str(Path(tmp) / "t.db"))
             await d.connect()
-            term.db = d
+            sr.db = d
             try:
                 rec = Path(tmp) / "rec"
                 rec.mkdir(mode=0o755)
@@ -122,7 +123,7 @@ def test_refused_folder_is_not_chmodded_not_swept_and_recording_goes_off():
                 recording_paths.reset()
                 assert await d.cleanup_orphan_recordings() == 1 and not cast.exists()
             finally:
-                Config.RECORDINGS_DIR, term.db, vod_staging.TEMP_ROOTS = saved
+                Config.RECORDINGS_DIR, sr.db, vod_staging.TEMP_ROOTS = saved
                 await d.close()
     asyncio.run(go())
 

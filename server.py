@@ -128,6 +128,7 @@ import file_manager
 import gameservers
 import jobs as bg_jobs
 import hostkeys
+import session_recording
 import sshpass_rules
 import grant_expiry
 import sftp_browser
@@ -20963,6 +20964,168 @@ async def http_unblock_user(request: web.Request) -> web.Response:
 
 # Audit entries about system webhooks and alert routing: the audit log is open to moderators, and
 # these name destinations and settings only a superadmin manages, so everyone else never sees them.
+# Session recordings (administrators only). A recording can hold anything that was shown on a
+# terminal, so these routes are for the roles admin and superadmin and for nobody else: a
+# member, a moderator or a scoped key gets nothing, not even for their own sessions.
+RECORDING_AUDIT_ACTIONS = ("recording_play", "recording_download", "recording_delete")
+_RECORDINGS_PAGE_MAX = 100
+_RECORDING_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+async def _recordings_gate(request: web.Request):
+    """(user, None) for an administrator with a browser session or a full-scope token, else
+    (None, response). No credential is 401. Anyone who is not an administrator gets 404 before
+    any recording is looked up, so an id that exists and one that does not answer alike. A
+    scoped token and every API key get 403: no existing scope covers recordings (the "admin"
+    scope is the whole administrator surface, too wide to stand for session content), so a
+    recording is only reachable through a full session of an administrator."""
+    token = await authenticate_request(request)
+    if not token:
+        return None, unauthorized_response(request)
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else None
+    if role not in ("admin", "superadmin"):
+        return None, web.json_response({"error": "Not found"}, status=404)
+    if str(token.token_id or "").startswith("apikey-") or not has_full_user_scope(token):
+        return None, full_scope_required_response()
+    return user, None
+
+
+def _recording_time(text) -> Optional[str]:
+    if not text:
+        return None
+    try:
+        return datetime.strptime(str(text)[:19], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def _recording_public(row: dict) -> dict:
+    """A recording as the API shows it: never the file name or any path."""
+    started = _recording_time(row.get("created_at"))
+    live = row["id"] in db.live_recording_ids
+    ended = None
+    duration = float(row.get("duration") or 0)
+    if started and not live and duration > 0:
+        ended = (datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ") + timedelta(seconds=duration)
+                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "id": row["id"],
+        "user": row.get("username"),
+        "user_id": row.get("user_id"),
+        "connection": row.get("connection_name"),
+        "type": row.get("type"),
+        "started_at": started,
+        "ended_at": ended,
+        "duration": round(duration, 3) if not live else None,
+        "size": int(row.get("size") or 0),
+        "live": live,
+    }
+
+
+async def http_list_recordings(request: web.Request) -> web.Response:
+    """GET /api/recordings: one page, newest first. Filters: user, connection (part of the
+    name), from and to (YYYY-MM-DD). Listing is not audited; playing, downloading and
+    deleting are."""
+    user, refused = await _recordings_gate(request)
+    if refused:
+        return refused
+    q = request.query
+    for key in ("from", "to"):
+        if q.get(key) and not _RECORDING_DATE_RE.fullmatch(q[key]):
+            return web.json_response({"error": f"{key} must be a date, YYYY-MM-DD"}, status=400)
+    try:
+        page = max(1, int(q.get("page", 1)))
+        limit = min(_RECORDINGS_PAGE_MAX, max(1, int(q.get("limit", 25))))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "page and limit must be numbers"}, status=400)
+    if page > 100000:
+        page = 100000
+    rows, total = await db.list_recordings(
+        user=(q.get("user") or "").strip()[:100] or None,
+        connection=(q.get("connection") or "").strip()[:100] or None,
+        since=q.get("from") or None, until=q.get("to") or None,
+        limit=limit, offset=(page - 1) * limit)
+    return web.json_response({"recordings": [_recording_public(r) for r in rows],
+                              "total": total, "page": page, "limit": limit})
+
+
+async def _recording_audit(admin: dict, action: str, row: dict) -> bool:
+    """Write the audit entry for one recording access; False when it could not be written
+    (the caller then refuses, so nothing is played, downloaded or deleted unrecorded)."""
+    try:
+        await db.create_audit_entry(
+            action=action, actor_id=admin["id"], actor_username=admin["username"],
+            target_id=row["id"], target_type="recording", target_name=row.get("connection_name"),
+            details={"recording_id": row["id"], "owner": row.get("username"),
+                     "owner_id": row.get("user_id"), "connection": row.get("connection_name")})
+        return True
+    except Exception as e:
+        logger.error(f"[AuditLog] Failed to log {action}: {e}")
+        return False
+
+
+async def http_recording_cast(request: web.Request) -> web.StreamResponse:
+    """GET /api/recordings/{id}/cast: the asciicast file of one recording (?download=1 sends it
+    as an attachment). The file is found through the database row only and proven to be a
+    plain file inside the recordings folder; it is never cached."""
+    admin, refused = await _recordings_gate(request)
+    if refused:
+        return refused
+    row = await db.get_recording(int(request.match_info["id"]))
+    if not row:
+        return web.json_response({"error": "Not found"}, status=404)
+    try:
+        fd = session_recording.open_recording(row["filename"])
+    except session_recording.RecordingFileMissing:
+        return web.json_response({"error": "The recording file is gone"}, status=404)
+    except session_recording.RecordingFileRefused as e:
+        logger.warning(f"Recording {row['id']} refused: {e}")
+        return web.json_response({"error": "The recording cannot be read"}, status=403)
+    download = request.query.get("download") == "1"
+    try:
+        if not await _recording_audit(admin, "recording_download" if download else "recording_play", row):
+            return web.json_response({"error": "The audit entry could not be written"}, status=500)
+        headers = {"Content-Type": "application/x-asciicast; charset=utf-8",
+                   "Cache-Control": "no-store", "Pragma": "no-cache"}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="recording-{row["id"]}.cast"'
+        resp = web.StreamResponse(headers=headers)
+        await resp.prepare(request)
+        loop = asyncio.get_running_loop()
+        while True:
+            chunk = await loop.run_in_executor(None, os.read, fd, 262144)
+            if not chunk:
+                break
+            await resp.write(chunk)
+        await resp.write_eof()
+        return resp
+    finally:
+        os.close(fd)
+
+
+async def http_delete_recording(request: web.Request) -> web.Response:
+    """DELETE /api/recordings/{id}: remove the row and the file. A session that is still
+    running cannot be deleted (409)."""
+    admin, refused = await _recordings_gate(request)
+    if refused:
+        return refused
+    row = await db.get_recording(int(request.match_info["id"]))
+    if not row:
+        return web.json_response({"error": "Not found"}, status=404)
+    if row["id"] in db.live_recording_ids:
+        return web.json_response({"error": "The session is still running"}, status=409)
+    if not await _recording_audit(admin, "recording_delete", row):
+        return web.json_response({"error": "The audit entry could not be written"}, status=500)
+    try:
+        file_removed = session_recording.remove_recording_file(row["filename"])
+    except OSError as e:
+        logger.warning(f"Could not remove recording file of {row['id']}: {e}")
+        return web.json_response({"error": "The file could not be removed; nothing was deleted"}, status=500)
+    await db.delete_recording(row["id"])
+    return web.json_response({"deleted": row["id"], "file_removed": file_removed})
+
+
 SUPERADMIN_ONLY_AUDIT_ACTIONS = ("webhook_system_create", "webhook_system_update", "webhook_system_delete",
                                  "webhook_allow_private", "alert_notify_change")
 
@@ -21004,6 +21167,9 @@ async def http_get_audit_log(request: web.Request) -> web.Response:
 
     if role != "superadmin":
         filters["exclude_actions"] = SUPERADMIN_ONLY_AUDIT_ACTIONS
+    if role == "moderator":
+        # who looked at which session recording is for administrators only
+        filters["exclude_actions"] = tuple(filters.get("exclude_actions", ())) + RECORDING_AUDIT_ACTIONS
     entries = await db.get_audit_log(limit=limit, offset=offset, **filters)
     total = await db.get_audit_log_count(**filters)
     return web.json_response({"entries": entries, "total": total})
@@ -26747,6 +26913,9 @@ def create_app() -> web.Application:
 
     # Audit Log
     app.router.add_get("/api/admin/audit-log", http_get_audit_log)
+    app.router.add_get("/api/recordings", http_list_recordings)
+    app.router.add_get(r"/api/recordings/{id:\d{1,18}}/cast", http_recording_cast, allow_head=False)
+    app.router.add_delete(r"/api/recordings/{id:\d{1,18}}", http_delete_recording)
     app.router.add_get("/api/admin/security-events", http_get_security_events)
     app.router.add_get("/api/admin/security-events/export", http_export_security_events,
                        allow_head=False)
@@ -26872,7 +27041,7 @@ class PortalServer:
         # Terminal recordings are private: tighten an existing directory now,
         # not only when the next recording starts.
         try:
-            from plugins.terminal import prepare_recordings_dir, tighten_recording_files, RecordingsDirRefused
+            from session_recording import prepare_recordings_dir, tighten_recording_files, RecordingsDirRefused
             prepare_recordings_dir(Config.RECORDINGS_DIR)
             tightened = tighten_recording_files(Config.RECORDINGS_DIR)
             if tightened:

@@ -302,10 +302,21 @@ function initKeybar() {
 }
 
 /**
+ * Show or hide the "This session is recorded" banner. Only the server's word counts: the
+ * connected frame carries recording:true when this session is being recorded.
+ */
+function setRecordingBanner(on) {
+    const el = document.getElementById('recording-banner');
+    if (el) el.hidden = !on;
+    refit();  // the banner takes room from the terminal
+}
+
+/**
  * Connect to WebSocket
  */
 function connect() {
     updateStatus('connecting', 'Connecting...');
+    setRecordingBanner(false);
 
     const wsUrl = Portal.getWebSocketUrl(currentWsPath);
     ws = new WebSocket(wsUrl);
@@ -324,6 +335,10 @@ function connect() {
             switch (data.type) {
                 case 'connected':
                     term.writeln('\x1b[32m✓ Connected to terminal\x1b[0m\r\n');
+                    if (data.recording === true) {
+                        setRecordingBanner(true);
+                        term.writeln('\x1b[33mThis session is recorded\x1b[0m\r\n');
+                    }
                     sendResize();
                     break;
                 case 'error':
@@ -349,6 +364,7 @@ function connect() {
 
     ws.onclose = (event) => {
         updateStatus('disconnected', 'Disconnected');
+        setRecordingBanner(false);
 
         if (event.code === 4001) {
             // The session was revoked (logout, sign-out everywhere, password reset):

@@ -269,11 +269,11 @@ says18("rollback makes unswept rows permanent", "rollback", "1.17.0", "permanent
 says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
-check("1.18.0: the user-connections, dashboard and terminal versions stated are the ones the pages load",
+check("1.18.0: the user-connections and dashboard versions stated are the ones the pages load (terminal.js moved on in 1.20.0)",
       re.search(r"user-connections\.js\?v=55", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
-      and re.search(r"terminal\.js\?v=6", (ROOT / "static" / "terminal.html").read_text()) and "`terminal.js` 6" in sec18)
+      and "`terminal.js` 6" in sec18)
 check("1.18.0: the admin.js and portal.css versions stated are the ones the 1.18.0 pages loaded (admin.js moved on in 1.19.0)",
       re.search(r"js/admin\.js\?v=39", (ROOT / "static" / "index.html").read_text()) and "`admin.js` 38" in sec18
       and re.search(r"css/portal\.css\?v=55", (ROOT / "static" / "index.html").read_text()) and "`portal.css` 55" in sec18)
@@ -492,6 +492,33 @@ _mk = (ROOT / "tools" / "make_screenshots.py").read_text()
 check("make_screenshots takes the 1.19.0 pictures", all(f'@shot("{n}")' in _mk for n in ("chat-notify-menu", "phone-notifications", "admin-push")))
 check("api-docs.html and docs/API.md both describe the rebind call",
       "rebind" in (ROOT / "docs" / "API.md").read_text() and "rebind" in _pages["api-docs.html"])
+
+# --- 1.20.0 notes: recordings -------------------------------------------------------------
+m20 = re.search(r"### Upgrade notes for 1\.20\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.20.0' section directly before the 1.19.0 one",
+      m20 is not None and text.index("### Upgrade notes for 1.20.0") < text.index("### Upgrade notes for 1.19.0")
+      and text.index("### Upgrade notes for 1.20.0") > text.index("### Upgrade notes for 1.18.0"))
+low20 = (m20.group(1) if m20 else "").lower()
+for name, needles in (("recording is off unless the flag is a real boolean true", ("off", '"recording": true', "real boolean")),
+                      ("output only, never keystrokes, and what the remote echoes is recorded", ("output only", "keystrokes are never recorded", "echo")),
+                      ("0600 files, the cap and retention", ("0600", "50 mb", "retention_recordings_days")),
+                      ("a shared connection records the person at the keyboard", ("shared", "at the keyboard")),
+                      ("the banner comes from the server before any output", ("this session is recorded", "connected", "before any output")),
+                      ("only administrators, 404 for everyone else, 403 for API keys", ("administrators", "404", "every api key gets 403")),
+                      ("the routes and the audit actions", ("/api/recordings", "/cast", "recording_play", "recording_download", "recording_delete")),
+                      ("the refused rows", ("symlink", "outside the folder", "refused")),
+                      ("why asciinema-player is not used", ("asciinema-player", "webassembly", "wasm-unsafe-eval")),
+                      ("the table rebuild and what deleting a connection does", ("rebuilt", "service_id", "deleting a connection")),
+                      ("the static versions", ("terminal.js", "version 7", "recordings-admin.js", "version 1")),
+                      ("rollback", ("1.19.0", "migrated database")),
+                      ("what is not tested", ("not tested", "no browser", "no microphone", "cloudflare", "real ssh server"))):
+    check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
+_pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
+for js, ver in (("terminal.js", 7), ("recordings-admin.js", 1)):
+    loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
+    check(f"1.20.0 states {js} as version {ver} and the pages load exactly that", loaded == {str(ver)}, str(loaded))
+check("api-docs.html and docs/API.md both describe the recordings routes",
+      all("/api/recordings" in t_ and "recording_play" in t_ for t_ in ((ROOT / "docs" / "API.md").read_text(), _pages20["api-docs.html"])))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

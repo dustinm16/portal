@@ -428,6 +428,7 @@
                         <li><a href="#backups">Backups</a></li>
                         <li><a href="#ip-blocking">IP Blocking</a></li>
                         <li><a href="#audit-log">Audit Log</a></li>
+                        <li><a href="#recordings">Session Recordings</a></li>
                         <li><a href="#security-events">Security Events</a></li>
                         <li><a href="#automod">Auto-Moderation</a></li>
                     </ul>
@@ -6478,6 +6479,54 @@ Headers:
                     </div>
                 </div>
 
+                <!-- Session Recordings -->
+                <h2 id="recordings">Session Recordings <span class="badge-admin">ADMIN</span></h2>
+                <p>Recorded terminal and SSH sessions (asciicast v2). Only administrators (role <code>admin</code> or <code>superadmin</code>) can use these routes, with a browser session or an all-scope (<code>*</code>) bearer token. Anyone else who is signed in gets <code>404</code> for every route and every id, a request without a credential gets <code>401</code>, and every API key (also one made with <code>*</code>) and every narrowly scoped token gets <code>403</code>: no existing scope covers recordings. A file name or path is never returned. Recording is off per connection unless its config has <code>"recording": true</code>; input is never recorded.</p>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/recordings</span>
+                        <span class="endpoint-desc">List recordings</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>One page, newest first. Not audited.</p>
+                        <table class="param-table">
+                            <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+                            <tr><td><code>user</code></td><td>string</td><td>User name (any case) or id</td></tr>
+                            <tr><td><code>connection</code></td><td>string</td><td>Part of the connection name</td></tr>
+                            <tr><td><code>from</code>, <code>to</code></td><td>date</td><td><code>YYYY-MM-DD</code>, both days included</td></tr>
+                            <tr><td><code>page</code>, <code>limit</code></td><td>int</td><td>Default 1 and 25, limit at most 100</td></tr>
+                        </table>
+                        <p>Returns <code>{"recordings": [{"id", "user", "user_id", "connection", "type", "started_at", "ended_at", "duration", "size", "live"}], "total", "page", "limit"}</code>. A running session has <code>live: true</code> and no end time.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-get">GET</span>
+                        <span class="endpoint-path">/api/recordings/{id}/cast</span>
+                        <span class="endpoint-desc">Play or download a recording</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>The recording file, <code>Cache-Control: no-store</code>; <code>?download=1</code> sends it as an attachment. The file is found through the database row only and must be a plain file inside the recordings folder (no symlink, no path in the name): any other row is <code>403</code>, a missing file <code>404</code>. Audited as <code>recording_play</code> or <code>recording_download</code> with the administrator, the recording id, its owner and its connection; if the entry cannot be written the answer is <code>500</code> and nothing is sent.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint admin-only">
+                    <div class="endpoint-header" data-endpoint-toggle>
+                        <span class="method method-delete">DELETE</span>
+                        <span class="endpoint-path">/api/recordings/{id}</span>
+                        <span class="endpoint-desc">Delete a recording</span>
+                        <span class="badge-admin">ADMIN</span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Removes the row and the file; <code>409</code> while the session still runs. Audited as <code>recording_delete</code>. Returns <code>{"deleted": 7, "file_removed": true}</code>. The three audit actions are visible to administrators, not to moderators.</p>
+                    </div>
+                </div>
+
                 <!-- Security Events -->
                 <h2 id="security-events">Security Events <span class="badge-admin">SUPERADMIN</span></h2>
                 <p>A separate log of authentication and credential events. It has its own table because the audit log needs a signed-in actor and cannot hold a failed login for an unknown user; its rows are kept when an account is deleted. Reading and exporting need the superadmin role on a credential with admin scope; others get <code>403</code>. Backup runs, downloads, deletes and settings changes stay in the audit log only.</p>
@@ -6714,6 +6763,10 @@ X-RateLimit-Reset: 1704067200</pre>
             const endpoint = header.closest('.endpoint');
             endpoint.classList.toggle('expanded');
         }
+        // Headers without an inline handler (the Session Recordings section)
+        document.querySelectorAll('[data-endpoint-toggle]').forEach((h) => {
+            h.addEventListener('click', () => toggleEndpoint(h));
+        });
 
         async function tryEndpoint(method, path, button) {
             const output = button.nextElementSibling;

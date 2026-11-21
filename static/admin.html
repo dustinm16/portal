@@ -661,6 +661,7 @@
                 <button class="tab-btn" onclick="showTab('system', event)">System</button>
                 <button class="tab-btn" onclick="showTab('files', event)">Files</button>
                 <button class="tab-btn" onclick="showTab('audit', event)">Audit Log</button>
+                <button class="tab-btn" id="tab-btn-recordings" data-recordings-tab style="display:none;">Recordings</button>
                 <button class="tab-btn" onclick="showTab('automod', event)">Auto-Mod</button>
                 <button class="tab-btn" id="tab-btn-webhooks" style="display:none;" onclick="showTab('webhooks', event)">Webhooks</button>
                 <button class="tab-btn" onclick="showTab('updates', event)">Updates</button>
@@ -2146,6 +2147,9 @@
                         <option value="webhook_system_delete">System Webhook Delete</option>
                         <option value="webhook_allow_private">Webhook Private Addresses</option>
                         <option value="alert_notify_change">Alert Notice Change</option>
+                        <option value="recording_play">Recording Played</option>
+                        <option value="recording_download">Recording Downloaded</option>
+                        <option value="recording_delete">Recording Deleted</option>
                     </select>
                     <button class="range-btn" onclick="loadAuditLog()">Refresh</button>
                     <span id="audit-count" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
@@ -2212,6 +2216,58 @@
                             </thead>
                             <tbody id="automod-actions-body"></tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recordings Tab (session recordings, administrators only) -->
+            <div id="tab-recordings" class="tab-content">
+                <p class="tab-description">Recorded terminal and SSH sessions. Playing, downloading and deleting a recording is written to the audit log.</p>
+                <div class="sysmon-toolbar">
+                    <input type="text" id="rec-filter-user" placeholder="User" maxlength="100" autocomplete="off">
+                    <input type="text" id="rec-filter-connection" placeholder="Connection" maxlength="100" autocomplete="off">
+                    <label>From <input type="date" id="rec-filter-from"></label>
+                    <label>To <input type="date" id="rec-filter-to"></label>
+                    <button class="range-btn" id="rec-apply">Filter</button>
+                    <button class="range-btn" id="rec-reset">Reset</button>
+                    <span id="rec-count" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
+                </div>
+                <div class="sys-table-scroll">
+                    <table class="sysmon-table">
+                        <thead>
+                            <tr><th>Started</th><th>Ended</th><th>User</th><th>Connection</th><th>Type</th><th>Size</th><th></th></tr>
+                        </thead>
+                        <tbody id="rec-body"></tbody>
+                    </table>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:8px;justify-content:center;">
+                    <button class="range-btn" id="rec-prev" disabled>Previous</button>
+                    <span id="rec-page-info" style="padding:6px;color:var(--text-muted);font-size:0.85rem;"></span>
+                    <button class="range-btn" id="rec-next" disabled>Next</button>
+                </div>
+                <div id="rec-modal" class="modal" style="display:none;">
+                    <div class="modal-backdrop" id="rec-modal-backdrop"></div>
+                    <div class="modal-content modal-xlarge">
+                        <div class="modal-header">
+                            <h3 id="rec-modal-title">Recording</h3>
+                            <button class="modal-close" id="rec-modal-close" aria-label="Close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="sysmon-toolbar">
+                                <button class="range-btn" id="rec-play-toggle">Pause</button>
+                                <button class="range-btn" id="rec-restart">Restart</button>
+                                <label>Speed
+                                    <select id="rec-speed">
+                                        <option value="1">1x</option>
+                                        <option value="2">2x</option>
+                                        <option value="4">4x</option>
+                                        <option value="8">8x</option>
+                                    </select>
+                                </label>
+                                <span id="rec-play-status" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
+                            </div>
+                            <div id="rec-player" style="flex:1;min-height:0;overflow:auto;background:#000;padding:4px;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2432,6 +2488,7 @@
     <script src="/static/js/vendor/codemirror/mode/sql/sql.js?v=1"></script>
     <script src="/static/js/vendor/codemirror/mode/clike/clike.js?v=1"></script>
     <script src="/static/js/fileeditor.js?v=1"></script>
+    <script src="/static/js/recordings-admin.js?v=1"></script>
     <script>
         // Tab switching
         function showTab(tabName, evt) {

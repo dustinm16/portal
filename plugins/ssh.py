@@ -11,6 +11,7 @@ import sshpass_rules
 from hostkeys import HostKeyRefused, connect_verified, policy_for
 from .base import PluginBase, PluginInfo, ServiceTarget
 from . import register_plugin
+from session_recording import AsciicastRecorder, recorder_for, recording_wanted
 
 logger = logging.getLogger("portal.plugins.ssh")
 
@@ -86,6 +87,11 @@ class SSHPlugin(PluginBase):
                     "type": "string",
                     "description": "Remote shell to use (e.g. /bin/bash, /usr/bin/fish)",
                     "default": ""
+                },
+                "recording": {
+                    "type": "boolean",
+                    "description": "Record the session output (asciicast format; input is never recorded)",
+                    "default": False
                 }
             }
         }
@@ -222,13 +228,29 @@ class SSHPlugin(PluginBase):
                         return
                     proc_opts["command"] = shell_cmd
                 async with conn.create_process(**proc_opts) as process:
-                    await ws.send_json({
-                        "type": "connected",
-                        "host": host,
-                        "username": connect_opts["username"]
-                    })
+                    # Recording starts here, once the shell is up (so a failed login leaves
+                    # no empty recording and the clock starts with the session). It belongs
+                    # to the person at the keyboard: a grantee of a shared connection is
+                    # recorded under the grantee's own id.
+                    recorder: Optional[AsciicastRecorder] = None
+                    if recording_wanted(config):
+                        recorder = recorder_for(target, user_id, term_cols, term_rows, "ssh")
+                        if recorder is not None and await recorder.start() is None:
+                            recorder = None
+                    try:
+                        # The server says whether this session is recorded, in the frame that
+                        # opens it, before any output is sent or recorded.
+                        await ws.send_json({
+                            "type": "connected",
+                            "host": host,
+                            "username": connect_opts["username"],
+                            "recording": recorder is not None
+                        })
 
-                    await self._ssh_loop(ws, process)
+                        await self._ssh_loop(ws, process, recorder)
+                    finally:
+                        if recorder is not None:
+                            await recorder.finish()
 
         except HostKeyRefused:
             # Not a failure to report here: the caller shows the fingerprint
@@ -241,8 +263,9 @@ class SSHPlugin(PluginBase):
             logger.error(f"SSH connection error for user {user_id}: {e}")
             await ws.send_json({"type": "error", "message": "Connection failed"})
 
-    async def _ssh_loop(self, ws: web.WebSocketResponse, process) -> None:
-        """Handle SSH I/O."""
+    async def _ssh_loop(self, ws: web.WebSocketResponse, process,
+                        recorder: Optional[AsciicastRecorder] = None) -> None:
+        """Handle SSH I/O. Only what the remote sends (and resizes) is recorded, never input."""
         async def read_stdout():
             try:
                 # Use read(n) not async-for: the async iterator calls readline()
@@ -254,6 +277,8 @@ class SSHPlugin(PluginBase):
                 while not process.stdout.at_eof():
                     data = await process.stdout.read(65536)
                     if data:
+                        if recorder is not None:
+                            recorder.record_output(data)
                         await ws.send_str(data)
             except Exception as e:
                 logger.debug(f"SSH stdout ended: {e}")
@@ -263,6 +288,8 @@ class SSHPlugin(PluginBase):
                 while not process.stderr.at_eof():
                     data = await process.stderr.read(65536)
                     if data:
+                        if recorder is not None:
+                            recorder.record_output(data)
                         await ws.send_str(data)
             except Exception as e:
                 logger.debug(f"SSH stderr ended: {e}")
@@ -282,6 +309,8 @@ class SSHPlugin(PluginBase):
                                 data.get("cols", 80),
                                 data.get("rows", 24)
                             )
+                            if recorder is not None:
+                                recorder.record_resize(data.get("cols", 80), data.get("rows", 24))
                     except json.JSONDecodeError:
                         try:
                             process.stdin.write(msg.data)
