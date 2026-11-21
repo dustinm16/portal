@@ -6583,7 +6583,7 @@ Headers:
                             <tr><td><code>from</code>, <code>to</code></td><td>date</td><td><code>YYYY-MM-DD</code>, both days included</td></tr>
                             <tr><td><code>page</code>, <code>limit</code></td><td>int</td><td>Default 1 and 25, limit at most 100</td></tr>
                         </table>
-                        <p>Returns <code>{"recordings": [{"id", "user", "user_id", "connection", "type", "started_at", "ended_at", "duration", "size", "live"}], "total", "page", "limit"}</code>. A running session has <code>live: true</code> and no end time.</p>
+                        <p>Returns <code>{"recordings": [{"id", "user", "user_id", "connection", "type", "started_at", "ended_at", "duration", "size", "live", "interrupted"}], "total", "page", "limit"}</code>. A running session has <code>live: true</code> and no end time. <code>interrupted: true</code> marks a session that a restart of the portal cut short: at the next start its row gets the size of its file, the time of the file's last complete event as <code>duration</code> (and so an end time), and this flag; a recording whose file is missing is left as it was.</p>
                     </div>
                 </div>
 

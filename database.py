@@ -1805,6 +1805,10 @@ class Database:
                     raise
                 finally:
                     await conn.execute("PRAGMA foreign_keys = ON")
+            cursor = await conn.execute("PRAGMA table_info(recordings)")
+            if "interrupted" not in {row["name"] for row in await cursor.fetchall()}:
+                # set at the start after a restart cut a session short (see finish_interrupted)
+                await conn.execute("ALTER TABLE recordings ADD COLUMN interrupted INTEGER DEFAULT 0")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_connection_id ON recordings(connection_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at)")
             await conn.commit()
@@ -3474,9 +3478,26 @@ class Database:
         )
         await self.conn.commit()
 
+    async def list_unfinished_recordings(self) -> list[dict]:
+        """Rows that have no end: duration 0 and not yet marked interrupted. A finished session
+        always stores a duration above 0, so these are sessions that a restart cut off (or rows
+        of a running session, which the caller skips)."""
+        cursor = await self.conn.execute(
+            "SELECT id, filename FROM recordings "
+            "WHERE COALESCE(duration, 0) = 0 AND COALESCE(interrupted, 0) = 0 ORDER BY id")
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def mark_recording_interrupted(self, recording_id: int, size: int, duration: float) -> bool:
+        cursor = await self.conn.execute(
+            "UPDATE recordings SET size = ?, duration = ?, interrupted = 1 "
+            "WHERE id = ? AND COALESCE(interrupted, 0) = 0 AND COALESCE(duration, 0) = 0",
+            (size, duration, recording_id))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
     _RECORDING_SELECT = """
         SELECT r.id, r.user_id, u.username, r.service_id, r.connection_id, r.filename, r.format,
-               r.size, r.duration, r.created_at,
+               r.size, r.duration, r.created_at, r.interrupted,
                COALESCE(r.connection_name, s.name, uc.name) AS connection_name,
                COALESCE(r.kind, s.plugin, 'terminal') AS type
         FROM recordings r

@@ -21557,7 +21557,8 @@ def _recording_public(row: dict) -> dict:
     live = row["id"] in db.live_recording_ids
     ended = None
     duration = float(row.get("duration") or 0)
-    if started and not live and duration > 0:
+    interrupted = bool(row.get("interrupted"))
+    if started and not live and (duration > 0 or interrupted):
         ended = (datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ") + timedelta(seconds=duration)
                  ).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
@@ -21571,6 +21572,7 @@ def _recording_public(row: dict) -> dict:
         "duration": round(duration, 3) if not live else None,
         "size": int(row.get("size") or 0),
         "live": live,
+        "interrupted": interrupted and not live,
     }
 
 
@@ -27900,6 +27902,10 @@ class PortalServer:
             if tightened:
                 logger.info(f"Set mode 0600 on {tightened} existing recording file(s)")
             await session_recording.reconcile_total()
+            try:
+                await session_recording.finish_interrupted()
+            except Exception as e:
+                logger.warning(f"Could not close off interrupted recordings: {e}")
         except RecordingsDirRefused:
             pass  # recording_paths already logged why; recording stays off for this run
         except OSError as e:

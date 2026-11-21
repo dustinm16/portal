@@ -307,6 +307,50 @@ async def main():
     check("the retention form has the budget field", 'id="ret-recording-max"' in admin_html
           and "recording_max_total_mb: pInt('ret-recording-max', 2048)" in admin_html)
 
+    # ---- item 5: a session cut by a restart is closed off at the next start -----------------------
+    for f in Path(rec_dir).glob("*.cast"):
+        f.unlink()
+    await db.conn.execute("DELETE FROM recordings")
+    await db.conn.commit()
+    hdr = json.dumps({"version": 2, "width": 80, "height": 24}) + "\n"
+    body = hdr + json.dumps([0.5, "o", "a"]) + "\n" + json.dumps([3.25, "o", "b" * 300]) + "\n"
+    cut, f_cut = await add_row(db, rec_dir, uid["bob"], "cut", body=body + '[9.9, "o", "par', size=len(hdr), duration=0)
+    big, f_big = await add_row(db, rec_dir, uid["bob"], "bigline", size=len(hdr), duration=0,
+                               body=hdr + json.dumps([1.0, "o", "x"]) + "\n" + json.dumps([7.5, "o", "z" * 5000]) + "\n")
+    empty, f_empty = await add_row(db, rec_dir, uid["bob"], "empty", body=hdr, size=len(hdr), duration=0)
+    done, _ = await add_row(db, rec_dir, uid["bob"], "done", duration=12.0, size=7)
+    gone, _ = await add_row(db, rec_dir, uid["bob"], "gone", size=5, duration=0)
+    (Path(rec_dir) / f"rec_{uid['bob']}_c1_gone.cast").unlink()
+    livec, f_live = await add_row(db, rec_dir, uid["bob"], "running", body=body, size=len(hdr), duration=0)
+    db.live_recording_ids.add(livec)
+    session_recording._TAIL_WINDOW = 64  # a small window, so the 5000-byte last line forces it to grow
+    n = await session_recording.finish_interrupted()
+    rows = {r: await db.get_recording(r) for r in (cut, big, empty, done, gone, livec)}
+    check("an unfinished row gets the size of its file and the time of its last complete event",
+          rows[cut]["size"] == len(body.encode()) + len('[9.9, "o", "par') and rows[cut]["duration"] == 3.25, str(rows[cut]))
+    check("a last event longer than the tail window is still found", rows[big]["duration"] == 7.5, str(rows[big]))
+    check("a header-only file is closed off with duration 0", rows[empty]["duration"] == 0 and rows[empty]["interrupted"] == 1)
+    check("a finished row is not touched", rows[done]["duration"] == 12.0 and rows[done]["size"] == 7 and not rows[done]["interrupted"])
+    check("a row whose file is missing is left alone (nothing deleted)", rows[gone]["size"] == 5 and not rows[gone]["interrupted"])
+    check("a row of a running session is left alone", rows[livec]["duration"] == 0 and not rows[livec]["interrupted"])
+    check("the pass says how many it closed", n == 3, str(n))
+    check("the files themselves are untouched", (Path(rec_dir) / f_cut).read_text().endswith('"par'))
+    check("running it again changes nothing", await session_recording.finish_interrupted() == 0)
+    db.live_recording_ids.discard(livec)
+    check("the startup block runs the pass after the budget is counted",
+          "await session_recording.reconcile_total()\n            try:\n                await session_recording.finish_interrupted()"
+          in (Path(__file__).resolve().parent.parent / "server.py").read_text())
+    async with sess["adm"].get(f"{base}/api/recordings?connection=cut") as r:
+        item = (await r.json())["recordings"][0]
+        check("the list shows it as ended and interrupted, with its duration",
+              item["live"] is False and item["ended_at"] is not None and item["duration"] == 3.25
+              and item["interrupted"] is True, str(item))
+    async with sess["adm"].get(f"{base}/api/recordings?connection=empty") as r:
+        item = (await r.json())["recordings"][0]
+        check("a header-only interrupted recording still has an end time", item["ended_at"] is not None, str(item))
+    async with sess["adm"].get(f"{base}/api/recordings?connection=done") as r:
+        check("a normal recording is not marked interrupted", (await r.json())["recordings"][0]["interrupted"] is False)
+
     await srv.close()
     for s in sess.values():
         await s.close()

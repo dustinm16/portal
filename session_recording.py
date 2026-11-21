@@ -368,6 +368,72 @@ def _count(n: int) -> None:
     _total_bytes = max(0, _total_bytes + n)
 
 
+_TAIL_WINDOW = 64 * 1024  # how much of the end of a file is read to find its last event
+
+
+def _last_event_time(fd: int) -> tuple:
+    """(file size, time of the last complete event or 0.0) of an open recording, reading only the
+    tail: the window doubles until a complete event line is found or the whole file was read. A
+    last line without its newline (a write cut off by the restart) and lines that are not events
+    are ignored."""
+    size = os.fstat(fd).st_size
+    window = max(64, _TAIL_WINDOW)
+    while True:
+        start = max(0, size - window)
+        os.lseek(fd, start, os.SEEK_SET)
+        data = b""
+        while len(data) < size - start:
+            chunk = os.read(fd, size - start - len(data))
+            if not chunk:
+                break
+            data += chunk
+        lines = data.split(b"\n")
+        lines.pop()                      # what follows the last newline is empty or cut off
+        if start > 0 and lines:
+            lines.pop(0)                 # the first line of the window may be a partial one
+        for raw in reversed(lines):
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            if (isinstance(event, list) and len(event) >= 2 and isinstance(event[0], (int, float))
+                    and not isinstance(event[0], bool) and isinstance(event[1], str)):
+                return size, max(0.0, float(event[0]))
+        if start == 0:
+            return size, 0.0
+        window *= 4
+
+
+async def finish_interrupted() -> int:
+    """Close off recordings that a restart cut short, at startup.
+
+    A row with no end (duration 0, not live) whose file exists gets the size of the file, the
+    time of the file's last complete event as its duration, and is marked interrupted. A row
+    whose file is missing or refused is left as it is (nothing is deleted). Returns the number
+    of rows closed."""
+    closed = 0
+    for row in await db.list_unfinished_recordings():
+        if row["id"] in db.live_recording_ids:
+            continue
+        try:
+            fd = open_recording(row["filename"])
+        except (RecordingFileMissing, RecordingFileRefused) as e:
+            logger.warning(f"Interrupted recording {row['id']} not closed off: {e}")
+            continue
+        try:
+            size, duration = await asyncio.to_thread(_last_event_time, fd)
+        except OSError as e:
+            logger.warning(f"Interrupted recording {row['id']} could not be read: {e}")
+            continue
+        finally:
+            os.close(fd)
+        if await db.mark_recording_interrupted(row["id"], size, round(duration, 6)):
+            closed += 1
+    if closed:
+        logger.info(f"Closed off {closed} recording(s) cut short by a restart")
+    return closed
+
+
 def recording_wanted(config) -> bool:
     """True when a connection's config switches recording on and the portal allows it.
 
