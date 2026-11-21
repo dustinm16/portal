@@ -653,6 +653,10 @@ async def main():
                   all(len(c[k]) == 1 and c[k][0]["title"] == "Portal" for k in ("malformed", "nodata", "notobject")))
             check("worker: an absolute, protocol-relative, backslash or script URL becomes /",
                   all(c[k][0]["options"]["data"]["url"] == "/" for k in ("absolute", "protorel", "backslash", "script")))
+            check("worker: dot segments and encoded slashes that collapse into //host are refused, a plain query is kept",
+                  all(c[k][0]["options"]["data"]["url"] == "/" for k in ("dot1", "dot2", "dot3", "encslash", "encback"))
+                  and c["query_ok"][0]["options"]["data"]["url"] == "/chat?c=3&x=..//a#f"
+                  and c["click_dot"]["opened"] == ["https://portal.test/"])
             check("worker: control characters are stripped", c["control"][0]["title"] == "AB" and c["control"][0]["options"]["body"] == "xy")
             check("worker: a click opens the URL, or focuses the tab that already shows it",
                   c["click_open"]["opened"] == ["https://portal.test/chat?c=3"] and c["click_open"]["closed"]

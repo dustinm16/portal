@@ -85,6 +85,7 @@ SETTING_STAGE_SINK = "stage_push_sink_port"
 
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 _KIND_RE = re.compile(r"^[a-z][a-z0-9_.]{0,31}$")
+_ENCODED_SLASH_RE = re.compile(r"%(?:2f|5c)", re.I)
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f​-‏ -‮⁠-⁯﻿]")
 
 
@@ -400,9 +401,18 @@ def endpoint_label(endpoint: str) -> str:
 # --------------------------------------------------------------------------- payloads
 def safe_relative_url(url) -> str:
     """A same-origin relative path or PushError: starts with one slash, no scheme, no
-    protocol-relative form, no backslash, no control character."""
+    protocol-relative form, no backslash, no control character. The path part has no dot segment
+    (plain or percent-encoded, which a browser would collapse into a protocol-relative form such as
+    '/a/..//evil.example') and no encoded slash or backslash."""
     if (not isinstance(url, str) or not url.startswith("/") or url.startswith("//")
             or "\\" in url or _CTRL_RE.search(url) or len(url) > 300):
+        raise PushError("A push URL must be a relative path")
+    path = re.split(r"[?#]", url, maxsplit=1)[0]
+    if _ENCODED_SLASH_RE.search(path) or any(
+            seg.lower().replace("%2e", ".") in (".", "..") for seg in path.split("/")):
+        raise PushError("A push URL must be a relative path")
+    parts = urlsplit(url)
+    if parts.scheme or parts.netloc or parts.path.startswith("//"):
         raise PushError("A push URL must be a relative path")
     return url
 

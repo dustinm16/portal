@@ -48,6 +48,12 @@ function fire(type, event) {
     await push('protorel', () => ({ title: 'T', url: '//evil.example/x' }));
     await push('backslash', () => ({ title: 'T', url: '/\\evil.example' }));
     await push('script', () => ({ title: 'T', url: 'javascript:alert(1)' }));
+    await push('dot1', () => ({ title: 'T', url: '/a/..//evil.example' }));
+    await push('dot2', () => ({ title: 'T', url: '/.//evil.example' }));
+    await push('dot3', () => ({ title: 'T', url: '/a/%2e%2e//evil.example' }));
+    await push('encslash', () => ({ title: 'T', url: '/a%2f%2fevil.example' }));
+    await push('encback', () => ({ title: 'T', url: '/a%5Cevil.example' }));
+    await push('query_ok', () => ({ title: 'T', url: '/chat?c=3&x=..//a#f' }));
     await push('control', () => ({ title: 'A\u0000B', body: 'x\u0007y', url: '/ok' }));
 
     // a client is a url string, or {url, navigate: 'ok'|'reject', ack: bool, focused, frameType}
@@ -74,6 +80,7 @@ function fire(type, event) {
     await click('click_other_origin_tab', '/chat?c=3', ['https://evil.example/chat?c=3']);
     await click('click_tampered', 'https://evil.example/', []);
     await click('click_tampered2', '//evil.example/', []);
+    await click('click_dot', '/a/..//evil.example', []);
     await click('click_nodata', undefined, []);
     // an open portal window at another page: it is the one that goes to the target, no new window
     await click('click_navigate', '/chat?c=3', [{ url: 'https://portal.test/about', navigate: 'ok' }]);

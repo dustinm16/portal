@@ -151,6 +151,10 @@ check("build_payload keeps type, title, body, url",
 check("an absolute, protocol-relative, backslash or control-character URL is refused",
       all(raises(wp.build_payload, "x", "t", "b", u) for u in
           ("https://evil.example/", "//evil.example/", "/\\evil.example", "javascript:alert(1)", "chat", "", "/a\nb")))
+check("a dot segment (plain or encoded) or encoded slash that collapses to //host is refused; a query is kept",
+      all(raises(wp.build_payload, "x", "t", "b", u) for u in
+          ("/a/..//evil.example", "/.//evil.example", "/a/%2E%2e//evil.example", "/a/./b", "/a%2F%2Fevil.example", "/a%5cb"))
+      and wp.build_payload("x", "t", "b", "/chat?c=3&x=..//a#f")["url"] == "/chat?c=3&x=..//a#f")
 check("bad type or empty title refused", raises(wp.build_payload, "Bad Type", "t") and raises(wp.build_payload, "x", "  "))
 check("long text is cut, control characters removed",
       len(wp.build_payload("x", "t" * 500, "b" * 500)["title"]) == 80

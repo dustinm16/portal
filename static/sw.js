@@ -8,15 +8,26 @@ function cleanText(value, limit) {
     return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, limit) : '';
 }
 
-/* A same-origin relative path, or "/" when the value is anything else. */
+/* A same-origin relative path, or "/" when the value is anything else. The path part may hold no dot
+   segment (plain or percent-encoded) and no encoded slash or backslash, and the URL as the browser
+   resolves it must stay on this origin with a path that does not start with "//". */
 function safeUrl(value) {
     if (typeof value !== 'string' || value.charAt(0) !== '/' || value.charAt(1) === '/' ||
         value.indexOf('\\') !== -1 || value.length > 300) {
         return '/';
     }
+    var path = value.split(/[?#]/)[0];
+    if (/%(2f|5c)/i.test(path)) return '/';
+    var segments = path.split('/');
+    for (var i = 0; i < segments.length; i++) {
+        var seg = segments[i].toLowerCase().split('%2e').join('.');
+        if (seg === '.' || seg === '..') return '/';
+    }
     try {
         var u = new URL(value, self.location.origin);
-        if (u.origin !== self.location.origin) return '/';
+        if (u.origin !== self.location.origin || u.pathname.charAt(0) !== '/' || u.pathname.indexOf('//') === 0) {
+            return '/';
+        }
         return u.pathname + u.search + u.hash;
     } catch (e) {
         return '/';
