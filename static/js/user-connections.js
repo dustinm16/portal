@@ -1191,6 +1191,20 @@ function onSSHAuthChange() {
     }
     document.getElementById('connection-ssh-stored-group').style.display =
         (authMethod !== 'key' && (isSftp || !prompt.checked)) ? 'block' : 'none';
+    // Recording is an administrator's setting and only SSH has it (the server ignores a member's
+    // value, so the toggle is not offered to anyone else).
+    document.getElementById('connection-ssh-recording-group').style.display =
+        (!isSftp && connectionRecordingAllowed()) ? 'block' : 'none';
+}
+
+/** True for an administrator (role admin or superadmin). */
+function connectionRecordingAllowed() {
+    return typeof currentUser !== 'undefined' && !!currentUser && Portal.isAdmin(currentUser);
+}
+
+/** The stored flag counts as on for exactly true, 1, "1" and "true" (any case), like the server. */
+function recordingFlagOn(value) {
+    return value === true || value === 1 || (typeof value === 'string' && ['1', 'true'].includes(value.toLowerCase()));
 }
 
 /**
@@ -1294,6 +1308,11 @@ async function submitConnection(event) {
             const sshShell = document.getElementById('connection-ssh-shell').value;
             if (sshShell) config.shell = sshShell;
             config.host_key_ignore = document.getElementById('connection-ssh-host-key-ignore').checked;
+            // Only an administrator sends the flag (and it also clears it); for anyone else the
+            // key is left out, so an edit never touches what is stored.
+            if (type === 'ssh' && connectionRecordingAllowed()) {
+                config.recording = document.getElementById('connection-ssh-recording').checked;
+            }
             {
                 const pwFieldNow = document.getElementById('connection-ssh-stored-password');
                 const initialPrompt = isEdit && pwFieldNow.dataset.initialPrompt ? pwFieldNow.dataset.initialPrompt === '1' : undefined;
@@ -1440,6 +1459,7 @@ async function editConnection(connectionId) {
                 }
                 document.getElementById('connection-ssh-shell').value = config.shell || '';
                 document.getElementById('connection-ssh-host-key-ignore').checked = config.host_key_ignore === true;
+                document.getElementById('connection-ssh-recording').checked = recordingFlagOn(config.recording);
                 break;
             case 'database':
                 document.getElementById('connection-db-type').value = config.db_type || 'mysql';

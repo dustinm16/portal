@@ -269,8 +269,8 @@ says18("rollback makes unswept rows permanent", "rollback", "1.17.0", "permanent
 says18("what was not tested", "not tested", "ssh", "browser", "cloudflare")
 check("1.18.0: the sweeper interval and the close code stated are the ones in the code",
       "every 60 seconds" in low18 and f"`{_server.GRANT_ENDED_CLOSE_CODE}`" in sec18 and _server._GRANT_SWEEP_SECONDS == 60)
-check("1.18.0: the user-connections and dashboard versions stated are the ones the pages load (terminal.js moved on in 1.20.0)",
-      re.search(r"user-connections\.js\?v=55", (ROOT / "static" / "index.html").read_text())
+check("1.18.0: the user-connections and dashboard versions stated are the ones the pages loaded then (user-connections.js and terminal.js moved on in 1.20.0)",
+      re.search(r"user-connections\.js\?v=56", (ROOT / "static" / "index.html").read_text())
       and "`user-connections.js` is now version 55" in sec18
       and re.search(r"dashboard\.js\?v=59", (ROOT / "static" / "index.html").read_text()) and "`dashboard.js` 59" in sec18
       and "`terminal.js` 6" in sec18)
@@ -509,12 +509,12 @@ for name, needles in (("recording is off unless the flag is exactly true, 1, '1'
                       ("the refused rows", ("symlink", "outside the folder", "refused")),
                       ("why asciinema-player is not used", ("asciinema-player", "webassembly", "wasm-unsafe-eval")),
                       ("the table rebuild and what deleting a connection does", ("rebuilt", "service_id", "deleting a connection")),
-                      ("the static versions", ("terminal.js", "version 7", "recordings-admin.js", "version 1")),
+                      ("the static versions", ("terminal.js", "version 7", "recordings-admin.js", "version 1", "user-connections.js", "version 56")),
                       ("rollback", ("1.19.0", "migrated database")),
                       ("what is not tested", ("not tested", "no browser", "no microphone", "cloudflare", "real ssh server"))):
     check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
 _pages20 = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "static").glob("*.html")}
-for js, ver in (("terminal.js", 7), ("recordings-admin.js", 1)):
+for js, ver in (("terminal.js", 7), ("recordings-admin.js", 1), ("user-connections.js", 56)):
     loaded = {m for t_ in _pages20.values() for m in re.findall(rf"/static/js/{re.escape(js)}\?v=(\d+)", t_)}
     check(f"1.20.0 states {js} as version {ver} and the pages load exactly that", loaded == {str(ver)}, str(loaded))
 check("api-docs.html and docs/API.md both describe the recordings routes",

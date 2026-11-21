@@ -5431,6 +5431,16 @@ CONNECTION_TYPES = {
 
 # Allowed shells for terminal and SSH connections
 
+async def _may_set_recording(token) -> bool:
+    """Only an administrator (role admin or superadmin) may set or clear the "recording" flag
+    of a connection: a recording takes disk space (up to 50 MB a session) and holds what was
+    shown on a terminal. Services are already administrator-only (http_create_service and
+    http_update_service), so this is the one place a member could reach the flag."""
+    user = await db.get_user_by_id(token.user_id)
+    role = (user.get("role") or ("superadmin" if user.get("is_admin") else "user")) if user else None
+    return role in ("admin", "superadmin")
+
+
 async def http_create_user_connection(request: web.Request) -> web.Response:
     """Create a new user connection."""
     token = await authenticate_request(request)
@@ -5465,6 +5475,10 @@ async def http_create_user_connection(request: web.Request) -> web.Response:
         config = {}
     if not isinstance(config, dict):
         return web.json_response({"error": "Config must be an object"}, status=400)
+    if "recording" in config and not await _may_set_recording(token):
+        # Not an error, so a client that always sends the key keeps working: a member's value
+        # is ignored and a new connection starts without the flag.
+        config = {k: v for k, v in config.items() if k != "recording"}
     ssh_key_id = data.get("ssh_key_id")
     icon = data.get("icon")
     portal_access = 1 if data.get("portal_access", 1) else 0
@@ -5662,6 +5676,10 @@ async def http_update_user_connection(request: web.Request) -> web.Response:
 
     if "config" in data and not isinstance(data["config"], dict):
         return web.json_response({"error": "Config must be an object"}, status=400)
+    if isinstance(data.get("config"), dict) and "recording" in data["config"] \
+            and not await _may_set_recording(token):
+        # Not an error: a member's value is ignored, so the stored flag is kept as it is.
+        data["config"] = {k: v for k, v in data["config"].items() if k != "recording"}
 
     # Resolve UUID to internal connection
     connection = await db.get_user_connection_by_uuid(conn_uuid, token.user_id)

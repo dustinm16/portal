@@ -1546,6 +1546,13 @@
                         </label>
                         <small style="color: var(--text-muted);">Off by default. When off, Portal shows the server's host key fingerprint on first connect and you accept it once. Turning this on disables that check and exposes the connection to impersonation.</small>
                     </div>
+                    <div class="form-group" id="connection-ssh-recording-group" style="display: none;">
+                        <label for="connection-ssh-recording" style="display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="checkbox" id="connection-ssh-recording">
+                            Record sessions
+                        </label>
+                        <small style="color: var(--text-muted);">Off by default. The output of the session is recorded; keystrokes are not. Only administrators can play the recordings back. Everyone who uses this connection is told that the session is recorded.</small>
+                    </div>
                 </div>
 
                 <!-- Stream-specific fields -->
@@ -2032,7 +2039,7 @@
     <script src="/static/js/dashboard.js?v=59"></script>
     <script src="/static/js/admin.js?v=39"></script>
     <script src="/static/js/ssh-keys.js?v=25"></script>
-    <script src="/static/js/user-connections.js?v=55"></script>
+    <script src="/static/js/user-connections.js?v=56"></script>
     <!-- VOD Storage Settings Modal -->
     <div id="vod-storage-modal" class="modal" style="display: none;">
         <div class="modal-backdrop" onclick="closeModal('vod-storage-modal')"></div>

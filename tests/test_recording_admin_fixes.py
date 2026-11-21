@@ -10,7 +10,9 @@ recordings folder. Nothing outside the temporary tree is touched and nothing is 
 import asyncio
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +33,7 @@ import server  # noqa: E402
 import session_recording  # noqa: E402
 from auth import create_user  # noqa: E402
 from config import Config  # noqa: E402
+from database import decrypt_config, encrypt_config  # noqa: E402
 
 recording_paths.vod_staging.TEMP_ROOTS = ()
 
@@ -134,6 +137,73 @@ async def main():
     async with sess["adm"].delete(f"{base}/api/recordings/{rid}") as r:
         check("the delete works once the file can be removed", r.status == 200, str(r.status))
     check("a successful delete adds no failed entry", len(await audit(db, "recording_delete_failed")) == 1)
+
+    # ---- item 1: only an administrator sets or clears the recording flag -------------------------
+    PUBLIC = "93.184.216.34"
+
+    async def make(who, name, config):
+        async with sess[who].post(f"{base}/api/connections", json={
+                "name": name, "type": "ssh", "host": PUBLIC, "port": 22, "config": config}) as r:
+            body = await r.json()
+            assert r.status == 201, (r.status, body)
+            return body["id"]
+
+    async def stored(conn_id):
+        cur = await db.conn.execute("SELECT config FROM user_connections WHERE uuid = ? OR id = ?", (conn_id, conn_id))
+        row = await cur.fetchone()
+        cfg = decrypt_config(row["config"])
+        return json.loads(cfg) if isinstance(cfg, str) else cfg
+
+    async def update(who, conn_id, config):
+        async with sess[who].put(f"{base}/api/connections/{conn_id}", json={"config": config}) as r:
+            return r.status
+
+    base_cfg = {"username": "u", "auth_method": "password", "credential_mode": "prompt"}
+    c_member = await make("bob", "m1", {**base_cfg, "recording": True})
+    check("a member creating a connection with recording true gets no recording flag",
+          "recording" not in await stored(c_member), str(await stored(c_member)))
+    c_admin = await make("adm", "a1", {**base_cfg, "recording": True})
+    check("an administrator creating one with recording true keeps it", (await stored(c_admin)).get("recording") is True)
+    c_admin_text = await make("adm", "a2", {**base_cfg, "recording": "true"})
+    check("an administrator's value is stored as sent", (await stored(c_admin_text)).get("recording") == "true")
+    check("a member's update is not an error", await update("bob", c_member, {**base_cfg, "recording": True}) == 200)
+    check("a member's update does not turn recording on", "recording" not in await stored(c_member))
+    # a stored flag (set by an administrator, or by 1.19 data) survives the member's edit unchanged
+    await db.conn.execute("UPDATE user_connections SET config = ? WHERE uuid = ?",
+                          (encrypt_config(json.dumps({**base_cfg, "recording": True})), c_member))
+    await db.conn.commit()
+    check("a member's update of a recorded connection is accepted", await update("bob", c_member, {"recording": False, "username": "u2"}) == 200)
+    check("a member cannot clear the flag", (await stored(c_member)).get("recording") is True, str(await stored(c_member)))
+    check("the other fields of the member's update were applied", (await stored(c_member)).get("username") == "u2")
+    check("an administrator can clear it", await update("adm", c_admin, {"recording": False}) == 200
+          and (await stored(c_admin)).get("recording") is False)
+    check("an administrator's update without the key keeps it", await update("adm", c_admin_text, {"username": "z"}) == 200
+          and (await stored(c_admin_text)).get("recording") == "true")
+    check("an administrator can set it on their own connection", await update("adm", c_admin, {"recording": True}) == 200
+          and (await stored(c_admin)).get("recording") is True)
+    async with sess["mod"].post(f"{base}/api/connections", json={
+            "name": "mm", "type": "ssh", "host": PUBLIC, "port": 22, "config": {**base_cfg, "recording": True}}) as r:
+        mid = (await r.json())["id"]
+    check("a moderator is not an administrator here", "recording" not in await stored(mid))
+
+    # the form: the toggle exists for administrators only, nothing inline, the text says what is recorded
+    root = Path(__file__).resolve().parent.parent
+    index = (root / "static" / "index.html").read_text()
+    ucjs = (root / "static" / "js" / "user-connections.js").read_text()
+    grp = index.split('id="connection-ssh-recording-group"', 1)[1].split("</div>", 1)[0]
+    check("the form has a hidden Record sessions toggle with no inline handler",
+          'style="display: none;"' in grp and 'id="connection-ssh-recording"' in grp and not re.search(r"\son[a-z]+\s*=", grp))
+    check("the toggle says output is recorded, keystrokes are not, and only administrators play it back",
+          "output of the session is recorded" in grp and "keystrokes are not" in grp
+          and "Only administrators can play" in grp)
+    check("the script shows the toggle to administrators only and sends the flag only for them",
+          "Portal.isAdmin(currentUser)" in ucjs and "connectionRecordingAllowed()" in ucjs
+          and "if (type === 'ssh' && connectionRecordingAllowed())" in ucjs)
+    fn = re.search(r"function recordingFlagOn\(value\) \{.*?\n\}\n", ucjs, re.S).group(0)
+    run = subprocess.run(["node", "-e", fn + "console.log(JSON.stringify([true,1,'1','true','TRUE',false,0,'yes',2,1.0,null,undefined,['true']].map(recordingFlagOn)))"],
+                         capture_output=True, text=True, timeout=30)
+    check("the form reads the stored flag like the server does",
+          json.loads(run.stdout) == [True, True, True, True, True, False, False, False, False, True, False, False, False], run.stdout + run.stderr)
 
     await srv.close()
     for s in sess.values():

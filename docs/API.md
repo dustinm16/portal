@@ -880,7 +880,7 @@ List user's remote connections. Sensitive config fields (passwords, private keys
 ---
 
 #### POST /api/connections
-Create a new connection.
+Create a new connection. `config.recording` (SSH connections) is an administrator's setting: only a user with the role `admin` or `superadmin` can set or clear it. From anyone else the key is ignored, not refused: a create stores no flag and an update keeps the stored value, so existing clients that send it keep working and get no error. The stored flag counts as on for exactly `true`, `1`, `"1"` and `"true"` (any case). Output is recorded, keystrokes are not, and only administrators can play recordings back.
 
 **Request:**
 ```json
@@ -937,7 +937,7 @@ Get connection details. `{id}` is the opaque string token. Sensitive config fiel
 ---
 
 #### PUT /api/connections/{id}
-Update connection. `{id}` is the opaque string token. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
+Update connection. `config.recording` (SSH connections) is an administrator's setting: only a user with the role `admin` or `superadmin` can set or clear it. From anyone else the key is ignored, not refused: a create stores no flag and an update keeps the stored value, so existing clients that send it keep working and get no error. The stored flag counts as on for exactly `true`, `1`, `"1"` and `"true"` (any case). Output is recorded, keystrokes are not, and only administrators can play recordings back. `{id}` is the opaque string token. Config fields are merged server-side with existing config — sensitive fields not included in the request are preserved from the encrypted database record. Credentials never need to round-trip through the client.
 
 **Request:**
 ```json
@@ -4247,7 +4247,7 @@ Query audit log with optional filters.
 
 ### Session Recordings (Admin)
 
-Recorded terminal and SSH sessions (asciicast v2). Only administrators (role `admin` or `superadmin`) can use these routes, and only with a browser session or an all-scope (`*`) bearer token. A member, a moderator or the owner of the connection gets **404** for every route and every id (an existing id and a missing one answer alike); without a credential the answer is `401`; every API key, also one made with `*`, and every narrowly scoped token get `403` (no existing scope covers recordings). A file name or path is never returned. Recording is off per connection unless its config has `"recording": true`.
+Recorded terminal and SSH sessions (asciicast v2). Only administrators (role `admin` or `superadmin`) can use these routes, and only with a browser session or an all-scope (`*`) bearer token. A member, a moderator or the owner of the connection gets **404** for every route and every id (an existing id and a missing one answer alike); without a credential the answer is `401`; every API key, also one made with `*`, and every narrowly scoped token get `403` (no existing scope covers recordings). A file name or path is never returned. Recording is off per connection unless its config has `"recording"` set to `true`, `1`, `"1"` or `"true"` (any case), and only an administrator can set or clear that flag (a member's value is ignored without an error); it is also limited by the recordings disk budget (setting `recording_max_total_mb`, free-space floor).
 
 #### GET /api/recordings
 One page, newest first. Query: `user` (name, any case, or id), `connection` (part of the connection name), `from` and `to` (`YYYY-MM-DD`, both days included), `page` (default 1), `limit` (default 25, max 100). A bad date or number is `400`. Not audited.
