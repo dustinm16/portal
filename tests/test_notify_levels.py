@@ -51,6 +51,7 @@ class Env(base.Env):
         server._notify_prefs_cache.clear()
         server._activity_verdicts.clear()
         server._activity_context.clear()
+        server._activity_verdict_stream.clear()
         app = web.Application()
         app.router.add_get("/ws/chat", server.handle_chat_websocket)
         app.router.add_get("/api/chat/channels", server.http_get_chat_channels)
@@ -412,6 +413,57 @@ def test_a_socket_whose_levels_are_not_loaded_yet_gets_no_signal():
         finally:
             d.get_notify_prefs = real
             gate.set()
+    run(body)
+
+
+def test_a_removal_that_lands_between_the_context_reads_never_leaves_a_stale_verdict():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        gen = await general(d)
+        pvt = await base.private_channel(d, ids, members=("alice", "bob"))
+        channel = await d.get_chat_channel(pvt)
+        bob = await env.sock(ids["bob"])
+        await bob.join(gen)
+        real = d.get_channel_member_ids
+        state = {"n": 0}
+
+        async def racing(channel_id):
+            state["n"] += 1
+            old = await real(channel_id)
+            if state["n"] == 1:        # bob is removed after this read answered, before the caller uses it
+                await d.remove_channel_member(channel_id, ids["bob"])
+                server._forget_activity_verdicts(channel_id)
+            return old
+        d.get_channel_member_ids = racing
+        try:
+            assert await server._signal_channel_activity(channel, ids["alice"]) == 0, "a removed member was told"
+            assert not server._activity_verdicts.get(pvt, {}).get((ids["bob"], "user"), (False,))[0], \
+                "a verdict made from the stale member set was stored"
+            assert await server._signal_channel_activity(channel, ids["alice"]) == 0, "the stale verdict is served"
+        finally:
+            d.get_channel_member_ids = real
+    run(body)
+
+
+def test_verdicts_follow_the_context_memo_and_are_cleared_by_stream_id():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        cid, sid = await base.stream_chat(d, ids, public=True)
+        channel = await d.get_chat_channel(cid)
+        # an expired context takes the verdicts made from it along when it is read again
+        stream, bans, members, g = await server._activity_channel_context(channel)
+        server._activity_context[cid] = server._activity_context[cid][:3] + (0.0, g)
+        server._activity_verdicts[cid] = {(ids["bob"], "user"): (True, 1e18)}
+        await server._activity_channel_context(channel)
+        assert cid not in server._activity_verdicts, "verdicts outlived their context"
+        # a verdict that is held without a context is found by the stream id
+        server._activity_context.pop(cid, None)
+        server._activity_verdicts[cid] = {(ids["bob"], "user"): (True, 1e18)}
+        server._activity_verdict_stream[cid] = sid
+        server._forget_activity_for_stream(sid)
+        assert cid not in server._activity_verdicts and cid not in server._activity_verdict_stream
     run(body)
 
 

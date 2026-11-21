@@ -20240,6 +20240,7 @@ _chat_sockets: dict = {}                   # chat socket -> (user_id, role), for
 _activity_verdicts: dict[int, dict] = {}   # channel id -> {(user_id, role): (allowed, expiry)}
 _activity_context: dict[int, tuple] = {}   # channel id -> (stream, banned ids, member ids, expiry)
 _activity_gen: dict[int, int] = {}         # channel id -> bumped when access changed
+_activity_verdict_stream: dict[int, int] = {}   # channel id -> stream id its verdicts were made for
 _activity_tasks: set = set()
 
 
@@ -20298,53 +20299,72 @@ def _chat_socket_close(ws, user_id: int) -> None:
         _notify_prefs_gen.pop(user_id, None)
 
 
+def _activity_drop_memo(channel_id) -> None:
+    """Drop a channel's remembered context and verdicts together: a verdict was computed from a
+    context, so it must not outlive it."""
+    _activity_context.pop(channel_id, None)
+    _activity_verdicts.pop(channel_id, None)
+    _activity_verdict_stream.pop(channel_id, None)
+
+
 def _forget_activity_verdicts(channel_id) -> None:
     """Drop what the activity signal remembers about a channel: the verdicts and the channel's
     stream and ban set. Called wherever access to the channel changes, in either direction."""
     if channel_id is not None:
-        _activity_verdicts.pop(channel_id, None)
-        _activity_context.pop(channel_id, None)
+        _activity_drop_memo(channel_id)
         _activity_gen[channel_id] = _activity_gen.get(channel_id, 0) + 1
 
 
 def _forget_activity_for_stream(stream_id) -> None:
-    """A stream's visibility, bans or existence changed: forget its chat channel's memo."""
-    for cid in [c for c, ctx in _activity_context.items()
-                if ctx[0] and ctx[0].get("id") == stream_id]:
+    """A stream's visibility, bans or existence changed: forget its chat channel's memo, found by
+    the stream id in the remembered context and in the verdicts alike."""
+    cids = {c for c, ctx in _activity_context.items() if ctx[0] and ctx[0].get("id") == stream_id}
+    cids.update(c for c, sid in _activity_verdict_stream.items() if sid == stream_id)
+    for cid in cids:
         _forget_activity_verdicts(cid)
 
 
 async def _activity_channel_context(channel):
-    """(stream, banned ids, member ids) of a channel for the fan-out (None where not needed: no
-    stream, not private), read once and remembered for _ACTIVITY_VERDICT_TTL. Cold: at most three
-    reads for the channel, whatever the number of members. Warm: none.
-    _forget_activity_verdicts drops it."""
+    """(stream, banned ids, member ids, generation) of a channel for the fan-out (None where not
+    needed: no stream, not private), read once and remembered for _ACTIVITY_VERDICT_TTL. Cold: at
+    most three reads for the channel, whatever the number of members. Warm: none.
+    The generation is the one read BEFORE the database reads: when access changed while they ran
+    (the generation moved) they are read again, and a result that is still not known to be current
+    is returned without being stored and with the old generation, so no verdict computed from it is
+    stored either. _forget_activity_verdicts drops the memo."""
     cid = channel["id"]
     now = monotonic()
     hit = _activity_context.get(cid)
     if hit and hit[3] > now:
-        return hit[0], hit[1], hit[2]
-    gen = _activity_gen.get(cid, 0)
-    stream = await db.get_stream_by_chat_channel(cid)
-    bans = await db.get_banned_user_ids(stream["id"]) if stream else None
-    members = await db.get_channel_member_ids(cid) if channel.get("visibility", "public") == "private" else None
-    if _activity_gen.get(cid, 0) == gen:
-        if len(_activity_context) > 1000:
-            for k in [k for k, v in _activity_context.items() if v[3] <= now]:
-                _activity_context.pop(k, None)
-        _activity_context[cid] = (stream, bans, members, now + _ACTIVITY_VERDICT_TTL)
-    return stream, bans, members
+        return hit[0], hit[1], hit[2], hit[4]
+    if hit:
+        _activity_drop_memo(cid)       # the context ended: the verdicts made from it end with it
+    for _ in range(3):
+        gen = _activity_gen.get(cid, 0)
+        stream = await db.get_stream_by_chat_channel(cid)
+        bans = await db.get_banned_user_ids(stream["id"]) if stream else None
+        members = await db.get_channel_member_ids(cid) if channel.get("visibility", "public") == "private" else None
+        if _activity_gen.get(cid, 0) == gen:
+            if len(_activity_context) > 1000:
+                for k in [k for k, v in _activity_context.items() if v[3] <= now]:
+                    _activity_drop_memo(k)
+            _activity_context[cid] = (stream, bans, members, now + _ACTIVITY_VERDICT_TTL, gen)
+            break
+    return stream, bans, members, gen
 
 
 async def _activity_may_read(channel, stream, user_id: int, role: str, banned_ids=None,
-                             member_ids=None) -> bool:
-    """_can_read_channel for the activity signal, remembered briefly per channel and member."""
+                             member_ids=None, gen=None) -> bool:
+    """_can_read_channel for the activity signal, remembered briefly per channel and member.
+    gen is the generation the stream, ban and member sets were read under; the verdict is stored
+    only when it is still the current one, so sets that were stale never leave a stored verdict."""
     cid = channel["id"]
     now = monotonic()
     hit = _activity_verdicts.get(cid, {}).get((user_id, role))
     if hit and hit[1] > now:
         return hit[0]
-    gen = _activity_gen.get(cid, 0)
+    if gen is None:
+        gen = _activity_gen.get(cid, 0)
     try:
         allowed = bool(await _can_read_channel(channel, user_id, role, stream, banned_ids, member_ids))
     except Exception as e:
@@ -20356,6 +20376,8 @@ async def _activity_may_read(channel, stream, user_id: int, role: str, banned_id
             for k in [k for k, v in memo.items() if v[1] <= now]:
                 memo.pop(k, None)
         memo[(user_id, role)] = (allowed, now + _ACTIVITY_VERDICT_TTL)
+        if stream:
+            _activity_verdict_stream[cid] = stream.get("id")
     return allowed
 
 
@@ -20377,7 +20399,7 @@ async def _signal_channel_activity(channel, sender_id=None) -> int:
     try:
         if not channel or not _chat_sockets:
             return 0
-        stream, bans, members = await _activity_channel_context(channel)
+        stream, bans, members, ctx_gen = await _activity_channel_context(channel)
         restricted = channel.get("visibility", "public") == "private" or bool(stream)
         joined = {entry[1] for entry in chat_rooms.get(channel["name"], ())}
         now = _notify_clock()
@@ -20394,7 +20416,7 @@ async def _signal_channel_activity(channel, sender_id=None) -> int:
                 # skipped: an unloaded level none or mute must not be read as the default
                 ok = prefs is not None and not _notify_quiet(prefs, channel["id"], now)
                 if ok and restricted:
-                    ok = await _activity_may_read(channel, stream, uid, role, bans, members)
+                    ok = await _activity_may_read(channel, stream, uid, role, bans, members, ctx_gen)
                 decided[key] = ok
             if decided[key]:
                 targets.append(ws)
