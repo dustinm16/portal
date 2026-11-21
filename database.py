@@ -1467,6 +1467,67 @@ class Database:
         # Blocks are kept in canonical address form
         await self._migrate_blocked_ips_canonical()
 
+        # One-time: a member's connection no longer carries a stored "recording" flag
+        await self._migrate_member_recording_flags()
+
+    async def _migrate_member_recording_flags(self) -> None:
+        """Remove the "recording" key from the config of every connection whose owner is not an
+        administrator (role admin or superadmin, as the server reads it).
+
+        On 1.19.0 a member could store the key; it did nothing there, but a later promotion would
+        silently have started recording. Runs once (settings row `recording_member_flags_cleared`),
+        after the config encryption migrations, so a config is read the way it is stored. Only rows
+        that hold the key are rewritten, in the format they had (encrypted or plain JSON), so 1.19.0
+        still reads them. A row that cannot be decoded is skipped and its id logged; any other
+        failure leaves the setting unset and the migration runs at the next start.
+        """
+        key = "recording_member_flags_cleared"
+        try:
+            cursor = await self._connection.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = await cursor.fetchone()
+            if row and row["value"] == "1":
+                return
+            cursor = await self._connection.execute(
+                "SELECT c.id, c.config FROM user_connections c LEFT JOIN users u ON u.id = c.user_id "
+                "WHERE c.config IS NOT NULL AND c.config != '{}' "
+                "AND (c.config LIKE 'enc:%' OR c.config LIKE '%\"recording\"%') "
+                "AND COALESCE(NULLIF(u.role, ''), CASE WHEN u.is_admin = 1 THEN 'superadmin' ELSE 'user' END) "
+                "NOT IN ('admin', 'superadmin')")
+            rows = await cursor.fetchall()
+            cleared = 0
+            for row in rows:
+                stored = row["config"]
+                try:
+                    plain = decrypt_config(stored)
+                    if stored.startswith("enc:") and plain == "{}":
+                        raise ValueError("the stored config cannot be decrypted")
+                    config = json.loads(plain)
+                    if not isinstance(config, dict):
+                        raise ValueError("the stored config is not an object")
+                except Exception as e:
+                    logger.warning(f"Recording flag clean-up: connection {row['id']} skipped, "
+                                   f"its config cannot be read ({type(e).__name__})")
+                    continue
+                if "recording" not in config:
+                    continue
+                del config["recording"]
+                text = json.dumps(config)
+                await self._connection.execute(
+                    "UPDATE user_connections SET config = ? WHERE id = ?",
+                    (encrypt_config(text) if stored.startswith("enc:") else text, row["id"]))
+                cleared += 1
+            await self._connection.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')", (key,))
+            await self._connection.commit()
+            if cleared:
+                logger.info(f"Recording flag clean-up: removed the stored flag from {cleared} member connection(s)")
+        except Exception as e:
+            logger.warning(f"Recording flag clean-up failed, it runs again at the next start: {e}")
+            try:
+                await self._connection.rollback()
+            except Exception:
+                pass
+
     async def _migrate_blocked_ips_canonical(self) -> None:
         """Rewrite blocked_ips rows to the canonical address form (idempotent).
 
