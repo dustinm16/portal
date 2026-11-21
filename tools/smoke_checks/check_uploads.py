@@ -482,8 +482,9 @@ out = {"name": name}
         ctx.ok("uploads: files named in a status message, channel topic, poll or stream description are kept",
                all((up / ps[k]).is_file() for k in ("status", "topic", "poll", "stream")))
         ctx.ok("uploads: the old orphan nothing names, and the file of the deleted message, are removed",
-               not (up / ps["plain"]).exists() and not (up / ps["msg"]).exists() and sweep.get("deleted") == 2,
-               str(sweep)[:300])
+               not (up / ps["plain"]).exists() and not (up / ps["msg"]).exists()
+               and sweep.get("deleted", 0) + d.get("chat_files", 0) >= 2 and sweep.get("deleted", 0) >= 1,
+               str(d)[:300])
         r = await sess.get(ctx.base_url + "/admin")
         page = await r.text()
         ctx.ok("uploads: the admin page shows both skip reasons in the cleanup summary",

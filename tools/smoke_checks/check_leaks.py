@@ -994,6 +994,26 @@ async def _voice_payloads(ctx, data):
     be in a channel voice room: joining is refused, and switching anonymous
     mode on removes the member from a room they are already in."""
     alice = data["leakalice"]
+    # An earlier step of this module timed her out for a minute; a member who is timed out cannot join
+    # voice (the intended rule), so her timeout is lifted here and not left to run out on its own
+    # (a moderator's unmute over the chat socket: it also clears the short voice deny a timeout leaves in memory)
+    async with ctx.http() as mod_sess:
+        resp = await ctx.login(mod_sess, "leakmod", PW)
+        if resp.status != 200:
+            ctx.ok("leaks: voice: the moderator can log in to lift the timeout", False, f"status {resp.status}")
+            return
+        async with mod_sess.ws_connect(f"{ctx.base_url}/ws/chat") as mod_ws:
+            mod_ev = []
+            mod_pump = asyncio.create_task(_pump(mod_ws, mod_ev))
+            try:
+                await mod_ws.send_json({"type": "join", "channel_id": data["channel"]})
+                await _wait_for(mod_ev, lambda e: e.get("type") == "users")
+                await mod_ws.send_json({"type": "unmute_user", "target_user_id": alice})
+                lifted = await _wait_for(mod_ev, lambda e: e.get("type") == "user_unmuted")
+            finally:
+                mod_pump.cancel()
+        ctx.ok("leaks: voice: the moderator lifts the member's earlier timeout", lifted is not None,
+               json.dumps(mod_ev[-3:]))
     ev = {}
     async with AsyncExitStack() as stack:
         sess, sockets = {}, {}
