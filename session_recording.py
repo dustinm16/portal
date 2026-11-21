@@ -276,10 +276,21 @@ class AsciicastRecorder:
 def recording_wanted(config) -> bool:
     """True when a connection's config switches recording on and the portal allows it.
 
-    Only a real boolean true counts (a stored "false" string must not turn it on).
-    Recording is off per connection by default.
+    On means exactly True, the integer 1, the text "1" or the text "true" in any case;
+    everything else (false, 0, "false", "yes", " true", 1.0, 2, a list) is off. Recording is
+    off per connection by default.
     """
-    return isinstance(config, dict) and config.get("recording") is True and bool(Config.RECORDING_ENABLED)
+    if not isinstance(config, dict) or not Config.RECORDING_ENABLED:
+        return False
+    return _flag_on(config.get("recording"))
+
+
+def _flag_on(value) -> bool:
+    if value is True:
+        return True
+    if type(value) is int:
+        return value == 1
+    return isinstance(value, str) and value.lower() in ("1", "true")
 
 
 def recorder_for(target, user_id: int, cols: int, rows: int, kind: str) -> Optional[AsciicastRecorder]:

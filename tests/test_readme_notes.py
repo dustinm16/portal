@@ -499,7 +499,7 @@ check("README has an 'Upgrade notes for 1.20.0' section directly before the 1.19
       m20 is not None and text.index("### Upgrade notes for 1.20.0") < text.index("### Upgrade notes for 1.19.0")
       and text.index("### Upgrade notes for 1.20.0") > text.index("### Upgrade notes for 1.18.0"))
 low20 = (m20.group(1) if m20 else "").lower()
-for name, needles in (("recording is off unless the flag is a real boolean true", ("off", '"recording": true', "real boolean")),
+for name, needles in (("recording is off unless the flag is exactly true, 1, '1' or 'true'", ("off", '"recording"', "exactly", '"yes"')),
                       ("output only, never keystrokes, and what the remote echoes is recorded", ("output only", "keystrokes are never recorded", "echo")),
                       ("0600 files, the cap and retention", ("0600", "50 mb", "retention_recordings_days")),
                       ("a shared connection records the person at the keyboard", ("shared", "at the keyboard")),

@@ -200,7 +200,7 @@ async def main():
 
     # ---- an unrecorded connection: no banner fact, no file --------------------------------------
     for n, (label, extra) in enumerate((("without the flag", {}), ("with the flag false", {"recording": False}),
-                                        ("with the flag as text", {"recording": "true"}))):
+                                        ("with the flag as unrecognised text", {"recording": "yes"}))):
         u, _ = await new_row(f"plain-{n}", **extra)
         ws = await open_ws("bob", u)
         conn, raw = await until_connected(ws)
