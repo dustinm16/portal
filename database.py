@@ -694,6 +694,7 @@ MIGRATIONS = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         last_success_at TEXT,
         failure_count INTEGER NOT NULL DEFAULT 0,
+        announced_at TEXT,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )""",
     "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)",
@@ -1296,6 +1297,8 @@ MIGRATIONS = [
     # column with no default is a schema-only change, cheap on a large database.
     "ALTER TABLE connection_shares ADD COLUMN expires_at TEXT",
     "ALTER TABLE service_grants ADD COLUMN expires_at TEXT",
+    # when a live session last announced the device (subscribe or re-announcement); NULL reads as created_at
+    "ALTER TABLE push_subscriptions ADD COLUMN announced_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_conn_shares_expires ON connection_shares(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_service_grants_expires ON service_grants(expires_at)",
 ]
@@ -4728,7 +4731,8 @@ class Database:
                 if row and row["user_id"] == user_id:
                     cursor = await self.conn.execute(
                         f"""UPDATE push_subscriptions SET p256dh = ?, auth = ?, user_agent = ?, token_id = ?,
-                            failure_count = 0 WHERE id = ? AND user_id = ? AND {live}""",
+                            failure_count = 0, announced_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND user_id = ? AND {live}""",
                         (p256dh, auth, user_agent, token_id, row["id"], user_id, token_id, token_id))
                     await self.conn.commit()
                     if cursor.rowcount > 0:
@@ -4743,10 +4747,12 @@ class Database:
                 # ON CONFLICT is the last line of defence: a row that appeared for another
                 # user is never overwritten (WHERE), the statement then changes nothing.
                 cursor = await self.conn.execute(
-                    f"""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, token_id)
-                        SELECT ?, ?, ?, ?, ?, ? WHERE {live}
+                    f"""INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, token_id,
+                                                        announced_at)
+                        SELECT ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP WHERE {live}
                         ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth,
-                            user_agent = excluded.user_agent, token_id = excluded.token_id, failure_count = 0
+                            user_agent = excluded.user_agent, token_id = excluded.token_id, failure_count = 0,
+                            announced_at = CURRENT_TIMESTAMP
                             WHERE push_subscriptions.user_id = excluded.user_id""",
                     (user_id, endpoint, p256dh, auth, user_agent, token_id, token_id, token_id))
                 await self.conn.commit()
@@ -4769,7 +4775,7 @@ class Database:
         device is not registered to this user with these keys, or the session has ended."""
         async with self._push_sub_lock:
             cursor = await self.conn.execute(
-                """UPDATE push_subscriptions SET token_id = ?, user_agent = ?
+                """UPDATE push_subscriptions SET token_id = ?, user_agent = ?, announced_at = CURRENT_TIMESTAMP
                    WHERE user_id = ? AND endpoint = ? AND p256dh = ? AND auth = ?
                      AND (? IS NULL OR EXISTS (SELECT 1 FROM tokens WHERE token_id = ? AND revoked = 0))""",
                 (token_id, user_agent, user_id, endpoint, p256dh, auth, token_id, token_id))
@@ -4794,17 +4800,45 @@ class Database:
                FROM push_subscriptions WHERE user_id = ? ORDER BY id""", (user_id,))
         return [dict(r) for r in await cursor.fetchall()]
 
+    PUSH_STALE_DAYS = 30
+
+    # A device whose registering session is no longer live (it expired, or its row is gone, or none was
+    # recorded) and that no live session has announced for PUSH_STALE_DAYS: nothing is sent to it and the
+    # periodic cleanup deletes it. A live session's device is never stale, however long ago it was announced.
+    _PUSH_STALE_SQL = """COALESCE(push_subscriptions.announced_at, push_subscriptions.created_at) < datetime('now', ?)
+        AND (push_subscriptions.token_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM tokens t WHERE t.token_id = push_subscriptions.token_id AND t.revoked = 0
+              AND (t.expires_at IS NULL OR t.expires_at >= ?)))"""
+
+    async def _delete_stale_push_subscriptions(self) -> int:
+        """Delete the devices _PUSH_STALE_SQL describes, without committing."""
+        try:
+            cursor = await self.conn.execute(
+                f"DELETE FROM push_subscriptions WHERE {self._PUSH_STALE_SQL}",
+                (f"-{self.PUSH_STALE_DAYS} days", datetime.now(timezone.utc).isoformat()))
+            return cursor.rowcount
+        except Exception as e:
+            logger.warning(f"push_subscriptions stale cleanup skipped: {type(e).__name__}")
+            return 0
+
     async def push_subscriptions_for_send(self, user_id: int) -> list[dict]:
-        """Devices a push may go to now: not those of a session that was revoked."""
+        """Devices a push may go to now: not those of a session that was revoked, and not those that
+        belong to no live session and were not announced for PUSH_STALE_DAYS."""
         cursor = await self.conn.execute(
-            """SELECT s.id, s.endpoint, s.p256dh, s.auth, s.token_id, t.id AS tid, t.revoked, t.expires_at
-               FROM push_subscriptions s LEFT JOIN tokens t ON t.token_id = s.token_id
-               WHERE s.user_id = ? ORDER BY s.id""", (user_id,))
+            f"""SELECT push_subscriptions.id, push_subscriptions.endpoint, push_subscriptions.p256dh,
+                       push_subscriptions.auth, push_subscriptions.token_id, t.id AS tid, t.revoked,
+                       ({self._PUSH_STALE_SQL}) AS stale
+               FROM push_subscriptions LEFT JOIN tokens t ON t.token_id = push_subscriptions.token_id
+               WHERE push_subscriptions.user_id = ? ORDER BY push_subscriptions.id""",
+            (f"-{self.PUSH_STALE_DAYS} days", datetime.now(timezone.utc).isoformat(), user_id))
         out = []
         for r in await cursor.fetchall():
-            # Only a revoked session ends its devices. A session that merely expired keeps them:
-            # the browser still holds its subscription and nothing would register it again.
+            # A revoked session ends its devices at once. A session that merely expired keeps them for
+            # PUSH_STALE_DAYS after the last announcement (the browser still holds the subscription and
+            # re-announces it whenever the member opens a page signed in), then they go as well.
             if r["token_id"] is not None and r["tid"] is not None and r["revoked"]:
+                continue
+            if r["stale"]:
                 continue
             out.append({"id": r["id"], "endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"]})
         return out
@@ -8654,8 +8688,10 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         # A device must not outlive the revoked session that registered it: the send filter
         # skips it only while the revoked row exists, so drop the devices before the row.
-        # (A session that merely expired keeps its devices on purpose: see push_subscriptions_for_send.)
+        # (A session that merely expired keeps its devices for a while on purpose: see push_subscriptions_for_send.)
         await self._delete_push_subscriptions_of_revoked_tokens()
+        # ... and a device of an expired or vanished session that nobody announced for 30 days goes too.
+        await self._delete_stale_push_subscriptions()
         cursor = await self.conn.execute(
             "DELETE FROM tokens WHERE (expires_at IS NOT NULL AND expires_at < ?) OR revoked = 1",
             (now,)

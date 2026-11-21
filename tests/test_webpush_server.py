@@ -732,6 +732,45 @@ async def main():
         await w.db.revoke_token("t-out")
         check("revoking a session removes its device in the same step", await w.rows("erin") == [])
 
+        # a device of a session that merely expired is bounded: 30 days without an announcement by a live session
+        from datetime import datetime, timedelta, timezone
+        past = datetime.now(timezone.utc) - timedelta(days=2)
+        await w.db.create_token(aid, "t-live", FULL, name="web_session")
+        await w.db.create_token(aid, "t-expired", FULL, name="web_session", expires_at=past)
+        await w.db.create_token(aid, "t-vanished", FULL, name="web_session")
+        stale = {}
+        for tag, tid in (("live_old", "t-live"), ("exp_old", "t-expired"), ("exp_new", "t-expired"),
+                         ("gone_old", "t-vanished"), ("exp_old2", "t-expired")):
+            dv = Receiver(w.service, "stale-" + tag)
+            r_ = await w.db.add_push_subscription(aid, dv.endpoint, dv.sub()["keys"]["p256dh"], dv.sub()["keys"]["auth"], "x", tid, 10)
+            assert r_ == "created", (tag, r_)
+            stale[tag] = dv
+        await w.db.conn.execute("DELETE FROM tokens WHERE token_id = 't-vanished'")
+        for tag in ("live_old", "exp_old", "gone_old", "exp_old2"):
+            await w.db.conn.execute("UPDATE push_subscriptions SET announced_at = datetime('now', '-31 days') WHERE endpoint = ?",
+                                    (stale[tag].endpoint,))
+        await w.db.conn.execute("UPDATE push_subscriptions SET announced_at = datetime('now', '-5 days') WHERE endpoint = ?",
+                                (stale["exp_new"].endpoint,))
+        await w.db.conn.commit()
+        sendable = {d["endpoint"] for d in await w.db.push_subscriptions_for_send(aid)}
+        check("nothing is sent to a device of an expired or vanished session that was not announced for 30 days; a live session's device, "
+              "and an expired session's recent one, still get pushes",
+              sendable == {stale["live_old"].endpoint, stale["exp_new"].endpoint}, str(sorted(sendable)))
+        # an announcement by a live session (the page-load re-announcement) brings it back under a live session
+        bd = stale["exp_old2"]
+        check("a re-announcement from a live session restores the old device",
+              await w.db.rebind_push_subscription(aid, bd.endpoint, bd.sub()["keys"]["p256dh"], bd.sub()["keys"]["auth"], "x", "t-live")
+              and bd.endpoint in {d["endpoint"] for d in await w.db.push_subscriptions_for_send(aid)})
+        await w.db.cleanup_expired_tokens()
+        left = {r["endpoint"] for r in await w.rows("erin")}
+        check("the periodic cleanup deletes the stale devices of expired or vanished sessions and nothing else",
+              left == {stale["live_old"].endpoint, stale["exp_new"].endpoint, bd.endpoint}, str(sorted(left)))
+        cur = await w.db.conn.execute("PRAGMA table_info(push_subscriptions)")
+        check("the announced_at column exists and running the migrations again is harmless",
+              "announced_at" in [r["name"] for r in await cur.fetchall()] and await w.db._run_migrations() is None)
+        for r in await w.rows("erin"):
+            await w.db.delete_push_subscription(aid, sub_id=r["id"])
+
         # the cap holds under concurrent subscribes
         devs = [Receiver(w.service, f"cap{i}") for i in range(15)]
         res = await asyncio.gather(*(w.db.add_push_subscription(
