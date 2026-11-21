@@ -2813,6 +2813,18 @@ async def http_push_subscribe(request: web.Request) -> web.Response:
     try:
         endpoint = webpush.validate_endpoint(data.get("endpoint"), await pusher.extra_hosts(), sink)
         webpush.validate_keys(keys.get("p256dh"), keys.get("auth"))
+        # The page script re-announces its device on every page load while push is on here, so
+        # the device always belongs to the live session. A device this member already holds with
+        # these keys is only tied to this session: no name lookup, not counted against the limit.
+        label = parse_user_agent(session_devices.clean_user_agent(request.headers.get("User-Agent")))["label"]
+        if await db.rebind_push_subscription(token.user_id, endpoint, keys["p256dh"].strip(),
+                                             keys["auth"].strip(), label, token.token_id):
+            return web.json_response({"status": "updated"}, status=200)
+        if data.get("rebind") is True:
+            # A page-load re-announcement never registers, moves or takes a device: it only
+            # refreshes one this member already holds. (A browser used by someone else since
+            # keeps no claim on the new member: they switch push on themselves.)
+            return web.json_response({"error": "This device is not registered to your account"}, status=404)
         # Only a well-formed request on an allow-listed host reaches the name lookup, and
         # those are limited per member
         now = monotonic()
@@ -2827,7 +2839,6 @@ async def http_push_subscribe(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=400)
     if await webpush.get_vapid(db) is None:
         return web.json_response({"error": "Push is unavailable on this server"}, status=503)
-    label = parse_user_agent(session_devices.clean_user_agent(request.headers.get("User-Agent")))["label"]
     result = await db.add_push_subscription(
         token.user_id, endpoint, keys["p256dh"].strip(), keys["auth"].strip(), label,
         token.token_id, webpush.MAX_DEVICES_PER_USER)
@@ -17817,6 +17828,7 @@ _SEARXNG_HEAD_INJECT = (
     b'<link rel="stylesheet" href="/static/css/portal.css?v=55">'
     b'<link rel="stylesheet" href="/static/css/searxng-portal.css?v=6">'
     b'<script src="/static/js/searxng-portal.js?v=4" defer></script>'
+    b'<script src="/static/js/push.js?v=3" defer></script>'
 )
 
 

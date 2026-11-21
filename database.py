@@ -4762,6 +4762,20 @@ class Database:
                     pass
                 raise
 
+    async def rebind_push_subscription(self, user_id: int, endpoint: str, p256dh: str, auth: str,
+                                       user_agent: str | None, token_id: str | None) -> bool:
+        """Tie an already registered device of this user (same endpoint and same keys) to the
+        session that is calling now. A cheap write: no cap, no name lookup. False when the
+        device is not registered to this user with these keys, or the session has ended."""
+        async with self._push_sub_lock:
+            cursor = await self.conn.execute(
+                """UPDATE push_subscriptions SET token_id = ?, user_agent = ?
+                   WHERE user_id = ? AND endpoint = ? AND p256dh = ? AND auth = ?
+                     AND (? IS NULL OR EXISTS (SELECT 1 FROM tokens WHERE token_id = ? AND revoked = 0))""",
+                (token_id, user_agent, user_id, endpoint, p256dh, auth, token_id, token_id))
+            await self.conn.commit()
+            return cursor.rowcount > 0
+
     async def list_push_subscriptions(self, user_id: int) -> list[dict]:
         cursor = await self.conn.execute(
             """SELECT id, endpoint, user_agent, token_id, created_at, last_success_at, failure_count

@@ -27,8 +27,9 @@ function world(opts) {
     unsubscribe() { this.unsubscribed = true; return Promise.resolve(true); }, toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'p', auth: 'a' } }; } } : null;
   const state = { permissionAsked: 0, registered: 0, sub, navigated: null, devices: opts.devices || [], prefs: { dm: true, mention: true, golive: true } };
   const docListeners = {};
+  const swListeners = {};
   const win = {
-    location: { pathname: opts.path || '/', origin: 'https://portal.example', href: '' },
+    location: { pathname: opts.path || '/', search: opts.search || '', hash: '', origin: 'https://portal.example', href: '' },
     Notification: { permission: opts.permission || 'default', requestPermission() { state.permissionAsked++; return Promise.resolve(opts.grant === false ? 'denied' : 'granted'); } },
     matchMedia: () => ({ matches: !!opts.standalone }),
   };
@@ -37,6 +38,8 @@ function world(opts) {
   const nav = {
     userAgent: opts.ua || 'Mozilla/5.0 (X11; Linux x86_64) Firefox', platform: 'Linux', maxTouchPoints: 0, standalone: !!opts.navStandalone,
     serviceWorker: {
+      addEventListener(t, f) { (swListeners[t] = swListeners[t] || []).push(f); },
+      startMessages() { state.messagesStarted = true; },
       register() { state.registered++; return Promise.resolve({ active: {}, pushManager: { getSubscription: () => Promise.resolve(state.sub),
         subscribe() { state.sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/new', unsubscribe() { return Promise.resolve(true); }, toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'p', auth: 'a' } }; } }; return Promise.resolve(state.sub); } } }); },
       getRegistration() { return Promise.resolve(state.sub || opts.registered ? { pushManager: { getSubscription: () => Promise.resolve(state.sub) } } : undefined); },
@@ -61,7 +64,7 @@ function world(opts) {
   Object.defineProperty(win.location, 'href', { get() { return state.navigated || ''; }, set(v) { state.navigated = v; } });
   vm.createContext(ctx);
   vm.runInContext(source, ctx);
-  return { ctx, win, state, calls, docListeners, store };
+  return { ctx, win, state, calls, docListeners, store, swListeners };
 }
 const tick = (ms) => new Promise(r => setTimeout(r, ms || 20));
 function logoutClick(w) {
@@ -145,6 +148,57 @@ function logoutClick(w) {
   w = world({ framed: true, subscribed: true, storage: [['portal_push_on', '1']] });
   const p3 = logoutClick(w); await tick(20);
   check('inside a frame the logout hook does nothing', !p3());
+
+  // every page load where push is on here: the device is re-announced, so it belongs to the live session
+  const onLoad = { subscribed: true, registered: true, permission: 'granted', storage: [['portal_push_on', '1']] };
+  w = world(onLoad); await tick(40);
+  const ann = w.calls.filter(c => c.url === '/api/push/subscriptions' && c.method === 'POST');
+  check('page load with push on here re-announces the device (POST with the endpoint and keys, nothing asked, nothing registered)',
+        ann.length === 1 && JSON.parse(ann[0].body).endpoint === 'https://fcm.googleapis.com/fcm/send/abc' && JSON.parse(ann[0].body).keys.p256dh && JSON.parse(ann[0].body).rebind === true
+        && w.state.permissionAsked === 0 && w.state.registered === 0, JSON.stringify(w.calls));
+  const quiet = (name, o) => {
+    const q = world(Object.assign({}, onLoad, o));
+    return tick(40).then(() => check(name, !q.calls.some(c => c.method === 'POST')));
+  };
+  await quiet('no re-announcement without the local hint', { storage: [] });
+  await quiet('no re-announcement before permission was granted', { permission: 'default' });
+  await quiet('no re-announcement in a frame', { framed: true });
+  await quiet('no re-announcement on a proxied page', { path: '/proxy/abc/x' });
+  await quiet('no re-announcement in the embedded browser shell', { path: '/browser' });
+  const q2 = world(Object.assign({}, onLoad, { subscribed: false })); await tick(40);
+  check('no re-announcement when the browser holds no subscription', !q2.calls.some(c => c.method === 'POST'));
+  w = world(Object.assign({}, onLoad, { path: '/search/' })); await tick(40);
+  check('on /search/ (where push cannot be switched on) the device is still re-announced', w.calls.filter(c => c.method === 'POST').length === 1 && !w.win.PortalPush.supported());
+  const fail = world(onLoad); await tick(40);
+  check('a refused re-announcement is silent (no unhandled rejection, no navigation)', fail.state.navigated === null || fail.state.navigated === '');
+
+  // the sign-out hook also works where push cannot be switched on (/search/ has a logout link)
+  w = world({ path: '/search/', subscribed: true, registered: true, storage: [['portal_push_on', '1']] });
+  const ps = logoutClick(w); await tick(80);
+  const los = w.calls.find(c => c.url === '/logout');
+  check('on /search/ a logout click names this browser\'s device too', ps() && los && JSON.parse(los.body).endpoint === 'https://fcm.googleapis.com/fcm/send/abc' && w.state.navigated === '/logout');
+
+  // the worker asks the page to go to the tapped target
+  function swMessage(wd, data) {
+    const port = { sent: [], postMessage(m) { this.sent.push(m); } };
+    (wd.swListeners.message || []).forEach(f => f({ data, ports: [port] }));
+    return port;
+  }
+  w = world({ path: '/about' });
+  check('the page listens for the worker and starts its message queue', (w.swListeners.message || []).length === 1 && w.state.messagesStarted === true);
+  let port = swMessage(w, { type: 'portal-open', url: '/chat?dm=3' });
+  check('a relative target is followed and the worker is told', w.state.navigated === '/chat?dm=3' && port.sent.length === 1);
+  for (const bad of ['https://evil.example/', '//evil.example/', '/\\evil.example', 'javascript:alert(1)', 42, null]) {
+    w = world({ path: '/about' });
+    swMessage(w, { type: 'portal-open', url: bad });
+    check('an absolute, protocol-relative, backslash or non-string target is never followed: ' + String(bad), !w.state.navigated);
+  }
+  w = world({ path: '/about' }); swMessage(w, { type: 'other', url: '/x' });
+  check('another message type is ignored', !w.state.navigated);
+  w = world({ path: '/chat', search: '?dm=3' }); port = swMessage(w, { type: 'portal-open', url: '/chat?dm=3' });
+  check('already on the target: no reload, the worker is still told', !w.state.navigated && port.sent.length === 1);
+  check('a framed page does not listen', (world({ framed: true }).swListeners.message || []).length === 0);
+  check('a proxied page does not listen', (world({ path: '/proxy/a/b' }).swListeners.message || []).length === 0);
 
   for (const r of results) console.log('RESULT ' + JSON.stringify(r));
 })().catch(e => { console.log('RESULT ' + JSON.stringify({ name: 'harness crashed', ok: false, detail: e && e.stack })); });

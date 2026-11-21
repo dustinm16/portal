@@ -262,9 +262,13 @@ async def main():
         # ------------------------------------------------------------ subscribe rate limit
         server._PUSH_SUBSCRIBE_LIMIT = 3
         codes = [(await w.call("POST", "bob", "/api/push/subscriptions",
-                               json={"endpoint": "https://fcm.googleapis.com/fcm/send/rl", "keys": dev0.sub()["keys"]}))[0]
-                 for _ in range(5)]
-        check("subscribe lookups are limited per member (3 per minute here), 429 after", codes == [201, 200, 200, 429, 429], str(codes))
+                               json={"endpoint": f"https://fcm.googleapis.com/fcm/send/rl{i}", "keys": dev0.sub()["keys"]}))[0]
+                 for i in range(5)]
+        check("subscribe lookups are limited per member (3 per minute here), 429 after", codes == [201, 201, 201, 429, 429], str(codes))
+        codes = [(await w.call("POST", "bob", "/api/push/subscriptions",
+                               json={"endpoint": "https://fcm.googleapis.com/fcm/send/rl0", "keys": dev0.sub()["keys"]}))[0]
+                 for _ in range(4)]
+        check("re-announcing a device already held (same endpoint, same keys) is not a lookup and is not limited", codes == [200] * 4, str(codes))
         await w.call("DELETE", "bob", "/api/push/subscriptions")
         server._PUSH_SUBSCRIBE_LIMIT = 10000
         server._push_subscribe_log.clear()
@@ -657,6 +661,22 @@ async def main():
                   c["click_other_origin_tab"]["opened"] == ["https://portal.test/chat?c=3"] and not c["click_other_origin_tab"]["focused"])
             check("worker: a tampered or missing click URL opens the portal root only",
                   all(c[k]["opened"] == ["https://portal.test/"] for k in ("click_tampered", "click_tampered2", "click_nodata")))
+            A = "https://portal.test/chat?c=3"
+            check("worker: a click takes an open portal window to the page (navigate) and opens none",
+                  c["click_navigate"]["navigated"] == [["https://portal.test/about", A]] and not c["click_navigate"]["opened"]
+                  and c["click_navigate"]["focused"] == ["https://portal.test/about"])
+            check("worker: where navigate is refused (a page the worker does not control) the page is asked to go there, relative URL only",
+                  c["click_relay"]["posted"] == [["https://portal.test/about", {"type": "portal-open", "url": "/chat?c=3"}]]
+                  and not c["click_relay"]["opened"] and not c["click_relay"]["navigated"])
+            check("worker: the window in front is the one used", [n[0] for n in c["click_front_first"]["navigated"]] == ["https://portal.test/b"]
+                  and not c["click_front_first"]["opened"])
+            check("worker: a window that neither navigates nor answers is skipped and a new window is opened",
+                  c["click_no_answer"]["opened"] == [A] and len(c["click_no_answer"]["posted"]) == 1)
+            check("worker: a proxied page, the embedded browser shell and a nested frame are never navigated, focused or messaged",
+                  c["click_proxied"]["opened"] == [A] and not c["click_proxied"]["navigated"] and not c["click_proxied"]["posted"]
+                  and not c["click_proxied"]["focused"])
+            check("worker: a tampered URL takes an open window to the portal root, nowhere else",
+                  c["click_tampered_navigate"]["navigated"] == [["https://portal.test/about", "https://portal.test/"]])
         else:
             print("skip: node is not installed, the worker behaviour was not run")
 
@@ -714,6 +734,50 @@ async def main():
               s == 409 and len(await w.rows("fay")) == 1 and await w.rows("erin") == [], str(s))
         await w.call("DELETE", "fay", "/api/push/subscriptions")
         server._PUSH_SUBSCRIBE_LIMIT = 3
+
+        # ------------------------------------------------------------ a device is always tied to the live session
+        server._PUSH_SUBSCRIBE_LIMIT = 1000
+        server._push_subscribe_log.clear()
+        await w.db.create_token(w.ids["erin"], "t-A", FULL, name="web_session")
+        await w.db.create_token(w.ids["erin"], "t-B", FULL, name="web_session")
+        dev = Receiver(w.service, "tied")
+        await w.subscribe("erin", dev, headers={"X-Test-Tid": "t-A"})
+        await w.db.conn.execute("UPDATE tokens SET expires_at = '2020-01-01T00:00:00+00:00' WHERE token_id = 't-A'")
+        await w.db.conn.commit()
+        check("a device registered under a session that expired is still live (nothing else would end it)",
+              len(await w.db.push_subscriptions_for_send(w.ids["erin"])) == 1)
+        s, b = await w.subscribe("erin", dev, headers={"X-Test-Tid": "t-B"})
+        rows = await w.db.conn.execute("SELECT token_id FROM push_subscriptions WHERE endpoint = ?", (dev.endpoint,))
+        check("the page's re-announcement ties the device to the session that is open now: updated, no second row",
+              s == 200 and b["status"] == "updated" and [r["token_id"] for r in await rows.fetchall()] == ["t-B"]
+              and len(await w.rows("erin")) == 1, f"{s} {b}")
+        s, _b, _h = await w.call("GET", "erin", "/logout", headers={"X-Test-Tid": "t-B", "Cookie": f"{Config.SESSION_COOKIE_NAME}=x"})
+        check("signing out of that session (a plain GET /logout, as from a page with no push script) ends the device",
+              s == 302 and await w.rows("erin") == [] and await w.db.push_subscriptions_for_send(w.ids["erin"]) == [], str(s))
+        # the re-announcement never takes a device that is not this member's, and a revoked session does nothing
+        await w.subscribe("fay", dev)
+        s, _b = await w.subscribe("erin", dev, headers={"X-Test-Tid": "t-A"})
+        check("re-announcing someone else's device with the same keys is the ordinary ownership rule (the newest sign-in owns it)",
+              s in (200, 201) and len(await w.rows("erin")) == 1 and await w.rows("fay") == [], str(s))
+        await w.call("DELETE", "erin", "/api/push/subscriptions")
+        # a page-load re-announcement ("rebind") only refreshes a device the member holds
+        body = dict(dev.sub(), rebind=True)
+        s, _b, _h = await w.call("POST", "erin", "/api/push/subscriptions", json=body)
+        check("a re-announcement of a device this member does not hold registers nothing and takes nothing (404)",
+              s == 404 and await w.rows("erin") == [], str(s))
+        await w.subscribe("fay", dev)
+        s, _b, _h = await w.call("POST", "erin", "/api/push/subscriptions", json=body)
+        check("a re-announcement never moves another member's device", s == 404 and len(await w.rows("fay")) == 1 and await w.rows("erin") == [], str(s))
+        s, _b, _h = await w.call("POST", "fay", "/api/push/subscriptions", json=body)
+        check("a re-announcement of the member's own device is updated", s == 200, str(s))
+        await w.call("DELETE", "fay", "/api/push/subscriptions")
+        server._PUSH_SUBSCRIBE_LIMIT = 3
+        # every portal page with a logout link loads the sign-out hook, at one version
+        for page in ("index", "chat", "admin", "streams", "files", "about", "guides", "api-docs"):
+            text = (ROOT / "static" / f"{page}.html").read_text()
+            check(f"{page}.html has a logout link and loads push.js", 'href="/logout"' in text and "/static/js/push.js?v=3" in text)
+        check("/search/ gets push.js too (its navbar has a logout link)", 'push.js?v=3' in (ROOT / "server.py").read_text()
+              and 'href="/logout"' in (ROOT / "static" / "js" / "searxng-portal.js").read_text())
 
         # ------------------------------------------------------------ VAPID reset, key state, shutdown
         root_cookie, _tid = await auth_mod.create_access_token(w.ids["root"], ["*"], name="web_session")

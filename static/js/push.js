@@ -20,14 +20,38 @@
     var SCOPE = '/push-sw/';
     var HINT = 'portal_push_on';
 
-    function inForeignContext() {
+    function framed() {
         try {
-            if (window.top !== window.self) return true;
+            return window.top !== window.self;
         } catch (e) {
             return true;
         }
+    }
+
+    function onProxiedPath() {
         var path = window.location.pathname || '';
-        return path.indexOf('/proxy/') === 0 || path.indexOf('/search/') === 0 || path === '/browser';
+        return path.indexOf('/proxy/') === 0 || path === '/browser';
+    }
+
+    function inForeignContext() {
+        var path = window.location.pathname || '';
+        return framed() || onProxiedPath() || path.indexOf('/search/') === 0;
+    }
+
+    /* The sign-out hook, the device re-announcement and the tap relay need no permission prompt and no
+       settings screen, so they also run where push cannot be switched on (/search/): only a framed page
+       and a proxied page are left out. */
+    function canAct() {
+        return typeof navigator !== 'undefined' && 'serviceWorker' in navigator &&
+            typeof window !== 'undefined' && 'PushManager' in window && !framed() && !onProxiedPath();
+    }
+
+    function hinted() {
+        try {
+            return localStorage.getItem(HINT) === '1';
+        } catch (e) {
+            return false;
+        }
     }
 
     function supported() {
@@ -156,9 +180,7 @@
        (bounded wait). Without a push device here the link works as it always did. */
     document.addEventListener('click', function (ev) {
         var a = ev.target && ev.target.closest ? ev.target.closest('a[href="/logout"]') : null;
-        var on = false;
-        try { on = localStorage.getItem(HINT) === '1'; } catch (e) { on = false; }
-        if (!a || !on || !supported()) return;
+        if (!a || !hinted() || !canAct()) return;
         ev.preventDefault();
         var done = false;
         /* Always /logout, never /login: when the POST was slow or failed the link still signs the member out;
@@ -175,6 +197,42 @@
             }).then(function () { return sub.unsubscribe(); });
         }).then(go, go);
     });
+
+    /* Every page load where push is on for this browser: tell the server this device belongs to the session
+       that is open now (the server only re-ties a device it already holds with the same keys). A device
+       registered under a session that has since expired is thereby always tied to a live session, so signing
+       out (here, or from the Sessions page) ends it. Silent: nothing is asked and nothing is shown. */
+    function reannounce() {
+        if (!hinted() || !canAct() || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+        currentSubscription().then(function (sub) {
+            if (!sub) return null;
+            var body = sub.toJSON();
+            body.rebind = true;     /* refresh a device the server holds for this member; never register or take one */
+            return api('POST', '/api/push/subscriptions', body);
+        }).then(null, function () { /* signed out, or the server refused: nothing to do */ });
+    }
+    reannounce();
+
+    /* A tap on a notification: the worker controls no page, so it cannot navigate one; it focuses a portal
+       window and posts the target here. Only a relative path of this site is followed. */
+    function relativeTarget(value) {
+        if (typeof value !== 'string' || value.charAt(0) !== '/' || value.charAt(1) === '/' ||
+            value.indexOf('\\') !== -1 || value.length > 300) return null;
+        return value;
+    }
+
+    if (canAct() && navigator.serviceWorker.addEventListener) {
+        navigator.serviceWorker.addEventListener('message', function (ev) {
+            var d = ev && ev.data;
+            if (!d || d.type !== 'portal-open') return;
+            var url = relativeTarget(d.url);
+            var here = (window.location.pathname || '') + (window.location.search || '') + (window.location.hash || '');
+            if (url && url !== here) window.location.href = url;
+            /* tell the worker this page took it, so it does not open another window */
+            try { if (ev.ports && ev.ports[0]) ev.ports[0].postMessage('ok'); } catch (e) { /* gone */ }
+        });
+        if (navigator.serviceWorker.startMessages) navigator.serviceWorker.startMessages();
+    }
 
     /* ---- the "Phone notifications" block of the user settings ---- */
     var KINDS = [
