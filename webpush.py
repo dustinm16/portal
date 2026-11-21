@@ -203,14 +203,53 @@ def vapid_authorization(keys: VapidKeys, audience: str, subject: str, *, now: fl
 _vapid_lock: asyncio.Lock | None = None
 
 
+def _lock() -> asyncio.Lock:
+    global _vapid_lock
+    if _vapid_lock is None:
+        _vapid_lock = asyncio.Lock()
+    return _vapid_lock
+
+
+async def vapid_state(db) -> str:
+    """Why push is or is not usable on the key side: 'ok', 'none' (no key yet: one is made on
+    first use), 'unreadable' (a stored key that cannot be decrypted here: another machine's
+    key or a changed salt) or 'plain' (a stored key that is not encrypted). Never generates."""
+    import database as dbmod
+    stored = await db.get_setting(SETTING_PRIVATE)
+    if not stored:
+        return "none"
+    if not stored.startswith("enc:"):
+        return "plain"
+    try:
+        vapid_from_secret(json.loads(dbmod.decrypt_config(stored))["d"])
+    except Exception:
+        return "unreadable"
+    return "ok"
+
+
+async def reset_vapid(db) -> int | None:
+    """Replace the VAPID key pair with a new one and delete every subscription (a device is
+    bound to the key it subscribed with, so none of them could receive another push). Works
+    also when the stored key cannot be decrypted. Returns the number of devices removed, or
+    None (nothing changed) when the new key could not be stored encrypted."""
+    import database as dbmod
+    async with _lock():
+        key = ec.generate_private_key(ec.SECP256R1())
+        d = b64u(key.private_numbers().private_value.to_bytes(32, "big"))
+        sealed = dbmod.encrypt_config(json.dumps({"d": d}))
+        if not sealed.startswith("enc:"):
+            logger.error("Web push: the new VAPID key could not be encrypted; nothing was changed")
+            return None
+        removed = await db.delete_all_push_subscriptions()
+        await db.set_settings({SETTING_PRIVATE: sealed, SETTING_PUBLIC: b64u(public_bytes(key))})
+        return removed
+
+
 async def get_vapid(db) -> VapidKeys | None:
     """The server's VAPID key pair; generated on first use. None when push must stay off
     (the key could not be stored encrypted, or the stored one cannot be decrypted)."""
-    global _vapid_lock
     import database as dbmod
-    if _vapid_lock is None:
-        _vapid_lock = asyncio.Lock()
-    async with _vapid_lock:
+    async with _lock():
         stored = await db.get_setting(SETTING_PRIVATE)
         if stored:
             if not stored.startswith("enc:"):
@@ -445,6 +484,19 @@ class Pusher:
     def cancel_all(self) -> None:
         for t in list(self.tasks):
             t.cancel()
+
+    async def shutdown(self) -> None:
+        """Cancel the outstanding push tasks and wait for them, so none runs against a database
+        that is closing. Never raises."""
+        tasks = [t for t in list(self.tasks) if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.tasks.clear()
+
+    def forget_paused(self) -> None:
+        self._paused.clear()
 
     def _rate_ok(self, user_id: int) -> bool:
         now = self._clock()

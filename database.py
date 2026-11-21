@@ -4690,6 +4690,12 @@ class Database:
             logger.warning(f"push_subscriptions cleanup skipped: {type(e).__name__}")
             return 0
 
+    async def delete_all_push_subscriptions(self) -> int:
+        """Delete every device of every member (the VAPID key was replaced)."""
+        cursor = await self.conn.execute("DELETE FROM push_subscriptions")
+        await self.conn.commit()
+        return cursor.rowcount
+
     async def delete_user_push_subscriptions(self, user_id: int, except_token_id: str | None = None) -> int:
         n = await self._delete_push_subscriptions(user_id, except_token_id)
         await self.conn.commit()

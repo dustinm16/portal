@@ -47,6 +47,7 @@ from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import TestServer  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 
+import auth as auth_mod  # noqa: E402
 import host_check  # noqa: E402
 import server  # noqa: E402
 import webpush as wp  # noqa: E402
@@ -142,6 +143,8 @@ class World:
         self.db = d = Database(str(Path(self.tmp.name) / "t.db"))
         await d.connect()
         self.saved = {n: getattr(server, n) for n in ("db", "authenticate_request")}
+        self.saved_auth_db = auth_mod.db
+        auth_mod.db = d
         server.db = d
         server.authenticate_request = fake_auth
         server._push_pusher = None
@@ -171,6 +174,7 @@ class World:
         r.add_get("/api/admin/push", server.http_admin_push_get)
         r.add_put("/api/admin/push", server.http_admin_push_put)
         r.add_post("/api/admin/push/test", server.http_admin_push_test)
+        r.add_post("/api/admin/push/reset-key", server.http_admin_push_reset_key)
         r.add_post("/api/me/password", server.http_change_password)
         r.add_get("/logout", server.http_logout)
         r.add_post("/api/me/sessions/others", server.http_revoke_my_other_sessions)
@@ -197,6 +201,7 @@ class World:
         await self.service.srv.close()
         for n, v in self.saved.items():
             setattr(server, n, v)
+        auth_mod.db = self.saved_auth_db
         server._push_pusher = None
         await self.db.close()
         self.tmp.cleanup()
@@ -709,6 +714,58 @@ async def main():
               s == 409 and len(await w.rows("fay")) == 1 and await w.rows("erin") == [], str(s))
         await w.call("DELETE", "fay", "/api/push/subscriptions")
         server._PUSH_SUBSCRIBE_LIMIT = 3
+
+        # ------------------------------------------------------------ VAPID reset, key state, shutdown
+        root_cookie, _tid = await auth_mod.create_access_token(w.ids["root"], ["*"], name="web_session")
+        member_cookie, _tid = await auth_mod.create_access_token(w.ids["erin"], FULL, name="web_session")
+        ck = lambda c: {"Cookie": f"{Config.SESSION_COOKIE_NAME}={c}"}
+        reset = "/api/admin/push/reset-key"
+        server._PUSH_SUBSCRIBE_LIMIT = 1000
+        server._push_subscribe_log.clear()
+        for who in ("erin", "fay"):
+            await w.subscribe(who, Receiver(w.service, "rk-" + who))
+        n0 = await w.db.count_push_subscriptions()
+        check("two members hold devices before the reset", n0 >= 2)
+        old_pub = await w.db.get_setting(wp.SETTING_PUBLIC)
+        s, _b, _h = await w.call("POST", "root", reset, json={"confirm": True})      # a bearer-style credential, no cookie
+        check("the key reset refuses a credential that is not a browser session", s in (401, 403) and await w.db.count_push_subscriptions() == n0, str(s))
+        s, _b, _h = await w.call("POST", None, reset, json={"confirm": True}, headers=ck(member_cookie))
+        check("the key reset refuses an ordinary member's session", s == 403 and await w.db.count_push_subscriptions() == n0, str(s))
+        s, _b, _h = await w.call("POST", None, reset, json={}, headers=ck(root_cookie))
+        check("the key reset needs an explicit confirmation", s == 400 and await w.db.get_setting(wp.SETTING_PUBLIC) == old_pub)
+        s, b, _h = await w.call("POST", None, reset, json={"confirm": True}, headers=ck(root_cookie))
+        new_pub = await w.db.get_setting(wp.SETTING_PUBLIC)
+        check("a superadmin's browser session resets the key: a new public key, every device deleted",
+              s == 200 and b["devices_removed"] == n0 and new_pub and new_pub != old_pub
+              and await w.db.count_push_subscriptions() == 0, f"{s} {b}")
+        cur = await w.db.conn.execute("SELECT details FROM audit_log WHERE action = 'push_key_reset'")
+        check("the key reset is audited", len(await cur.fetchall()) == 1)
+        import secevents
+        check("the key reset is a known, uncapped security event",
+              "push_key_reset" in secevents.EVENTS and "push_key_reset" in secevents.CAP_EXEMPT
+              and "'push_key_reset'" in (ROOT / "static" / "admin.html").read_text())
+        s, st, _h = await w.call("GET", "root", "/api/admin/push")
+        check("with a readable key the admin card has no key problem", st["key_state"] == "ok" and st["key_problem"] is None, str(st))
+        # a key that cannot be decrypted: push stays off, the card says why, the reset is the way out
+        await w.db.set_setting(wp.SETTING_PRIVATE, "enc:not-a-valid-token")
+        s, st, _h = await w.call("GET", "root", "/api/admin/push")
+        check("an undecryptable key: the admin state says so", st["key_state"] == "unreadable" and "cannot be decrypted" in st["key_problem"], str(st))
+        s, _b = await w.subscribe("erin", Receiver(w.service, "rk-late"))
+        check("an undecryptable key keeps push off (no subscribe, no new key made over the old one)",
+              s == 503 and await w.db.get_setting(wp.SETTING_PRIVATE) == "enc:not-a-valid-token", str(s))
+        s, _b, _h = await w.call("POST", None, reset, json={"confirm": True}, headers=ck(root_cookie))
+        s2, st, _h = await w.call("GET", "root", "/api/admin/push")
+        s3, _b = await w.subscribe("erin", Receiver(w.service, "rk-after"))
+        check("resetting replaces the undecryptable key and push works again", s == 200 and st["key_state"] == "ok" and s3 == 201, f"{s} {st} {s3}")
+        await w.call("DELETE", "erin", "/api/push/subscriptions")
+        server._PUSH_SUBSCRIBE_LIMIT = 3
+        # shutdown waits for the outstanding push tasks
+        pusher = server._get_pusher()
+        slow = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+        pusher.tasks.add(slow)
+        await pusher.shutdown()
+        check("the pusher's shutdown cancels and awaits its outstanding tasks", slow.cancelled() and not pusher.tasks)
+        check("the server's stop awaits the pusher", "await _push_pusher.shutdown()" in (ROOT / "server.py").read_text())
 
         # ------------------------------------------------------------ CSP
         s, _b, h = await w.call("GET", None, "/html")

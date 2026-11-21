@@ -2881,14 +2881,24 @@ async def http_push_delete_all(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "removed": removed})
 
 
+_PUSH_KEY_PROBLEMS = {
+    "unreadable": "The stored push key cannot be decrypted on this machine (a different encryption key or salt), "
+                  "so push stays off. Restore the matching salt, or reset the push key (every device must then "
+                  "turn Phone notifications on again).",
+    "plain": "The stored push key is not encrypted, so push stays off. Reset the push key to make a new one.",
+}
+
+
 async def _push_admin_state() -> dict:
     pusher = _get_pusher()
+    key_state = await webpush.vapid_state(db)
     return {"enabled": await pusher.enabled(),
             "default_hosts": list(webpush.DEFAULT_ALLOWED_HOSTS),
             "allowed_hosts": await pusher.extra_hosts(),
             "subject": (await db.get_setting(webpush.SETTING_SUBJECT) or "").strip() or None,
             "effective_subject": await pusher.subject(),
-            "device_count": await db.count_push_subscriptions()}
+            "device_count": await db.count_push_subscriptions(),
+            "key_state": key_state, "key_problem": _PUSH_KEY_PROBLEMS.get(key_state)}
 
 
 async def http_admin_push_get(request: web.Request) -> web.Response:
@@ -2931,6 +2941,30 @@ async def http_admin_push_put(request: web.Request) -> web.Response:
         await audit_log("push_settings", token.user_id, user["username"], target_type="settings",
                         details={"changed": sorted(k.replace("push_", "") for k in values)})
     return web.json_response(await _push_admin_state())
+
+
+async def http_admin_push_reset_key(request: web.Request) -> web.Response:
+    """POST /api/admin/push/reset-key {"confirm": true}: replace the VAPID key pair and delete
+    every device. Superadmin, browser login session only (a token or key cannot end every
+    member's devices); audited. The way out when the stored key cannot be decrypted."""
+    user, err = await _backup_superadmin(request, cookie_only=True)
+    if err is not None:
+        return err
+    data, bad = await _push_json(request)
+    if bad is not None:
+        return bad
+    if data.get("confirm") is not True:
+        return web.json_response({"error": "Send {\"confirm\": true} to reset the push key"}, status=400)
+    removed = await webpush.reset_vapid(db)
+    if removed is None:
+        return web.json_response({"error": "The new key could not be stored encrypted; nothing was changed"},
+                                 status=503)
+    _get_pusher().forget_paused()
+    await audit_log("push_key_reset", user["id"], user.get("username", "unknown"), target_type="settings",
+                    details={"devices_removed": removed})
+    await security_event("push_key_reset", request=request, user=user, details={"devices_removed": removed})
+    logger.warning(f"Push key reset by user {user['id']}; {removed} device(s) removed")
+    return web.json_response({"status": "reset", "devices_removed": removed})
 
 
 async def http_admin_push_test(request: web.Request) -> web.Response:
@@ -26320,6 +26354,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/admin/push", http_admin_push_get)
     app.router.add_put("/api/admin/push", http_admin_push_put)
     app.router.add_post("/api/admin/push/test", http_admin_push_test)
+    app.router.add_post("/api/admin/push/reset-key", http_admin_push_reset_key)
     app.router.add_put("/api/streams/{id}/follow", http_follow_stream)
     app.router.add_delete("/api/streams/{id}/follow", http_unfollow_stream)
     app.router.add_get("/api/streams/open", http_get_open_streams)
@@ -27215,7 +27250,7 @@ class PortalServer:
         await _cancel_golive_tasks()
         await _cancel_stream_info_tasks()
         if _push_pusher is not None:
-            _push_pusher.cancel_all()
+            await _push_pusher.shutdown()
 
         # Stop any active stream relays
         for sid in list(active_relays.keys()):

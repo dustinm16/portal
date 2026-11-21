@@ -289,7 +289,7 @@ async def exempt_events_unit():
         exempt = ["role_changed", "user_deleted", "password_reset", "never_ban_changed", "login_ban_changed", "proxy_limit_changed",
                   "cf_ranges_refreshed", "cf_ranges_reset", "cf_refresh_toggled", "cf_ranges_approved", "cf_ranges_dismissed",
                   "security_retention_changed", "security_events_pruned", "security_log_export",
-                  "webhook_allow_private"]
+                  "webhook_allow_private", "push_key_reset"]
         cap_exempt = set(getattr(secevents, "CAP_EXEMPT", ()))
         check("every cf_* event of the table is on the exempt list",
               {e for e in secevents.EVENTS if e.startswith("cf_")} <= cap_exempt)

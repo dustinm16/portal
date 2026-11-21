@@ -1639,7 +1639,9 @@
                         <div style="display:flex; gap:0.5rem; margin-top:0.75rem; flex-wrap:wrap;">
                             <button class="btn btn-primary btn-sm" onclick="savePushAdmin()">Save</button>
                             <button class="btn btn-secondary btn-sm" onclick="sendPushTest()">Send test push to my devices</button>
+                            <button class="btn btn-secondary btn-sm" onclick="resetPushKey()">Reset the push key</button>
                         </div>
+                        <p id="push-admin-keystate" style="font-size:0.8125rem; margin:0.5rem 0 0; color:var(--accent-red); display:none;"></p>
                         <p id="push-admin-msg" style="font-size:0.8125rem; margin:0.5rem 0 0; color:var(--text-muted);"></p>
                     </div>
 
@@ -5460,6 +5462,9 @@
                 document.getElementById('push-admin-count').textContent = String(s.device_count || 0);
                 document.getElementById('push-admin-hosts').value = (s.allowed_hosts || []).join('\n');
                 document.getElementById('push-admin-defaults').textContent = 'Built in: ' + (s.default_hosts || []).join(', ');
+                const ks = document.getElementById('push-admin-keystate');
+                ks.textContent = s.key_problem || '';
+                ks.style.display = s.key_problem ? '' : 'none';
             } catch (e) {
                 card.style.display = 'none';
             }
@@ -5480,6 +5485,17 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) { pushAdminSay(data.error || 'Could not save', true); return; }
             pushAdminSay('Saved.');
+            loadPushAdmin();
+        }
+
+        async function resetPushKey() {
+            if (!confirm('Reset the push key? Every device must turn Phone notifications on again.')) return;
+            const resp = await Portal.fetch('/api/admin/push/reset-key', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) { pushAdminSay(data.error || 'Could not reset the key', true); return; }
+            pushAdminSay('New key made; ' + (data.devices_removed || 0) + ' devices were removed.');
             loadPushAdmin();
         }
 
@@ -7545,7 +7561,7 @@
             '2fa_disable_failed', 'api_key_created', 'api_key_revoked', 'api_key_deleted', 'api_key_ip_denied', 'password_changed',
             'password_change_failed', 'password_reset', 'user_created', 'user_deleted', 'role_changed',
             'invite_created', 'invite_deactivated', 'ip_blocked', 'ip_unblocked', 'probe_block',
-            'never_ban_changed', 'login_ban_changed', 'proxy_limit_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed'
+            'never_ban_changed', 'login_ban_changed', 'proxy_limit_changed', 'cf_ranges_refreshed', 'cf_ranges_reset', 'cf_ranges_approved', 'cf_ranges_dismissed', 'cf_refresh_toggled', 'security_retention_changed', 'security_events_pruned', 'rate_limited', 'host_key_accepted', 'security_log_export', 'webhook_allow_private', 'login_failed_burst', 'cert_expiring', 'cert_renewal_failed', 'push_key_reset'
         ];
         let auditView = 'audit';
         let secOffset = 0;
