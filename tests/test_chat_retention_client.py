@@ -40,6 +40,9 @@ check("an attachment whose file was removed is marked in the message", "data.fil
 check("the script has no inline handler and no innerHTML", not re.search(r"\bon(click|change|input|submit)\s*=", JS) and "innerHTML" not in JS)
 check("the script sends credentials and uses the retention and prune routes",
       "credentials: 'include'" in JS and "/retention'" in JS and "/prune'" in JS)
+_STREAMS = (STATIC / "js" / "streams.js").read_text()
+check("the Streams page's small chat handles messages_pruned with the list of ids",
+      "data.type === 'messages_pruned'" in _STREAMS and "removeStreamChatMessages(data.ids)" in _STREAMS)
 check("the script has no emoji", not re.search("[\U0001F000-\U0001FFFF☀-➿]", JS))
 
 if shutil.which("node") is None:
@@ -53,6 +56,28 @@ else:
     check("the harness ran and reported checks", len(got) >= 25, proc.stdout[-300:] + proc.stderr[-300:])
     for r in got:
         check(r["name"], r["ok"], r["detail"])
+
+if shutil.which("node") is not None:
+    m = re.search(r"function removeStreamChatMessages\(ids\) \{.*?\n\}\n", _STREAMS, re.S)
+    check("streams.js has the pruned-message remover to run", m is not None)
+    if m:
+        harness = """
+class El { constructor(id){ this.dataset = {messageId: String(id)}; this.gone = false; } remove(){ this.gone = true; } }
+const els = [1, 2, 3, 40].map(i => new El(i));
+global.document = { querySelectorAll: sel => (sel === '#stream-chat-messages .chat-message' ? els : []) };
+""" + m.group(0) + """
+removeStreamChatMessages([2, '40', 99]);
+const a = els.map(e => e.gone);
+removeStreamChatMessages(null); removeStreamChatMessages('1'); removeStreamChatMessages({});
+console.log(JSON.stringify([a, els.map(e => e.gone)]));
+"""
+        proc = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=60)
+        try:
+            first, after = json.loads(proc.stdout.strip())
+        except Exception:
+            first = after = None
+        check("the listed ids leave the small chat, the others stay, a non-list is ignored",
+              first == [False, True, False, True] and after == first, proc.stdout + proc.stderr[-300:])
 
 if failed:
     print(f"\ntest_chat_retention_client: {len(failed)} FAILED: " + "; ".join(failed))

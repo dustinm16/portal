@@ -1007,12 +1007,26 @@ function connectStreamChat(streamKey) {
             const msgId = String(data.message_id).replace(/[^a-zA-Z0-9_-]/g, '');
             const el = document.querySelector(`#stream-chat-messages .chat-message[data-message-id="${msgId}"]`);
             if (el) el.remove();
+        } else if (data.type === 'messages_pruned') {
+            removeStreamChatMessages(data.ids);
         }
     };
 
     streamChatWs.onclose = () => {
         streamChatWs = null;
     };
+}
+
+/**
+ * Remove the messages a prune took out of the stream chat (the ids of one messages_pruned frame).
+ * Ids that are not on screen, and anything that is not a list, are ignored.
+ */
+function removeStreamChatMessages(ids) {
+    if (!Array.isArray(ids)) return;
+    const wanted = new Set(ids.map(id => String(id).replace(/[^a-zA-Z0-9_-]/g, '')));
+    document.querySelectorAll('#stream-chat-messages .chat-message').forEach(el => {
+        if (wanted.has(el.dataset.messageId)) el.remove();
+    });
 }
 
 /**

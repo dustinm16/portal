@@ -198,8 +198,8 @@ sv = re.findall(r"`streams\.js`[^.]*?version (\d+)|`streams\.js` (?:is|moved to)
 index_html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
 real_v = re.search(r"streams\.js\?v=(\d+)", index_html).group(1)
 stated = {a or b for a, b in sv}
-check("1.17.0: exactly one streams.js version is stated and it is the one index.html loads",
-      stated == {real_v}, f"stated {stated}, index.html {real_v}")
+check("1.17.0: exactly one streams.js version is stated and it is the one index.html loaded then (streams.js moved on in 1.20.0)",
+      stated == {"48"} and real_v == "49", f"stated {stated}, index.html {real_v}")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("JWT_SECRET", "x" * 64)
 import server as _server  # noqa: E402
