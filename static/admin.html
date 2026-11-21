@@ -6892,6 +6892,11 @@
                         <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
                     </div>
                     <div>
+                        <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Terminal Recording Budget (MB)</label>
+                        <input type="number" id="ret-recording-max" value="${c.recording_max_total_mb}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
+                        <span style="font-size:0.7rem;color:var(--text-muted);">Total for all recordings; 0 = no limit. New sessions are not recorded when it is used up or the disk is nearly full (nothing older is deleted)</span>
+                    </div>
+                    <div>
                         <label style="display:block;font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.25rem;">Security Event Retention (days)</label>
                         <input type="number" id="ret-security-events" value="${c.retention_security_events_days}" min="0" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--card-border);border-radius:6px;color:var(--text-primary);padding:0.5rem;box-sizing:border-box;">
                         <span style="font-size:0.7rem;color:var(--text-muted);">0 = keep forever</span>
@@ -6926,6 +6931,7 @@
                 retention_service_logs_max: pInt('ret-svc-logs', 1000),
                 retention_device_metrics_days: pInt('ret-device-metrics', 14),
                 retention_recordings_days: pInt('ret-recordings', 30),
+                recording_max_total_mb: pInt('ret-recording-max', 2048),
                 retention_security_events_days: pInt('ret-security-events', 180),
                 cleanup_interval_hours: pInt('ret-interval', 6),
                 auto_vacuum: document.getElementById('ret-vacuum').checked ? 'true' : 'false'

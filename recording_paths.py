@@ -26,6 +26,7 @@ _PROTECTED_SUBDIRS = ("static", "backups", os.path.join("data", "vod_tmp"))
 
 # Folders already refused during this run: path -> reason. Logged once each.
 _refused: dict = {}
+_verified: set = set()   # folders that passed once in this run (see check_verified)
 
 
 def _inside(path: str, parent: str) -> bool:
@@ -90,6 +91,20 @@ def check(path: str, project_root: Optional[str] = None) -> Optional[str]:
     return reason
 
 
+def check_verified(path: str, project_root: Optional[str] = None) -> Optional[str]:
+    """Like check(), but a folder that passed once in this run is not walked again: the start of
+    a session must not read the whole recordings folder. Startup and the retention pass use
+    check() (a full look) and a refusal stays remembered either way."""
+    key = os.path.abspath(path)
+    if key in _verified and key not in _refused:
+        return None
+    reason = check(path, project_root)
+    if reason is None:
+        _verified.add(key)
+    return reason
+
+
 def reset() -> None:
-    """Forget remembered refusals (for tests)."""
+    """Forget remembered refusals and verified folders (for tests)."""
     _refused.clear()
+    _verified.clear()

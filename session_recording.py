@@ -13,6 +13,7 @@ name), so a row can never be used to read or remove anything else.
 import json
 import logging
 import os
+import asyncio
 import re
 import secrets
 import stat
@@ -32,17 +33,98 @@ RECORDING_TRUNCATED_NOTE = "recording truncated: size limit reached"
 _TRUNCATION_RESERVE = 128  # room kept free below the cap for the closing marker line
 
 
+# Disk budget. The total is a running count (header and every written line, reconciled by one
+# walk of the folder at startup, after the retention pass and after an administrator's delete),
+# so starting a session never walks the folder. Sessions that run at the same time can overshoot
+# the budget by up to RECORDING_MAX_BYTES each. An older recording is never deleted to make room.
+DEFAULT_MAX_TOTAL_MB = 2048          # setting recording_max_total_mb; 0 = no limit
+FREE_FLOOR_BYTES = 1024 ** 3         # refuse under min(1 GiB, 5 percent of the filesystem) free
+FREE_FLOOR_FRACTION = 0.05
+WARN_INTERVAL_SECONDS = 600          # one warning per reason per ten minutes
+_total_bytes = 0
+_warned: dict = {}
+
+
+def recordings_total_bytes() -> int:
+    return _total_bytes
+
+
+def _scan_total(path: str) -> int:
+    """Sum of the sizes of the recording files directly inside the folder (a symlink is not
+    followed; subfolders are not entered)."""
+    total = 0
+    try:
+        with os.scandir(path) as entries:
+            for e in entries:
+                if not e.name.endswith(RECORDING_FILE_EXTENSION):
+                    continue
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    total += st.st_size
+    except OSError:
+        return 0
+    return total
+
+
+async def reconcile_total(path: Optional[str] = None) -> int:
+    """Recount the folder (one walk, off the event loop) and store the result as the running total."""
+    global _total_bytes
+    folder = path or Config.RECORDINGS_DIR
+    _total_bytes = await asyncio.to_thread(_scan_total, folder)
+    return _total_bytes
+
+
+def _free_and_total(path: str) -> tuple:
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+
+
+def _warn_once(reason: str, message: str) -> None:
+    now = time.monotonic()
+    last = _warned.get(reason)
+    if last is not None and now - last < WARN_INTERVAL_SECONDS:
+        return
+    _warned[reason] = now
+    logger.warning(message)
+
+
+async def budget_refusal(directory) -> Optional[str]:
+    """The reason a new recording must not start (budget used up, or too little free space), else None."""
+    try:
+        raw = await db.get_setting("recording_max_total_mb")
+        max_mb = int(raw) if raw is not None else DEFAULT_MAX_TOTAL_MB
+        if max_mb < 0:
+            max_mb = DEFAULT_MAX_TOTAL_MB
+    except (TypeError, ValueError):
+        max_mb = DEFAULT_MAX_TOTAL_MB
+    if max_mb and _total_bytes >= max_mb * 1024 * 1024:
+        return (f"the recordings folder holds {_total_bytes // (1024 * 1024)} MB, "
+                f"at the limit of {max_mb} MB (setting recording_max_total_mb)")
+    try:
+        free, total = _free_and_total(str(directory))
+    except OSError:
+        return None  # cannot tell; the write itself fails safely if the disk is full
+    floor = min(FREE_FLOOR_BYTES, int(total * FREE_FLOOR_FRACTION))
+    if free < floor:
+        return f"only {free // (1024 * 1024)} MB are free on the disk of the recordings folder (floor {floor // (1024 * 1024)} MB)"
+    return None
+
+
 class RecordingsDirRefused(OSError):
     """The recordings folder failed the safety check (recording_paths)."""
 
 
-def prepare_recordings_dir(path: str) -> Path:
+def prepare_recordings_dir(path: str, cached: bool = False) -> Path:
     """Create the recordings directory (owner only) and tighten an existing one.
 
     Raises RecordingsDirRefused, without touching the folder, when it is a
-    dangerous location or holds anything besides recordings.
+    dangerous location or holds anything besides recordings. With cached=True a folder
+    that passed once in this run is not read again (the start of a session uses it).
     """
-    reason = recording_paths.check(path)
+    reason = (recording_paths.check_verified if cached else recording_paths.check)(path)
     if reason:
         raise RecordingsDirRefused(f"{path} cannot be used for recordings: {reason}")
     directory = Path(path)
@@ -165,7 +247,11 @@ class AsciicastRecorder:
         safe_service = re.sub(r"[^A-Za-z0-9]", "", str(which)) or "x"
         filename = f"rec_{self.user_id}_{safe_service}_{timestamp}_{secrets.token_hex(4)}{RECORDING_FILE_EXTENSION}"
         try:
-            directory = prepare_recordings_dir(Config.RECORDINGS_DIR)
+            directory = prepare_recordings_dir(Config.RECORDINGS_DIR, cached=True)
+            refusal = await budget_refusal(directory)
+            if refusal:
+                _warn_once("budget", f"Recording refused, the session goes on unrecorded: {refusal}")
+                return None
             filepath = directory / filename
             db.live_recording_files.add(filename)  # before the file exists
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | os.O_NOFOLLOW
@@ -173,6 +259,7 @@ class AsciicastRecorder:
             header = self._header_line()
             os.write(self._fd, header)
             self.size = len(header)
+            _count(self.size)
         except RecordingsDirRefused:
             return None  # already logged once by recording_paths
         except OSError as e:
@@ -197,6 +284,7 @@ class AsciicastRecorder:
             self._close_fd()
             try:
                 os.unlink(filepath)
+                _count(-self.size)
             except OSError:
                 pass
             db.live_recording_files.discard(filename)
@@ -232,6 +320,7 @@ class AsciicastRecorder:
         try:
             os.write(self._fd, line)
             self.size += len(line)
+            _count(len(line))
         except OSError as e:
             logger.error(f"Recording {self.filename} stopped, write failed: {e}")
             self._active = False
@@ -248,6 +337,7 @@ class AsciicastRecorder:
             if self._fd is not None and self.size + len(marker) <= self.max_bytes:
                 os.write(self._fd, marker)
                 self.size += len(marker)
+                _count(len(marker))
         except OSError as e:
             logger.warning(f"Recording {self.filename}: could not write the truncation marker: {e}")
         self._close_fd()
@@ -271,6 +361,11 @@ class AsciicastRecorder:
             db.live_recording_ids.discard(recording_id)
             db.live_recording_files.discard(self.filename)
 
+
+
+def _count(n: int) -> None:
+    global _total_bytes
+    _total_bytes = max(0, _total_bytes + n)
 
 
 def recording_wanted(config) -> bool:

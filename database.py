@@ -8907,6 +8907,7 @@ class Database:
         "retention_service_logs_max": "1000",
         "retention_device_metrics_days": "14",
         "retention_recordings_days": "30",
+        "recording_max_total_mb": "2048",
         "retention_security_events_days": "180",
         "cleanup_interval_hours": "6",
         "auto_vacuum": "true",
@@ -8945,6 +8946,7 @@ class Database:
                         "retention_activity_max": 100000, "retention_service_logs_max": 100000,
                         "retention_device_metrics_days": 365,
                         "retention_recordings_days": 3650,
+                        "recording_max_total_mb": 10_000_000,
                         "retention_security_events_days": 3650,
                         "cleanup_interval_hours": 168,  # max 1 week
                     }

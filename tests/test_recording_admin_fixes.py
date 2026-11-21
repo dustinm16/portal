@@ -205,6 +205,108 @@ async def main():
     check("the form reads the stored flag like the server does",
           json.loads(run.stdout) == [True, True, True, True, True, False, False, False, False, True, False, False, False], run.stdout + run.stderr)
 
+    # ---- item 2: the disk budget and the free-space floor ----------------------------------------
+    import logging  # noqa: E402
+    import time as _time  # noqa: E402
+    for f in Path(rec_dir).glob("*.cast"):
+        f.unlink()
+    await db.conn.execute("DELETE FROM recordings")
+    await db.conn.commit()
+    check("the default budget is 2048 MB and it is a retention (superadmin) setting",
+          (await db.get_retention_config()).get("recording_max_total_mb") == "2048")
+    async with sess["adm"].put(f"{base}/api/admin/retention", json={"recording_max_total_mb": 1}) as r:
+        check("an administrator who is not a superadmin cannot change it", r.status == 403, str(r.status))
+    await db.set_retention_config({"recording_max_total_mb": "-5"})
+    check("a negative value is ignored", (await db.get_retention_config())["recording_max_total_mb"] == "2048")
+
+    class Cap(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.records = []
+
+        def emit(self, rec):
+            self.records.append(rec)
+    cap = Cap()
+    logging.getLogger("portal.recording").addHandler(cap)
+
+    def refusals():
+        return [x for x in cap.records if x.levelno >= logging.WARNING and "Recording refused" in x.getMessage()]
+
+    any_conn = (await (await db.conn.execute("SELECT id FROM user_connections LIMIT 1")).fetchone())["id"]
+
+    async def attempt(n=1):
+        rec = session_recording.AsciicastRecorder(uid["bob"], None, 80, 24, connection_id=any_conn, connection_name="b", kind="ssh")
+        started = await rec.start()
+        return rec, started
+
+    session_recording._warned.clear()
+    await session_recording.reconcile_total()
+    rec1, s1 = await attempt()
+    check("with room left a recording starts", s1 is not None and rec1.filename is not None)
+    # the folder is not walked per session: a start must work with scandir broken
+    real_scandir = os.scandir
+
+    def no_walk(*a, **k):
+        raise AssertionError("the recordings folder was walked at the start of a session")
+    os.scandir = no_walk
+    try:
+        rec2, s2 = await attempt()
+    finally:
+        os.scandir = real_scandir
+    check("starting a recording does not walk the folder", s2 is not None)
+    rec1.record_output("x" * 1000)
+    before = session_recording.recordings_total_bytes()
+    rec1.record_output("y" * 500)
+    check("the running total grows with what is written", session_recording.recordings_total_bytes() > before)
+    await rec1.finish()
+    await rec2.finish()
+    await db.set_retention_config({"recording_max_total_mb": "1"})
+    big = Path(rec_dir) / "rec_big.cast"
+    big.write_bytes(b"x" * (1024 * 1024 + 1))
+    os.chmod(big, 0o600)
+    await session_recording.reconcile_total()
+    check("reconciling counts what is in the folder", session_recording.recordings_total_bytes() >= 1024 * 1024)
+    n_files = len(list(Path(rec_dir).glob("*.cast")))
+    rows_before = len(await (await db.conn.execute("SELECT id FROM recordings")).fetchall())
+    rec3, s3 = await attempt()
+    check("over budget a recording is refused and nothing is created", s3 is None
+          and len(list(Path(rec_dir).glob("*.cast"))) == n_files
+          and len(await (await db.conn.execute("SELECT id FROM recordings")).fetchall()) == rows_before)
+    check("an older recording is never deleted to make room", big.exists() and len(list(Path(rec_dir).glob("*.cast"))) == n_files)
+    check("one warning is logged for the refusal", len(refusals()) == 1, str(len(refusals())))
+    await attempt()
+    await attempt()
+    check("the warning is rate limited", len(refusals()) == 1, str(len(refusals())))
+    session_recording._warned.clear()
+    await attempt()
+    check("it is logged again once the interval has passed", len(refusals()) == 2)
+    await db.set_retention_config({"recording_max_total_mb": "0"})
+    rec4, s4 = await attempt()
+    check("0 means no limit", s4 is not None)
+    await rec4.finish()
+    # the free-space floor: under min(1 GiB, 5 percent) free is refused
+    real_fs = session_recording._free_and_total
+    GiB = 1024 ** 3
+    session_recording._free_and_total = lambda path: (GiB // 2, 100 * GiB)
+    rec5, s5 = await attempt()
+    check("under 1 GB free the recording is refused", s5 is None)
+    session_recording._free_and_total = lambda path: (3 * GiB, 100 * GiB)
+    rec5, s5 = await attempt()
+    check("over 1 GB free it starts (on a 100 GB disk 5 percent is 5 GB, the smaller floor is 1 GB)", s5 is not None)
+    await rec5.finish()
+    session_recording._free_and_total = lambda path: (GiB // 4, 4 * GiB)
+    rec6, s6 = await attempt()
+    check("on a small disk the floor is 5 percent: 256 MB free of 4 GB passes", s6 is not None)
+    await rec6.finish()
+    session_recording._free_and_total = lambda path: (GiB // 100, 4 * GiB)
+    rec7, s7 = await attempt()
+    check("and 10 MB free of 4 GB is refused", s7 is None)
+    session_recording._free_and_total = real_fs
+    logging.getLogger("portal.recording").removeHandler(cap)
+    admin_html = (Path(__file__).resolve().parent.parent / "static" / "admin.html").read_text()
+    check("the retention form has the budget field", 'id="ret-recording-max"' in admin_html
+          and "recording_max_total_mb: pInt('ret-recording-max', 2048)" in admin_html)
+
     await srv.close()
     for s in sess.values():
         await s.close()

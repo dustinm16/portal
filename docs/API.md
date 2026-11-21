@@ -3819,7 +3819,7 @@ Feature switches (admin). `allow_user_connections` and `allow_user_streams` are 
 Data retention settings control automatic cleanup of old chat messages, DMs, notifications, activity logs, and service logs.
 
 #### GET /api/admin/retention
-Get data retention configuration settings.
+Get data retention configuration settings. `recording_max_total_mb` (default `2048`, `0` = no limit, at most 10000000) is the budget for the whole recordings folder: a new SSH or terminal session is not recorded (it carries on, and its `connected` frame says `recording: false`) while the folder holds that much, or while the disk of the folder has less than 1 GB or 5 percent free, whichever is smaller. Nothing older is deleted to make room, and sessions that start at the same time can overshoot it by up to 50 MB each. It is set with `PUT /api/admin/retention` (superadmin only).
 
 **Auth**: Admin or higher
 
@@ -3834,6 +3834,7 @@ Get data retention configuration settings.
   "retention_service_logs_max": "1000",
   "retention_device_metrics_days": "14",
   "retention_recordings_days": "30",
+  "recording_max_total_mb": "2048",
   "retention_security_events_days": "180",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"
@@ -3857,6 +3858,7 @@ Update data retention settings.
   "retention_service_logs_max": "1000",
   "retention_device_metrics_days": "14",
   "retention_recordings_days": "30",
+  "recording_max_total_mb": "2048",
   "retention_security_events_days": "180",
   "cleanup_interval_hours": "6",
   "auto_vacuum": "true"

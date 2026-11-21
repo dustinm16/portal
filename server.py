@@ -21689,6 +21689,7 @@ async def http_delete_recording(request: web.Request) -> web.Response:
                                       reason="database row not removed", file_removed=bool(file_removed)):
             logger.error(f"[AuditLog] Could not record the failed delete of recording {row['id']}")
         return web.json_response({"error": "The recording could not be deleted"}, status=500)
+    await session_recording.reconcile_total()  # the space is free again for the budget
     return web.json_response({"deleted": row["id"], "file_removed": file_removed})
 
 
@@ -24733,6 +24734,7 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
         errors.append(f"recordings: {e}")
     try:
         results["recording_orphans"] = await db.cleanup_orphan_recordings()
+        await session_recording.reconcile_total()
     except Exception as e:
         errors.append(f"recording_orphans: {e}")
     try:
@@ -27897,6 +27899,7 @@ class PortalServer:
             tightened = tighten_recording_files(Config.RECORDINGS_DIR)
             if tightened:
                 logger.info(f"Set mode 0600 on {tightened} existing recording file(s)")
+            await session_recording.reconcile_total()
         except RecordingsDirRefused:
             pass  # recording_paths already logged why; recording stays off for this run
         except OSError as e:
@@ -28259,6 +28262,7 @@ class PortalServer:
                 # Recording files no row refers to (account or service deleted)
                 try:
                     d = await db.cleanup_orphan_recordings()
+                    await session_recording.reconcile_total()
                     if d > 0:
                         logger.info(f"[Retention] Removed {d} orphan terminal recording files")
                     total += d
