@@ -341,6 +341,7 @@ const VoiceChat = (() => {
         _watchMic(_micTrack());
         _setupVoiceMode();
         _meterRebind();
+        _qualityStart();
         _notifyState();
     }
 
@@ -385,6 +386,8 @@ const VoiceChat = (() => {
 
         // Stop VAD
         _stopVAD();
+
+        _qualityClear();
 
         // Close all peer connections
         for (const [uid, pc] of _peers) {
@@ -1521,10 +1524,257 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         const a = document.activeElement;
         const raw = a && container && container.contains(a) && a.getAttribute ? a.getAttribute('data-voice-uid') : null;
         render();
+        if (container) { _tileRoots.add(container); _paintQuality(container); }
         if (raw && /^\d+$/.test(raw)) {
             const el = container.querySelector(`[data-voice-uid="${raw}"]`);
             if (el && el.focus) el.focus();
         }
+    }
+
+    // ---- Connection quality (1.20.0) -------------------------------------------
+    // Every QUALITY_POLL_MS while in voice, getStats() is read on each peer
+    // connection and boiled down to 1-4 bars, a tooltip and a "no audio" hint on
+    // that participant's tile. Client only: nothing from getStats is sent
+    // anywhere and only the words direct / relayed leave this module (as text on
+    // the tile); addresses and candidate IPs are never read. The loop is paused
+    // while the page is hidden and stopped by _cleanup. The hint never touches
+    // the connection (no restart, no renegotiation).
+    const QUALITY_POLL_MS = 4000;
+    const QUALITY_NOAUDIO_MS = 6000;
+    // 4 bars when every figure is within the first limit, 3 within the second,
+    // 2 within the third, otherwise 1 (the worst figure counts).
+    const QUALITY_LOSS_PCT = [2, 5, 10];        // % of packets lost in the last interval
+    const QUALITY_RTT_MS = [150, 300, 500];     // round-trip time
+    const QUALITY_JITTER_MS = [30, 60, 120];    // inbound jitter
+
+    function _tier(value, limits) {
+        if (value === null || value === undefined || !Number.isFinite(value)) return null;
+        for (let i = 0; i < limits.length; i++) if (value <= limits[i]) return 4 - i;
+        return 1;
+    }
+
+    function _finiteOrNull(v) {
+        const n = Number(v);
+        return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null;
+    }
+
+    // Reads the few numbers wanted out of an RTCStatsReport (anything with
+    // forEach(value) and get(id)). Returns {t, received, lost, jitterMs, rttMs,
+    // path} where path is 'direct', 'relayed' or 'unknown'. Only the candidate
+    // TYPE of the local candidate is looked at, never an address.
+    function readQualityStats(report, now) {
+        const out = { t: now, received: null, lost: null, jitterMs: null, rttMs: null, path: 'unknown' };
+        if (!report || typeof report.forEach !== 'function') return out;
+        let selectedId = null;
+        const pairs = [];
+        let remoteRtt = null;
+        report.forEach((s) => {
+            if (!s || typeof s !== 'object') return;
+            if (s.type === 'inbound-rtp' && (s.kind || s.mediaType) === 'audio') {
+                const r = _finiteOrNull(s.packetsReceived);
+                const l = _finiteOrNull(s.packetsLost);
+                if (r !== null) out.received = (out.received || 0) + r;
+                if (l !== null) out.lost = (out.lost || 0) + l;
+                const j = _finiteOrNull(s.jitter);
+                if (j !== null) out.jitterMs = Math.max(out.jitterMs || 0, j * 1000);
+            } else if (s.type === 'transport') {
+                if (s.selectedCandidatePairId) selectedId = s.selectedCandidatePairId;
+            } else if (s.type === 'candidate-pair') {
+                pairs.push(s);
+            } else if (s.type === 'remote-inbound-rtp' && (s.kind || s.mediaType) === 'audio') {
+                const rr = _finiteOrNull(s.roundTripTime);
+                if (rr !== null) remoteRtt = rr;
+            }
+        });
+        let pair = null;
+        if (selectedId !== null) pair = pairs.find(p => p.id === selectedId) || null;
+        if (!pair) pair = pairs.find(p => p.selected === true) || null;
+        // Older Firefox: no selected pair, the nominated succeeded one is the path.
+        if (!pair) pair = pairs.find(p => p.nominated === true && p.state === 'succeeded') || null;
+        if (pair) {
+            const rtt = _finiteOrNull(pair.currentRoundTripTime);
+            if (rtt !== null) out.rttMs = rtt * 1000;
+            let local = null;
+            if (pair.localCandidateId && typeof report.get === 'function') local = report.get(pair.localCandidateId);
+            const type = local && typeof local.candidateType === 'string' ? local.candidateType : '';
+            if (type === 'relay') out.path = 'relayed';
+            else if (type) out.path = 'direct';
+        }
+        if (out.rttMs === null && remoteRtt !== null) out.rttMs = remoteRtt * 1000;
+        return out;
+    }
+
+    // Pure scoring. prev is the record returned by the previous call for the same
+    // peer connection (null for the first); sample comes from readQualityStats;
+    // peerMuted is true when that peer is muted by themselves or a moderator.
+    // Loss is the share lost in THIS interval (deltas), never the lifetime
+    // totals. Returns {rec, view}: rec goes back in as prev next time; view is
+    // {bars (0 = no figures yet, else 1-4), lossPct, rttMs, jitterMs, path, hint,
+    // title}.
+    function scoreQuality(prev, sample, peerMuted) {
+        const now = sample.t;
+        const haveCounters = sample.received !== null;
+        let lossPct = null;
+        let advanced = false;
+        let lastAdvance = prev ? prev.lastAdvance : now;
+        let rebase = !prev;
+        if (prev && haveCounters && prev.received !== null) {
+            const dRecv = sample.received - prev.received;
+            const dLost = Math.max(0, (sample.lost || 0) - (prev.lost || 0));
+            if (dRecv < 0) {
+                rebase = true;                 // counters restarted (new stream): no interval
+            } else {
+                advanced = dRecv > 0;
+                if (dRecv + dLost > 0) lossPct = (dLost / (dRecv + dLost)) * 100;
+            }
+        }
+        if (!prev || rebase || advanced || peerMuted || (prev && prev.muted && !peerMuted)) lastAdvance = now;
+        const hint = !peerMuted && haveCounters && !rebase && prev !== null
+            && now - lastAdvance >= QUALITY_NOAUDIO_MS;
+        const tiers = [_tier(lossPct, QUALITY_LOSS_PCT), _tier(sample.rttMs, QUALITY_RTT_MS),
+                       _tier(sample.jitterMs, QUALITY_JITTER_MS)].filter(x => x !== null);
+        const bars = tiers.length ? Math.min.apply(null, tiers) : 0;
+        const parts = [];
+        parts.push(sample.rttMs === null ? 'Round trip unknown' : 'Round trip ' + Math.round(sample.rttMs) + ' ms');
+        parts.push(lossPct === null ? 'loss unknown'
+            : 'loss ' + (Math.round(lossPct * 10) / 10) + '% in the last ' + Math.round(QUALITY_POLL_MS / 1000) + ' seconds');
+        parts.push(sample.path);
+        let title = parts.join(', ');
+        if (hint) title += '. No audio received';
+        const rec = {
+            received: haveCounters ? sample.received : (prev ? prev.received : null),
+            lost: haveCounters ? sample.lost : (prev ? prev.lost : null),
+            lastAdvance, muted: !!peerMuted
+        };
+        return {
+            rec,
+            view: { bars, lossPct, rttMs: sample.rttMs, jitterMs: sample.jitterMs, path: sample.path, hint, title }
+        };
+    }
+
+    let _qualityTimer = null;
+    let _qualityView = new Map();     // user_id -> latest view
+    let _qualityState = new Map();    // user_id -> {pc, rec, busy}
+    let _tileRoots = new Set();       // containers passed to renderKeepingFocus
+
+    // Makes sure a tile has its quality slot (fixed size, so nothing moves when
+    // the figures arrive) and fills it from the latest view. Built from DOM nodes.
+    function _paintTile(tile) {
+        const raw = tile.getAttribute ? tile.getAttribute('data-voice-uid') : null;
+        if (!raw || !/^\d+$/.test(raw)) return;
+        const uid = Number(raw);
+        let slot = tile.querySelector('.vq');
+        if (!slot) {
+            slot = document.createElement('span');
+            slot.setAttribute('class', 'vq');
+            slot.setAttribute('role', 'img');
+            for (let i = 0; i < 4; i++) {
+                const bar = document.createElement('span');
+                bar.setAttribute('class', 'vq-bar');
+                slot.appendChild(bar);
+            }
+            const mark = document.createElement('span');
+            mark.setAttribute('class', 'vq-hint');
+            mark.textContent = '!';
+            slot.appendChild(mark);
+            tile.appendChild(slot);
+        }
+        const view = _qualityView.get(uid);
+        const bars = view ? view.bars : 0;
+        const cls = 'vq vq-q' + bars + (view && view.hint ? ' vq-noaudio' : '');
+        if (slot.className !== cls) slot.setAttribute('class', cls);
+        const title = view ? view.title : 'Connection quality: measuring';
+        if (slot.getAttribute('title') !== title) {
+            slot.setAttribute('title', title);
+            slot.setAttribute('aria-label', title);
+        }
+        const kids = slot.children;
+        for (let i = 0; i < 4 && i < kids.length; i++) {
+            const c = i < bars ? 'vq-bar on' : 'vq-bar';
+            if (kids[i].className !== c) kids[i].setAttribute('class', c);
+        }
+    }
+
+    function _paintQuality(root) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+        root.querySelectorAll('[data-voice-uid]').forEach(_paintTile);
+    }
+
+    function _paintAllQuality() {
+        for (const root of Array.from(_tileRoots)) {
+            if (root.isConnected === false) { _tileRoots.delete(root); continue; }
+            _paintQuality(root);
+        }
+    }
+
+    function _peerIsMuted(uid) {
+        const u = _voiceUsers.get(uid);
+        return !!(u && (u.muted || u.server_muted));
+    }
+
+    async function _qualityPoll(uid, pc, epoch) {
+        let st = _qualityState.get(uid);
+        if (!st || st.pc !== pc) { st = { pc, rec: null, busy: false }; _qualityState.set(uid, st); }
+        if (st.busy) return;
+        st.busy = true;
+        try {
+            const report = await pc.getStats();
+            // Stale: we left, the peer was replaced or dropped while waiting
+            if (epoch !== _callEpoch || !_inVoice || _peers.get(uid) !== pc) return;
+            const scored = scoreQuality(st.rec, readQualityStats(report, Date.now()), _peerIsMuted(uid));
+            st.rec = scored.rec;
+            _qualityView.set(uid, scored.view);
+        } catch (e) {
+            // getStats failing is not worth a message; the bars just stay as they were
+        } finally {
+            st.busy = false;
+        }
+    }
+
+    async function _qualityTick() {
+        if (!_inVoice || _qualityTimer === null) return;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        const epoch = _callEpoch;
+        const jobs = [];
+        for (const [uid, pc] of Array.from(_peers)) {
+            if (typeof pc.getStats === 'function') jobs.push(_qualityPoll(uid, pc, epoch));
+        }
+        await Promise.all(jobs);
+        if (epoch !== _callEpoch || !_inVoice) return;
+        for (const uid of Array.from(_qualityView.keys())) {
+            if (!_peers.has(uid)) { _qualityView.delete(uid); _qualityState.delete(uid); }
+        }
+        _paintAllQuality();
+    }
+
+    function _qualityStart() {
+        if (_qualityTimer !== null || !_inVoice) return;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        _qualityState.clear();           // a fresh baseline: no interval spans a pause
+        _qualityTimer = setInterval(_qualityTick, QUALITY_POLL_MS);
+    }
+
+    function _qualityStop() {
+        if (_qualityTimer !== null) { clearInterval(_qualityTimer); _qualityTimer = null; }
+    }
+
+    function _qualityClear() {
+        _qualityStop();
+        _qualityView.clear();
+        _qualityState.clear();
+        _tileRoots.clear();
+    }
+
+    function _qualityVisibility() {
+        if (!_inVoice) return;
+        if (document.hidden) _qualityStop();
+        else _qualityStart();
+    }
+
+    function isQualityRunning() { return _qualityTimer !== null; }
+    function getQuality(userId) {
+        const v = _qualityView.get(Number(userId));
+        return v ? { ...v } : null;
     }
 
     // WebRTC peer management
@@ -1697,6 +1947,8 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
             pc.close();
             _peers.delete(userId);
         }
+        _qualityState.delete(userId);
+        _qualityView.delete(userId);
         _detachPlayback(userId);
         _micSenders.delete(userId);
         _screenSenders.delete(userId);
@@ -2062,6 +2314,10 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
 
     function isInVoice() { return _inVoice; }
 
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('visibilitychange', _qualityVisibility);
+    }
+
     // Clean up when navigating away
     if (typeof window !== 'undefined') {
         window.addEventListener('beforeunload', () => {
@@ -2107,6 +2363,10 @@ background:var(--bg-tertiary,#36393f);color:inherit;border:1px solid var(--borde
         openUserMenu,
         closeUserMenu,
         attachUserMenu,
-        renderKeepingFocus
+        renderKeepingFocus,
+        scoreQuality,
+        readQualityStats,
+        isQualityRunning,
+        getQuality
     };
 })();

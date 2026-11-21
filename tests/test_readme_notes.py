@@ -532,7 +532,7 @@ for name, needles in (("who is refused at join", ("timed out or muted", "locked 
                       ("the lock and the block are in memory", ("in memory", "restart")),
                       ("signalling is re-checked", ("dropped unless the sender is currently in that room",)),
                       ("a penalty ends the call", ("timeout or mute", "removes the member from that channel's voice room")),
-                      ("the static version", ("voice.js", "version 14")),
+                      ("the static version", ("voice.js", "version 15")),
                       ("rollback", ("1.19.0", "ignores the setting")),
                       ("what is not tested", ("not tested", "no browser", "microphone", "cloudflare"))):
     check(f"1.20.0 states: {name}", all(n in low20 for n in needles), str(needles))
@@ -540,7 +540,22 @@ check("1.20.0: the cap range and the default stated are the ones in the code",
       all(re.search(p_, (ROOT / "server.py").read_text()) for p_ in (
           r"VOICE_CAP_DEFAULT, VOICE_CAP_MIN, VOICE_CAP_MAX = 8, 2, 25", r"VOICE_KICK_BLOCK = 60\.0")))
 _vj = {m for p_ in ("chat.html", "watch.html") for m in re.findall(r"/static/js/voice\.js\?v=(\d+)", (ROOT / "static" / p_).read_text())}
-check("1.20.0 states voice.js as version 14 and chat.html and watch.html load exactly that", _vj == {"14"}, str(_vj))
+check("1.20.0 states voice.js as version 15 and chat.html and watch.html load exactly that", _vj == {"15"}, str(_vj))
+
+# --- 1.20.0 notes: voice connection quality ---------------------------------------------
+_vq_js = (ROOT / "static" / "js" / "voice.js").read_text()
+for name, needles in (("what is shown", ("voice connection quality", "1 to 4 small bars", "every 4 seconds", "in place", "direct", "relayed")),
+                      ("how it is scored", ("packetsreceived", "currentroundtriptime", "last interval", "never the lifetime totals", "worst one", "scoreQuality".lower())),
+                      ("the thresholds", ("2 percent loss, 150 ms round trip and 30 ms jitter", "5 percent, 300 ms and 60 ms", "10 percent, 500 ms and 120 ms")),
+                      ("the firefox fallback and privacy", ("nominated pair", "unknown", "no address, candidate ip or port")),
+                      ("the hint", ("not advanced for 6 seconds", "self-muted nor server muted", "never closes, restarts or renegotiates")),
+                      ("the lifecycle", ("pauses while the page is hidden", "stops when you leave")),
+                      ("no server change and no breaking change", ("nothing new is sent to the server", "docs/api.md", "**breaking changes.** none")),
+                      ("what is not tested", ("not tested (connection quality)", "no browser", "real `getstats` shapes"))):
+    check(f"1.20.0 quality states: {name}", all(n in low20 for n in needles), str(needles))
+check("1.20.0 quality: the thresholds stated are the ones in the code",
+      all(s_ in _vq_js for s_ in ("QUALITY_POLL_MS = 4000", "QUALITY_NOAUDIO_MS = 6000", "QUALITY_LOSS_PCT = [2, 5, 10]",
+                                  "QUALITY_RTT_MS = [150, 300, 500]", "QUALITY_JITTER_MS = [30, 60, 120]")))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

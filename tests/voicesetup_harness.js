@@ -219,7 +219,8 @@ function makeEnv(opts) {
   };
   env.liveHandles = () => opened.filter(t => !t.stopped);
   env.liveClones = () => clones.filter(t => !t.stopped);
-  env.liveIntervals = () => intervals.filter(t => t.live).length;
+  // the 4 s connection-quality loop (voicequality_harness.js tests it) is not a meter or VAD timer
+  env.liveIntervals = () => intervals.filter(t => t.live && t.ms !== 4000).length;
   env.liveTimeouts = () => timeouts.filter(t => t.live).length;
   env.types = () => sent.map(m => JSON.parse(m).type);
   env.speaking = () => sent.map(m => JSON.parse(m)).filter(m => m.type === 'voice_speaking').map(m => m.speaking);

@@ -3,7 +3,7 @@ loopback test, output device, PTT release delay).
 
 The feature is client-side only, so this proves what can be proven without a
 browser or a microphone:
-  - the chat page and the watch page are served with voice.js v14, the chat
+  - the chat page and the watch page are served with voice.js v15, the chat
     page carries the settings window (meter and threshold line, PTT delay,
     input and output pickers, loopback box with a headphones warning, output
     picker hidden until the script finds support) and voice.js is served as
@@ -129,8 +129,8 @@ async def run(ctx):
                 bodies[label] = await r.text()
                 status = r.status
             ok(f"voicesetup: the {label} loads", status == 200, f"status {status}")
-            ok(f"voicesetup: the {label} loads voice.js v14",
-               "/static/js/voice.js?v=14" in bodies[label] and "voice.js?v=13" not in bodies[label], "")
+            ok(f"voicesetup: the {label} loads voice.js v15",
+               "/static/js/voice.js?v=15" in bodies[label] and "voice.js?v=14" not in bodies[label], "")
         chat = bodies["chat page"]
         ok("voicesetup: the chat page has the level meter with a threshold line",
            'id="voice-meter"' in chat and 'id="voice-meter-line"' in chat, "")
@@ -146,11 +146,11 @@ async def run(ctx):
         ok("voicesetup: the chat page has a place for the one-time threshold notice, outside the VAD block, and shows it as text",
            'id="voice-gate-notice"' in chat and chat.index('id="voice-gate-notice"') < chat.index('id="vad-settings"')
            and "VoiceChat.takeGateNotice()" in open_fn and "gateEl.textContent = gateNotice" in open_fn, "")
-        async with s_alice.get(f"{ctx.base_url}/static/js/voice.js?v=14") as r:
+        async with s_alice.get(f"{ctx.base_url}/static/js/voice.js?v=15") as r:
             script = await r.text()
             ctype = r.headers.get("Content-Type", "")
             status = r.status
-        ok("voicesetup: voice.js v14 is served as JavaScript", status == 200 and "javascript" in ctype, f"{status} {ctype}")
+        ok("voicesetup: voice.js v15 is served as JavaScript", status == 200 and "javascript" in ctype, f"{status} {ctype}")
         ok("voicesetup: the served script has the setup API and no markup injection",
            all(n in script for n in ("setInputDevice", "startMeter", "setLoopback", "setPttDelay", "listDevices"))
            and "innerHTML" not in script, "")

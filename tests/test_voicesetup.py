@@ -34,8 +34,8 @@ def check(name, ok, detail=""):
 
 
 # ---- static ---------------------------------------------------------------------
-check("chat.html and watch.html load voice.js v14",
-      "js/voice.js?v=14" in CHAT and "js/voice.js?v=14" in WATCH)
+check("chat.html and watch.html load voice.js v15",
+      "js/voice.js?v=15" in CHAT and "js/voice.js?v=15" in WATCH)
 check("track.enabled is written in one place only (the gate)",
       len(re.findall(r"\.enabled = ", SRC)) == 3,   # the gate, a clone's flag, the replacement track
       str(re.findall(r".*\.enabled = .*", SRC)))
