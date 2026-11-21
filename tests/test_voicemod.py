@@ -125,6 +125,7 @@ class Env:
         server.voice_state.clear()
         server._voice_locked.clear()
         server._voice_kick_blocks.clear()
+        server._voice_penalty_denies.clear()
         server.voice_cap_invalidate()
         app = web.Application()
         app.router.add_get("/ws/chat", server.handle_chat_websocket)
@@ -167,6 +168,7 @@ class Env:
         server.voice_state.clear()
         server._voice_locked.clear()
         server._voice_kick_blocks.clear()
+        server._voice_penalty_denies.clear()
         server.voice_cap_invalidate()
         await self.db.close()
         self.tmp.cleanup()
@@ -524,6 +526,45 @@ def test_a_timeout_or_mute_takes_the_member_out_of_the_channel_voice_room():
         assert await carol.wait(typ("voice_denied"), mark_c)
         assert env.u["carol"] not in server.voice_state["general"]
         assert env.u["dave"] in server.voice_state["chat-s"]
+    run(body)
+
+
+def test_a_penalty_landing_inside_the_join_lookup_window_is_not_missed():
+    """The join reads the penalty table, then awaits again before it inserts; a timeout or mute that
+    commits (and runs its voice drop) after that read must still keep the member out."""
+    async def body(env):
+        d = env.db
+        general = await d.get_chat_channel(env.general)
+        real = d.is_user_timed_out
+        victims = {}
+
+        async def stale_lookup(user_id, channel_id=None):
+            result = await real(user_id, channel_id)           # what the join saw: no penalty yet
+            kind = victims.pop(user_id, None)
+            if kind:
+                await d.create_chat_timeout(user_id, env.u["admin"], kind, env.general, "r",
+                                            600 if kind == "timeout" else None)
+                await server._voice_drop_for_penalty(user_id, general)   # nobody in voice yet: nothing to drop
+            return result
+
+        d.is_user_timed_out = stale_lookup
+        try:
+            for name, kind in (("bob", "timeout"), ("carol", "mute")):
+                victims[env.u[name]] = kind
+                s = await env.voice(name, expect="voice_denied")
+                assert s.last["code"] == "timed_out", s.last
+                assert env.u[name] not in server.voice_state.get("general", {}), name
+        finally:
+            d.is_user_timed_out = real
+        # the deny is short and never applies to a moderator or to another room
+        server._voice_penalty_denies.clear()
+        await server._voice_drop_for_penalty(env.u["dave"], general)
+        assert server._voice_join_refusal("general", env.u["dave"], cap=8, is_mod=True, timed_out=None) is None
+        assert server._voice_join_refusal("stream-x", env.u["dave"], cap=8, is_mod=False, timed_out=None) is None
+        assert server._voice_join_refusal("general", env.u["dave"], cap=8, is_mod=False, timed_out=None)[0] == "timed_out"
+        server._voice_penalty_denies[("general", env.u["dave"])] = server.monotonic() - 1
+        assert server._voice_join_refusal("general", env.u["dave"], cap=8, is_mod=False, timed_out=None) is None
+        assert ("general", env.u["dave"]) not in server._voice_penalty_denies
     run(body)
 
 

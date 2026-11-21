@@ -23188,6 +23188,7 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             continue
                         removed = await db.remove_chat_timeout(target_user_id, channel["id"])
                         if removed:
+                            _voice_penalty_denies.pop((channel["name"], target_user_id), None)
                             target_user = await db.get_user_by_id(target_user_id)
                             target_anon = bool(target_user.get("chat_anonymous")) if target_user else False
                             target_name = ("Anonymous" if target_anon else (target_user.get("nickname") or target_user["username"])) if target_user else "Unknown"
@@ -25181,6 +25182,10 @@ VOICE_KICK_BLOCK = 60.0
 _voice_cfg: dict = {"room_cap": None, "gen": 0}
 _voice_locked: set = set()
 _voice_kick_blocks: dict = {}       # (room, user_id) -> monotonic time the block ends
+# (room, user_id) -> monotonic time a short deny ends: left by the penalty path (_voice_drop_for_penalty)
+# so a join that read the penalty table just before the penalty committed is still refused
+_voice_penalty_denies: dict = {}
+VOICE_PENALTY_DENY = 10.0           # seconds
 
 
 def _voice_cap_value(raw) -> int:
@@ -25223,6 +25228,15 @@ def _voice_kick_block_left(room: str, user_id: int) -> float:
     return max(0.0, until - now) if until is not None else 0.0
 
 
+def _voice_penalty_deny_left(room: str, user_id: int) -> float:
+    """Seconds of penalty deny left for this member in this room (0 when none); expired ones are dropped."""
+    now = monotonic()
+    for key in [k for k, until in _voice_penalty_denies.items() if until <= now]:
+        _voice_penalty_denies.pop(key, None)
+    until = _voice_penalty_denies.get((room, user_id))
+    return max(0.0, until - now) if until is not None else 0.0
+
+
 def _voice_join_refusal(room: str, user_id: int, *, cap: int, is_mod: bool, timed_out):
     """(code, message) when this member may not join the room now, else None.
 
@@ -25233,6 +25247,9 @@ def _voice_join_refusal(room: str, user_id: int, *, cap: int, is_mod: bool, time
         left = _voice_kick_block_left(room, user_id)
         if left > 0:
             return ("kicked", f"A moderator removed you from this voice chat. You can join again in {int(left) + 1} seconds.")
+        if not timed_out and not is_mod and _voice_penalty_deny_left(room, user_id) > 0:
+            # a penalty committed while this join was awaiting its lookup: the lookup is stale
+            timed_out = {"type": "timeout"}
         if timed_out and not is_mod:
             kind = "muted" if timed_out.get("type") == "mute" else "timed out"
             return ("timed_out", f"You are {kind} in this channel and cannot join its voice chat.")
@@ -25379,6 +25396,9 @@ async def _voice_drop_for_penalty(user_id: int, channel) -> None:
         if not channel:
             return
         room = channel["name"]
+        # First and synchronous: a join that is between its penalty lookup and its insert
+        # cannot have seen this penalty, and the check in _voice_join_refusal reads this entry
+        _voice_penalty_denies[(room, user_id)] = monotonic() + VOICE_PENALTY_DENY
         entry = (voice_state.get(room) or {}).get(user_id)
         if entry is None:
             return
