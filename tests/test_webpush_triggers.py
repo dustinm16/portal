@@ -103,6 +103,8 @@ class PushEnv(nl.Env):
 
     async def device(self, user_id, name, token_id=None):
         dev = Device(self.service, name)
+        if token_id and not await self.db.get_token(token_id):
+            await self.db.create_token(user_id, token_id, ["*"], name="web_session")
         await self.db.add_push_subscription(
             user_id, dev.endpoint, rx.b64e(dev.key["public"]), rx.b64e(dev.key["auth"]), "test", token_id, 10)
         self.devices[name] = dev
@@ -583,6 +585,49 @@ def test_the_topic_is_a_keyed_hash_and_a_channel_that_turned_private_is_judged_a
         assert await server._push_mentions(stale, 1, [ids["bob"]], []) == 0
         await env.settle()
         assert env.pushes() == []
+    run(body)
+
+
+def test_a_trigger_pays_for_no_query_when_push_is_off_everybody_is_in_the_portal_or_nobody_has_a_device():
+    async def body(env):
+        d = env.db
+        ids = await base.users(d)
+        lobby = await nl.pub_channel(d, ids)
+        channel = await d.get_chat_channel(lobby)
+        conv = await conversation(d, ids["alice"], ids["bob"])
+        calls = []
+        for name in ("get_dm_muted_ids", "get_chat_channel", "get_stream_by_chat_channel"):
+            def wrap(orig, name=name):
+                async def inner(*a, **k):
+                    calls.append(name)
+                    return await orig(*a, **k)
+                return inner
+            setattr(d, name, wrap(getattr(d, name)))
+        heavy = {"get_dm_muted_ids", "get_chat_channel", "get_stream_by_chat_channel"}
+
+        async def run_both():
+            calls.clear()
+            await server._push_dm(conv, ids["alice"])
+            await server._push_mentions(channel, 1, [ids["bob"]], [ids["carol"]] if "carol" in ids else [])
+            return set(calls) & heavy
+
+        # nobody has a device: nothing beyond the cheap lookups
+        assert await run_both() == set(), "no device, yet the muted list or the channel was read"
+        # a device, but push switched off
+        await env.device(ids["bob"], "bob1")
+        await d.set_setting(wp.SETTING_ENABLED, "0")
+        assert await run_both() == set(), "push is off, yet the muted list or the channel was read"
+        await d.set_setting(wp.SETTING_ENABLED, "1")
+        # a device and a tab open: the member is not away
+        bob = await env.sock(ids["bob"])
+        assert await run_both() == set(), "the member has a tab open, yet the muted list or the channel was read"
+        await bob.close()
+        await asyncio.sleep(0.3)
+        # control: an away member with a device does cost the lookups (and gets the pushes)
+        got = await run_both()
+        assert {"get_dm_muted_ids", "get_chat_channel"} <= got, got
+        await env.settle()
+        assert len(env.pushes("bob1")) == 2
     run(body)
 
 

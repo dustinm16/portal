@@ -3020,11 +3020,32 @@ def _schedule_push(coro) -> "asyncio.Task | None":
     return task
 
 
+async def _push_away_candidates(user_ids, kind: str) -> list:
+    """The members of `user_ids` who could get a push of this kind right now: push is on, they
+    have no open notification socket, and they have a device that wants this kind. Cheapest
+    check first; an empty answer lets the caller skip every further query, so a portal where
+    push is unused pays nothing per message beyond the switch lookup."""
+    pusher = _get_pusher()
+    if not await pusher.enabled():
+        return []
+    away = [u for u in dict.fromkeys(user_ids) if not _has_open_notification_socket(u)]
+    if not away:
+        return []
+    return sorted(await db.push_targets(away, kind))
+
+
 async def _push_dm(conv_id: int, sender_id: int) -> int:
     """A direct message: every other participant who has not muted the conversation. Never names
     the sender (an anonymous one least of all) and never carries the text."""
+    pusher = _get_pusher()
+    if not await pusher.enabled():
+        return 0
+    ids = [p for p in await db.get_dm_participant_ids(conv_id) if p != sender_id]
+    ids = await _push_away_candidates(ids, "dm")
+    if not ids:
+        return 0
     muted = await db.get_dm_muted_ids(conv_id)
-    ids = [p for p in await db.get_dm_participant_ids(conv_id) if p != sender_id and p not in muted]
+    ids = [p for p in ids if p not in muted]
 
     async def build(uid):
         return {"title": "New direct message", "body": "Open the portal to read it.",
@@ -3039,6 +3060,8 @@ async def _push_mentions(channel, msg_id: int, direct_ids, everyone_ids) -> int:
     ids = list(direct_ids) + [u for u in everyone_ids if u not in direct_ids]
     direct = set(direct_ids)
     cid = int(channel["id"])
+    if not await _push_away_candidates(ids, "mention"):
+        return 0                                      # off, everybody is in the portal, or nobody has a device
     channel = await db.get_chat_channel(cid)          # as it is now: it may have turned private
     if not channel:
         return 0

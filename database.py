@@ -4710,7 +4710,8 @@ class Database:
         and the same-endpoint race cannot be beaten by concurrent calls. The write itself is
         conditional on the registering session still being live ('revoked' otherwise), so a
         subscribe that was in flight while its session was revoked leaves no row behind."""
-        live = "EXISTS (SELECT 1 FROM tokens WHERE token_id = ? AND revoked = 0)"
+        # a device with no session recorded (token_id NULL) has nothing to be revoked with
+        live = "(? IS NULL OR EXISTS (SELECT 1 FROM tokens WHERE token_id = ? AND revoked = 0))"
         async with self._push_sub_lock:
             try:
                 cursor = await self.conn.execute(
@@ -4722,7 +4723,7 @@ class Database:
                     cursor = await self.conn.execute(
                         f"""UPDATE push_subscriptions SET p256dh = ?, auth = ?, user_agent = ?, token_id = ?,
                             failure_count = 0 WHERE id = ? AND user_id = ? AND {live}""",
-                        (p256dh, auth, user_agent, token_id, row["id"], user_id, token_id))
+                        (p256dh, auth, user_agent, token_id, row["id"], user_id, token_id, token_id))
                     await self.conn.commit()
                     if cursor.rowcount > 0:
                         return "updated"
@@ -4741,12 +4742,12 @@ class Database:
                         ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth,
                             user_agent = excluded.user_agent, token_id = excluded.token_id, failure_count = 0
                             WHERE push_subscriptions.user_id = excluded.user_id""",
-                    (user_id, endpoint, p256dh, auth, user_agent, token_id, token_id))
+                    (user_id, endpoint, p256dh, auth, user_agent, token_id, token_id, token_id))
                 await self.conn.commit()
                 if cursor.rowcount > 0:
                     return "created"
                 cursor = await self.conn.execute(
-                    f"SELECT 1 WHERE {live}", (token_id,))
+                    f"SELECT 1 WHERE {live}", (token_id, token_id))
                 return "conflict" if await cursor.fetchone() else "revoked"
             except BaseException:
                 try:
