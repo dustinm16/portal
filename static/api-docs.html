@@ -3039,6 +3039,41 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
                 <div class="endpoint">
                     <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-put">PUT</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/retention</span>
+                        <span class="endpoint-desc">Set a channel's retention <span class="badge-admin">ADMIN</span></span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Administrators only (1.20.0): a moderator or channel moderator gets <code>403</code>, and the generic channel update ignores these fields. The chat socket has no channel-settings path for retention.</p>
+                        <h4>Request</h4>
+                        <div class="code-block">
+<pre>{<span class="string">"retention_days"</span>: <span class="number">30</span>, <span class="string">"file_retention_days"</span>: <span class="number">7</span>, <span class="string">"confirm"</span>: <span class="keyword">true</span>}</pre>
+                        </div>
+                        <p><code>retention_days</code>: days after which the periodic cleanup removes the channel's messages (pinned ones stay). A number, <code>0</code> or <code>"forever"</code> (stored as the cap, setting <code>retention_chat_max_days</code>, default 3650), or <code>null</code> to follow the global setting. A channel with its own value is no longer touched by the global chat retention. <code>file_retention_days</code>: removes only the uploaded files of older messages (the message stays, marked <code>file_removed</code>) and can never exceed the message retention (<code>400</code>). A field left out is kept.</p>
+                        <p>A change that makes removal sooner is applied only with <code>"confirm": true</code>. Without it nothing changes and the answer is <code>{"applied": false, "confirm_required": true, "would_remove_messages": 12, "would_remove_files": 3}</code>; <code>"dry_run": true</code> only looks. Applied: <code>{"applied": true, "retention_days": 30, "file_retention_days": 7, "capped": false, "next_cleanup_at": "..."}</code>. Audited as <code>channel_retention_change</code> with the old and new value. Errors: <code>400</code> (bad value, file value above the message value, a stream's own chat), <code>403</code>, <code>404</code>.</p>
+                        <p>The channel list and the <code>channel_info</code> frame carry <code>retention_days</code>, <code>file_retention_days</code> and <code>retention_next_cleanup</code> for a channel with its own value.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
+                        <span class="method method-post">POST</span>
+                        <span class="endpoint-path">/api/chat/channels/{id}/prune</span>
+                        <span class="endpoint-desc">Prune messages in a date range <span class="badge-admin">MOD</span></span>
+                    </div>
+                    <div class="endpoint-body">
+                        <p>Administrators and the moderators of that chat per <code>chat_mod_level</code> (global staff, a stream's owner, a stream mod). A channel the caller may not read, and a caller with no moderator level in it, get <code>404 {"error": "Channel not found"}</code>. The prune removes only what the caller could delete one message at a time: a stream mod the posts of ordinary members, the stream's owner everybody's but staff (the go-live card is the owner's), a global moderator or administrator everybody's of a lower role, everybody their own. A user filter on someone the caller may not act on counts 0, and a range prune leaves those posts.</p>
+                        <h4>Request</h4>
+                        <div class="code-block">
+<pre>{<span class="string">"from"</span>: <span class="string">"2026-11-21T10:00:00Z"</span>, <span class="string">"to"</span>: <span class="string">"2026-11-21T11:00:00Z"</span>, <span class="string">"user"</span>: <span class="string">"alice"</span>, <span class="string">"skip_pinned"</span>: <span class="keyword">true</span>, <span class="string">"dry_run"</span>: <span class="keyword">true</span>}</pre>
+                        </div>
+                        <p><code>from</code> and <code>to</code> (ISO 8601, both required, both inclusive, no offset = UTC). <code>user</code> (optional): an account id or a username; a user filter from anybody but an administrator never matches that user's anonymous messages. Without a user filter, an anonymous message in the range is matched for every caller but an administrator whoever wrote it (the rank rules cover named messages only), so a count cannot tell the rank of its author. An administrator's prune without a user filter leaves anonymous messages alone when the rank rules exclude any author (another administrator or a superadmin), so nothing shows which of them survived. <code>skip_pinned</code> (default true). A dry run answers <code>{"count": 12, "margin": 2}</code> and removes nothing. A real run must send that count as <code>expected_count</code>; it is <code>409</code> (with the live <code>count</code>) when the live count differs by more than <code>max(2, 2 percent)</code>, and <code>400</code> without it. Success: <code>202 {"started": true, "count": 12}</code>.</p>
+                        <p>The prune runs as a background task in batches of 200 that yield to the event loop. The room receives one <code>messages_pruned</code> frame per batch (<code>{"type": "messages_pruned", "channel": "general", "ids": [41, 42]}</code>, ids only), and one audit entry <code>chat_prune</code> is written when it ends. Upload files go with their messages. When an administrator's <code>user</code> filter includes that user's anonymous messages, staff and that user receive every id while everybody else receives only the ids of the named messages (the anonymous ones leave their screen at the next load), so the anonymous poster is not linked. One prune per channel at a time (<code>409</code>). <code>GET</code> on the same path returns <code>{"running", "status", "removed", "total", "files"}</code> of the last prune, same gate. After an administrator's <code>user</code>-filtered prune that includes that user's anonymous messages, <code>removed</code>, <code>total</code> and <code>files</code> are returned only to staff and to the administrator who started it; a stream owner or stream mod gets <code>running</code> and <code>status</code> only.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="endpoint-header" onclick="toggleEndpoint(this)">
                         <span class="method method-post">POST</span>
                         <span class="endpoint-path">/api/chat/upload</span>
                         <span class="endpoint-desc">Upload image for chat</span>
@@ -3271,6 +3306,7 @@ rfb.resizeSession = <span class="keyword">true</span>;</pre>
 
 <span class="comment">// Message deleted (deleted_by is null for ordinary members when the message was posted anonymously)</span>
 {<span class="string">"type"</span>: <span class="string">"message_deleted"</span>, <span class="string">"message_id"</span>: <span class="number">42</span>, <span class="string">"deleted_by"</span>: <span class="number">1</span>}
+{<span class="string">"type"</span>: <span class="string">"messages_pruned"</span>, <span class="string">"channel"</span>: <span class="string">"general"</span>, <span class="string">"ids"</span>: [<span class="number">41</span>, <span class="number">42</span>, <span class="number">43</span>]}
 
 <span class="comment">// Channel renamed (admin action via REST)</span>
 {<span class="string">"type"</span>: <span class="string">"channel_renamed"</span>, <span class="string">"old_name"</span>: <span class="string">"dev-talk"</span>, <span class="string">"new_name"</span>: <span class="string">"engineering"</span>}
@@ -6043,7 +6079,8 @@ Headers:
                         <h4>Settings Description</h4>
                         <table class="param-table">
                             <tr><th>Field</th><th>Type</th><th>Description</th></tr>
-                            <tr><td><code>retention_chat_days</code></td><td>int</td><td>Days to keep chat messages (0 = disabled, default: 7)</td></tr>
+                            <tr><td><code>retention_chat_days</code></td><td>int</td><td>Days to keep chat messages (0 = disabled, default: 7); channels with their own retention are not covered</td></tr>
+                            <tr><td><code>retention_chat_max_days</code></td><td>int</td><td>Longest retention an administrator can set on one channel (1-3650, default: 3650)</td></tr>
                             <tr><td><code>retention_dm_days</code></td><td>int</td><td>Days to keep direct messages (0 = disabled, default: 30)</td></tr>
                             <tr><td><code>retention_notifications_days</code></td><td>int</td><td>Days to keep notifications (0 = disabled, default: 30)</td></tr>
                             <tr><td><code>retention_activity_max</code></td><td>int</td><td>Maximum activity log entries to keep (0 = disabled, default: 500)</td></tr>
@@ -6493,6 +6530,8 @@ Headers:
                             <tr><td><code>user_ban</code> / <code>user_unban</code></td><td>User banned/unbanned</td></tr>
                             <tr><td><code>channel_create</code> / <code>channel_update</code> / <code>channel_delete</code></td><td>Channel operations</td></tr>
                             <tr><td><code>channel_clear</code></td><td>All messages cleared from channel</td></tr>
+                            <tr><td><code>channel_retention_change</code></td><td>A channel's own retention set (old and new value in details)</td></tr>
+                            <tr><td><code>chat_prune</code></td><td>Messages pruned from a channel by date range (range, user filter, count, status)</td></tr>
                             <tr><td><code>role_change</code></td><td>User role updated</td></tr>
                             <tr><td><code>user_delete</code></td><td>User account deleted</td></tr>
                             <tr><td><code>channel_member_add</code> / <code>channel_member_remove</code> / <code>channel_member_role</code></td><td>Channel membership changes</td></tr>

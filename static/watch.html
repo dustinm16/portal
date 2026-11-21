@@ -1624,6 +1624,13 @@
                     const delEl = document.querySelector(`.chat-message[data-message-id="${CSS.escape(String(data.message_id))}"]`);
                     if (delEl) delEl.remove();
                     break;
+                case 'messages_pruned':
+                    // a moderator pruned a range: one frame per batch, ids only
+                    (data.ids || []).forEach(function (id) {
+                        const prunedEl = document.querySelector(`.chat-message[data-message-id="${CSS.escape(String(id))}"]`);
+                        if (prunedEl) prunedEl.remove();
+                    });
+                    break;
                 case 'reaction_update':
                     handleWatchReactionUpdate(data);
                     break;

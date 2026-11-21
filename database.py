@@ -15,7 +15,7 @@ import stat
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 from config import Config
 import recording_paths
 import chat_uploads
@@ -29,6 +29,10 @@ logger = logging.getLogger("portal.database")
 
 # Terminal recording files end in this extension (see plugins/terminal.py).
 RECORDING_FILE_EXTENSION = ".cast"
+
+
+class PurgeStopped(Exception):
+    """A purge ended at a batch boundary because it was asked to stop (see Database._purge_messages)."""
 
 # Message encryption using Fernet-like scheme with AES
 try:
@@ -770,6 +774,10 @@ MIGRATIONS = [
         UNIQUE(message_id, user_id, emoji)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_chat_reactions_message ON chat_reactions(message_id)",
+    # Upload files of deleted chat messages that are not removed yet (written in the transaction of
+    # the batch that deleted the rows, so a stop or a kill between the batches and the file removal
+    # cannot leave a file nothing refers to; finish_purge_files settles them)
+    "CREATE TABLE IF NOT EXISTS chat_upload_pending (name TEXT PRIMARY KEY)",
     # Message editing
     "ALTER TABLE chat_messages ADD COLUMN edited_at TEXT",
     # Pinned messages
@@ -1301,6 +1309,12 @@ MIGRATIONS = [
     "ALTER TABLE push_subscriptions ADD COLUMN announced_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_conn_shares_expires ON connection_shares(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_service_grants_expires ON service_grants(expires_at)",
+    # Per-channel retention: NULL = follow the global setting. Nullable columns with no default are a
+    # schema-only change (cheap on a large database); 1.19.0 ignores all three columns.
+    "ALTER TABLE chat_channels ADD COLUMN retention_days INTEGER",
+    "ALTER TABLE chat_channels ADD COLUMN file_retention_days INTEGER",
+    # set when the uploaded file of a message was removed by file retention (the message stays)
+    "ALTER TABLE chat_messages ADD COLUMN file_removed INTEGER DEFAULT 0",
 ]
 
 # Role hierarchy - higher index = more permissions
@@ -6171,6 +6185,14 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def list_chat_staff_candidates(self) -> list:
+        """Accounts that may count as global staff (id, role, is_admin), a handful of rows: the
+        caller decides with _user_role_of, which falls back to is_admin when role is empty."""
+        cursor = await self.conn.execute(
+            "SELECT id, role, is_admin FROM users WHERE role IN ('moderator', 'admin', 'superadmin') "
+            "OR is_admin = 1 OR role IS NULL OR role = ''")
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def get_channel_moderator_ids(self, channel_id: int) -> list:
         """The user ids with a 'moderator' row in this channel (a stream chat's mods)."""
         cursor = await self.conn.execute(
@@ -6561,15 +6583,139 @@ class Database:
         """Delete a chat message (optionally verify ownership)."""
         return await self._delete_one_message("chat_messages", "channel", message_id, user_id)
 
-    async def cleanup_old_chat_messages(self, days: int = 7, stats: dict = None) -> int:
-        """Delete chat messages older than specified days (pinned ones stay), and
-        their upload files unless another row still refers to them. Returns the
-        count of messages deleted; `stats`, when given, receives the files and
-        bytes removed."""
+    # A channel whose own retention_days applies: it has a value and is not a stream's own chat.
+    # A stream chat keeps following the global setting even if a stale value is stored on it.
+    _OWN_RETENTION_SQL = (
+        "retention_days IS NOT NULL AND (is_default = 1 OR id NOT IN "
+        "(SELECT chat_channel_id FROM user_streams WHERE chat_channel_id IS NOT NULL))")
+
+    async def cleanup_old_chat_messages(self, days: int = 7, stats: dict = None,
+                                        names: Optional[set] = None) -> int:
+        """Delete chat messages older than the global retention (pinned ones stay), and
+        their upload files unless another row still refers to them. Channels that have
+        their own retention_days are not touched here (see cleanup_channel_messages).
+        Returns the count of messages deleted; `stats`, when given, receives the files
+        and bytes removed. With `names` (a set) the upload names are collected there
+        and the caller removes the files once for the whole pass."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         return await self._purge_messages(
             "chat_messages", "channel", "chat_reactions",
-            "created_at < ? AND is_pinned = 0", (cutoff,), stats)
+            "created_at < ? AND is_pinned = 0 AND channel_id NOT IN "
+            f"(SELECT id FROM chat_channels WHERE {self._OWN_RETENTION_SQL})",
+            (cutoff,), stats, names=names)
+
+    async def get_channels_with_own_retention(self) -> list[dict]:
+        """Channels whose retention_days applies (value set, not a stream's own chat)."""
+        cursor = await self.conn.execute(
+            f"SELECT id, name, retention_days, file_retention_days FROM chat_channels WHERE {self._OWN_RETENTION_SQL}")
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_channels_with_file_retention(self) -> list[dict]:
+        """Channels with a file_retention_days value that are not a stream's own chat."""
+        cursor = await self.conn.execute(
+            "SELECT id, name, retention_days, file_retention_days FROM chat_channels "
+            "WHERE file_retention_days IS NOT NULL AND (is_default = 1 OR id NOT IN "
+            "(SELECT chat_channel_id FROM user_streams WHERE chat_channel_id IS NOT NULL))")
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def set_channel_retention(self, channel_id: int, retention_days, file_retention_days) -> bool:
+        """Store both retention values of a channel (None clears one). The caller has
+        validated and capped them."""
+        cursor = await self.conn.execute(
+            "UPDATE chat_channels SET retention_days = ?, file_retention_days = ? WHERE id = ?",
+            (retention_days, file_retention_days, channel_id))
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def cleanup_channel_messages(self, channel_id: int, days: int, stats: dict = None,
+                                       names: Optional[set] = None) -> int:
+        """Delete the messages of ONE channel older than `days` (pinned ones stay)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return await self._purge_messages(
+            "chat_messages", "channel", "chat_reactions",
+            "channel_id = ? AND created_at < ? AND is_pinned = 0",
+            (channel_id, cutoff), stats, names=names)
+
+    async def count_channel_expiring(self, channel_id: int, days: int) -> int:
+        """Unpinned messages of one channel older than `days`: what a cleanup with that
+        retention would remove."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE channel_id = ? AND created_at < ? AND is_pinned = 0",
+            (channel_id, cutoff))
+        return (await cursor.fetchone())[0]
+
+    _HAS_FILE_SQL = "(COALESCE(image_url, '') != '' OR COALESCE(attachment_url, '') != '')"
+
+    async def count_channel_files_expiring(self, channel_id: int, days: int) -> int:
+        """Unpinned messages of one channel older than `days` that still carry an uploaded file."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE channel_id = ? AND created_at < ? AND is_pinned = 0 "
+            f"AND {self._HAS_FILE_SQL}", (channel_id, cutoff))
+        return (await cursor.fetchone())[0]
+
+    async def remove_channel_files(self, channel_id: int, days: int, stats: dict,
+                                   names: set) -> int:
+        """File retention of one channel: the uploaded file of each unpinned message older
+        than `days` is detached in batches of 500 (links cleared, file_removed set, the
+        search flags for image and file cleared in the same transaction); the message
+        stays. The upload names are added to `names` and, in the transaction of the batch, to
+        chat_upload_pending; the caller removes the files once for the whole pass, after the
+        commits, through finish_purge_files (which settles those rows). Returns the
+        number of messages changed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        total = 0
+        last_id = 0
+        while True:
+            cursor = await self.conn.execute(
+                "SELECT id, image_url, attachment_url FROM chat_messages WHERE channel_id = ? "
+                f"AND created_at < ? AND is_pinned = 0 AND {self._HAS_FILE_SQL} AND id > ? "
+                "ORDER BY id LIMIT 500", (channel_id, cutoff, last_id))
+            rows = await cursor.fetchall()
+            if not rows:
+                break
+            batch = [r["id"] for r in rows]
+            last_id = batch[-1]
+            ph = ",".join("?" * len(batch))
+            await self.conn.execute(
+                "UPDATE chat_messages SET image_url = NULL, attachment_url = NULL, file_removed = 1 "
+                f"WHERE id IN ({ph})", batch)
+            await self.conn.execute(
+                f"UPDATE chat_fts_map SET has_image = 0, has_file = 0 WHERE message_id IN ({ph})", batch)
+            batch_names = self._upload_names([(r["image_url"], r["attachment_url"]) for r in rows])
+            if batch_names:
+                await self.conn.executemany(
+                    "INSERT OR IGNORE INTO chat_upload_pending (name) VALUES (?)", [(n,) for n in sorted(batch_names)])
+            await self.conn.commit()
+            total += len(batch)
+            names |= batch_names
+            await asyncio.sleep(0)
+        return total
+
+    async def finish_purge_files(self, names: set, stats: dict) -> None:
+        """Remove the upload files of already-committed deletions (see _remove_unreferenced_uploads)
+        and forget their pending rows, except when the check was skipped: those stay for the next try."""
+        stats = self._new_file_stats(stats)
+        mine = self._new_file_stats(None)
+        await self._remove_unreferenced_uploads(names, mine)
+        stats["files"] += mine["files"]
+        stats["bytes"] += mine["bytes"]
+        if "skipped" in mine:
+            stats.setdefault("skipped", mine["skipped"])
+            return
+        listed = sorted(names)
+        for i in range(0, len(listed), 500):
+            chunk = listed[i:i + 500]
+            await self.conn.execute(
+                f"DELETE FROM chat_upload_pending WHERE name IN ({','.join('?' * len(chunk))})", chunk)
+        await self.conn.commit()
+
+    async def pending_upload_names(self) -> set:
+        """Upload file names of deleted messages whose removal has not been settled yet (a prune or a
+        cleanup that was stopped, cancelled or killed after its deletions were committed)."""
+        cursor = await self.conn.execute("SELECT name FROM chat_upload_pending")
+        return {r["name"] for r in await cursor.fetchall()}
 
     async def clear_channel_messages(self, channel_id: int, stats: dict = None) -> int:
         """Delete all messages in a channel (pinned ones too) and their upload
@@ -6635,40 +6781,118 @@ class Database:
         stats["bytes"] += size
 
     async def _purge_messages(self, table: str, source: str, reaction_table: str,
-                              where: str, params: tuple, stats: Optional[dict]) -> int:
-        """Delete the rows of `table` matching `where` in batches of 500, each
-        batch in one transaction. After the last commit, the upload files of the
-        deleted rows that no surviving row refers to are removed (one reference
-        check for the whole purge, so the text of the surviving rows is decrypted
-        once, not once per batch)."""
+                              where: str, params: tuple, stats: Optional[dict],
+                              names: Optional[set] = None, on_batch=None,
+                              batch_size: int = 500, flag_anonymous: bool = False,
+                              should_stop=None) -> int:
+        """Delete the rows of `table` matching `where` in batches of `batch_size`
+        (500), each batch in one transaction: the search rows (map table), the
+        reactions and the messages go together. After the last commit, the upload
+        files of the deleted rows that no surviving row refers to are removed (one
+        reference check for the whole purge, so the text of the surviving rows is
+        decrypted once, not once per batch). With `names` (a set) the files are not
+        removed here: the names are collected and, in the transaction of the batch, written
+        to chat_upload_pending; the caller removes the files once for a whole pass
+        (finish_purge_files, which settles those rows). `on_batch`, when given, is awaited with
+        the list of ids after each committed batch (with `flag_anonymous`, also the list of
+        those that were anonymous posts, read before the rows went); the loop yields to the event
+        loop between batches. `should_stop`, when given, is called before each batch and, when
+        true, ends the purge with PurgeStopped between two batches (never inside one), so no
+        batch is left half done. The contentless full-text rows themselves stay (they
+        cannot be deleted without their text and never match through the map)."""
         stats = self._new_file_stats(stats)
         total = 0
         last_id = 0
-        names: set = set()
+        collect = names is not None
+        names = names if collect else set()
+        map_table = self._SEARCH_TABLES[source][1]
         while True:
+            if should_stop is not None and should_stop():
+                raise PurgeStopped()
             cursor = await self.conn.execute(
-                f"SELECT id, image_url, attachment_url FROM {table} "
-                f"WHERE ({where}) AND id > ? ORDER BY id LIMIT 500", (*params, last_id))
+                f"SELECT id, image_url, attachment_url{', COALESCE(anonymous, 0) AS anon' if flag_anonymous else ''} "
+                f"FROM {table} WHERE ({where}) AND id > ? ORDER BY id LIMIT ?", (*params, last_id, batch_size))
             rows = await cursor.fetchall()
             if not rows:
                 break
             batch = [r["id"] for r in rows]
             last_id = batch[-1]
-            for msg_id in batch:
-                try:
-                    await self.remove_message_from_search(msg_id, source)
-                except Exception:
-                    pass
             placeholders = ",".join("?" * len(batch))
+            await self.conn.execute(
+                f"DELETE FROM {map_table} WHERE message_id IN ({placeholders})", batch)
             await self.conn.execute(
                 f"DELETE FROM {reaction_table} WHERE message_id IN ({placeholders})", batch)
             await self.conn.execute(
                 f"DELETE FROM {table} WHERE id IN ({placeholders})", batch)
+            batch_names = self._upload_names([(r["image_url"], r["attachment_url"]) for r in rows])
+            if collect and batch_names:
+                await self.conn.executemany(
+                    "INSERT OR IGNORE INTO chat_upload_pending (name) VALUES (?)", [(n,) for n in sorted(batch_names)])
             await self.conn.commit()
             total += len(batch)
-            self._upload_names([(r["image_url"], r["attachment_url"]) for r in rows], names)
-        await self._remove_unreferenced_uploads(names, stats)
+            names |= batch_names
+            if on_batch is not None:
+                try:
+                    if flag_anonymous:
+                        await on_batch(batch, [r["id"] for r in rows if r["anon"]])
+                    else:
+                        await on_batch(batch)
+                except Exception as e:
+                    logger.warning(f"Purge batch callback failed: {type(e).__name__}: {e}")
+            await asyncio.sleep(0)
+        if not collect:
+            await self._remove_unreferenced_uploads(names, stats)
         return total
+
+    # Manual prune of one channel (see server.http_prune_chat_channel)
+    def prune_where(self, channel_id: int, start_iso: str, end_iso: str, user_id: Optional[int] = None,
+                    skip_pinned: bool = True, may_name_anonymous: bool = False,
+                    exclude_users: Sequence[int] = (), allow_authorless: bool = True,
+                    anonymous_rankless: bool = False) -> tuple[str, tuple]:
+        """The one WHERE clause (and its parameters) of a prune, used by the dry run and the
+        real run so they cannot differ. The range is on the stored created_at strings
+        (UTC isoformat). A user filter from someone who may not see anonymous authors never
+        matches an anonymous message (the count would reveal it). `exclude_users` are the
+        authors the caller may not act on (the rank rules of a single delete) and, unless
+        `allow_authorless`, posts with no author are left alone too. With `anonymous_rankless` (every
+        caller but an administrator) an anonymous message is never excluded because of its author, so
+        whether one is included does not depend on who wrote it and a dry run cannot tell. An
+        administrator (`may_name_anonymous`) with no user filter and authors to exclude leaves every
+        anonymous message alone instead: the frames and the counts that reach everyone else would
+        otherwise show which of them survived, and that tells the rank of the author."""
+        where = "channel_id = ? AND created_at >= ? AND created_at <= ?"
+        params: list = [channel_id, start_iso, end_iso]
+        if skip_pinned:
+            where += " AND is_pinned = 0"
+        if user_id is not None:
+            where += " AND user_id = ?"
+            params.append(user_id)
+            if not may_name_anonymous:
+                where += " AND COALESCE(anonymous, 0) = 0"
+        if exclude_users:
+            rankless = " OR COALESCE(anonymous, 0) = 1" if anonymous_rankless else ""
+            where += f" AND (user_id IS NULL{rankless} OR user_id NOT IN ({','.join('?' * len(exclude_users))}))"
+            params.extend(exclude_users)
+            if may_name_anonymous and user_id is None:
+                where += " AND COALESCE(anonymous, 0) = 0"
+        if not allow_authorless:
+            where += " AND user_id IS NOT NULL"
+        return where, tuple(params)
+
+    async def count_where_chat_messages(self, where: str, params: tuple) -> int:
+        cursor = await self.conn.execute(f"SELECT COUNT(*) FROM chat_messages WHERE {where}", params)
+        return (await cursor.fetchone())[0]
+
+    async def prune_chat_messages(self, where: str, params: tuple, stats: dict, names: set,
+                                  on_batch=None, batch_size: int = 200, flag_anonymous: bool = False,
+                                  should_stop=None) -> int:
+        """The real prune: delete what `where` matches in batches (see _purge_messages); the
+        caller removes the upload files afterwards through finish_purge_files. Raises PurgeStopped
+        at a batch boundary once `should_stop()` is true."""
+        return await self._purge_messages(
+            "chat_messages", "channel", "chat_reactions", where, params, stats,
+            names=names, on_batch=on_batch, batch_size=batch_size, flag_anonymous=flag_anonymous,
+            should_stop=should_stop)
 
     async def _delete_one_message(self, table: str, source: str, message_id: int,
                                   user_id: Optional[int]) -> bool:
@@ -8676,6 +8900,7 @@ class Database:
 
     _RETENTION_DEFAULTS = {
         "retention_chat_days": "7",
+        "retention_chat_max_days": "3650",
         "retention_dm_days": "30",
         "retention_notifications_days": "30",
         "retention_activity_max": "500",
@@ -8710,9 +8935,12 @@ class Database:
                     int_val = int(value)
                     if int_val < 0:
                         continue
+                    if key == "retention_chat_max_days" and int_val < 1:
+                        continue        # the cap of a channel's own value: at least one day
                     # Enforce reasonable upper bounds
                     max_vals = {
                         "retention_chat_days": 3650, "retention_dm_days": 3650,
+                        "retention_chat_max_days": 3650,
                         "retention_notifications_days": 3650,
                         "retention_activity_max": 100000, "retention_service_logs_max": 100000,
                         "retention_device_metrics_days": 365,

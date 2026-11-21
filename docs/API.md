@@ -1808,6 +1808,43 @@ The messages' upload files are removed with them unless another message still na
 
 ---
 
+#### PUT /api/chat/channels/:id/retention
+Set the retention of one channel (1.20.0). **Administrators only** (a moderator or channel moderator gets `403`; the generic `PUT /api/chat/channels/:id` ignores these fields). This REST route is the only way to set it: the chat socket has no channel-settings path for retention.
+
+**Request** (a field left out is kept):
+```json
+{"retention_days": 30, "file_retention_days": 7, "confirm": true}
+```
+- `retention_days`: days after which the periodic cleanup removes the channel's messages (pinned messages are kept). A number, `0` or `"forever"` (both stored as the cap, the setting `retention_chat_max_days`, default 3650, 1 to 3650), or `null` for "follow the global setting `retention_chat_days`". A number above the cap is stored as the cap (`"capped": true`). A channel with its own value is no longer touched by the global chat retention.
+- `file_retention_days`: days after which only the **uploaded files** of older messages are removed; the message stays and is marked `file_removed`. It can never exceed the message retention: a larger number is `400`, `0` or `"forever"` means "as long as the messages", and shortening `retention_days` below it cuts it to the same value. `null` = files stay with their messages.
+- `confirm`: required to apply a change that makes removal sooner (a shorter value, or a value where there was none). Without it nothing is changed and the answer is `{"applied": false, "confirm_required": true, "would_remove_messages": 12, "would_remove_files": 3, "old": {...}, "new": {...}, "cap_days": 3650}`; the counts are what the next cleanup would remove. `"dry_run": true` only looks, for any change.
+
+**Response (applied):** `{"applied": true, "retention_days": 30, "file_retention_days": 7, "capped": false, "cap_days": 3650, "old": {...}, "new": {...}, "next_cleanup_at": "..."}`. Every change is audited (`channel_retention_change`, old and new value). **Errors:** `400` (bad value, a file value above the message value, an empty body, or a stream's own chat: it keeps the global setting), `403`, `404`. Default channels are allowed. DMs are not channels and are untouched.
+
+The channel list (`GET /api/chat/channels`) and the `channel_info` frame carry `retention_days`, `file_retention_days` and `retention_next_cleanup` (the time of the next periodic cleanup, null until the cleanup task has started) for a channel with its own value; a stream's chat carries none.
+
+---
+
+#### POST /api/chat/channels/:id/prune
+Remove the messages of a channel inside a date range (1.20.0). **Allowed:** administrators and the moderators of that chat per `chat_mod_level` (global staff, a stream's owner, a stream mod). A channel the caller may not read, and a caller with no moderator level in it, get the `404 {"error": "Channel not found"}` of a missing channel. **Rank:** the prune removes only what the caller could delete one message at a time over the chat socket: a stream mod the posts of ordinary members only, the stream's owner everybody's but staff (the go-live card is the owner's), a global moderator or administrator everybody's of a lower role; everybody their own. A user filter on someone the caller may not act on gives `count` 0, and a range prune leaves those posts (the count says how many remain to be removed).
+
+**Request:**
+```json
+{"from": "2026-11-21T10:00:00Z", "to": "2026-11-21T11:00:00Z", "user": "alice", "skip_pinned": true, "dry_run": true}
+```
+- `from`, `to`: ISO 8601, both required, both ends inclusive (no offset = UTC).
+- `user`: optional, an account id or a username (an unknown one matches nothing). A user filter from anybody but an administrator never matches that user's **anonymous** messages, so the count cannot reveal them; an administrator's does (the audit entry then says `anonymous_included`). Without a user filter, an **anonymous** message in the range is matched for every caller but an administrator whoever wrote it: the rank rules apply to named messages only, so a count can never tell the rank of an anonymous author (this includes anonymous messages of higher-ranked authors that a single delete would refuse). An administrator's prune without a user filter leaves every **anonymous** message alone when the rank rules exclude any author (another administrator, or a superadmin), so no frame or count shows which anonymous messages survived; with a user filter an administrator matches that user's anonymous messages, subject to the same rank rules.
+- `skip_pinned`: default `true`; `false` includes pinned messages.
+- `dry_run`: `{"dry_run": true, "count": 12, "margin": 2, "skip_pinned": true}` and nothing is removed.
+- A real run (no `dry_run`) must send the count of the dry run as `expected_count`; it is refused with `409 {"error": ..., "count": <live>, "expected_count": <sent>}` when the live count differs by more than the margin, `max(2, 2 percent of expected_count)`. `400` when `expected_count` is missing.
+
+**Response:** `202 {"started": true, "count": 12}`. The prune runs as a background task in batches of 200 that yield to the event loop; the room receives one `messages_pruned` frame per batch (below); one audit entry `chat_prune` (who, channel, range, user filter, count, status `completed`, `failed` or `interrupted`, files removed) is written when it ends. The messages' upload files are removed with them unless another row still names them; a prune that a shutdown stopped or cancelled leaves its files to the next start or cleanup (their names are kept in the database, so none is forgotten). When an administrator's `user` filter includes that user's anonymous messages, the frames go per socket: staff and that user get every id, everybody else only the ids of the named messages (no frame when a batch has none), so the room cannot link the anonymous poster; the anonymous messages leave an ordinary member's screen at the next load. One prune per channel at a time: a second one is `409 {"error": "A prune is already running in this channel"}`.
+
+#### GET /api/chat/channels/:id/prune
+State of the last prune in the channel, same gate: `{"running": false, "status": "completed", "removed": 12, "total": 12, "files": 1}` (`{"running": false, "status": "none"}` when there was none since the portal started). After an administrator's `user`-filtered prune that includes that user's anonymous messages, `removed`, `total` and `files` count those too, so they go only to staff and to the administrator who started the prune; a stream owner or stream mod gets `{"running", "status"}` only.
+
+---
+
 #### POST /api/chat/upload
 Upload an image for embedding in chat messages (max 5MB, JPEG/PNG/GIF/WebP).
 
@@ -1889,7 +1926,7 @@ Read older messages of a channel, or a window around one message (for a link to 
 - `messages` are oldest first, in the same shape as the `history` reply of the WebSocket (user enrichment, reactions, polls, reply previews). The three ways to read a channel (join, `history_page`, this route) build them in one shared function, so the same viewer gets byte-identical message objects from each.
 - `has_more`: older messages exist. `has_newer`: newer messages exist than the window shows (only for `around_id`). `found` is `false`, with an empty list, when `around_id` is not a message of this channel (deleted, removed by the chat retention, or in another channel).
 - Anonymous posts are masked for ordinary members exactly as in the join history: no account id, role, nickname, avatar or name, in the message, its reactions, reply previews and poll. Moderators, admins and the author keep the id.
-- Messages older than the chat retention (`retention_chat_days`, one setting for every channel) no longer exist and are never returned.
+- Messages older than the chat retention (`retention_chat_days`, or the channel's own `retention_days` since 1.20.0) no longer exist and are never returned. A message whose uploaded file was removed by the channel's file retention has `"file_removed": 1` and no `image_url` / `attachment_url`.
 - Reading never marks anything as read and sends no notification.
 - A go-live card (1.16.0) is a message with `"message_type": "stream_card"` and `"card": {"stream_id": 5, "streamer": "alice", "title": "..."}`; `message` holds a plain-text fallback (`alice is live: title - https://host/watch/5`) for a client that does not know the type. A client builds the watch link from `card.stream_id` (`/watch/{id}`). The card is a system post written through the normal encrypted insert, authored by the streamer's account, and cannot be edited. It is posted into the stream's own chat and, for a public stream, into the announce channel an administrator chose; it is never posted into a channel ordinary members can read for a stream that is not public. It is deleted from every channel except the stream's own closed chat when the stream becomes private (also from a channel that was made private later and has members) and everywhere when the stream is deleted, and the chat retention removes it like any message. It carries no stream key and no thumbnail. The room receives `message_deleted` when it is removed.
 - The chat of a stream that is not public (`is_public` off) can be read, joined and written to only by the stream's owner and admins; everyone else gets the answer for a missing channel. The answer carries `Cache-Control: private, no-store`.
@@ -2580,6 +2617,7 @@ Display name priority: **Anonymous** > **Nickname** > **Username**. Anonymous st
 {"type": "channel_renamed", "old_name": "dev-talk", "new_name": "engineering"}
 {"type": "channel_deleted", "channel": "old-channel"}
 {"type": "channel_cleared", "cleared_by": "admin", "message_count": 150}
+{"type": "messages_pruned", "channel": "general", "ids": [41, 42, 43]}
 {"type": "error", "message": "Slow down! You're sending messages too fast."}
 {"type": "reaction_update", "message_id": 42, "emoji": "👍", "user_id": 1, "added": true, "count": 3}
 {"type": "message_edited", "message_id": 42, "message": "Updated text", "edited_at": "2026-02-10T..."}
@@ -3789,6 +3827,7 @@ Get data retention configuration settings.
 ```json
 {
   "retention_chat_days": "7",
+  "retention_chat_max_days": "3650",
   "retention_dm_days": "30",
   "retention_notifications_days": "30",
   "retention_activity_max": "500",

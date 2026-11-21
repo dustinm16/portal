@@ -51,7 +51,7 @@ from multidict import CIMultiDict
 
 from config import Config, ALLOWED_SHELLS
 from session_devices import parse_user_agent, public_session_id, matches_public_id
-from database import db, SearchIndexBusy, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
+from database import db, SearchIndexBusy, PurgeStopped, ROLE_HIERARCHY, get_role_level, can_manage_role, can_assign_role, get_manageable_roles, encrypt_config, decrypt_config
 from auth import (
     AuthError,
     TokenPayload,
@@ -18856,9 +18856,18 @@ async def http_get_chat_channels(request: web.Request) -> web.Response:
     # Enrich with unread counts
     unread_counts = await db.get_unread_counts(token.user_id)
     notify_prefs = await _notify_prefs_for(token.user_id)
+    next_cleanup = (datetime.fromtimestamp(_cleanup_next_at, timezone.utc).isoformat()
+                    if _cleanup_next_at else None)
     for ch in channels:
         ch["unread_count"] = unread_counts.get(ch["id"], 0)
         ch.update(_notify_pref_public(notify_prefs.get(ch["id"])))
+        # when the channel's own retention applies (a stream's chat follows the global setting)
+        # the next periodic cleanup is stated next to it
+        stream_bound = bool(ch.get("is_stream_channel")) and not ch.get("is_default")
+        if ch.get("retention_days") is not None and not stream_bound:
+            ch["retention_next_cleanup"] = next_cleanup
+        elif stream_bound:
+            ch["retention_days"] = None
     return web.json_response({"channels": channels})
 
 
@@ -19117,6 +19126,527 @@ async def http_clear_chat_channel(request: web.Request) -> web.Response:
         # The messages are gone but their upload files were not looked at.
         result["chat_files_skipped"] = clear_stats["skipped"]
     return web.json_response(result)
+
+
+# ---------------------------------------------------------------------------
+# Per-channel retention and the manual prune
+#
+# Only administrators set a channel's retention (PUT /api/chat/channels/{id}/retention); no chat
+# socket action sets it (REST only) and the generic channel PUT ignores both fields. The periodic cleanup (_run_chat_retention) works per
+# channel through database._purge_messages. The manual prune is a background task per channel.
+# ---------------------------------------------------------------------------
+
+_cleanup_next_at = 0.0               # epoch seconds of the next periodic cleanup (0 = not known yet)
+_RETENTION_FOREVER = ("forever", "never")
+_prune_tasks: dict = {}              # channel id -> running prune task (strong reference)
+_prune_status: dict = {}             # channel id -> {"running", "removed", "total", "status"} of the last prune
+PRUNE_BATCH = 200                    # messages per batch; the loop yields to the event loop after each
+
+
+def _chat_retention_cap(config: dict) -> int:
+    """The ceiling of a channel's own retention (setting retention_chat_max_days, 1..3650)."""
+    try:
+        cap = int(config.get("retention_chat_max_days", 3650))
+    except (TypeError, ValueError):
+        cap = 3650
+    return max(1, min(cap, 3650))
+
+
+def _prune_margin(expected: int) -> int:
+    """How far the live count of a prune may be from the count the dry run showed: 2 messages
+    or 2 percent of the count, whichever is larger (messages arrive and go while the dialog is open)."""
+    return max(2, int(expected) // 50)
+
+
+def _chat_message_retention_days(channel: dict, config: dict):
+    """Days after which the next cleanup removes this channel's messages: its own value (capped), else
+    the global chat retention, else None (kept)."""
+    cap = _chat_retention_cap(config)
+    own = channel.get("retention_days")
+    if own is not None:
+        return max(1, min(int(own), cap))
+    try:
+        glob = int(config.get("retention_chat_days", 7))
+    except (TypeError, ValueError):
+        glob = 7
+    return glob if glob > 0 else None
+
+
+async def _pending_upload_names() -> set:
+    """Upload files of messages a stopped, cancelled or killed prune or cleanup had already deleted
+    (chat_upload_pending); an empty set when they cannot be read."""
+    try:
+        return await db.pending_upload_names()
+    except Exception as e:
+        logger.error(f"[Retention] Pending chat upload list failed: {e}")
+        return set()
+
+
+async def _run_chat_retention(config: dict, stats: dict) -> int:
+    """The chat part of the periodic cleanup (and of 'run cleanup now'): the global retention for
+    every channel without a value of its own, then each channel's own retention_days, then each
+    channel's file_retention_days. The upload files are removed once at the end. Returns the number
+    of messages deleted; a failing step is logged and the others still run."""
+    names: set = await _pending_upload_names()        # deletions of a stopped or killed prune or cleanup
+    total = 0
+    cap = _chat_retention_cap(config)
+    try:
+        chat_days = int(config.get("retention_chat_days", 7))
+        if chat_days > 0:
+            d = await db.cleanup_old_chat_messages(days=chat_days, stats=stats, names=names)
+            if d > 0:
+                logger.info(f"[Retention] Cleaned {d} chat messages older than {chat_days} days")
+            total += d
+    except Exception as e:
+        logger.error(f"[Retention] Chat cleanup failed: {e}")
+    try:
+        channels = await db.get_channels_with_own_retention()
+    except Exception as e:
+        logger.error(f"[Retention] Channel retention list failed: {e}")
+        channels = []
+    for ch in channels:
+        try:
+            days = max(1, min(int(ch["retention_days"]), cap))
+            d = await db.cleanup_channel_messages(ch["id"], days, stats, names=names)
+            if d > 0:
+                logger.info(f"[Retention] Cleaned {d} messages older than {days} days in channel {ch['id']}")
+            total += d
+        except Exception as e:
+            logger.error(f"[Retention] Cleanup of channel {ch.get('id')} failed: {e}")
+    try:
+        file_channels = await db.get_channels_with_file_retention()
+    except Exception as e:
+        logger.error(f"[Retention] Channel file retention list failed: {e}")
+        file_channels = []
+    for ch in file_channels:
+        try:
+            limit = _chat_message_retention_days(ch, config) or cap
+            days = max(1, min(int(ch["file_retention_days"]), limit, cap))
+            n = await db.remove_channel_files(ch["id"], days, stats, names)
+            if n > 0:
+                logger.info(f"[Retention] Removed the files of {n} messages older than {days} days in channel {ch['id']}")
+        except Exception as e:
+            logger.error(f"[Retention] File cleanup of channel {ch.get('id')} failed: {e}")
+    try:
+        await db.finish_purge_files(names, stats)
+    except Exception as e:
+        logger.error(f"[Retention] Chat upload removal failed: {e}")
+    return total
+
+
+def _parse_retention_value(raw, cap: int):
+    """One retention field of the request: ("clear", None) for null, ("forever", cap) for 0 or
+    "forever", ("days", n) for a positive whole number (capped), or raises ValueError."""
+    if raw is None:
+        return "clear", None
+    if isinstance(raw, bool):
+        raise ValueError("a number of days, 0, \"forever\" or null")
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in _RETENTION_FOREVER:
+            return "forever", cap
+        if not text.isdigit() or len(text) > 9:
+            raise ValueError("a number of days, 0, \"forever\" or null")
+        raw = int(text)
+    if isinstance(raw, float) and raw == int(raw):
+        raw = int(raw)
+    if not isinstance(raw, int) or raw < 0 or raw > 10 ** 9:
+        raise ValueError("a number of days, 0, \"forever\" or null")
+    if raw == 0:
+        return "forever", cap
+    return "days", min(raw, cap)
+
+
+async def http_set_channel_retention(request: web.Request) -> web.Response:
+    """Set the retention of one channel (administrators only).
+
+    Body: retention_days and/or file_retention_days: a number of days, 0 or "forever" (stored as the
+    global cap retention_chat_max_days), or null (follow the global setting); a field left out is kept.
+    file_retention_days removes only the uploaded files of older messages and never exceeds the
+    message retention. A change that makes the removal sooner is not applied without "confirm": true;
+    the answer without it ({"applied": false, "confirm_required": true}) carries the number of
+    messages and of files the next cleanup would remove. "dry_run": true only looks."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request)
+    if not has_full_user_scope(token):
+        return full_scope_required_response()
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return unauthorized_response(request)
+    if _user_role_of(user) not in ("admin", "superadmin"):
+        return web.json_response({"error": "Administrator access required"}, status=403)
+    try:
+        channel_id = _row_id(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid channel ID"}, status=400)
+    channel = await db.get_chat_channel(channel_id)
+    if not channel:
+        return web.json_response({"error": "Channel not found"}, status=404)
+    stream = await db.get_stream_by_chat_channel(channel_id)
+    if stream and not channel.get("is_default"):
+        return web.json_response({"error": "A stream's chat keeps the global retention"}, status=400)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict) or not ({"retention_days", "file_retention_days"} & set(data)):
+        return web.json_response({"error": "retention_days or file_retention_days required"}, status=400)
+    for flag in ("confirm", "dry_run"):
+        if flag in data and not isinstance(data[flag], bool):
+            return web.json_response({"error": f"{flag} must be true or false"}, status=400)
+
+    config = await db.get_retention_config()
+    cap = _chat_retention_cap(config)
+    old = {"retention_days": channel.get("retention_days"),
+           "file_retention_days": channel.get("file_retention_days")}
+    new = dict(old)
+    capped = False
+    forever_file = False
+    try:
+        if "retention_days" in data:
+            kind, value = _parse_retention_value(data["retention_days"], cap)
+            capped = capped or (kind == "days" and isinstance(data["retention_days"], (int, str))
+                                and str(data["retention_days"]).strip().isdigit() and int(data["retention_days"]) > cap)
+            new["retention_days"] = value
+        if "file_retention_days" in data:
+            kind, value = _parse_retention_value(data["file_retention_days"], cap)
+            forever_file = kind == "forever"
+            new["file_retention_days"] = value
+    except ValueError as e:
+        return web.json_response({"error": f"Invalid value: expected {e}"}, status=400)
+
+    limit = _chat_message_retention_days({"retention_days": new["retention_days"]}, config) or cap
+    if new["file_retention_days"] is not None:
+        if forever_file:
+            new["file_retention_days"] = limit        # keep files as long as the messages
+        elif new["file_retention_days"] > limit:
+            if "file_retention_days" in data:
+                return web.json_response(
+                    {"error": f"file_retention_days cannot exceed the message retention ({limit} days)"},
+                    status=400)
+            new["file_retention_days"] = limit       # the message retention was shortened under it
+
+    def eff_msg(values):
+        return _chat_message_retention_days({"retention_days": values["retention_days"]}, config)
+
+    def eff_file(values):
+        f = values["file_retention_days"]
+        if f is None:
+            return None
+        m = eff_msg(values)
+        return min(f, m) if m else f
+
+    inf = float("inf")
+    old_m, new_m = eff_msg(old) or inf, eff_msg(new) or inf
+    old_f, new_f = eff_file(old) or inf, eff_file(new) or inf
+    msg_shorter, file_shorter = new_m < old_m, new_f < old_f
+    report = {"old": old, "new": new, "capped": capped, "cap_days": cap}
+    if msg_shorter:
+        report["would_remove_messages"] = await db.count_channel_expiring(channel_id, int(new_m))
+    if file_shorter:
+        report["would_remove_files"] = await db.count_channel_files_expiring(channel_id, int(new_f))
+    shortening = msg_shorter or file_shorter
+    if data.get("dry_run") or (shortening and not data.get("confirm")):
+        report.update({"applied": False, "confirm_required": shortening, "dry_run": True})
+        return web.json_response(report)
+    if new != old:
+        if not await db.set_channel_retention(channel_id, new["retention_days"], new["file_retention_days"]):
+            return web.json_response({"error": "Channel not found"}, status=404)
+        await audit_log("channel_retention_change", token.user_id, user["username"],
+                        target_id=channel_id, target_type="channel", target_name=channel["name"],
+                        channel_id=channel_id, channel_name=channel["name"],
+                        details=json.dumps({"old": old, "new": new, "cap_days": cap,
+                                            "confirmed": bool(data.get("confirm")),
+                                            "would_remove_messages": report.get("would_remove_messages"),
+                                            "would_remove_files": report.get("would_remove_files")}))
+    report.update({"applied": True, "confirm_required": False, "dry_run": False,
+                   "retention_days": new["retention_days"], "file_retention_days": new["file_retention_days"]})
+    if new["retention_days"] is not None and _cleanup_next_at:
+        report["next_cleanup_at"] = datetime.fromtimestamp(_cleanup_next_at, timezone.utc).isoformat()
+    return web.json_response(report)
+
+
+PRUNE_SHUTDOWN_WAIT = 20.0      # seconds a shutdown waits for the cancelled prunes to write their entry
+
+
+def _ask_prunes_to_stop() -> dict:
+    """Ask every running prune to end at its next batch boundary; the tasks that are running."""
+    tasks = {cid: t for cid, t in list(_prune_tasks.items()) if not t.done()}
+    for cid in tasks:
+        if cid in _prune_status:
+            _prune_status[cid]["_stop"] = True
+    return tasks
+
+
+async def _cancel_prune_tasks() -> None:
+    """Shutdown: stop the running prunes and wait for them (at most PRUNE_SHUTDOWN_WAIT seconds)
+    while the database is still open, so each writes its one 'interrupted' audit entry (see _run_prune).
+    A prune is asked to stop and ends at its next batch boundary, never inside a batch (a cancel inside
+    one leaves the shared connection with an uncommitted half batch); only one that has not stopped
+    within the bound is cancelled. The upload files of its committed batches are not removed then: their
+    names are in chat_upload_pending and go at the next start or cleanup. Never raises."""
+    tasks = _ask_prunes_to_stop()
+    if not tasks:
+        return
+    _, pending = await asyncio.wait(tasks.values(), timeout=PRUNE_SHUTDOWN_WAIT)
+    if pending:
+        for task in pending:
+            task.cancel()
+        logger.warning(f"[Prune] {len(pending)} prune(s) did not stop within {PRUNE_SHUTDOWN_WAIT:.0f}s, cancelled")
+        await asyncio.wait(pending, timeout=PRUNE_SHUTDOWN_WAIT)
+
+
+async def _prune_gate(request: web.Request):
+    """(token, user, role, channel, stream, level) of a prune request, or (response,)*: the
+    reader check first (an unreadable channel answers exactly like a missing one), then the
+    moderator level of chat_mod_level; a member without any answers the same 404."""
+    token = await authenticate_request(request)
+    if not token:
+        return unauthorized_response(request), None, None, None, None, None
+    if not has_full_user_scope(token):
+        return full_scope_required_response(), None, None, None, None, None
+    user = await db.get_user_by_id(token.user_id)
+    if not user:
+        return unauthorized_response(request), None, None, None, None, None
+    role = _user_role_of(user)
+    missing = web.json_response({"error": "Channel not found"}, status=404)
+    try:
+        channel_id = _row_id(request.match_info.get("id"))
+    except (ValueError, TypeError):
+        return missing, None, None, None, None, None
+    channel = await db.get_chat_channel(channel_id)
+    stream = await db.get_stream_by_chat_channel(channel_id) if channel else None
+    if not await _can_read_channel(channel, token.user_id, role, stream):
+        return missing, None, None, None, None, None
+    level = await chat_mod_level(channel, {"id": token.user_id, "role": role}, stream)
+    if level == CHAT_LEVEL_NONE:
+        return missing, None, None, None, None, None
+    return None, token, user, role, (channel, stream), level
+
+
+async def _prune_protected(channel, stream, actor_id: int, actor_role: str, level: int) -> tuple[list, bool]:
+    """(author ids a prune must leave alone, whether posts without an author may go): the rank
+    rules of a single message delete (_chat_may_act_on), taken from where rank comes from (global
+    staff, the stream's owner, its stream mods) so a new poster cannot slip through. Everyone may
+    prune their own posts; a post with no author (a system post) goes only for the owner and staff."""
+    ranked: dict = {}
+    for u in await db.list_chat_staff_candidates():
+        role = _user_role_of(u)
+        if role in _CHAT_STAFF_ROLES:
+            ranked[u["id"]] = (CHAT_LEVEL_STAFF, role)
+    if _real_stream_chat(stream):
+        if stream.get("user_id") is not None:
+            ranked.setdefault(stream["user_id"], (CHAT_LEVEL_OWNER, "user"))
+        for mod_id in await db.get_channel_moderator_ids(channel["id"]):
+            ranked.setdefault(mod_id, (CHAT_LEVEL_MOD, "user"))
+    excluded = sorted(uid for uid, (rank, role) in ranked.items()
+                      if uid != actor_id and not _chat_may_act_on(level, actor_role, rank, role))
+    return excluded, level in (CHAT_LEVEL_OWNER, CHAT_LEVEL_STAFF)
+
+
+def _parse_prune_time(raw, field: str) -> str:
+    """An ISO 8601 date-time (no offset = UTC) as the UTC isoformat string the messages are stored
+    with, so the range compares as text."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"{field} (an ISO 8601 date and time) is required")
+    try:
+        dt = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        raise ValueError(f"{field} is not an ISO 8601 date and time")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+async def http_get_prune_status(request: web.Request) -> web.Response:
+    """State of the last manual prune in a channel (same gate as the prune itself)."""
+    refusal, token, user, role, ctx, level = await _prune_gate(request)
+    if refusal is not None:
+        return refusal
+    channel = ctx[0]
+    st = _prune_status.get(channel["id"])
+    if not st:
+        return web.json_response({"running": False, "status": "none"})
+    out = {k: v for k, v in st.items() if not k.startswith("_")}
+    # The counts of an administrator's user-filtered prune include that user's anonymous posts: only
+    # staff and the one who started it may see them (an owner or stream mod would learn how many)
+    if st.get("_anonymous_matchable") and role not in _CHAT_STAFF_ROLES and token.user_id != st.get("_actor_id"):
+        out = {"running": out.get("running"), "status": out.get("status")}
+    return web.json_response(out)
+
+
+async def http_prune_chat_channel(request: web.Request) -> web.Response:
+    """Prune the messages of one channel inside a date range (administrators, and the moderators of
+    that chat per chat_mod_level; anyone else, and anyone who may not read the channel, gets the
+    404 of a missing channel).
+
+    Body: from, to (ISO 8601, both required, both ends inclusive), user (optional: an account id or a
+    name), skip_pinned (default true), dry_run, expected_count. A dry run answers {"count": n}. A real
+    run must echo that count as expected_count: it is refused with 409 when the live count differs by
+    more than max(2, 2 percent of it). It then runs as a background task (202) in batches of
+    PRUNE_BATCH, broadcasts one messages_pruned frame (ids only) per batch to the room and writes one
+    audit entry at the end. One prune per channel at a time (409). A user filter never matches the
+    anonymous messages of that user unless the caller is an administrator. The caller prunes only
+    what a single delete would let them delete (_prune_protected): a stream mod ordinary members, the
+    owner everybody but staff, staff everybody of a lower role; their own posts always. That rank rule
+    covers named posts only: for every caller but an administrator an anonymous post is rankless, and
+    an administrator's prune with no user filter leaves anonymous posts alone when any author is
+    excluded, so no count, frame or entry depends on who wrote one."""
+    refusal, token, user, role, ctx, level = await _prune_gate(request)
+    if refusal is not None:
+        return refusal
+    channel, stream = ctx
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    try:
+        start = _parse_prune_time(data.get("from"), "from")
+        end = _parse_prune_time(data.get("to"), "to")
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if start > end:
+        return web.json_response({"error": "from must not be after to"}, status=400)
+    skip_pinned = data.get("skip_pinned", True)
+    dry_run = data.get("dry_run", False)
+    if not isinstance(skip_pinned, bool) or not isinstance(dry_run, bool):
+        return web.json_response({"error": "skip_pinned and dry_run must be true or false"}, status=400)
+
+    # The user filter: an account id or a name; one that matches no account matches nothing
+    user_id = None
+    user_label = None
+    raw_user = data.get("user", data.get("user_id"))
+    if raw_user is not None and raw_user != "":
+        target = None
+        if isinstance(raw_user, int) and not isinstance(raw_user, bool):
+            target = await db.get_user_by_id(raw_user) if abs(raw_user) <= _SQLITE_INT_MAX else None
+        elif isinstance(raw_user, str) and len(raw_user) <= 64:
+            target = (await db.get_user_by_id(int(raw_user)) if raw_user.strip().isdigit()
+                      and len(raw_user.strip()) < 15 else None) or await db.get_user_by_username(raw_user.strip())
+        else:
+            return web.json_response({"error": "user must be an account id or a name"}, status=400)
+        user_id = target["id"] if target else -1
+        user_label = target["username"] if target else None
+    may_name_anonymous = role in ("admin", "superadmin")
+    excluded, authorless_ok = await _prune_protected(channel, stream, token.user_id, role, level)
+    where, params = db.prune_where(channel["id"], start, end, user_id, skip_pinned, may_name_anonymous,
+                                   excluded, authorless_ok, anonymous_rankless=not may_name_anonymous)
+    live = await db.count_where_chat_messages(where, params)
+    margin = _prune_margin(live)
+    if dry_run:
+        return web.json_response({"dry_run": True, "count": live, "margin": margin,
+                                  "skip_pinned": skip_pinned})
+
+    running = _prune_tasks.get(channel["id"])
+    if running is not None and not running.done():
+        return web.json_response({"error": "A prune is already running in this channel"}, status=409)
+    expected = data.get("expected_count")
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 0:
+        return web.json_response({"error": "expected_count (the count of the dry run) is required"}, status=400)
+    if abs(live - expected) > _prune_margin(expected):
+        return web.json_response({"error": "The number of messages changed since the dry run; run it again",
+                                  "count": live, "expected_count": expected}, status=409)
+    state = {"running": True, "removed": 0, "total": live, "status": "running", "_actor_id": token.user_id,
+             "_anonymous_matchable": bool(user_id is not None and may_name_anonymous)}
+    _prune_status[channel["id"]] = state
+    task = asyncio.create_task(_run_prune(
+        channel["id"], token.user_id, user["username"], level, where, params, state, {
+            "from": start, "to": end, "user_id": None if user_id is None else (user_id if user_id > 0 else None),
+            "user": user_label, "skip_pinned": skip_pinned, "expected_count": expected,
+            "anonymous_matchable": bool(user_id is not None and may_name_anonymous)}))
+    _prune_tasks[channel["id"]] = task
+    task.add_done_callback(lambda t, cid=channel["id"]: _prune_tasks.pop(cid, None) if _prune_tasks.get(cid) is t else None)
+    return web.json_response({"started": True, "count": live}, status=202)
+
+
+async def _broadcast_pruned_hiding(channel: str, ids: list, anon_ids: set, subject_id: int) -> None:
+    """One messages_pruned frame per socket of the room: staff and the author (_viewer_sees_identity)
+    get every id; everybody else only the ids that are not anonymous posts of that author, and no frame
+    when nothing is left. Their clients drop the anonymous posts at the next load."""
+    named = [i for i in ids if i not in anon_ids]
+    dead = set()
+    for entry in list(chat_rooms.get(channel, ())):
+        ws = entry[0]
+        out = ids if _viewer_sees_identity(entry[1], entry[3] if len(entry) > 3 else None, subject_id) else named
+        if not out:
+            continue
+        try:
+            if not ws.closed:
+                await ws.send_json({"type": "messages_pruned", "channel": channel, "ids": out})
+            else:
+                dead.add(entry)
+        except (ConnectionError, ConnectionResetError, TypeError):
+            dead.add(entry)
+    if dead and channel in chat_rooms:
+        chat_rooms[channel] -= dead
+
+
+async def _run_prune(channel_id: int, actor_id: int, actor_name: str, level: int, where: str, params: tuple,
+                     state: dict, rng: dict) -> None:
+    """The background part of a prune: delete in batches, tell the room after each batch (ids only,
+    nothing about who or why), remove the upload files once, and write the single audit entry."""
+    stats = {"files": 0, "bytes": 0}
+    names: set = set()
+    status = "completed"
+    error = None
+
+    # A prune by one user that includes their anonymous posts (administrator only): the room must not
+    # watch those vanish together with that user's named posts, so only staff and the author hear of them
+    subject = rng["user_id"] if rng.get("anonymous_matchable") else None
+
+    async def on_batch(ids, anon_ids=()):
+        state["removed"] += len(ids)
+        ch = await db.get_chat_channel(channel_id)
+        if not ch:
+            return
+        if subject is None or not anon_ids:
+            await broadcast_to_channel(ch["name"], {"type": "messages_pruned", "channel": ch["name"], "ids": ids})
+            return
+        await _broadcast_pruned_hiding(ch["name"], ids, set(anon_ids), subject)
+
+    try:
+        await db.prune_chat_messages(where, params, stats, names, on_batch, batch_size=PRUNE_BATCH,
+                                     flag_anonymous=subject is not None,
+                                     should_stop=lambda: bool(state.get("_stop")))
+    except PurgeStopped:
+        status = "interrupted"
+    except asyncio.CancelledError:
+        status = "interrupted"
+        raise
+    except Exception as e:
+        status = "failed"
+        error = f"{type(e).__name__}: {e}"
+        logger.error(f"[Prune] Channel {channel_id} failed after {state['removed']} messages: {e}")
+    finally:
+        # A prune that was stopped or cancelled, or that ended while a shutdown was asking it to stop, leaves
+        # the upload files of its committed batches to the next start or cleanup: their names are in
+        # chat_upload_pending, and the check can take long
+        if status != "interrupted" and not state.get("_stop"):
+            try:
+                await db.finish_purge_files(names, stats)
+            except BaseException as e:
+                logger.warning(f"[Prune] Upload removal failed: {type(e).__name__} {e}")
+        state.update({"running": False, "status": status, "files": stats["files"]})
+        ch = None
+        try:
+            ch = await db.get_chat_channel(channel_id)
+        except BaseException:
+            pass
+        details = {"level": CHAT_LEVEL_NAMES.get(level, "none"), "from": rng["from"], "to": rng["to"],
+                   "user": rng["user"], "user_id": rng["user_id"], "skip_pinned": rng["skip_pinned"],
+                   "expected_count": rng["expected_count"], "count": state["removed"], "status": status,
+                   "files_removed": stats["files"]}
+        if rng.get("anonymous_matchable"):
+            details["anonymous_included"] = True
+        if error:
+            details["error"] = error
+        await asyncio.shield(audit_log(
+            "chat_prune", actor_id, actor_name, target_id=channel_id, target_type="channel",
+            target_name=ch["name"] if ch else str(channel_id), channel_id=channel_id,
+            channel_name=ch["name"] if ch else None, details=json.dumps(details)))
 
 
 async def http_upload_chat_image(request: web.Request) -> web.Response:
@@ -21965,6 +22495,13 @@ async def handle_chat_websocket(request: web.Request) -> web.WebSocketResponse:
                             "mod_level": CHAT_LEVEL_NAMES[await chat_mod_level(
                                 channel, {"id": user_id, "role": user_role}, check_stream)],
                             "stream_chat": _real_stream_chat(check_stream),
+                            # the channel's own retention (a stream's chat follows the global setting), for
+                            # the notice and the administrators' settings window
+                            "retention_days": None if check_stream and not channel.get("is_default") else channel.get("retention_days"),
+                            "file_retention_days": None if check_stream and not channel.get("is_default") else channel.get("file_retention_days"),
+                            "retention_next_cleanup": (datetime.fromtimestamp(_cleanup_next_at, timezone.utc).isoformat()
+                                                       if _cleanup_next_at and channel.get("retention_days") is not None
+                                                       and not (check_stream and not channel.get("is_default")) else None),
                             # @here / @everyone: the channel's switch and whether this member may use them
                             "allow_mass_mentions": bool(channel.get("allow_mass_mentions")),
                             "can_mass_mention": await _may_mass_mention(channel, user_id, user_role, check_stream)
@@ -24105,9 +24642,7 @@ async def http_run_cleanup_now(request: web.Request) -> web.Response:
     errors = []
     file_stats = {"files": 0, "bytes": 0}
     try:
-        chat_days = int(config.get("retention_chat_days", 7))
-        if chat_days > 0:
-            results["chat_messages"] = await db.cleanup_old_chat_messages(days=chat_days, stats=file_stats)
+        results["chat_messages"] = await _run_chat_retention(config, file_stats)
     except Exception as e:
         errors.append(f"chat: {e}")
     try:
@@ -27150,6 +27685,9 @@ def create_app() -> web.Application:
     app.router.add_put("/api/chat/channels/{id}", http_update_chat_channel)
     app.router.add_delete("/api/chat/channels/{id}", http_delete_chat_channel)
     app.router.add_post("/api/chat/channels/{id}/clear", http_clear_chat_channel)
+    app.router.add_put("/api/chat/channels/{id}/retention", http_set_channel_retention)
+    app.router.add_get("/api/chat/channels/{id}/prune", http_get_prune_status)
+    app.router.add_post("/api/chat/channels/{id}/prune", http_prune_chat_channel)
     app.router.add_post("/api/chat/upload", http_upload_chat_image)
     app.router.add_get("/api/chat/link-preview", http_link_preview)
     app.router.add_get("/api/chat/thread/{id}", http_get_chat_thread)
@@ -27556,10 +28094,24 @@ class PortalServer:
 
     async def _data_cleanup_task(self) -> None:
         """Unified data retention cleanup — interval configurable via settings."""
+        # Files of messages a prune or cleanup deleted before the last stop or kill go now, not at the
+        # end of the first interval
+        try:
+            pending = await _pending_upload_names()
+            if pending:
+                left_over = {"files": 0, "bytes": 0}
+                await db.finish_purge_files(pending, left_over)
+                logger.info(f"[Retention] Removed {left_over['files']} chat upload file(s) left by a stopped prune or cleanup")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"[Retention] Pending chat upload removal failed: {e}")
         while True:
             try:
                 config = await db.get_retention_config()
                 interval = max(1, int(config.get("cleanup_interval_hours", 6)))
+                global _cleanup_next_at
+                _cleanup_next_at = time() + interval * 60 * 60     # shown as "next cleanup about" in channel info
                 await asyncio.sleep(interval * 60 * 60)
 
                 config = await db.get_retention_config()
@@ -27574,12 +28126,7 @@ class PortalServer:
                 # Chat messages (and the upload files only they referred to)
                 file_stats = {"files": 0, "bytes": 0}
                 try:
-                    chat_days = int(config.get("retention_chat_days", 7))
-                    if chat_days > 0:
-                        d = await db.cleanup_old_chat_messages(days=chat_days, stats=file_stats)
-                        if d > 0:
-                            logger.info(f"[Retention] Cleaned {d} chat messages older than {chat_days} days")
-                        total += d
+                    total += await _run_chat_retention(config, file_stats)
                 except Exception as e:
                     logger.error(f"[Retention] Chat cleanup failed: {e}")
 
@@ -27856,6 +28403,10 @@ class PortalServer:
         """Stop the server gracefully."""
         logger.info("Shutting down...")
 
+        # A running prune starts winding down now (it ends at its next batch boundary), so that happens
+        # while the open connections drain instead of after it
+        _ask_prunes_to_stop()
+
         # Stop the go-live announcements still writing (cards, notifications) before anything else
         await _cancel_golive_tasks()
         await _cancel_stream_info_tasks()
@@ -27897,6 +28448,10 @@ class PortalServer:
 
         if self.runner:
             await self.runner.cleanup()
+
+        # No request can start a prune any more; a running one finishes its files and its audit entry
+        # while the database is still open
+        await _cancel_prune_tasks()
 
         # Write the security events still counted in memory before the database closes
         await secevents.log.shutdown()

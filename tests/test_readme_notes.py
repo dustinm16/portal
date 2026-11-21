@@ -556,6 +556,44 @@ for name, needles in (("what is shown", ("voice connection quality", "1 to 4 sma
 check("1.20.0 quality: the thresholds stated are the ones in the code",
       all(s_ in _vq_js for s_ in ("QUALITY_POLL_MS = 4000", "QUALITY_NOAUDIO_MS = 6000", "QUALITY_LOSS_PCT = [2, 5, 10]",
                                   "QUALITY_RTT_MS = [150, 300, 500]", "QUALITY_JITTER_MS = [30, 60, 120]")))
+# --- 1.20.0 notes: per-channel retention and prune ---------------------------------------
+m20r = re.search(r"### Upgrade notes for 1\.20\.0\n(.*?)(?=\n## |\n### )", text, re.S)
+check("README has an 'Upgrade notes for 1.20.0' section before the 1.19.0 one",
+      m20r is not None and text.index("### Upgrade notes for 1.20.0") < text.index("### Upgrade notes for 1.19.0"))
+low20r = (m20r.group(1) if m20r else "").lower()
+for name, needles in (
+        ("administrators only set it, moderators cannot", ("administrators only", "moderator", "cannot change")),
+        ("the cap setting and its range", ("retention_chat_max_days", "3650", "1 to 3650")),
+        ("empty means follow the global setting and nothing changes until set", ("follow the global setting", "nothing changes until an administrator")),
+        ("a channel with a value is no longer touched by the global retention", ("no longer touched",)),
+        ("file retention keeps the message and never exceeds it", ("file retention", "(file removed)", "can never be longer than the message retention")),
+        ("pinned messages are kept", ("pinned messages are kept",)),
+        ("shortening needs confirm and is audited", ("confirm", "would remove", "channel_retention_change")),
+        ("the next-cleanup notice and its limits", ("next cleanup about", "not known until the cleanup task has started")),
+        ("prune: who may, dry run, expected count, margin", ("chat_mod_level", "dry run", "expected", "max(2, 2 percent)")),
+        ("prune: background batches, frame, one audit entry, one at a time", ("batches of 200", "messages_pruned", "chat_prune", "one prune per channel")),
+        ("prune: unreadable and no-level callers get the 404 of a missing channel", ("404",)),
+        ("prune: rank rules of a single delete, own posts, user filter counts 0", ("rank", "lower role", "counts and removes 0")),
+        ("prune: anonymous ids of a user-filtered prune go to staff and the author only", ("not told which ids", "staff and the author", "next load")),
+        ("prune status counts go to staff and the starter only", ("`removed`, `total` and `files`", "stream owner or stream mod gets `running` and `status` only")),
+        ("anonymous posts are not revealed", ("anonymous", "never matches an anonymous message", "neither the frames nor the audit entry")),
+        ("DMs and stream chats are not covered", ("direct messages", "stream's own chat")),
+        ("the rollback consequence", ("rolling back", "retention_chat_days")),
+        ("a Not tested paragraph", ("**not tested.**", "no browser", "not proven"))):
+    check(f"1.20.0 states: retention {name}", all(n in low20r for n in needles), str(needles))
+_pages20 = {p_.name: p_.read_text(encoding="utf-8") for p_ in (ROOT / "static").glob("*.html")}
+_loaded20 = {m_ for t_ in _pages20.values() for m_ in re.findall(r"/static/js/chat-retention\.js\?v=(\d+)", t_)}
+check("1.20.0 states chat-retention.js as version 1 and the pages load exactly that",
+      _loaded20 == {"1"} and re.search(r"`chat-retention\.js` version 1", m20r.group(1) if m20r else "") is not None, str(_loaded20))
+_srv20 = (ROOT / "server.py").read_text(encoding="utf-8")
+check("the margin and the batch size stated are the ones in the code",
+      "return max(2, int(expected) // 50)" in _srv20 and "PRUNE_BATCH = 200" in _srv20)
+check("the new audit actions are in the admin filter and the API reference",
+      all(a in _pages20["admin.html"] and a in _pages20["api-docs.html"] for a in ("channel_retention_change", "chat_prune")))
+check("docs/API.md and api-docs.html both describe the retention route, the prune route and the frame",
+      all(x in (ROOT / "docs" / "API.md").read_text() and x in _pages20["api-docs.html"]
+          for x in ("/retention", "/prune", "messages_pruned")))
+check("the 1.20.0 retention notes carry no emoji", not re.search("[\U0001F000-\U0001FFFF\u2600-\u27BF]", m20r.group(1) if m20r else ""))
 
 if failures:
     print(f"\ntest_readme_notes: {len(failures)} FAILED: " + "; ".join(failures))

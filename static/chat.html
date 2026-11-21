@@ -232,6 +232,7 @@
             color: var(--text-muted);
         }
 
+        .file-removed-note { color: var(--text-muted); font-size: 0.8rem; font-style: italic; margin-top: 0.25rem; }
         .clear-channel-btn {
             background: rgba(239, 68, 68, 0.2);
             border: 1px solid rgba(239, 68, 68, 0.3);
@@ -3253,6 +3254,7 @@
     <script src="/static/js/push.js?v=4"></script>
     <script src="/static/js/voice.js?v=15"></script>
     <script src="/static/js/chat-notify.js?v=1"></script>
+    <script src="/static/js/chat-retention.js?v=1"></script>
     <script>
         // Mobile sidebar toggle
         function toggleMobileSidebar(which) {
@@ -4168,6 +4170,7 @@
                 case 'mod_level':
                     channelModLevel = data.mod_level || 'none';
                     renderMassMentionButton();
+                    if (window.ChatRetention) ChatRetention.onModLevel(channelModLevel, currentUser);
                     break;
                 case 'mass_mentions_changed':
                     // sent to the room this socket is in only
@@ -4257,6 +4260,10 @@
                     break;
                 case 'message_deleted':
                     removeDeletedMessage(data.message_id);
+                    break;
+                case 'messages_pruned':
+                    // a moderator pruned a range: one frame per batch, ids only
+                    (data.ids || []).forEach(removeDeletedMessage);
                     break;
                 case 'channel_renamed':
                     handleChannelRenamed(data);
@@ -4489,7 +4496,7 @@
                         ${data.edited_at ? '<span class="edited-indicator">(edited)</span>' : ''}
                         ${data.is_pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}
                     </div>
-                    <div class="message-text">${data.message ? formatMessage(data.message) : ''}${data.image_url ? `<br><img class="message-image" src="${escapeHtml(data.image_url)}" alt="image" onclick="openLightbox('${escapeHtml(data.image_url)}')" loading="lazy">` : ''}${data.attachment_url && !data.attachment_type?.startsWith('image/') ? `<div class="attachment-file"><a href="${escapeHtml(data.attachment_url)}" target="_blank" download="${escapeHtml(data.attachment_name || 'file')}"><span class="attachment-icon">${getFileIcon(data.attachment_type || '')}</span><span class="attachment-info"><span class="attachment-name">${escapeHtml(data.attachment_name || 'File')}</span><span class="attachment-size">${formatFileSize(data.attachment_size || 0)}</span></span></a></div>` : ''}</div>
+                    <div class="message-text">${data.message ? formatMessage(data.message) : ''}${data.image_url ? `<br><img class="message-image" src="${escapeHtml(data.image_url)}" alt="image" onclick="openLightbox('${escapeHtml(data.image_url)}')" loading="lazy">` : ''}${data.attachment_url && !data.attachment_type?.startsWith('image/') ? `<div class="attachment-file"><a href="${escapeHtml(data.attachment_url)}" target="_blank" download="${escapeHtml(data.attachment_name || 'file')}"><span class="attachment-icon">${getFileIcon(data.attachment_type || '')}</span><span class="attachment-info"><span class="attachment-name">${escapeHtml(data.attachment_name || 'File')}</span><span class="attachment-size">${formatFileSize(data.attachment_size || 0)}</span></span></a></div>` : ''}${data.file_removed ? '<div class="file-removed-note">(file removed)</div>' : ''}</div>
                     ${reactionsHtml}
                 </div>
             `;
@@ -4622,6 +4629,7 @@
             channelModLevel = data.mod_level || 'none';
             channelMassFlag = !!data.allow_mass_mentions;
             renderMassMentionButton();
+            if (window.ChatRetention) ChatRetention.onChannelInfo(data, currentUser);
             document.getElementById('channel-name').textContent = data.name;
             document.getElementById('channel-topic').textContent = data.topic || data.description || 'No topic set';
 
@@ -7834,6 +7842,7 @@
             const displayName = conversation.name || others.map(p => p.nickname || p.username).join(', ') || 'DM';
             const prefix = conversation.type === 'group' ? '' : '@';
             document.getElementById('channel-name').textContent = prefix + displayName;
+            if (window.ChatRetention) ChatRetention.onChannelInfo(null);   // no prune or retention in a DM
             document.getElementById('channel-topic').textContent = conversation.type === 'group' ? `Group DM - ${conversation.participants.length} members` : 'Direct Message';
             // Show voice button for DM calls, hide stream/clear/poll controls
             document.getElementById('voice-join-btn').style.display = '';
