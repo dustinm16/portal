@@ -19198,12 +19198,12 @@ def _prune_count_changed(live: int, expected: int) -> bool:
 
 
 def _chat_message_retention_days(channel: dict, config: dict):
-    """Days after which the next cleanup removes this channel's messages: its own value (capped), else
-    the global chat retention, else None (kept)."""
-    cap = _chat_retention_cap(config)
+    """Days after which the next cleanup removes this channel's messages: its own value as stored (the
+    cap setting limits a value when it is set, never afterwards: lowering the cap shortens nothing that
+    is already stored), else the global chat retention, else None (kept)."""
     own = channel.get("retention_days")
     if own is not None:
-        return max(1, min(int(own), cap))
+        return max(1, int(own))
     try:
         glob = int(config.get("retention_chat_days", 7))
     except (TypeError, ValueError):
@@ -19228,7 +19228,6 @@ async def _run_chat_retention(config: dict, stats: dict) -> int:
     of messages deleted; a failing step is logged and the others still run."""
     names: set = await _pending_upload_names()        # deletions of a stopped or killed prune or cleanup
     total = 0
-    cap = _chat_retention_cap(config)
     try:
         chat_days = int(config.get("retention_chat_days", 7))
         if chat_days > 0:
@@ -19245,7 +19244,7 @@ async def _run_chat_retention(config: dict, stats: dict) -> int:
         channels = []
     for ch in channels:
         try:
-            days = max(1, min(int(ch["retention_days"]), cap))
+            days = max(1, int(ch["retention_days"]))      # as stored: a lowered cap shortens nothing
             d = await db.cleanup_channel_messages(ch["id"], days, stats, names=names)
             if d > 0:
                 logger.info(f"[Retention] Cleaned {d} messages older than {days} days in channel {ch['id']}")
@@ -19259,8 +19258,10 @@ async def _run_chat_retention(config: dict, stats: dict) -> int:
         file_channels = []
     for ch in file_channels:
         try:
-            limit = _chat_message_retention_days(ch, config) or cap
-            days = max(1, min(int(ch["file_retention_days"]), limit, cap))
+            limit = _chat_message_retention_days(ch, config)
+            days = max(1, int(ch["file_retention_days"]))
+            if limit:
+                days = min(days, limit)
             n = await db.remove_channel_files(ch["id"], days, stats, names)
             if n > 0:
                 logger.info(f"[Retention] Removed the files of {n} messages older than {days} days in channel {ch['id']}")

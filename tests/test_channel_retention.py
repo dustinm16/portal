@@ -70,6 +70,28 @@ def test_cleanup_per_channel():
     run(body)
 
 
+def test_lowering_the_cap_shortens_no_stored_value():
+    """The cap limits a value when it is set. A channel stored as "forever" (the cap of that moment) and a
+    channel with a long file retention keep what they hold when the cap is lowered afterwards: the cleanup
+    deletes nothing nobody counted or confirmed."""
+    async def body(env):
+        d = env.db
+        uid = await env.user("poster")
+        ch = await d.create_chat_channel("long-keeper", created_by=uid)
+        await d.conn.execute("UPDATE chat_channels SET retention_days = ?, file_retention_days = ? WHERE id = ?",
+                             (CAP, 1000, ch))
+        await d.conn.commit()
+        f = env.make_file("d" * 32 + ".zip")
+        old = await env.message(ch, uid, "400 days old", days_old=400, upload=f)
+        await d.set_retention_config({"retention_chat_max_days": 365})
+        stats = {"files": 0, "bytes": 0}
+        total = await server._run_chat_retention(await d.get_retention_config(), stats)
+        check("lowering the cap removed nothing from a channel stored at the old cap",
+              old in await env.ids(ch) and total == 0, str(total))
+        check("... and no file either", (env.up / f).exists() and stats["files"] == 0, str(stats))
+    run(body)
+
+
 def test_global_setting_no_longer_touches_a_channel_with_a_value():
     """The old global pass removed everything older than 7 days in every channel."""
     async def body(env):
