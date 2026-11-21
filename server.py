@@ -21499,7 +21499,8 @@ async def http_unblock_user(request: web.Request) -> web.Response:
 # Session recordings (administrators only). A recording can hold anything that was shown on a
 # terminal, so these routes are for the roles admin and superadmin and for nobody else: a
 # member, a moderator or a scoped key gets nothing, not even for their own sessions.
-RECORDING_AUDIT_ACTIONS = ("recording_play", "recording_download", "recording_delete")
+RECORDING_AUDIT_ACTIONS = ("recording_play", "recording_download", "recording_delete",
+                           "recording_delete_failed")
 _RECORDINGS_PAGE_MAX = 100
 _RECORDING_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -21582,7 +21583,7 @@ async def http_list_recordings(request: web.Request) -> web.Response:
                               "total": total, "page": page, "limit": limit})
 
 
-async def _recording_audit(admin: dict, action: str, row: dict) -> bool:
+async def _recording_audit(admin: dict, action: str, row: dict, **extra) -> bool:
     """Write the audit entry for one recording access; False when it could not be written
     (the caller then refuses, so nothing is played, downloaded or deleted unrecorded)."""
     try:
@@ -21590,7 +21591,8 @@ async def _recording_audit(admin: dict, action: str, row: dict) -> bool:
             action=action, actor_id=admin["id"], actor_username=admin["username"],
             target_id=row["id"], target_type="recording", target_name=row.get("connection_name"),
             details={"recording_id": row["id"], "owner": row.get("username"),
-                     "owner_id": row.get("user_id"), "connection": row.get("connection_name")})
+                     "owner_id": row.get("user_id"), "connection": row.get("connection_name"),
+                     **extra})
         return True
     except Exception as e:
         logger.error(f"[AuditLog] Failed to log {action}: {e}")
@@ -21647,14 +21649,28 @@ async def http_delete_recording(request: web.Request) -> web.Response:
         return web.json_response({"error": "Not found"}, status=404)
     if row["id"] in db.live_recording_ids:
         return web.json_response({"error": "The session is still running"}, status=409)
-    if not await _recording_audit(admin, "recording_delete", row):
+    # No audit entry, no delete. The entry written first is the administrator's request
+    # (details.outcome "requested"): it does not claim the recording is gone. A removal that
+    # then fails is not rewritten; a second, append-only entry "recording_delete_failed" with
+    # the reason follows it, so the log never says deleted for a recording that is still there.
+    if not await _recording_audit(admin, "recording_delete", row, outcome="requested"):
         return web.json_response({"error": "The audit entry could not be written"}, status=500)
     try:
         file_removed = session_recording.remove_recording_file(row["filename"])
     except OSError as e:
         logger.warning(f"Could not remove recording file of {row['id']}: {e}")
+        if not await _recording_audit(admin, "recording_delete_failed", row,
+                                      reason=f"file not removed: {e.strerror or type(e).__name__}"):
+            logger.error(f"[AuditLog] Could not record the failed delete of recording {row['id']}")
         return web.json_response({"error": "The file could not be removed; nothing was deleted"}, status=500)
-    await db.delete_recording(row["id"])
+    try:
+        await db.delete_recording(row["id"])
+    except Exception as e:
+        logger.error(f"Could not delete the row of recording {row['id']} after its file was removed: {e}")
+        if not await _recording_audit(admin, "recording_delete_failed", row,
+                                      reason="database row not removed", file_removed=bool(file_removed)):
+            logger.error(f"[AuditLog] Could not record the failed delete of recording {row['id']}")
+        return web.json_response({"error": "The recording could not be deleted"}, status=500)
     return web.json_response({"deleted": row["id"], "file_removed": file_removed})
 
 

@@ -4258,9 +4258,9 @@ One page, newest first. Query: `user` (name, any case, or id), `connection` (par
 The recording file (`application/x-asciicast`, `Cache-Control: no-store`). `?download=1` sends it as an attachment. The file is found through the database row only and must be a plain file inside the recordings folder (no symlink, no path in the name): a row that points anywhere else is `403`, a missing file `404`. Audited as `recording_play` or `recording_download` (administrator, recording id, owner, connection); if the entry cannot be written the request is `500` and nothing is sent.
 
 #### DELETE /api/recordings/{id}
-Removes the row and the file. `409` while the session is still running. Audited as `recording_delete`. **Response:** `{"deleted": 7, "file_removed": true}` (`false` when the row's name was not a plain file name, in which case no file was touched).
+Removes the row and the file. `409` while the session is still running. Audited as `recording_delete` (written before anything is removed, details `outcome: "requested"`, so it records the request, not the result). If the file cannot be removed, or the row cannot be deleted afterwards, the answer is `500` and a second entry, `recording_delete_failed`, with the reason, is written; entries are never rewritten. **Response:** `{"deleted": 7, "file_removed": true}` (`false` when the row's name was not a plain file name, in which case no file was touched).
 
-The audit actions `recording_play`, `recording_download` and `recording_delete` are visible to administrators, not to moderators.
+The audit actions `recording_play`, `recording_download`, `recording_delete` and `recording_delete_failed` are visible to administrators, not to moderators.
 
 ---
 

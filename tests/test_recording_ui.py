@@ -43,7 +43,7 @@ section = admin_html.split('<!-- Recordings Tab', 1)[1].split('<!-- Webhooks Tab
 check("the new tab markup has no inline handlers", not re.search(r"\son[a-z]+\s*=", section), "")
 check("the new tab button has no inline handler", 'id="tab-btn-recordings" data-recordings-tab style="display:none;">' in admin_html)
 check("the audit filter lists the three recording actions",
-      all(f'value="{a}"' in admin_html for a in ("recording_play", "recording_download", "recording_delete")))
+      all(f'value="{a}"' in admin_html for a in ("recording_play", "recording_download", "recording_delete", "recording_delete_failed")))
 check("the player script builds rows with textContent, never innerHTML", "innerHTML" not in admin_js)
 check("the player attaches no input handler and turns stdin off",
       "onData" not in admin_js and "disableStdin: true" in admin_js)

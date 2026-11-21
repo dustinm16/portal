@@ -6605,7 +6605,7 @@ Headers:
                         <span class="badge-admin">ADMIN</span>
                     </div>
                     <div class="endpoint-body">
-                        <p>Removes the row and the file; <code>409</code> while the session still runs. Audited as <code>recording_delete</code>. Returns <code>{"deleted": 7, "file_removed": true}</code>. The three audit actions are visible to administrators, not to moderators.</p>
+                        <p>Removes the row and the file; <code>409</code> while the session still runs. Audited as <code>recording_delete</code> (written before anything is removed, details <code>outcome: "requested"</code>: it records the request, not the result). If the file cannot be removed, or the row cannot be deleted afterwards, the answer is <code>500</code> and a second entry, <code>recording_delete_failed</code>, with the reason, is written; entries are never rewritten. Returns <code>{"deleted": 7, "file_removed": true}</code>. The four audit actions (<code>recording_play</code>, <code>recording_download</code>, <code>recording_delete</code>, <code>recording_delete_failed</code>) are visible to administrators, not to moderators.</p>
                     </div>
                 </div>
 
