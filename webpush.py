@@ -325,12 +325,25 @@ def validate_endpoint(endpoint, extra_hosts=(), sink_port: int | None = None) ->
     return endpoint
 
 
+def is_sink_endpoint(endpoint: str, sink_port: int | None) -> bool:
+    """True only for plain http to 127.0.0.1 on exactly the sink port (test hook or staged sink)."""
+    if not sink_port:
+        return False
+    try:
+        parts = urlsplit(endpoint)
+        return parts.scheme == "http" and parts.hostname == "127.0.0.1" and parts.port == sink_port
+    except ValueError:
+        return False
+
+
 async def check_resolves_public(endpoint: str, sink_port: int | None = None) -> None:
     """Refuse an endpoint whose host resolves to a private, loopback, link-local or metadata
     address. Raises PushError with a generic text (the address is never shown)."""
     parts = urlsplit(endpoint)
-    if sink_port and parts.scheme == "http" and parts.hostname == "127.0.0.1" and parts.port == sink_port:
+    if is_sink_endpoint(endpoint, sink_port):
         return
+    if Config.STAGE_MODE:
+        return          # a staged instance never delivers to a real host, so it does not look names up either
     try:
         await host_check.resolve_checked_host(parts.hostname or "", 443)
     except host_check.HostCheckError:
@@ -487,10 +500,13 @@ class Pusher:
             res["outcome"] = "paused"
             return res
         sink = await self.sink_port()
-        if Config.STAGE_MODE and not sink:
-            res["outcome"] = "staged"          # a staged instance sends nothing outside the host
-            return res
         endpoint = sub["endpoint"]
+        if Config.STAGE_MODE and not (sink and is_sink_endpoint(endpoint, sink)):
+            # A staged instance sends nothing outside the host, whatever the endpoint: a copy of
+            # production holds real subscriptions to real push services, and a sink being set
+            # must not let those through. Dropped without a failure count or a prune.
+            res["outcome"] = "staged"
+            return res
         try:
             validate_endpoint(endpoint, await self.extra_hosts(), sink)
             message = encrypt_aes128gcm(body, b64u_decode(sub["p256dh"]), b64u_decode(sub["auth"]))

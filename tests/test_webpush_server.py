@@ -508,6 +508,21 @@ async def main():
             await w.db.set_setting(wp.SETTING_STAGE_SINK, str(w.service.port))
             r = (await w.deliver("alice"))[0]
             check("a staged instance sends to its sink port only", r["outcome"] == "sent" and len(w.service.hits) == before + 1)
+            # a production copy holds real subscriptions: with the sink set they must still go nowhere
+            k = d1.sub()["keys"]
+            await w.db.conn.execute(
+                "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)",
+                (w.ids["alice"], "https://fcm.googleapis.com/fcm/send/real-device", k["p256dh"], k["auth"]))
+            await w.db.conn.commit()
+            outbound_guard.refused.clear()
+            outs = await w.deliver("alice")
+            real = [o for o in outs if o["outcome"] != "sent"]
+            rows = await w.db.conn.execute("SELECT failure_count FROM push_subscriptions WHERE endpoint LIKE 'https://fcm%'")
+            check("a staged instance with a sink set drops a real push service endpoint as staged: not dialled, not counted, not pruned",
+                  [o["outcome"] for o in real] == ["staged"] and not outbound_guard.refused
+                  and [r["failure_count"] for r in await rows.fetchall()] == [0], f"{outs} {outbound_guard.refused}")
+            await w.db.conn.execute("DELETE FROM push_subscriptions WHERE endpoint LIKE 'https://fcm%'")
+            await w.db.conn.commit()
         finally:
             Config.STAGE_MODE = False
             wp.allow_test_sink(saved_sink)
